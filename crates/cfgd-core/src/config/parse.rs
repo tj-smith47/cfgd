@@ -117,20 +117,20 @@ pub(crate) fn validate_api_version(api_version: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reject `spec.fileStrategy: Modify`.
+/// Reject `spec.fileStrategy: Patch`.
 ///
 /// The global strategy is the fallback for files that declare none, and a
-/// `Modify` file is defined by its own `modify:` block — which a file
+/// `Patch` file is defined by its own `patch:` block — which a file
 /// inheriting the global cannot have. Every such file would fail at apply with
-/// `ModifyBlockMissing`, and the unmanaged-file prompt (which reads the file's
+/// `PatchBlockMissing`, and the unmanaged-file prompt (which reads the file's
 /// *declared* strategy) would back the target up before the merge, destroying
-/// the content `Modify` exists to preserve. It is only ever meaningful per
+/// the content `Patch` exists to preserve. It is only ever meaningful per
 /// file.
 pub(crate) fn validate_global_file_strategy(strategy: FileStrategy) -> Result<()> {
     if !strategy.valid_as_global_default() {
         return Err(ConfigError::Invalid {
-            message: "spec.fileStrategy: 'Modify' cannot be a global default — it requires a \
-                      per-file 'modify' block, so set 'strategy: Modify' on the individual file"
+            message: "spec.fileStrategy: 'Patch' cannot be a global default — it requires a \
+                      per-file 'patch' block, so set 'strategy: Patch' on the individual file"
                 .to_string(),
         }
         .into());

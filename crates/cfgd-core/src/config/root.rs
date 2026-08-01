@@ -72,7 +72,7 @@ pub struct ConfigSpec {
 
     /// Global default file deployment strategy. Per-file overrides take precedence.
     ///
-    /// `Modify` is rejected here: it is defined by a per-file `modify:` block,
+    /// `Patch` is rejected here: it is defined by a per-file `patch:` block,
     /// which a file inheriting the global default cannot have.
     #[serde(default)]
     #[schemars(schema_with = "global_file_strategy_schema")]
@@ -100,10 +100,10 @@ pub struct ConfigSpec {
     pub update: Option<UpdateConfig>,
 }
 
-/// Schema for `spec.fileStrategy`: the [`FileStrategy`] variants minus `Modify`.
+/// Schema for `spec.fileStrategy`: the [`FileStrategy`] variants minus `Patch`.
 ///
 /// Editors validate `cfgd.yaml` against the published schema, so the value set
-/// they offer must match what the parser accepts — `Modify` is rejected as a
+/// they offer must match what the parser accepts — `Patch` is rejected as a
 /// global default (see `validate_global_file_strategy`).
 fn global_file_strategy_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let accepted: Vec<&'static str> = FileStrategy::ALL

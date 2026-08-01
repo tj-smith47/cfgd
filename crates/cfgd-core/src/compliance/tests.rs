@@ -102,7 +102,7 @@ fn collect_file_checks_existing_file() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "test.conf".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -133,7 +133,7 @@ fn collect_file_checks_missing_file() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "test.conf".into(),
                 target: "/tmp/cfgd-nonexistent-file-12345".into(),
                 strategy: None,
@@ -170,7 +170,7 @@ fn collect_file_checks_permissions_match() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "secret.key".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -207,7 +207,7 @@ fn collect_file_checks_permissions_mismatch() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "secret.key".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -893,7 +893,7 @@ fn collect_file_checks_invalid_permission_string_warns() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "malformed.conf".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -936,7 +936,7 @@ fn collect_file_checks_with_encryption_declared_adds_file_encryption_check() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "secret.enc.yaml".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -1060,7 +1060,7 @@ fn collect_file_checks_includes_module_file_and_attributes_origin() {
         strategy: None,
         encryption: None,
         permissions: None,
-        modify: None,
+        patch: None,
     }];
 
     // No file_manager + no declared perms → exactly ONE check: the "present"
@@ -1077,15 +1077,15 @@ fn collect_file_checks_includes_module_file_and_attributes_origin() {
 }
 
 #[test]
-fn collect_file_checks_modify_reports_content_convergence() {
-    // A `Modify` entry has no source to compare against — its content check
+fn collect_file_checks_patch_reports_content_convergence() {
+    // A `Patch` entry has no source to compare against — its content check
     // comes from re-evaluating the merge over the target, with no file manager
     // wired.
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("settings.json");
     std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
 
-    let profile = modify_profile(&target, "telemetry: false");
+    let profile = patch_profile(&target, "telemetry: false");
     let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
 
     assert_eq!(checks.len(), 1);
@@ -1093,34 +1093,34 @@ fn collect_file_checks_modify_reports_content_convergence() {
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
     assert_eq!(
         checks[0].detail.as_deref(),
-        Some("content satisfies modify spec")
+        Some("content satisfies patch spec")
     );
 }
 
 #[test]
-fn collect_file_checks_modify_drift_is_violation() {
+fn collect_file_checks_patch_drift_is_violation() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("settings.json");
     std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").unwrap();
 
-    let profile = modify_profile(&target, "telemetry: false");
+    let profile = patch_profile(&target, "telemetry: false");
     let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
 
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
     assert_eq!(
         checks[0].detail.as_deref(),
-        Some("content differs from modify spec")
+        Some("content differs from patch spec")
     );
 }
 
 #[test]
-fn collect_file_checks_modify_unparseable_target_warns() {
+fn collect_file_checks_patch_unparseable_target_warns() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("settings.json");
     std::fs::write(&target, "not json at all").unwrap();
 
-    let profile = modify_profile(&target, "telemetry: false");
+    let profile = patch_profile(&target, "telemetry: false");
     let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
 
     assert_eq!(checks.len(), 1);
@@ -1129,25 +1129,25 @@ fn collect_file_checks_modify_unparseable_target_warns() {
         checks[0]
             .detail
             .as_deref()
-            .is_some_and(|d| d.starts_with("cannot evaluate modify spec:")),
+            .is_some_and(|d| d.starts_with("cannot evaluate patch spec:")),
         "expected an evaluation warning, got: {:?}",
         checks[0].detail
     );
 }
 
-/// Profile with a single `Modify` managed file over `target`.
-fn modify_profile(target: &std::path::Path, ensure: &str) -> MergedProfile {
+/// Profile with a single `Patch` managed file over `target`.
+fn patch_profile(target: &std::path::Path, ensure: &str) -> MergedProfile {
     MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: Some(crate::config::ModifySpec {
+                patch: Some(crate::config::PatchSpec {
                     format: None,
                     ensure: Some(serde_yaml::from_str(ensure).unwrap()),
                     script: None,
                 }),
                 source: String::new(),
                 target: target.to_path_buf(),
-                strategy: Some(crate::config::FileStrategy::Modify),
+                strategy: Some(crate::config::FileStrategy::Patch),
                 private: false,
                 origin: None,
                 encryption: None,
@@ -1160,7 +1160,7 @@ fn modify_profile(target: &std::path::Path, ensure: &str) -> MergedProfile {
 }
 
 #[test]
-fn collect_file_checks_module_modify_attributes_origin() {
+fn collect_file_checks_module_patch_attributes_origin() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("settings.json");
     std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").unwrap();
@@ -1171,10 +1171,10 @@ fn collect_file_checks_module_modify_attributes_origin() {
         source: PathBuf::new(),
         target: target.clone(),
         is_git_source: false,
-        strategy: Some(crate::config::FileStrategy::Modify),
+        strategy: Some(crate::config::FileStrategy::Patch),
         encryption: None,
         permissions: None,
-        modify: Some(crate::config::ModifySpec {
+        patch: Some(crate::config::PatchSpec {
             format: None,
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
@@ -1186,7 +1186,7 @@ fn collect_file_checks_module_modify_attributes_origin() {
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
     assert_eq!(
         checks[0].detail.as_deref(),
-        Some("content differs from modify spec (module: dev)")
+        Some("content differs from patch spec (module: dev)")
     );
 }
 
@@ -1204,7 +1204,7 @@ fn collect_file_checks_content_drift_is_violation() {
 
     let mut profile = MergedProfile::default();
     profile.files.managed = vec![crate::config::ManagedFileSpec {
-        modify: None,
+        patch: None,
         source: source.to_string_lossy().into_owned(),
         target: target.clone(),
         strategy: None,
@@ -1246,7 +1246,7 @@ fn collect_file_checks_content_match_is_compliant() {
 
     let mut profile = MergedProfile::default();
     profile.files.managed = vec![crate::config::ManagedFileSpec {
-        modify: None,
+        patch: None,
         source: source.to_string_lossy().into_owned(),
         target: target.clone(),
         strategy: None,
@@ -1288,7 +1288,7 @@ fn collect_file_checks_content_plus_perms_is_two_checks() {
 
     let mut profile = MergedProfile::default();
     profile.files.managed = vec![crate::config::ManagedFileSpec {
-        modify: None,
+        patch: None,
         source: source.to_string_lossy().into_owned(),
         target: target.clone(),
         strategy: None,
@@ -1435,7 +1435,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         strategy: None,
         encryption: None,
         permissions: None,
-        modify: None,
+        patch: None,
     }];
     m.packages = vec![ResolvedPackage {
         canonical_name: "ripgrep".into(),

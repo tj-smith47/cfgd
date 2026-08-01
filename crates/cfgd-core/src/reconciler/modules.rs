@@ -190,32 +190,32 @@ impl<'a> super::Reconciler<'a> {
                         None => None,
                     };
 
-                    // `Modify` rewrites the target's own content, so it is
+                    // `Patch` rewrites the target's own content, so it is
                     // computed here — before the backup/remove sequence below
                     // deletes the very bytes it reads. A failure aborts with
                     // the target still intact.
-                    let modified = if strategy == crate::config::FileStrategy::Modify {
-                        let spec = file.modify.as_ref().ok_or_else(|| {
-                            crate::errors::FileError::ModifyBlockMissing {
+                    let patched = if strategy == crate::config::FileStrategy::Patch {
+                        let spec = file.patch.as_ref().ok_or_else(|| {
+                            crate::errors::FileError::PatchBlockMissing {
                                 path: target.clone(),
                             }
                         })?;
                         let binding = match resolved_mod {
-                            Some(m) => super::modify::ModifyBinding::module(
+                            Some(m) => super::patch::PatchBinding::module(
                                 config_dir,
                                 resolved.profile_name(),
                                 context,
                                 m,
                             ),
-                            None => super::modify::ModifyBinding::profile(
+                            None => super::patch::PatchBinding::profile(
                                 config_dir,
                                 resolved.profile_name(),
                                 context,
                             ),
                         };
                         Some(
-                            super::modify::evaluate_modify(spec, &target, &binding.context())?
-                                .modified,
+                            super::patch::evaluate_patch(spec, &target, &binding.context())?
+                                .patched,
                         )
                     } else {
                         None
@@ -241,7 +241,7 @@ impl<'a> super::Reconciler<'a> {
                         }
                     }
 
-                    if let Some(content) = modified {
+                    if let Some(content) = patched {
                         crate::atomic_write_str(&target, &content)?;
                     } else if file.source.is_dir() {
                         match strategy {
@@ -262,8 +262,8 @@ impl<'a> super::Reconciler<'a> {
                             }
                             crate::config::FileStrategy::Copy
                             | crate::config::FileStrategy::Template
-                            // Unreachable: a `Modify` file took the branch above.
-                            | crate::config::FileStrategy::Modify => {
+                            // Unreachable: a `Patch` file took the branch above.
+                            | crate::config::FileStrategy::Patch => {
                                 let content = std::fs::read(&file.source)?;
                                 crate::atomic_write(&target, &content)?;
                             }

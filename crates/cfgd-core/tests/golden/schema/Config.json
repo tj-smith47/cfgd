@@ -191,7 +191,7 @@
         },
         "fileStrategy": {
           "default": "Symlink",
-          "description": "Global default file deployment strategy. Per-file overrides take precedence. `Modify` is rejected here: it is defined by a per-file `modify:` block, which a file inheriting the global default cannot have.",
+          "description": "Global default file deployment strategy. Per-file overrides take precedence. `Patch` is rejected here: it is defined by a per-file `patch:` block, which a file inheriting the global default cannot have.",
           "enum": [
             "Symlink",
             "Copy",

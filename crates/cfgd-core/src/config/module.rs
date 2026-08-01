@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::parse::check_yaml_anchor_limit;
 use super::profile_spec::{
-    EncryptionSpec, FileStrategy, ModifySpec, ScriptSpec, validate_file_modify_shape,
+    EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec, validate_file_patch_shape,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -113,7 +113,7 @@ pub struct ModulePackageEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleFileEntry {
-    /// Not required when `strategy` is `Modify`; required otherwise
+    /// Not required when `strategy` is `Patch`; required otherwise
     /// (enforced by `validate_module_file_entries`, not the JSON schema).
     #[serde(default)]
     pub source: String,
@@ -131,22 +131,22 @@ pub struct ModuleFileEntry {
     /// Unix permission bits (e.g. "600", "644") to apply after deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
-    /// Structured merge or script configuration for `strategy: Modify`.
-    /// Required when `strategy` is `Modify`, rejected otherwise (enforced by
+    /// Structured merge or script configuration for `strategy: Patch`.
+    /// Required when `strategy` is `Patch`, rejected otherwise (enforced by
     /// `validate_module_file_entries`, not the JSON schema).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub modify: Option<ModifySpec>,
+    pub patch: Option<PatchSpec>,
 }
 
-/// Validate the `modify` strategy shape of every module file entry
-/// (`spec.files`). See [`validate_file_modify_shape`].
+/// Validate the `patch` strategy shape of every module file entry
+/// (`spec.files`). See [`validate_file_patch_shape`].
 pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
     for entry in entries {
-        validate_file_modify_shape(
+        validate_file_patch_shape(
             &format!("module file '{}'", entry.target),
             entry.source.is_empty(),
             entry.strategy,
-            entry.modify.as_ref(),
+            entry.patch.as_ref(),
             entry.encryption.is_some(),
             entry.private,
         )?;
@@ -348,45 +348,38 @@ spec: {}
     }
 
     #[test]
-    fn module_file_entry_modify_ensure_parses_for_each_format() {
+    fn module_file_entry_patch_ensure_parses_for_each_format() {
         for fmt in ["ini", "json", "yaml", "toml"] {
             let yaml = format!(
-                "target: /tmp/settings.{fmt}\nstrategy: modify\nmodify:\n  format: {fmt}\n  ensure:\n    General:\n      theme: dark\n"
+                "target: /tmp/settings.{fmt}\nstrategy: patch\npatch:\n  format: {fmt}\n  ensure:\n    General:\n      theme: dark\n"
             );
             let entry: ModuleFileEntry = serde_yaml::from_str(&yaml)
                 .unwrap_or_else(|e| panic!("format {fmt} should parse: {e}"));
-            assert_eq!(entry.strategy, Some(FileStrategy::Modify));
-            let modify = entry
-                .modify
-                .as_ref()
-                .expect("modify block should be present");
-            assert!(modify.ensure.is_some());
-            assert!(modify.script.is_none());
+            assert_eq!(entry.strategy, Some(FileStrategy::Patch));
+            let patch = entry.patch.as_ref().expect("patch block should be present");
+            assert!(patch.ensure.is_some());
+            assert!(patch.script.is_none());
             validate_module_file_entries(std::slice::from_ref(&entry))
                 .unwrap_or_else(|e| panic!("format {fmt} should validate: {e}"));
         }
     }
 
     #[test]
-    fn module_file_entry_modify_script_parses() {
-        let yaml =
-            "target: ~/.zshrc\nstrategy: modify\nmodify:\n  script: scripts/patch-zshrc.sh\n";
+    fn module_file_entry_patch_script_parses() {
+        let yaml = "target: ~/.zshrc\nstrategy: patch\npatch:\n  script: scripts/patch-zshrc.sh\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(entry.strategy, Some(FileStrategy::Modify));
-        let modify = entry
-            .modify
-            .as_ref()
-            .expect("modify block should be present");
-        assert!(modify.script.is_some());
-        assert!(modify.ensure.is_none());
+        assert_eq!(entry.strategy, Some(FileStrategy::Patch));
+        let patch = entry.patch.as_ref().expect("patch block should be present");
+        assert!(patch.script.is_some());
+        assert!(patch.ensure.is_none());
         assert_eq!(entry.source, "");
-        validate_module_file_entries(&[entry]).expect("script-mode modify should validate");
+        validate_module_file_entries(&[entry]).expect("script-mode patch should validate");
     }
 
     #[test]
-    fn module_file_entry_modify_rejects_ensure_and_script_together() {
+    fn module_file_entry_patch_rejects_ensure_and_script_together() {
         let yaml =
-            "target: /tmp/a.ini\nstrategy: modify\nmodify:\n  ensure:\n    a: b\n  script: x.sh\n";
+            "target: /tmp/a.ini\nstrategy: patch\npatch:\n  ensure:\n    a: b\n  script: x.sh\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
@@ -396,8 +389,8 @@ spec: {}
     }
 
     #[test]
-    fn module_file_entry_modify_rejects_neither_ensure_nor_script() {
-        let yaml = "target: /tmp/a.ini\nstrategy: modify\nmodify: {}\n";
+    fn module_file_entry_patch_rejects_neither_ensure_nor_script() {
+        let yaml = "target: /tmp/a.ini\nstrategy: patch\npatch: {}\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
@@ -407,66 +400,66 @@ spec: {}
     }
 
     #[test]
-    fn module_file_entry_modify_block_without_modify_strategy_rejected() {
-        let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\nmodify:\n  ensure:\n    a: b\n";
+    fn module_file_entry_patch_block_without_patch_strategy_rejected() {
+        let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\npatch:\n  ensure:\n    a: b\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("only valid when strategy is 'modify'")
+                .contains("only valid when strategy is 'patch'")
         );
     }
 
-    /// See the `ManagedFileSpec` counterparts: a `Modify` entry has no source
+    /// See the `ManagedFileSpec` counterparts: a `Patch` entry has no source
     /// file, so neither `encryption` nor `private` can be honoured.
     #[test]
-    fn module_file_entry_modify_rejects_encryption() {
-        let yaml = "target: /tmp/a.ini\nstrategy: modify\nmodify:\n  ensure:\n    a: b\nencryption:\n  backend: sops\n";
+    fn module_file_entry_patch_rejects_encryption() {
+        let yaml = "target: /tmp/a.ini\nstrategy: patch\npatch:\n  ensure:\n    a: b\nencryption:\n  backend: sops\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("'encryption' is not supported with strategy 'modify'"),
+                .contains("'encryption' is not supported with strategy 'patch'"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn module_file_entry_modify_rejects_private() {
+    fn module_file_entry_patch_rejects_private() {
         let yaml =
-            "target: /tmp/a.ini\nstrategy: modify\nprivate: true\nmodify:\n  ensure:\n    a: b\n";
+            "target: /tmp/a.ini\nstrategy: patch\nprivate: true\npatch:\n  ensure:\n    a: b\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         assert!(entry.private);
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("'private' is not supported with strategy 'modify'"),
+                .contains("'private' is not supported with strategy 'patch'"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn module_file_entry_modify_strategy_without_modify_block_rejected() {
-        let yaml = "target: /tmp/a.ini\nstrategy: modify\n";
+    fn module_file_entry_patch_strategy_without_patch_block_rejected() {
+        let yaml = "target: /tmp/a.ini\nstrategy: patch\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         let err = validate_module_file_entries(&[entry]).unwrap_err();
-        assert!(err.to_string().contains("requires a 'modify' block"));
+        assert!(err.to_string().contains("requires a 'patch' block"));
     }
 
     #[test]
-    fn module_file_entry_non_modify_strategy_requires_nonempty_source() {
+    fn module_file_entry_non_patch_strategy_requires_nonempty_source() {
         let yaml = "target: /tmp/a.ini\nstrategy: copy\n";
         let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(entry.source, "");
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("'source' is required unless strategy is 'modify'")
+                .contains("'source' is required unless strategy is 'patch'")
         );
     }
 
     #[test]
-    fn module_document_with_invalid_modify_file_entry_rejected_by_parse_module() {
+    fn module_document_with_invalid_patch_file_entry_rejected_by_parse_module() {
         let yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -474,14 +467,14 @@ metadata:
 spec:
   files:
     - target: /tmp/a.ini
-      strategy: modify
+      strategy: patch
 "#;
         let err = parse_module(yaml).unwrap_err();
-        assert!(err.to_string().contains("requires a 'modify' block"));
+        assert!(err.to_string().contains("requires a 'patch' block"));
     }
 
     #[test]
-    fn module_document_with_valid_modify_file_entry_parses() {
+    fn module_document_with_valid_patch_file_entry_parses() {
         let yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -489,14 +482,14 @@ metadata:
 spec:
   files:
     - target: /tmp/a.ini
-      strategy: modify
-      modify:
+      strategy: patch
+      patch:
         format: ini
         ensure:
           General:
             theme: dark
 "#;
-        let doc = parse_module(yaml).expect("valid modify file entry should parse");
+        let doc = parse_module(yaml).expect("valid patch file entry should parse");
         assert_eq!(doc.spec.files.len(), 1);
     }
 

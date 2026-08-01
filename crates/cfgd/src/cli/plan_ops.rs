@@ -454,16 +454,16 @@ pub(in crate::cli) fn display_plan_preview(
                 if let reconciler::Action::File(FileAction::Update {
                     source,
                     target,
-                    modify,
+                    patch,
                     ..
                 }) = action
                     && let Ok(target_content) = std::fs::read_to_string(target)
                 {
-                    // A `Modify` action has no source file: its preview is the
+                    // A `Patch` action has no source file: its preview is the
                     // target against what re-running the merge would produce.
-                    let source_content = if let Some(spec) = modify {
+                    let source_content = if let Some(spec) = patch {
                         match fm.evaluate_spec(spec, target, reconciler::ReconcileContext::Apply) {
-                            Ok(outcome) => outcome.modified,
+                            Ok(outcome) => outcome.patched,
                             Err(e) => {
                                 printer
                                     .status(
@@ -638,14 +638,14 @@ pub(in crate::cli) fn is_unmanaged_file(
 /// Whether a strategy adopts an existing unmanaged target in place instead of
 /// replacing it.
 ///
-/// `Modify` merges into the target's own bytes, so the unmanaged-file prompt
+/// `Patch` merges into the target's own bytes, so the unmanaged-file prompt
 /// must never fire for it: every one of its choices is wrong. "Adopt
 /// (overwrite)" misdescribes a merge, and "Backup" renames the target away
 /// *before* apply — the merge would then read an empty current content and
 /// write only the ensured keys, destroying exactly the content the strategy
 /// exists to preserve.
 fn adopts_in_place(strategy: FileStrategy) -> bool {
-    matches!(strategy, FileStrategy::Modify)
+    matches!(strategy, FileStrategy::Patch)
 }
 
 pub(in crate::cli) fn handle_unmanaged_file_targets(

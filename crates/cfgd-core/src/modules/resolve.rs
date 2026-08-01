@@ -200,10 +200,10 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
-                modify: entry.modify.clone(),
+                patch: entry.patch.clone(),
             });
         } else if entry.source.is_empty() {
-            // A `strategy: Modify` entry needs no source. Joining an empty
+            // A `strategy: Patch` entry needs no source. Joining an empty
             // relative path onto the module directory would yield the module
             // directory itself, which every downstream `source.is_dir()` /
             // `source.exists()` branch would read as a deployable payload.
@@ -214,7 +214,7 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
-                modify: entry.modify.clone(),
+                patch: entry.patch.clone(),
             });
         } else {
             // Local path — relative to module directory
@@ -247,7 +247,7 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
-                modify: entry.modify.clone(),
+                patch: entry.patch.clone(),
             });
         }
     }

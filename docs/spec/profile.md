@@ -121,9 +121,9 @@ spec:
     managed:
       - source: string
         target: string
-        strategy: Symlink | Copy | Template | Hardlink | Modify
+        strategy: Symlink | Copy | Template | Hardlink | Patch
         private: bool
-        modify:
+        patch:
           format: Ini | Json | Yaml | Toml
           ensure: {}
           script: string
@@ -474,13 +474,13 @@ on the machine.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Only when `strategy` is not `Modify` | | Path to the source file or directory, relative to the config root. Not required when `strategy: Modify`. |
+| `source` | string | Only when `strategy` is not `Patch` | | Path to the source file or directory, relative to the config root. Not required when `strategy: Patch`. |
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
 | `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"600"`). Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
-| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Modify`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
-| `modify` | object | Only when `strategy: Modify` | | Structured merge or script configuration, used only when `strategy: Modify`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
+| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Patch`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
+| `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
 **Example:**
 ```yaml
@@ -498,8 +498,8 @@ files:
       private: true
 
     - target: ~/.gitconfig
-      strategy: Modify
-      modify:
+      strategy: Patch
+      patch:
         format: Ini
         ensure:
           user:
@@ -514,14 +514,14 @@ files:
 | `Copy` | Copy source content to `target`. The target is an independent file; changes to source are not reflected until the next reconcile. |
 | `Template` | Render the source as a Tera template and write the output to `target`. Automatically selected for `.tera` source files. |
 | `Hardlink` | Create a hard link from `target` to source. Changes to either file are immediately visible in both. |
-| `Modify` | Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `modify` block; `source` is not required. |
+| `Patch` | Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `patch` block; `source` is not required. |
 
 #### Managed file encryption fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `encryption.backend` | string | Yes (when `encryption` present) | | Encryption backend: `"sops"` or `"age"`. Same values as `spec.secrets.backend` in `cfgd.yaml`. |
-| `encryption.mode` | enum | No | `InRepo` | `InRepo`: source must be encrypted in the repo, deployed decrypted. `Always`: encrypted in repo and encrypted at the target path. `Always` is incompatible with `strategy: Symlink` and `strategy: Hardlink`; the whole `encryption` block is incompatible with `strategy: Modify`. |
+| `encryption.mode` | enum | No | `InRepo` | `InRepo`: source must be encrypted in the repo, deployed decrypted. `Always`: encrypted in repo and encrypted at the target path. `Always` is incompatible with `strategy: Symlink` and `strategy: Hardlink`; the whole `encryption` block is incompatible with `strategy: Patch`. |
 
 **Example:**
 ```yaml

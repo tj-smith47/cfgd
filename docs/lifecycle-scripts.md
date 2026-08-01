@@ -139,8 +139,8 @@ cfgd injects these read-only variables into every lifecycle script's environment
 | `CFGD_MODULE_NAME` | Module name (module scripts only) |
 | `CFGD_MODULE_DIR` | Absolute path to the module's directory (module scripts only) |
 
-The same variables reach a [`strategy: Modify` filter script](configuration.md#script--pipe-the-file-through-a-command),
-which runs with `CFGD_PHASE=modify`.
+The same variables reach a [`strategy: Patch` filter script](configuration.md#script--pipe-the-file-through-a-command),
+which runs with `CFGD_PHASE=patch`.
 
 ## File Scripts vs Inline
 

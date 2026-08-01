@@ -211,7 +211,7 @@ fn finish(
 ///
 /// `script_dir` is the config directory: `spec.backups[]` is profile-declared,
 /// so a relative `run:` resolves against the config tree — the same anchoring
-/// `ModifyBinding::profile` uses for a profile-declared file. Entries honour
+/// `PatchBinding::profile` uses for a profile-declared file. Entries honour
 /// `continueOnError`, so a hook list can be told to press on past a failure;
 /// the first failure is still what the caller sees.
 fn run_hooks(

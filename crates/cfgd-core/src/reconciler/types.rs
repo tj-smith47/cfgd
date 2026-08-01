@@ -202,8 +202,8 @@ pub enum ScriptPhase {
     PostReconcile,
     OnDrift,
     OnChange,
-    /// A `modify.script` filter rewriting a managed file's content.
-    Modify,
+    /// A `patch.script` filter rewriting a managed file's content.
+    Patch,
     /// A `spec.backups[].preBackup` hook, run before the snapshot is taken.
     PreBackup,
     /// A `spec.backups[].postBackup` hook, run after the copy step.
@@ -219,7 +219,7 @@ impl ScriptPhase {
             ScriptPhase::PostReconcile => "postReconcile",
             ScriptPhase::OnDrift => "onDrift",
             ScriptPhase::OnChange => "onChange",
-            ScriptPhase::Modify => "modify",
+            ScriptPhase::Patch => "patch",
             ScriptPhase::PreBackup => "preBackup",
             ScriptPhase::PostBackup => "postBackup",
         }

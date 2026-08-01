@@ -1,8 +1,8 @@
-//! Format-aware partial-file modification for `strategy: Modify`.
+//! Format-aware partial-file patching for `strategy: Patch`.
 //!
-//! Where `Copy`/`Symlink`/`Template` own the *whole* target file, `Modify`
+//! Where `Copy`/`Symlink`/`Template` own the *whole* target file, `Patch`
 //! owns only the keys it names: it reads the target's current content, folds
-//! `modify.ensure` into it (or pipes it through `modify.script`), and returns
+//! `patch.ensure` into it (or pipes it through `patch.script`), and returns
 //! the new content. Everything the spec does not mention survives untouched.
 //!
 //! Format preservation is per-format and deliberate:
@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{ModifyFormat, ModifySpec};
+use crate::config::{PatchFormat, PatchSpec};
 use crate::effective::Origin;
 use crate::errors::{FileError, Result};
 use crate::modules::ResolvedModule;
@@ -26,19 +26,19 @@ use super::scripts::{
 };
 use super::types::{ReconcileContext, ScriptPhase};
 
-/// Execution context for `modify.script`, ignored by `modify.ensure`.
+/// Execution context for `patch.script`, ignored by `patch.ensure`.
 ///
 /// `script_dir` anchors a relative script path (the module's directory, or the
 /// config directory for a profile-level file). The working directory and
 /// environment default to the same values a lifecycle script would receive.
-pub struct ModifyContext<'a> {
+pub struct PatchContext<'a> {
     script_dir: &'a Path,
     working_dir: Option<&'a Path>,
     env: &'a [(String, String)],
     timeout: std::time::Duration,
 }
 
-impl<'a> ModifyContext<'a> {
+impl<'a> PatchContext<'a> {
     /// Context anchored at `script_dir`, with the default script working
     /// directory (the user's home), no extra environment, and the standard
     /// module-script timeout.
@@ -76,7 +76,7 @@ impl<'a> ModifyContext<'a> {
     }
 }
 
-/// Owner of the values a [`ModifyContext`] borrows, so every dispatch site
+/// Owner of the values a [`PatchContext`] borrows, so every dispatch site
 /// builds the same context from the same two inputs instead of re-deriving a
 /// script directory and environment by hand.
 ///
@@ -87,12 +87,12 @@ impl<'a> ModifyContext<'a> {
 /// resolves against the module's directory, a profile-declared file against the
 /// config directory.
 #[derive(Debug)]
-pub struct ModifyBinding {
+pub struct PatchBinding {
     script_dir: PathBuf,
     env: Vec<(String, String)>,
 }
 
-impl ModifyBinding {
+impl PatchBinding {
     /// Binding for a file declared by the profile (`spec.files.managed`):
     /// scripts resolve against the config directory and see the standard
     /// `CFGD_*` metadata with no module attribution.
@@ -103,7 +103,7 @@ impl ModifyBinding {
                 config_dir,
                 profile_name,
                 context,
-                &ScriptPhase::Modify,
+                &ScriptPhase::Patch,
                 None,
                 None,
                 &[],
@@ -126,7 +126,7 @@ impl ModifyBinding {
                 config_dir,
                 profile_name,
                 context,
-                &ScriptPhase::Modify,
+                &ScriptPhase::Patch,
                 Some(&module.name),
                 Some(&module.dir),
                 &module.env,
@@ -161,38 +161,38 @@ impl ModifyBinding {
         Ok(Self::module(config_dir, profile_name, context, module))
     }
 
-    /// Borrow the binding as an execution context for [`compute_modified`] /
-    /// [`evaluate_modify`].
-    pub fn context(&self) -> ModifyContext<'_> {
-        ModifyContext::new(&self.script_dir).with_env(&self.env)
+    /// Borrow the binding as an execution context for [`compute_patched`] /
+    /// [`evaluate_patch`].
+    pub fn context(&self) -> PatchContext<'_> {
+        PatchContext::new(&self.script_dir).with_env(&self.env)
     }
 }
 
-/// A `Modify` target's content before and after the spec is folded in.
+/// A `Patch` target's content before and after the spec is folded in.
 #[derive(Debug)]
-pub struct ModifyOutcome {
+pub struct PatchOutcome {
     /// The target's content on disk; empty when the target does not exist.
     pub current: String,
     /// The content the spec produces from `current`.
-    pub modified: String,
+    pub patched: String,
 }
 
-impl ModifyOutcome {
+impl PatchOutcome {
     /// Whether applying the spec would change the target — the single
     /// up-to-date predicate shared by plan, diff, drift, and compliance so they
-    /// can never disagree about whether a `Modify` file has converged.
+    /// can never disagree about whether a `Patch` file has converged.
     pub fn is_up_to_date(&self) -> bool {
-        self.current == self.modified
+        self.current == self.patched
     }
 }
 
-/// Wording shared by every read-only surface that could not evaluate a `Modify`
+/// Wording shared by every read-only surface that could not evaluate a `Patch`
 /// spec, so `diff`, `verify`, `status` and a compliance snapshot describe the
 /// same failure identically. Collapsed to one line because it lands in a status
 /// subject or a compliance detail.
-pub fn modify_failure_detail(error: &crate::errors::CfgdError) -> String {
+pub fn patch_failure_detail(error: &crate::errors::CfgdError) -> String {
     format!(
-        "cannot evaluate modify spec: {}",
+        "cannot evaluate patch spec: {}",
         crate::output::collapse_to_subject_line(error)
     )
 }
@@ -200,15 +200,15 @@ pub fn modify_failure_detail(error: &crate::errors::CfgdError) -> String {
 /// Read `target` and compute what `spec` would make of it.
 ///
 /// A missing target reads as empty content (`ensure` then creates a minimal
-/// document, `script` receives empty stdin), matching [`compute_modified`]'s
+/// document, `script` receives empty stdin), matching [`compute_patched`]'s
 /// contract. Any other read failure — a directory, a permission error, non-UTF-8
 /// bytes — is surfaced rather than silently treated as empty, because writing
 /// the merge result would then destroy content cfgd could not read.
-pub fn evaluate_modify(
-    spec: &ModifySpec,
+pub fn evaluate_patch(
+    spec: &PatchSpec,
     target: &Path,
-    ctx: &ModifyContext<'_>,
-) -> Result<ModifyOutcome> {
+    ctx: &PatchContext<'_>,
+) -> Result<PatchOutcome> {
     let current = match std::fs::read_to_string(target) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -220,8 +220,8 @@ pub fn evaluate_modify(
             .into());
         }
     };
-    let modified = compute_modified(&current, spec, target, ctx)?;
-    Ok(ModifyOutcome { current, modified })
+    let patched = compute_patched(&current, spec, target, ctx)?;
+    Ok(PatchOutcome { current, patched })
 }
 
 /// Compute the new content of `target` by applying `spec` to `current`.
@@ -231,34 +231,34 @@ pub fn evaluate_modify(
 /// with respect to the filesystem for `ensure` mode — it never reads or writes
 /// the target — so the same call produces both the plan preview and the applied
 /// content.
-pub fn compute_modified(
+pub fn compute_patched(
     current: &str,
-    spec: &ModifySpec,
+    spec: &PatchSpec,
     target: &Path,
-    ctx: &ModifyContext<'_>,
+    ctx: &PatchContext<'_>,
 ) -> Result<String> {
     match (spec.ensure.as_ref(), spec.script.as_deref()) {
         (Some(ensure), None) => match resolve_format(spec, target)? {
-            ModifyFormat::Ini => merge_ini(current, ensure, target),
-            ModifyFormat::Json => merge_json(current, ensure, target),
-            ModifyFormat::Yaml => merge_yaml(current, ensure, target),
-            ModifyFormat::Toml => merge_toml(current, ensure, target),
+            PatchFormat::Ini => merge_ini(current, ensure, target),
+            PatchFormat::Json => merge_json(current, ensure, target),
+            PatchFormat::Yaml => merge_yaml(current, ensure, target),
+            PatchFormat::Toml => merge_toml(current, ensure, target),
         },
         (None, Some(script)) => run_script(current, script, target, ctx),
-        _ => Err(FileError::ModifySpecInvalid {
+        _ => Err(FileError::PatchSpecInvalid {
             path: target.to_path_buf(),
         }
         .into()),
     }
 }
 
-/// Resolve the format to parse the target as: the explicit `modify.format`
+/// Resolve the format to parse the target as: the explicit `patch.format`
 /// when set, otherwise inferred from the target's extension.
-pub fn resolve_format(spec: &ModifySpec, target: &Path) -> Result<ModifyFormat> {
+pub fn resolve_format(spec: &PatchSpec, target: &Path) -> Result<PatchFormat> {
     match spec.format {
         Some(format) => Ok(format),
         None => infer_format(target).ok_or_else(|| {
-            FileError::ModifyFormatUnknown {
+            FileError::PatchFormatUnknown {
                 path: target.to_path_buf(),
             }
             .into()
@@ -266,31 +266,31 @@ pub fn resolve_format(spec: &ModifySpec, target: &Path) -> Result<ModifyFormat> 
     }
 }
 
-/// Infer a [`ModifyFormat`] from a target's extension. `None` for any other
+/// Infer a [`PatchFormat`] from a target's extension. `None` for any other
 /// extension (and for extensionless paths) — the caller turns that into a
-/// typed error telling the author to set `modify.format`.
-pub fn infer_format(target: &Path) -> Option<ModifyFormat> {
+/// typed error telling the author to set `patch.format`.
+pub fn infer_format(target: &Path) -> Option<PatchFormat> {
     let ext = target.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "ini" => Some(ModifyFormat::Ini),
-        "json" => Some(ModifyFormat::Json),
-        "yaml" | "yml" => Some(ModifyFormat::Yaml),
-        "toml" => Some(ModifyFormat::Toml),
+        "ini" => Some(PatchFormat::Ini),
+        "json" => Some(PatchFormat::Json),
+        "yaml" | "yml" => Some(PatchFormat::Yaml),
+        "toml" => Some(PatchFormat::Toml),
         _ => None,
     }
 }
 
-fn format_label(format: ModifyFormat) -> &'static str {
+fn format_label(format: PatchFormat) -> &'static str {
     match format {
-        ModifyFormat::Ini => "ini",
-        ModifyFormat::Json => "json",
-        ModifyFormat::Yaml => "yaml",
-        ModifyFormat::Toml => "toml",
+        PatchFormat::Ini => "ini",
+        PatchFormat::Json => "json",
+        PatchFormat::Yaml => "yaml",
+        PatchFormat::Toml => "toml",
     }
 }
 
-fn parse_error(target: &Path, format: ModifyFormat, message: impl std::fmt::Display) -> FileError {
-    FileError::ModifyParse {
+fn parse_error(target: &Path, format: PatchFormat, message: impl std::fmt::Display) -> FileError {
+    FileError::PatchParse {
         path: target.to_path_buf(),
         format: format_label(format).to_string(),
         message: message.to_string(),
@@ -299,18 +299,18 @@ fn parse_error(target: &Path, format: ModifyFormat, message: impl std::fmt::Disp
 
 fn serialize_error(
     target: &Path,
-    format: ModifyFormat,
+    format: PatchFormat,
     message: impl std::fmt::Display,
 ) -> FileError {
-    FileError::ModifySerialize {
+    FileError::PatchSerialize {
         path: target.to_path_buf(),
         format: format_label(format).to_string(),
         message: message.to_string(),
     }
 }
 
-fn shape_error(target: &Path, format: ModifyFormat, message: impl Into<String>) -> FileError {
-    FileError::ModifyEnsureShape {
+fn shape_error(target: &Path, format: PatchFormat, message: impl Into<String>) -> FileError {
+    FileError::PatchEnsureShape {
         path: target.to_path_buf(),
         format: format_label(format).to_string(),
         message: message.into(),
@@ -319,11 +319,11 @@ fn shape_error(target: &Path, format: ModifyFormat, message: impl Into<String>) 
 
 /// `ensure` must be a mapping for every format: a scalar or list at the top
 /// level would replace the entire document, which is the opposite of what the
-/// `Modify` strategy promises.
+/// `Patch` strategy promises.
 fn ensure_mapping<'v>(
     ensure: &'v serde_yaml::Value,
     target: &Path,
-    format: ModifyFormat,
+    format: PatchFormat,
 ) -> Result<&'v serde_yaml::Mapping> {
     ensure
         .as_mapping()
@@ -335,12 +335,12 @@ fn ensure_mapping<'v>(
 // ---------------------------------------------------------------------------
 
 fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay = ensure_mapping(ensure, target, ModifyFormat::Yaml)?;
+    let overlay = ensure_mapping(ensure, target, PatchFormat::Yaml)?;
     let mut doc: serde_yaml::Value = if current.trim().is_empty() {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
         serde_yaml::from_str::<serde_yaml::Value>(current)
-            .map_err(|e| parse_error(target, ModifyFormat::Yaml, e))?
+            .map_err(|e| parse_error(target, PatchFormat::Yaml, e))?
     };
     // An all-comment document parses to Null; merging into it would drop the
     // ensured keys on the floor.
@@ -350,13 +350,13 @@ fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
     if !doc.is_mapping() {
         return Err(parse_error(
             target,
-            ModifyFormat::Yaml,
+            PatchFormat::Yaml,
             "top-level document is not a mapping",
         )
         .into());
     }
     crate::deep_merge_yaml(&mut doc, &serde_yaml::Value::Mapping(overlay.clone()));
-    serde_yaml::to_string(&doc).map_err(|e| serialize_error(target, ModifyFormat::Yaml, e).into())
+    serde_yaml::to_string(&doc).map_err(|e| serialize_error(target, PatchFormat::Yaml, e).into())
 }
 
 // ---------------------------------------------------------------------------
@@ -375,16 +375,16 @@ fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
 /// enabling `preserve_order` would have reordered every generated schema and
 /// CRD in the repo.
 fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay = ensure_mapping(ensure, target, ModifyFormat::Json)?;
+    let overlay = ensure_mapping(ensure, target, PatchFormat::Json)?;
     let mut doc: serde_yaml::Value = if current.trim().is_empty() {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
-        parse_json_last_wins(current).map_err(|e| parse_error(target, ModifyFormat::Json, e))?
+        parse_json_last_wins(current).map_err(|e| parse_error(target, PatchFormat::Json, e))?
     };
     if !doc.is_mapping() {
         return Err(parse_error(
             target,
-            ModifyFormat::Json,
+            PatchFormat::Json,
             "top-level document is not an object",
         )
         .into());
@@ -396,7 +396,7 @@ fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
     )?;
     crate::deep_merge_yaml(&mut doc, &overlay);
     let mut out = serde_json::to_string_pretty(&doc)
-        .map_err(|e| serialize_error(target, ModifyFormat::Json, e))?;
+        .map_err(|e| serialize_error(target, PatchFormat::Json, e))?;
     out.push('\n');
     Ok(out)
 }
@@ -429,7 +429,7 @@ fn prepare_json_overlay(
                 let Some(name) = key.as_str() else {
                     return Err(shape_error(
                         target,
-                        ModifyFormat::Json,
+                        PatchFormat::Json,
                         format!(
                             "object keys must be strings, but {} has a non-string key: {}",
                             json_path_label(path),
@@ -460,7 +460,7 @@ fn prepare_json_overlay(
         serde_yaml::Value::Number(n) if n.is_f64() && !n.as_f64().is_some_and(f64::is_finite) => {
             return Err(shape_error(
                 target,
-                ModifyFormat::Json,
+                PatchFormat::Json,
                 format!(
                     "{} is {n} — JSON has no NaN or Infinity",
                     json_path_label(path)
@@ -508,7 +508,7 @@ fn yaml_key_label(key: &serde_yaml::Value) -> String {
 /// A plain `serde_json::from_str::<serde_yaml::Value>` rejects duplicate keys
 /// outright, which would turn a tolerable quirk of a user-owned file into a hard
 /// failure of the whole apply. `serde_json`'s own default is last-wins, so this
-/// keeps `Modify` as permissive as the parser the file is written for while
+/// keeps `Patch` as permissive as the parser the file is written for while
 /// still preserving key order (`Mapping::insert` overwrites the value and keeps
 /// the key's original position).
 fn parse_json_last_wins(
@@ -601,13 +601,13 @@ impl<'de> serde::de::Visitor<'de> for LastWinsJsonVisitor {
 // ---------------------------------------------------------------------------
 
 fn merge_toml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay = ensure_mapping(ensure, target, ModifyFormat::Toml)?;
+    let overlay = ensure_mapping(ensure, target, PatchFormat::Toml)?;
     let mut doc: toml_edit::DocumentMut = if current.trim().is_empty() {
         toml_edit::DocumentMut::new()
     } else {
         current
             .parse()
-            .map_err(|e| parse_error(target, ModifyFormat::Toml, e))?
+            .map_err(|e| parse_error(target, PatchFormat::Toml, e))?
     };
     merge_toml_table(doc.as_table_mut(), overlay, target)?;
     let mut out = doc.to_string();
@@ -637,7 +637,7 @@ fn toml_slot(item: Option<&toml_edit::Item>) -> TomlSlot {
 fn missing_toml_slot(target: &Path, key: &str) -> FileError {
     shape_error(
         target,
-        ModifyFormat::Toml,
+        PatchFormat::Toml,
         format!("could not open table '{key}'"),
     )
 }
@@ -764,7 +764,7 @@ fn set_toml_value(table: &mut toml_edit::Table, key: &str, new_value: toml_edit:
 
 fn toml_key<'k>(key: &'k serde_yaml::Value, target: &Path) -> Result<&'k str> {
     key.as_str()
-        .ok_or_else(|| shape_error(target, ModifyFormat::Toml, "table keys must be strings").into())
+        .ok_or_else(|| shape_error(target, PatchFormat::Toml, "table keys must be strings").into())
 }
 
 fn yaml_to_toml(value: &serde_yaml::Value, target: &Path) -> Result<toml_edit::Value> {
@@ -783,7 +783,7 @@ fn yaml_to_toml(value: &serde_yaml::Value, target: &Path) -> Result<toml_edit::V
                 // different number than the spec asked for.
                 return Err(shape_error(
                     target,
-                    ModifyFormat::Toml,
+                    PatchFormat::Toml,
                     format!("{n} is outside TOML's signed 64-bit integer range"),
                 )
                 .into());
@@ -806,7 +806,7 @@ fn yaml_to_toml(value: &serde_yaml::Value, target: &Path) -> Result<toml_edit::V
         serde_yaml::Value::Null => {
             return Err(shape_error(
                 target,
-                ModifyFormat::Toml,
+                PatchFormat::Toml,
                 "TOML has no null — remove the key or give it a value",
             )
             .into());
@@ -823,13 +823,13 @@ fn yaml_to_toml(value: &serde_yaml::Value, target: &Path) -> Result<toml_edit::V
 /// A scalar at the top level of `ensure` targets a key in the file's global
 /// area (before the first `[section]` header); a mapping targets a section.
 fn merge_ini(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay = ensure_mapping(ensure, target, ModifyFormat::Ini)?;
+    let overlay = ensure_mapping(ensure, target, PatchFormat::Ini)?;
     let mut doc = IniDoc::parse(current);
     for (key, value) in overlay {
         let name = key.as_str().ok_or_else(|| {
             shape_error(
                 target,
-                ModifyFormat::Ini,
+                PatchFormat::Ini,
                 "section and key names must be strings",
             )
         })?;
@@ -839,7 +839,7 @@ fn merge_ini(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result
                 let mut pairs = Vec::with_capacity(section.len());
                 for (k, v) in section {
                     let k = k.as_str().ok_or_else(|| {
-                        shape_error(target, ModifyFormat::Ini, "key names must be strings")
+                        shape_error(target, PatchFormat::Ini, "key names must be strings")
                     })?;
                     validate_ini_name(k, IniNameKind::Key, target)?;
                     pairs.push((k, ini_scalar(v, target, &format!("{name}.{k}"))?));
@@ -889,7 +889,7 @@ fn validate_ini_name(name: &str, kind: IniNameKind, target: &Path) -> Result<()>
     if name.is_empty() || name.trim() != name {
         return Err(shape_error(
             target,
-            ModifyFormat::Ini,
+            PatchFormat::Ini,
             format!("{what} '{name}' must not be empty or padded with whitespace"),
         )
         .into());
@@ -900,7 +900,7 @@ fn validate_ini_name(name: &str, kind: IniNameKind, target: &Path) -> Result<()>
     if matches!(kind, IniNameKind::Key) && name.starts_with(['#', ';']) {
         return Err(shape_error(
             target,
-            ModifyFormat::Ini,
+            PatchFormat::Ini,
             format!(
                 "{what} '{name}' starts with a comment marker — the line would read back as a comment"
             ),
@@ -910,7 +910,7 @@ fn validate_ini_name(name: &str, kind: IniNameKind, target: &Path) -> Result<()>
     if let Some(bad) = name.chars().find(|c| INI_NAME_FORBIDDEN.contains(c)) {
         return Err(shape_error(
             target,
-            ModifyFormat::Ini,
+            PatchFormat::Ini,
             format!(
                 "{what} '{}' contains {} — INI has no escape syntax for it",
                 name.escape_debug(),
@@ -943,7 +943,7 @@ fn ini_scalar(value: &serde_yaml::Value, target: &Path, key: &str) -> Result<Str
             if let Some(bad) = s.chars().find(|c| *c == '\n' || *c == '\r') {
                 return Err(shape_error(
                     target,
-                    ModifyFormat::Ini,
+                    PatchFormat::Ini,
                     format!(
                         "value for '{key}' contains {} — an INI value is a single line",
                         describe_ini_char(bad)
@@ -956,19 +956,19 @@ fn ini_scalar(value: &serde_yaml::Value, target: &Path, key: &str) -> Result<Str
         serde_yaml::Value::Tagged(tagged) => ini_scalar(&tagged.value, target, key),
         serde_yaml::Value::Null => Err(shape_error(
             target,
-            ModifyFormat::Ini,
+            PatchFormat::Ini,
             format!("'{key}' has no value — INI cannot express null"),
         )
         .into()),
         serde_yaml::Value::Sequence(_) => Err(shape_error(
             target,
-            ModifyFormat::Ini,
+            PatchFormat::Ini,
             format!("'{key}' is a list — INI supports section → key → scalar only"),
         )
         .into()),
         serde_yaml::Value::Mapping(_) => Err(shape_error(
             target,
-            ModifyFormat::Ini,
+            PatchFormat::Ini,
             format!("'{key}' is nested — INI supports section → key → scalar only"),
         )
         .into()),
@@ -1256,7 +1256,7 @@ fn run_script(
     current: &str,
     script: &str,
     target: &Path,
-    ctx: &ModifyContext<'_>,
+    ctx: &PatchContext<'_>,
 ) -> Result<String> {
     let default_workdir: PathBuf;
     let working_dir = match ctx.working_dir {
@@ -1268,7 +1268,7 @@ fn run_script(
     };
 
     let failed = |message: String| -> crate::errors::CfgdError {
-        FileError::ModifyScriptFailed {
+        FileError::PatchScriptFailed {
             path: target.to_path_buf(),
             script: script.to_string(),
             message,
@@ -1277,7 +1277,7 @@ fn run_script(
     };
 
     // Every way the filter can fail lands in the same typed variant, so the
-    // error always names the target being modified — a bare `Io`/`Config` error
+    // error always names the target being patched — a bare `Io`/`Config` error
     // from the executor would say which *script* broke but not which file the
     // operator was trying to change.
     let outcome = run_filter_script(

@@ -5,9 +5,9 @@ use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
 /// Render one module-deployed file's inline diff and report whether it drifts.
 ///
-/// A `Modify` file has no source to compare against — its diff is the target's
+/// A `Patch` file has no source to compare against — its diff is the target's
 /// current content against what re-running the merge would produce — so it
-/// routes through the modify renderer while every other strategy keeps the
+/// routes through the patch renderer while every other strategy keeps the
 /// shared source→target renderer.
 fn diff_module_file(
     fm: &CfgdFileManager,
@@ -17,12 +17,12 @@ fn diff_module_file(
     config_dir: &std::path::Path,
     printer: &Printer,
 ) -> anyhow::Result<bool> {
-    match &file.modify {
+    match &file.patch {
         Some(spec) => {
-            let binding = crate::files::module_modify_binding(config_dir, resolved, module);
+            let binding = crate::files::module_patch_binding(config_dir, resolved, module);
             let evaluated =
-                cfgd_core::reconciler::evaluate_modify(spec, &file.target, &binding.context());
-            Ok(crate::files::render_modify_diff(
+                cfgd_core::reconciler::evaluate_patch(spec, &file.target, &binding.context());
+            Ok(crate::files::render_patch_diff(
                 &file.target,
                 evaluated,
                 printer,

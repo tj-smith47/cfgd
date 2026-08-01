@@ -883,17 +883,17 @@ spec:
     }
 
     /// `config set` validates the document it is about to write, so the global
-    /// `Modify` rejection reaches the CLI surface too — the file is left
+    /// `Patch` rejection reaches the CLI surface too — the file is left
     /// untouched rather than written into a state every apply would fail on.
     #[test]
-    fn cmd_config_set_rejects_modify_as_the_global_file_strategy() {
+    fn cmd_config_set_rejects_patch_as_the_global_file_strategy() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let before = std::fs::read_to_string(&path).unwrap();
         let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
-        let err = cmd_config_set(&cli, &printer, "fileStrategy", "Modify").unwrap_err();
+        let err = cmd_config_set(&cli, &printer, "fileStrategy", "Patch").unwrap_err();
         assert!(
             err.to_string().contains("fileStrategy"),
             "expected the fileStrategy rejection, got: {err}"

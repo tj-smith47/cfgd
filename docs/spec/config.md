@@ -485,7 +485,7 @@ module file entries.
 | `Copy` | Copy the source file content to the target path. | yes |
 | `Template` | Render the source as a Tera template and write the output. Auto-selected for `.tera` files. | yes |
 | `Hardlink` | Create a hard link from target to source. | yes |
-| `Modify` | Merge structured keys/values into the target, or pipe it through a script, leaving the rest untouched. Requires a per-file `modify:` block. | **no** — rejected at config load |
+| `Patch` | Merge structured keys/values into the target, or pipe it through a script, leaving the rest untouched. Requires a per-file `patch:` block. | **no** — rejected at config load |
 
 ---
 

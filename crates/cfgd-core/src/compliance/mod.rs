@@ -225,7 +225,7 @@ fn origin_suffix(origin: &Origin) -> String {
 /// compared to its rendered source via `FileManager::content_drift` — a file that
 /// exists but drifted is a violation, matching the live drift paths. Without a
 /// file manager, content checking is skipped and only existence + permissions are
-/// reported (honest degradation). A `strategy: Modify` file is content-checked by
+/// reported (honest degradation). A `strategy: Patch` file is content-checked by
 /// re-evaluating its merge against the target instead, which needs no file
 /// manager. Module-contributed files are attributed in each check's detail so a
 /// reader can tell their origin.
@@ -261,12 +261,12 @@ pub fn collect_file_checks(
         // suppressed below to avoid two Compliant rows for the same signal.
         // Without a file manager, content checking is skipped and the "present"
         // check stands in as the existence signal.
-        let content_checked = if let Some(ref spec) = file.modify {
-            // A `Modify` file has no source to compare against: it has
+        let content_checked = if let Some(ref spec) = file.patch {
+            // A `Patch` file has no source to compare against: it has
             // converged when re-running its merge over the target's current
             // content would change nothing.
             // A snapshot never writes, so the scripts see `CFGD_CONTEXT=reconcile`.
-            let evaluated = crate::reconciler::ModifyBinding::for_origin(
+            let evaluated = crate::reconciler::PatchBinding::for_origin(
                 config_dir,
                 profile_name,
                 crate::reconciler::ReconcileContext::Reconcile,
@@ -274,21 +274,21 @@ pub fn collect_file_checks(
                 &file.origin,
             )
             .and_then(|binding| {
-                crate::reconciler::evaluate_modify(spec, &target, &binding.context())
+                crate::reconciler::evaluate_patch(spec, &target, &binding.context())
             });
             match evaluated {
                 Ok(outcome) if outcome.is_up_to_date() => checks.push(ComplianceCheck {
                     category: "file-content".into(),
                     target: Some(to_posix_string(&target)),
                     status: ComplianceStatus::Compliant,
-                    detail: Some(format!("content satisfies modify spec{}", suffix)),
+                    detail: Some(format!("content satisfies patch spec{}", suffix)),
                     ..Default::default()
                 }),
                 Ok(_) => checks.push(ComplianceCheck {
                     category: "file-content".into(),
                     target: Some(to_posix_string(&target)),
                     status: ComplianceStatus::Violation,
-                    detail: Some(format!("content differs from modify spec{}", suffix)),
+                    detail: Some(format!("content differs from patch spec{}", suffix)),
                     ..Default::default()
                 }),
                 Err(e) => checks.push(ComplianceCheck {
@@ -297,7 +297,7 @@ pub fn collect_file_checks(
                     status: ComplianceStatus::Warning,
                     detail: Some(format!(
                         "{}{}",
-                        crate::reconciler::modify_failure_detail(&e),
+                        crate::reconciler::patch_failure_detail(&e),
                         suffix
                     )),
                     ..Default::default()

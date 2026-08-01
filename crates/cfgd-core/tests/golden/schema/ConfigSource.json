@@ -360,8 +360,8 @@
           "type": "string"
         },
         {
-          "const": "Modify",
-          "description": "Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `modify:` block.",
+          "const": "Patch",
+          "description": "Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `patch:` block.",
           "type": "string"
         }
       ]
@@ -400,16 +400,16 @@
           ],
           "description": "Encryption settings for this file."
         },
-        "modify": {
+        "patch": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ModifySpec"
+              "$ref": "#/definitions/PatchSpec"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema)."
+          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema)."
         },
         "permissions": {
           "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -424,7 +424,7 @@
         },
         "source": {
           "default": "",
-          "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+          "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
           "type": "string"
         },
         "strategy": {
@@ -445,59 +445,6 @@
       "required": [
         "target"
       ],
-      "type": "object"
-    },
-    "ModifyFormat": {
-      "description": "File format used to interpret and re-serialize a `Modify`-strategy target.",
-      "oneOf": [
-        {
-          "const": "Ini",
-          "description": "INI sections/keys, edited line-by-line to preserve comments and layout.",
-          "type": "string"
-        },
-        {
-          "const": "Json",
-          "description": "JSON, re-serialized on write (no comments to preserve).",
-          "type": "string"
-        },
-        {
-          "const": "Yaml",
-          "description": "YAML; comments are NOT preserved across a merge (see docs for the caveat).",
-          "type": "string"
-        },
-        {
-          "const": "Toml",
-          "description": "TOML, edited via `toml_edit` to preserve comments and layout.",
-          "type": "string"
-        }
-      ]
-    },
-    "ModifySpec": {
-      "additionalProperties": false,
-      "description": "Configuration for the `Modify` file strategy: a structured merge (`ensure`) or a content-rewriting script, applied on top of the target's current content.",
-      "properties": {
-        "ensure": {
-          "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`."
-        },
-        "format": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ModifyFormat"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "File format to parse the target as. Inferred from the target's extension when omitted."
-        },
-        "script": {
-          "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
       "type": "object"
     },
     "NpmSpec": {
@@ -679,6 +626,59 @@
             "type": "string"
           },
           "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PatchFormat": {
+      "description": "File format used to interpret and re-serialize a `Patch`-strategy target.",
+      "oneOf": [
+        {
+          "const": "Ini",
+          "description": "INI sections/keys, edited line-by-line to preserve comments and layout.",
+          "type": "string"
+        },
+        {
+          "const": "Json",
+          "description": "JSON, re-serialized on write (no comments to preserve).",
+          "type": "string"
+        },
+        {
+          "const": "Yaml",
+          "description": "YAML; comments are NOT preserved across a merge (see docs for the caveat).",
+          "type": "string"
+        },
+        {
+          "const": "Toml",
+          "description": "TOML, edited via `toml_edit` to preserve comments and layout.",
+          "type": "string"
+        }
+      ]
+    },
+    "PatchSpec": {
+      "additionalProperties": false,
+      "description": "Configuration for the `Patch` file strategy: a structured merge (`ensure`) or a content-rewriting script, applied on top of the target's current content.",
+      "properties": {
+        "ensure": {
+          "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`."
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PatchFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "File format to parse the target as. Inferred from the target's extension when omitted."
+        },
+        "script": {
+          "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"

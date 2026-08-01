@@ -262,7 +262,7 @@ Profile files support five deployment strategies:
 - **Copy** — copies the source file to the target path. The target is independent of the source after apply.
 - **Template** — renders the file through [Tera](templates.md) before copying. Auto-detected for `.tera` extension.
 - **Hardlink** — creates a hard link. Both paths share the same inode.
-- **Modify** — merges structured keys/values into an existing target, or pipes it through a script, leaving everything else untouched. Requires a `modify:` block; `source` is not required.
+- **Patch** — merges structured keys/values into an existing target, or pipes it through a script, leaving everything else untouched. Requires a `patch:` block; `source` is not required.
 
 ```yaml
 files:
@@ -276,23 +276,23 @@ files:
     - source: shell/.zshrc.tera   # .tera triggers template rendering
       target: ~/.zshrc
     - target: ~/.gitconfig
-      strategy: Modify
-      modify:
+      strategy: Patch
+      patch:
         format: Ini             # Ini | Json | Yaml | Toml; inferred from the target's extension when omitted
         ensure:                 # deep-merged into the target; mutually exclusive with `script`
           user:
             name: "Example User"
     - target: /etc/hosts
-      strategy: Modify
-      modify:
+      strategy: Patch
+      patch:
         script: scripts/ensure-hosts-entry.sh   # receives current content on stdin, writes new content to stdout
 ```
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
-### Partial-file edits (`strategy: Modify`)
+### Partial-file edits (`strategy: Patch`)
 
-`Modify` is the strategy for files cfgd must *share* rather than own — a
+`Patch` is the strategy for files cfgd must *share* rather than own — a
 distro-shipped config, a file another tool also writes, a target that already has
 hand-written content worth keeping. cfgd owns only the keys the spec names;
 everything else in the target survives byte-for-byte where the format allows it.
@@ -300,23 +300,23 @@ everything else in the target survives byte-for-byte where the format allows it.
 A missing target is treated as empty content: `ensure` writes a minimal document,
 `script` receives empty stdin.
 
-`Modify` has no source file, so the source-file options are rejected rather than
+`Patch` has no source file, so the source-file options are rejected rather than
 silently ignored: `encryption` and `private` are both validation errors on a
-`Modify` entry, and `source` itself is optional (and unused).
+`Patch` entry, and `source` itself is optional (and unused).
 
 #### `ensure` — structured merge
 
 `ensure` is deep-merged into the target. Nested mappings merge recursively; a
 scalar, list, or type change replaces the value at that key. Values are literal —
-`Modify` never renders Tera templates, so `{{ … }}` lands in the file verbatim.
+`Patch` never renders Tera templates, so `{{ … }}` lands in the file verbatim.
 Re-applying the same `ensure` is a no-op.
 
 ```yaml
 files:
   managed:
     - target: ~/.config/app/settings.json
-      strategy: Modify
-      modify:
+      strategy: Patch
+      patch:
         ensure:
           editor:
             tabSize: 4        # other editor.* keys are left alone
@@ -370,8 +370,8 @@ rather than guessing:
 
 ```yaml
     - target: ~/.gitconfig
-      strategy: Modify
-      modify:
+      strategy: Patch
+      patch:
         format: Ini             # required: `.gitconfig` has no format-bearing extension
         ensure:
           user:
@@ -407,8 +407,8 @@ engine for, and for edits that must preserve YAML comments.
 
 ```yaml
     - target: /etc/hosts
-      strategy: Modify
-      modify:
+      strategy: Patch
+      patch:
         script: scripts/ensure-hosts-entry.sh
 ```
 
@@ -428,24 +428,24 @@ directory when one resolves, and an inline command otherwise — so a one-liner
 works without a script file:
 
 ```yaml
-      modify:
+      patch:
         script: "yq -y '.server.port = 9090'"
 ```
 
 Scripts run with the same `CFGD_*` environment lifecycle hooks receive
-(`CFGD_PHASE=modify`, plus `CFGD_MODULE_NAME` / `CFGD_MODULE_DIR` and the
+(`CFGD_PHASE=patch`, plus `CFGD_MODULE_NAME` / `CFGD_MODULE_DIR` and the
 module's `env` for a module-owned file), in the user's home directory, under the
 standard script timeout.
 
 **The filter must be a pure stdin → stdout transform.** cfgd decides whether a
-`Modify` file has converged by *running* it, so every read-only command executes
+`Patch` file has converged by *running* it, so every read-only command executes
 it too — `cfgd plan`, `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`,
 `cfgd apply --dry-run`, and a compliance snapshot. A filter that installs
 packages, writes files, or takes a lock will do so on a command the user expects
 to change nothing, and a slow one makes every one of those commands slow. Write
 it to be idempotent for the same reason: cfgd runs it on every reconcile.
 
-#### When a `Modify` file fails
+#### When a `Patch` file fails
 
 A target that cannot be parsed for its declared format, and a `script` that exits
 non-zero, both fail with a typed error and write nothing — the target is left

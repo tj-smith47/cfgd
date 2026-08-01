@@ -369,7 +369,7 @@ fn extract_source_resources_from_merged_profile() {
         },
         files: FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "dotfiles/.zshrc".into(),
                 target: PathBuf::from("/home/user/.zshrc"),
                 strategy: None,
@@ -822,7 +822,7 @@ fn action_resource_info_file_create() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
-        modify: None,
+        patch: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -840,7 +840,7 @@ fn action_resource_info_file_update() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
-        modify: None,
+        patch: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -2021,7 +2021,7 @@ fn extract_source_resources_full_profile() {
         },
         files: FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "dotfiles/.zshrc".into(),
                 target: PathBuf::from("/home/user/.zshrc"),
                 strategy: None,
@@ -2411,7 +2411,7 @@ fn extract_source_resources_multiple_files() {
         files: FilesSpec {
             managed: vec![
                 ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "dotfiles/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -2421,7 +2421,7 @@ fn extract_source_resources_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "dotfiles/.vimrc".into(),
                     target: PathBuf::from("/home/user/.vimrc"),
                     strategy: None,
@@ -2431,7 +2431,7 @@ fn extract_source_resources_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "dotfiles/.gitconfig".into(),
                     target: PathBuf::from("/home/user/.gitconfig"),
                     strategy: None,
@@ -5912,7 +5912,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
                 origin: "local".into(),
                 strategy: crate::config::FileStrategy::default(),
                 source_hash: None,
-                modify: None,
+                patch: None,
             }])
         }
         fn plan_packages(
@@ -6014,7 +6014,7 @@ impl DaemonHooks for DriftingFileHooks {
             origin: "local".into(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
-            modify: None,
+            patch: None,
         }])
     }
     fn plan_packages(

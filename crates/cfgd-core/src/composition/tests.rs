@@ -71,7 +71,7 @@ fn make_source_input(name: &str, priority: u32) -> CompositionInput {
             },
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "security/policy.yaml".into(),
                     target: "~/.config/company/security-policy.yaml".into(),
                     strategy: None,
@@ -336,7 +336,7 @@ fn validate_constraints_path_containment() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "evil.sh".into(),
                 target: "/etc/sudoers".into(),
                 strategy: None,
@@ -366,7 +366,7 @@ fn validate_constraints_path_allowed() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "config.yaml".into(),
                 target: "~/.config/acme/config.yaml".into(),
                 strategy: None,
@@ -569,7 +569,7 @@ fn required_resource_cannot_be_overridden() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -597,7 +597,7 @@ fn required_resource_cannot_be_overridden() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "rogue/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -635,7 +635,7 @@ fn file_conflict_between_sources_records_resolution() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "alpha/tool.conf".into(),
                     target: "~/.config/tool.conf".into(),
                     strategy: None,
@@ -662,7 +662,7 @@ fn file_conflict_between_sources_records_resolution() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "beta/tool.conf".into(),
                     target: "~/.config/tool.conf".into(),
                     strategy: None,
@@ -713,7 +713,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "team-a/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -740,7 +740,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "team-b/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -887,7 +887,7 @@ fn make_file_spec_with_encryption(target: &str, backend: Option<&str>) -> Profil
     ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "source/file".into(),
                 target: target.into(),
                 strategy: None,
@@ -1236,7 +1236,7 @@ fn higher_priority_source_wins_file_content() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "low/gitconfig".into(),
                     target: "~/.gitconfig".into(),
                     strategy: None,
@@ -1263,7 +1263,7 @@ fn higher_priority_source_wins_file_content() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "high/gitconfig".into(),
                     target: "~/.gitconfig".into(),
                     strategy: None,
@@ -1723,7 +1723,7 @@ fn policy_items_to_spec_converts_all_fields() {
             ..Default::default()
         }),
         files: vec![ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "f.yaml".into(),
             target: "~/.config/f.yaml".into(),
             strategy: None,
@@ -1782,7 +1782,7 @@ fn check_locked_violations_no_conflict() {
 fn check_locked_violations_detects_override() {
     let locked = PolicyItems {
         files: vec![ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "corp/policy.yaml".into(),
             target: "~/.config/policy.yaml".into(),
             strategy: None,
@@ -1795,7 +1795,7 @@ fn check_locked_violations_detects_override() {
     };
     let mut merged = MergedProfile::default();
     merged.files.managed.push(ManagedFileSpec {
-        modify: None,
+        patch: None,
         source: "local/override.yaml".into(), // different source
         target: "~/.config/policy.yaml".into(), // same target
         strategy: None,
@@ -1815,7 +1815,7 @@ fn check_locked_violations_detects_override() {
 fn check_locked_violations_same_source_is_ok() {
     let locked = PolicyItems {
         files: vec![ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "corp/policy.yaml".into(),
             target: "~/.config/policy.yaml".into(),
             strategy: None,
@@ -1828,7 +1828,7 @@ fn check_locked_violations_same_source_is_ok() {
     };
     let mut merged = MergedProfile::default();
     merged.files.managed.push(ManagedFileSpec {
-        modify: None,
+        patch: None,
         source: "corp/policy.yaml".into(), // same source
         target: "~/.config/policy.yaml".into(),
         strategy: None,
@@ -1878,7 +1878,7 @@ fn detect_permission_changes_locked_items_increased() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "new-lock.yaml".into(),
                     target: "~/.lock".into(),
                     strategy: None,
@@ -2015,7 +2015,7 @@ fn count_policy_tier_items_comprehensive() {
             ..Default::default()
         }),
         files: vec![ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "s".into(),
             target: "t".into(),
             strategy: None,
@@ -2421,7 +2421,7 @@ fn validate_constraints_encryption_mode_mismatch() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "key".into(),
                 target: "~/.ssh/id_rsa".into(),
                 strategy: None,
@@ -2486,7 +2486,7 @@ fn compose_file_origins_tagged_for_source_files() {
             spec: ProfileSpec {
                 files: Some(FilesSpec {
                     managed: vec![ManagedFileSpec {
-                        modify: None,
+                        patch: None,
                         source: "corp/tool.conf".into(),
                         target: "~/.config/tool.conf".into(),
                         strategy: None,
@@ -2767,7 +2767,7 @@ fn compose_opted_in_optional_profile_out_of_bounds_path_rejected() {
             spec: ProfileSpec {
                 files: Some(FilesSpec {
                     managed: vec![ManagedFileSpec {
-                        modify: None,
+                        patch: None,
                         source: "evil.sh".into(),
                         target: "/etc/sudoers".into(),
                         strategy: None,
@@ -2832,7 +2832,7 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
             managed: vec![
                 // First file does NOT match the pattern — OK
                 ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "files/.zshrc".into(),
                     target: "~/.zshrc".into(),
                     strategy: None,
@@ -2843,7 +2843,7 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
                 },
                 // Second file MATCHES the pattern and has no encryption — error
                 ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "files/api-key".into(),
                     target: "~/.config/secrets/api-key".into(),
                     strategy: None,
@@ -2883,7 +2883,7 @@ fn unwrap_composition_err(err: crate::errors::CfgdError) -> crate::errors::Compo
 fn composition_error_variant_locked_resource() {
     let locked = PolicyItems {
         files: vec![ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "corp/policy.yaml".into(),
             target: "~/.config/policy.yaml".into(),
             strategy: None,
@@ -2896,7 +2896,7 @@ fn composition_error_variant_locked_resource() {
     };
     let mut merged = MergedProfile::default();
     merged.files.managed.push(ManagedFileSpec {
-        modify: None,
+        patch: None,
         source: "local/override.yaml".into(),
         target: "~/.config/policy.yaml".into(),
         strategy: None,
@@ -2922,7 +2922,7 @@ fn composition_error_variant_required_resource() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -2949,7 +2949,7 @@ fn composition_error_variant_required_resource() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "rogue/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -2993,7 +2993,7 @@ fn composition_error_variant_path_not_allowed() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "evil.sh".into(),
                 target: "/etc/sudoers".into(),
                 strategy: None,
@@ -3062,7 +3062,7 @@ fn composition_error_variant_unresolvable_conflict() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "team-a/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -3089,7 +3089,7 @@ fn composition_error_variant_unresolvable_conflict() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "team-b/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -3156,7 +3156,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "key".into(),
                 target: "~/.ssh/id_rsa".into(),
                 strategy: None,
@@ -3523,7 +3523,7 @@ fn compose_rejects_policy_tier_file_outside_allowed_paths() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "evil.sh".into(),
                     target: "/etc/sudoers".into(),
                     strategy: None,
@@ -3566,7 +3566,7 @@ fn compose_rejects_required_tier_file_outside_allowed_paths() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "rc".into(),
                     target: "/etc/profile.d/corp.sh".into(),
                     strategy: None,
@@ -3609,7 +3609,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         merged: MergedProfile {
             files: FilesSpec {
                 managed: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "local/policy.yaml".into(),
                     target: "~/.config/company/security-policy.yaml".into(),
                     strategy: None,
@@ -3629,7 +3629,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/company/security-policy.yaml".into(),
                     strategy: None,
@@ -3706,7 +3706,7 @@ fn compose_accepts_compliant_source() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/corp/policy.yaml".into(),
                     strategy: None,
@@ -3903,7 +3903,7 @@ fn compose_report_mode_visits_every_source() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
-                    modify: None,
+                    patch: None,
                     source: "x".into(),
                     target: "/etc/sudoers".into(),
                     strategy: None,

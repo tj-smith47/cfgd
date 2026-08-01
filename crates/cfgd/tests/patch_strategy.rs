@@ -1,13 +1,13 @@
-//! End-to-end coverage for `strategy: Modify` through the real `cfgd plan` /
+//! End-to-end coverage for `strategy: Patch` through the real `cfgd plan` /
 //! `cfgd apply` entry points.
 //!
-//! `Modify` is the one strategy whose desired content is a function of the
+//! `Patch` is the one strategy whose desired content is a function of the
 //! target's *current* content, so the properties that matter cannot be observed
 //! from a single call: a second apply must be a no-op, keys the spec never
 //! mentions must survive every reconcile, and an out-of-band edit must be folded
 //! back in rather than blindly overwritten. Each test drives the command
 //! functions, not the file manager, so the plan → apply hand-off (which carries
-//! the `modify` block through `FileAction`) is exercised too.
+//! the `patch` block through `FileAction`) is exercised too.
 
 mod common;
 
@@ -31,19 +31,19 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Profile with a single `Modify` managed file over `settings.json`, whose
-    /// `modify:` block is the caller-supplied YAML (indented four spaces to sit
+    /// Profile with a single `Patch` managed file over `settings.json`, whose
+    /// `patch:` block is the caller-supplied YAML (indented four spaces to sit
     /// under the managed-file entry).
-    fn new(modify_block: &str) -> Self {
+    fn new(patch_block: &str) -> Self {
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let target = config_dir.path().join("out").join("settings.json");
 
         let profile = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - target: {}\n        strategy: Modify\n        modify:\n{}",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - target: {}\n        strategy: Patch\n        patch:\n{}",
             cfgd_core::to_posix_string(&target),
-            modify_block
+            patch_block
         );
         let profiles_dir = config_dir.path().join("profiles");
         std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -130,7 +130,7 @@ fn second_apply_plans_nothing_and_rewrites_nothing() {
     assert_eq!(
         fixture.planned_action_count(),
         0,
-        "a converged Modify target must plan no work"
+        "a converged Patch target must plan no work"
     );
 
     fixture.apply();
@@ -158,7 +158,7 @@ fn apply_reconverges_after_out_of_band_drift() {
     assert_eq!(
         fixture.planned_action_count(),
         1,
-        "drift on a Modify target must be planned as one action"
+        "drift on a Patch target must be planned as one action"
     );
     fixture.apply();
 
@@ -178,13 +178,13 @@ fn plan_never_writes_the_target() {
     assert_eq!(fixture.planned_action_count(), 1);
     assert!(
         !fixture.target.exists(),
-        "planning a Modify file must not create its target"
+        "planning a Patch file must not create its target"
     );
 }
 
 #[test]
 fn an_unparseable_target_fails_planning_and_writes_nothing() {
-    // Planning a `Modify` file has to parse the target, so a malformed one
+    // Planning a `Patch` file has to parse the target, so a malformed one
     // fails there — the same place a missing source or an unreadable file
     // fails for every other strategy, and before anything is written.
     let fixture = Fixture::new("          ensure:\n            telemetry: false\n");
@@ -197,7 +197,7 @@ fn an_unparseable_target_fails_planning_and_writes_nothing() {
     });
     assert!(
         err.to_string().contains("is not valid json"),
-        "expected a typed modify-parse error, got: {err}"
+        "expected a typed patch-parse error, got: {err}"
     );
 
     assert_eq!(
@@ -289,7 +289,7 @@ fn a_failing_filter_leaves_the_target_untouched() {
 #[test]
 #[cfg(unix)]
 fn module_script_resolves_relative_to_the_module_dir() {
-    // The binding a module-deployed `Modify` file gets is the module's own
+    // The binding a module-deployed `Patch` file gets is the module's own
     // directory: the same relative `script:` path that resolves for a profile
     // file must resolve against `modules/<name>/` here, and the filter must see
     // the module's metadata and declared env.
@@ -301,11 +301,11 @@ fn module_script_resolves_relative_to_the_module_dir() {
     std::fs::write(&target, "127.0.0.1 localhost\n").unwrap();
 
     // No `spec.env` on the module: applying one would push the value into the
-    // developer's live systemd/launchd user session. `ModifyBinding::module`'s
+    // developer's live systemd/launchd user session. `PatchBinding::module`'s
     // env injection is pinned by the cfgd-core unit tests instead.
     let module_dir = config_dir.path().join("modules/hosts-mod");
     let module = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hosts-mod\nspec:\n  files:\n    - target: {}\n      strategy: Modify\n      modify:\n        script: ensure-host.sh\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hosts-mod\nspec:\n  files:\n    - target: {}\n      strategy: Patch\n      patch:\n        script: ensure-host.sh\n",
         cfgd_core::to_posix_string(&target)
     );
     std::fs::create_dir_all(&module_dir).unwrap();

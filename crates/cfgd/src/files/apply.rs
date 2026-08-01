@@ -126,14 +126,14 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     source,
                     target,
                     strategy,
-                    modify,
+                    patch,
                     ..
                 }
                 | FileAction::Update {
                     source,
                     target,
                     strategy,
-                    modify,
+                    patch,
                     ..
                 } => {
                     let file_origin = match action {
@@ -147,25 +147,23 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                         _ => None,
                     };
 
-                    // `Modify` rewrites the target's own content, so the merge
+                    // `Patch` rewrites the target's own content, so the merge
                     // runs against the live file here — before the removal
                     // below deletes the bytes it reads, and against whatever
                     // the target holds now rather than what planning saw.
-                    let modified = match strategy {
-                        FileStrategy::Modify => {
+                    let patched = match strategy {
+                        FileStrategy::Patch => {
                             let spec =
-                                modify
-                                    .as_ref()
-                                    .ok_or_else(|| FileError::ModifyBlockMissing {
-                                        path: target.clone(),
-                                    })?;
+                                patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
+                                    path: target.clone(),
+                                })?;
                             Some(
                                 self.evaluate_spec(
                                     spec,
                                     target,
                                     cfgd_core::reconciler::ReconcileContext::Apply,
                                 )?
-                                .modified,
+                                .patched,
                             )
                         }
                         _ => None,
@@ -197,10 +195,10 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                                 source: e,
                             })?;
                         }
-                        FileStrategy::Modify => {
+                        FileStrategy::Patch => {
                             cfgd_core::atomic_write_str(
                                 target,
-                                modified.as_deref().unwrap_or_default(),
+                                patched.as_deref().unwrap_or_default(),
                             )
                             .map_err(|e| FileError::Io {
                                 path: target.clone(),

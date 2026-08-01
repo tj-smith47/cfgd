@@ -4092,7 +4092,7 @@ fn build_module_crd_json_files_emit_only_source_and_target() {
     // Module CRD file entries are source+target pairs only. Per-file `strategy`,
     // `private`, `encryption` etc. are local-side concerns and must not leak.
     let f = config::ModuleFileEntry {
-        modify: None,
+        patch: None,
         source: "vimrc".into(),
         target: "~/.vimrc".into(),
         strategy: Some(config::FileStrategy::Symlink),

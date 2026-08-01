@@ -657,7 +657,7 @@ pub(crate) fn run_filter_script(
             let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
-                    "modify script '{}' exists but is not executable ({})",
+                    "patch script '{}' exists but is not executable ({})",
                     resolved.posix(),
                     hint,
                 ),
@@ -909,14 +909,14 @@ pub(super) fn kill_script_child(child: &mut std::process::Child, graceful: bool)
 /// Pre-hooks abort on failure; post-hooks, onChange, onDrift continue.
 pub(super) fn default_continue_on_error(phase: &ScriptPhase) -> bool {
     match phase {
-        // A failed `modify` filter leaves the target unwritten; continuing past
+        // A failed `patch` filter leaves the target unwritten; continuing past
         // it would apply a half-configured machine.
         // A failed `preBackup` leaves the source in whatever state the hook was
         // meant to prepare (typically a still-running service), so the snapshot
         // would be inconsistent — the backup unit aborts instead.
         ScriptPhase::PreApply
         | ScriptPhase::PreReconcile
-        | ScriptPhase::Modify
+        | ScriptPhase::Patch
         | ScriptPhase::PreBackup => false,
         ScriptPhase::PostApply
         | ScriptPhase::PostReconcile

@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use similar::TextDiff;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedProfile, ModifySpec};
+use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedProfile, PatchSpec};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{FileAction, FileDriftResult};
 use cfgd_core::reconciler::{
-    ModifyBinding, ModifyOutcome, ReconcileContext, evaluate_modify, modify_failure_detail,
+    PatchBinding, PatchOutcome, ReconcileContext, evaluate_patch, patch_failure_detail,
 };
 
 use super::is_file_encrypted;
@@ -24,11 +24,11 @@ impl super::CfgdFileManager {
         source: &Path,
         per_file: Option<FileStrategy>,
     ) -> FileStrategy {
-        // `Modify` edits the target in place and never reads the source, so a
+        // `Patch` edits the target in place and never reads the source, so a
         // `.tera` source path must not silently downgrade it to a whole-file
         // Copy — that would overwrite exactly the content it promises to keep.
-        if per_file == Some(FileStrategy::Modify) {
-            return FileStrategy::Modify;
+        if per_file == Some(FileStrategy::Patch) {
+            return FileStrategy::Patch;
         }
         if is_tera_template(source) {
             return FileStrategy::Copy;
@@ -36,13 +36,13 @@ impl super::CfgdFileManager {
         per_file.unwrap_or(self.global_strategy)
     }
 
-    /// Script-execution binding for a profile-declared `Modify` file: a relative
-    /// `modify.script` resolves against the config directory.
-    fn modify_binding(&self, context: ReconcileContext) -> ModifyBinding {
-        ModifyBinding::profile(&self.config_dir, &self.profile_name, context)
+    /// Script-execution binding for a profile-declared `Patch` file: a relative
+    /// `patch.script` resolves against the config directory.
+    fn patch_binding(&self, context: ReconcileContext) -> PatchBinding {
+        PatchBinding::profile(&self.config_dir, &self.profile_name, context)
     }
 
-    /// Current-vs-modified content for a profile-declared `Modify` file.
+    /// Current-vs-patched content for a profile-declared `Patch` file.
     ///
     /// The single evaluation entry point for the profile paths (`plan`, `diff`,
     /// `file_drift_results`) so all three agree on what "up to date" means.
@@ -51,28 +51,28 @@ impl super::CfgdFileManager {
         managed: &ManagedFileSpec,
         target: &Path,
         context: ReconcileContext,
-    ) -> Result<ModifyOutcome> {
-        self.evaluate_spec(Self::modify_spec(managed, target)?, target, context)
+    ) -> Result<PatchOutcome> {
+        self.evaluate_spec(Self::patch_spec(managed, target)?, target, context)
     }
 
-    /// [`Self::evaluate`] for callers that already hold the `modify` block —
+    /// [`Self::evaluate`] for callers that already hold the `patch` block —
     /// the apply path (which reads it off the planned action) and the dry-run
     /// preview.
     pub(crate) fn evaluate_spec(
         &self,
-        spec: &ModifySpec,
+        spec: &PatchSpec,
         target: &Path,
         context: ReconcileContext,
-    ) -> Result<ModifyOutcome> {
-        evaluate_modify(spec, target, &self.modify_binding(context).context())
+    ) -> Result<PatchOutcome> {
+        evaluate_patch(spec, target, &self.patch_binding(context).context())
     }
 
-    /// The `modify` block a `Modify` entry must carry (guaranteed by
+    /// The `patch` block a `Patch` entry must carry (guaranteed by
     /// `validate_managed_file_specs`; re-checked here because this module is
     /// reachable from callers that build specs programmatically).
-    fn modify_spec<'s>(managed: &'s ManagedFileSpec, target: &Path) -> Result<&'s ModifySpec> {
-        managed.modify.as_ref().ok_or_else(|| {
-            FileError::ModifyBlockMissing {
+    fn patch_spec<'s>(managed: &'s ManagedFileSpec, target: &Path) -> Result<&'s PatchSpec> {
+        managed.patch.as_ref().ok_or_else(|| {
+            FileError::PatchBlockMissing {
                 path: target.to_path_buf(),
             }
             .into()
@@ -87,11 +87,11 @@ impl super::CfgdFileManager {
             let target_path = expand_tilde(&managed.target);
 
             // Branch on the declared strategy before resolving `source` at all:
-            // a `Modify` entry has no source (an empty one would resolve to the
+            // a `Patch` entry has no source (an empty one would resolve to the
             // config directory itself, which `resolve_source_path` would hand
             // back as an "existing" path and the content comparison below would
             // then try to read as a file).
-            if managed.strategy == Some(FileStrategy::Modify) {
+            if managed.strategy == Some(FileStrategy::Patch) {
                 let origin = managed
                     .origin
                     .clone()
@@ -104,24 +104,24 @@ impl super::CfgdFileManager {
                         FileAction::Update {
                             source: PathBuf::new(),
                             target: target_path.clone(),
-                            diff: modify_unified_diff(&target_path, &outcome),
+                            diff: patch_unified_diff(&target_path, &outcome),
                             origin,
-                            strategy: FileStrategy::Modify,
+                            strategy: FileStrategy::Patch,
                             // Apply re-evaluates the merge against whatever the
                             // target holds at write time, so there is no planned
                             // content to invalidate: an out-of-band edit between
                             // plan and apply is folded in, not overwritten.
                             source_hash: None,
-                            modify: managed.modify.clone(),
+                            patch: managed.patch.clone(),
                         }
                     } else {
                         FileAction::Create {
                             source: PathBuf::new(),
                             target: target_path.clone(),
                             origin,
-                            strategy: FileStrategy::Modify,
+                            strategy: FileStrategy::Patch,
                             source_hash: None,
-                            modify: managed.modify.clone(),
+                            patch: managed.patch.clone(),
                         }
                     });
                 }
@@ -204,7 +204,7 @@ impl super::CfgdFileManager {
                         origin,
                         strategy,
                         source_hash: None,
-                        modify: None,
+                        patch: None,
                     });
                 } else {
                     actions.push(FileAction::Create {
@@ -213,7 +213,7 @@ impl super::CfgdFileManager {
                         origin,
                         strategy,
                         source_hash: None,
-                        modify: None,
+                        patch: None,
                     });
                     if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
                         actions.push(action);
@@ -258,7 +258,7 @@ impl super::CfgdFileManager {
                         origin,
                         strategy,
                         source_hash: Some(content_hash),
-                        modify: None,
+                        patch: None,
                     });
 
                     if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
@@ -273,7 +273,7 @@ impl super::CfgdFileManager {
                     origin,
                     strategy,
                     source_hash: Some(content_hash),
-                    modify: None,
+                    patch: None,
                 });
 
                 if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
@@ -294,10 +294,10 @@ impl super::CfgdFileManager {
         let mut has_diffs = false;
 
         for managed in &profile.files.managed {
-            if managed.strategy == Some(FileStrategy::Modify) {
+            if managed.strategy == Some(FileStrategy::Patch) {
                 let target_path = expand_tilde(&managed.target);
                 let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
-                if render_modify_diff(&target_path, evaluated, printer) {
+                if render_patch_diff(&target_path, evaluated, printer) {
                     has_diffs = true;
                 }
                 continue;
@@ -386,10 +386,10 @@ impl super::CfgdFileManager {
         let mut results = Vec::new();
 
         for managed in &profile.files.managed {
-            if managed.strategy == Some(FileStrategy::Modify) {
+            if managed.strategy == Some(FileStrategy::Patch) {
                 let target_path = expand_tilde(&managed.target);
                 let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
-                results.push(modify_drift_result(&target_path, evaluated));
+                results.push(patch_drift_result(&target_path, evaluated));
                 continue;
             }
 
@@ -559,17 +559,17 @@ impl super::CfgdFileManager {
     }
 }
 
-/// Script-execution binding for a module-deployed `Modify` file: a relative
-/// `modify.script` resolves against the *module's* directory, and the filter
+/// Script-execution binding for a module-deployed `Patch` file: a relative
+/// `patch.script` resolves against the *module's* directory, and the filter
 /// sees the module's `CFGD_MODULE_*` metadata and declared env. Used by the
 /// read-only paths (`diff`, `verify`, `status --exit-code`), hence
 /// `CFGD_CONTEXT=reconcile`.
-pub(crate) fn module_modify_binding(
+pub(crate) fn module_patch_binding(
     config_dir: &Path,
     resolved: &cfgd_core::config::ResolvedProfile,
     module: &cfgd_core::modules::ResolvedModule,
-) -> ModifyBinding {
-    ModifyBinding::module(
+) -> PatchBinding {
+    PatchBinding::module(
         config_dir,
         resolved.profile_name(),
         ReconcileContext::Reconcile,
@@ -577,15 +577,15 @@ pub(crate) fn module_modify_binding(
     )
 }
 
-/// Render one `Modify` file's inline diff and report whether it drifts.
+/// Render one `Patch` file's inline diff and report whether it drifts.
 ///
 /// The counterpart of [`CfgdFileManager::diff_one`] for targets cfgd only
 /// partially owns: a converged target prints nothing, a drifted one shows
 /// current → merged, and a target that does not exist yet shows the content the
 /// merge would create. Shared by the profile-file and module-file diff paths.
-pub(crate) fn render_modify_diff(
+pub(crate) fn render_patch_diff(
     target: &Path,
-    evaluated: Result<ModifyOutcome>,
+    evaluated: Result<PatchOutcome>,
     printer: &Printer,
 ) -> bool {
     let outcome = match evaluated {
@@ -593,7 +593,7 @@ pub(crate) fn render_modify_diff(
         Err(e) => {
             printer.status_simple(
                 Role::Warn,
-                format!("{}: {}", target.display_posix(), modify_failure_detail(&e)),
+                format!("{}: {}", target.display_posix(), patch_failure_detail(&e)),
             );
             return true;
         }
@@ -603,15 +603,15 @@ pub(crate) fn render_modify_diff(
     }
     if target.exists() {
         printer.status_simple(Role::Info, target.display_posix());
-        printer.diff(&outcome.current, &outcome.modified);
+        printer.diff(&outcome.current, &outcome.patched);
     } else {
         printer.status_simple(Role::Info, format!("{} (new file)", target.posix()));
-        printer.syntax_highlight(&outcome.modified, &detect_language(target));
+        printer.syntax_highlight(&outcome.patched, &detect_language(target));
     }
     true
 }
 
-/// Drift outcome for one `Modify` file: converged when re-running the merge over
+/// Drift outcome for one `Patch` file: converged when re-running the merge over
 /// the target's current content would change nothing.
 ///
 /// An evaluation failure (an unparseable target, a filter that exits non-zero)
@@ -619,9 +619,9 @@ pub(crate) fn render_modify_diff(
 /// resource, and one broken filter must not blind the operator to unrelated
 /// results. Write paths keep propagating the error — nothing may be written on
 /// a guess.
-pub(crate) fn modify_drift_result(
+pub(crate) fn patch_drift_result(
     target: &Path,
-    evaluated: Result<ModifyOutcome>,
+    evaluated: Result<PatchOutcome>,
 ) -> FileDriftResult {
     let outcome = match evaluated {
         Ok(o) => o,
@@ -629,8 +629,8 @@ pub(crate) fn modify_drift_result(
             return FileDriftResult {
                 target: target.display_posix(),
                 matches: false,
-                expected: "content satisfies modify spec".to_string(),
-                actual: modify_failure_detail(&e),
+                expected: "content satisfies patch spec".to_string(),
+                actual: patch_failure_detail(&e),
             };
         }
     };
@@ -638,23 +638,23 @@ pub(crate) fn modify_drift_result(
     FileDriftResult {
         target: target.display_posix(),
         matches,
-        expected: "content satisfies modify spec".to_string(),
+        expected: "content satisfies patch spec".to_string(),
         actual: if matches {
-            "content satisfies modify spec".to_string()
+            "content satisfies patch spec".to_string()
         } else if target.exists() {
-            "content differs from modify spec".to_string()
+            "content differs from patch spec".to_string()
         } else {
             "missing".to_string()
         },
     }
 }
 
-/// Unified diff of a `Modify` target's current content against what the merge
+/// Unified diff of a `Patch` target's current content against what the merge
 /// would produce. Both sides name the target — unlike every other strategy the
 /// "before" and "after" are the same file, not a source and a target.
-pub(crate) fn modify_unified_diff(target: &Path, outcome: &ModifyOutcome) -> String {
+pub(crate) fn patch_unified_diff(target: &Path, outcome: &PatchOutcome) -> String {
     let label = target.display_posix();
-    TextDiff::from_lines(&outcome.current, &outcome.modified)
+    TextDiff::from_lines(&outcome.current, &outcome.patched)
         .unified_diff()
         .header(&label, &label)
         .to_string()
@@ -712,7 +712,7 @@ mod tests {
         strategy: Option<FileStrategy>,
     ) -> ManagedFileSpec {
         ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: source.to_string(),
             target,
             strategy,
@@ -860,7 +860,7 @@ mod tests {
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "nonexistent.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1067,7 +1067,7 @@ mod tests {
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "files/enc.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -1102,7 +1102,7 @@ mod tests {
 
         // Per-file permission on managed spec (not in profile.permissions map)
         let managed = ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "file.txt".to_string(),
             target: target.clone(),
             strategy: Some(FileStrategy::Copy),
@@ -1143,7 +1143,7 @@ mod tests {
         permissions.insert(target.display().to_string(), "600".to_string());
 
         let managed = ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "newfile.txt".to_string(),
             target: target.clone(),
             strategy: Some(FileStrategy::Copy),
@@ -1181,7 +1181,7 @@ mod tests {
         fs::write(&target, "data").unwrap();
 
         let managed = ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "file.txt".to_string(),
             target: target.clone(),
             strategy: Some(FileStrategy::Copy),
@@ -1237,10 +1237,10 @@ mod tests {
         );
     }
 
-    /// Managed-file spec for a `Modify` entry with the given `ensure` YAML.
-    fn modify_spec(target: std::path::PathBuf, ensure: &str) -> ManagedFileSpec {
-        let mut managed = spec("", target, Some(FileStrategy::Modify));
-        managed.modify = Some(cfgd_core::config::ModifySpec {
+    /// Managed-file spec for a `Patch` entry with the given `ensure` YAML.
+    fn patch_spec(target: std::path::PathBuf, ensure: &str) -> ManagedFileSpec {
+        let mut managed = spec("", target, Some(FileStrategy::Patch));
+        managed.patch = Some(cfgd_core::config::PatchSpec {
             format: None,
             ensure: Some(serde_yaml::from_str(ensure).unwrap()),
             script: None,
@@ -1249,13 +1249,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_modify_creates_a_missing_target() {
+    fn plan_patch_creates_a_missing_target() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let target = config_dir.join("settings.json");
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![modify_spec(target.clone(), "telemetry: false")],
+            managed: vec![patch_spec(target.clone(), "telemetry: false")],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -1268,17 +1268,17 @@ mod tests {
                 strategy,
                 source,
                 source_hash,
-                modify,
+                patch,
                 ..
             } => {
                 assert_eq!(t, &target);
-                assert_eq!(*strategy, FileStrategy::Modify);
-                assert_eq!(source, &std::path::PathBuf::new(), "Modify has no source");
+                assert_eq!(*strategy, FileStrategy::Patch);
+                assert_eq!(source, &std::path::PathBuf::new(), "Patch has no source");
                 assert!(
                     source_hash.is_none(),
                     "apply re-evaluates from live content"
                 );
-                assert!(modify.is_some(), "the merge spec must reach apply");
+                assert!(patch.is_some(), "the merge spec must reach apply");
             }
             other => panic!("expected Create, got: {other:?}"),
         }
@@ -1286,14 +1286,14 @@ mod tests {
     }
 
     #[test]
-    fn plan_modify_updates_a_drifted_target_with_a_current_to_merged_diff() {
+    fn plan_patch_updates_a_drifted_target_with_a_current_to_merged_diff() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let target = config_dir.join("settings.json");
         fs::write(&target, "{\n  \"keep\": 1\n}\n").unwrap();
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![modify_spec(target.clone(), "telemetry: false")],
+            managed: vec![patch_spec(target.clone(), "telemetry: false")],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -1315,14 +1315,14 @@ mod tests {
     }
 
     #[test]
-    fn plan_modify_emits_no_action_when_the_target_already_satisfies_the_spec() {
+    fn plan_patch_emits_no_action_when_the_target_already_satisfies_the_spec() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let target = config_dir.join("settings.json");
         fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![modify_spec(target, "telemetry: false")],
+            managed: vec![patch_spec(target, "telemetry: false")],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -1330,51 +1330,51 @@ mod tests {
 
         assert!(
             actions.is_empty(),
-            "a converged Modify target is a no-op, got: {actions:?}"
+            "a converged Patch target is a no-op, got: {actions:?}"
         );
     }
 
     #[test]
-    fn plan_modify_without_a_modify_block_errors() {
+    fn plan_patch_without_a_patch_block_errors() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let target = config_dir.join("settings.json");
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![spec("", target, Some(FileStrategy::Modify))],
+            managed: vec![spec("", target, Some(FileStrategy::Patch))],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let err = fm.plan(&resolved.merged).unwrap_err();
         assert!(
-            err.to_string().contains("requires a 'modify' block"),
-            "expected a missing-modify-block error, got: {err}"
+            err.to_string().contains("requires a 'patch' block"),
+            "expected a missing-patch-block error, got: {err}"
         );
     }
 
     #[test]
-    fn effective_strategy_keeps_modify_for_a_tera_source() {
+    fn effective_strategy_keeps_patch_for_a_tera_source() {
         let dir = tempfile::tempdir().unwrap();
         let fm = make_manager(dir.path());
         assert_eq!(
             fm.effective_strategy(
                 std::path::Path::new("shell/.zshrc.tera"),
-                Some(FileStrategy::Modify)
+                Some(FileStrategy::Patch)
             ),
-            FileStrategy::Modify,
-            "a declared Modify must never be downgraded to a whole-file Copy"
+            FileStrategy::Patch,
+            "a declared Patch must never be downgraded to a whole-file Copy"
         );
     }
 
     #[test]
-    fn diff_modify_renders_the_merge_and_reports_drift() {
+    fn diff_patch_renders_the_merge_and_reports_drift() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let target = config_dir.join("settings.json");
         fs::write(&target, "{\n  \"keep\": 1\n}\n").unwrap();
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![modify_spec(target, "telemetry: false")],
+            managed: vec![patch_spec(target, "telemetry: false")],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -1388,14 +1388,14 @@ mod tests {
     }
 
     #[test]
-    fn diff_modify_renders_nothing_when_converged() {
+    fn diff_patch_renders_nothing_when_converged() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let target = config_dir.join("settings.json");
         fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![modify_spec(target, "telemetry: false")],
+            managed: vec![patch_spec(target, "telemetry: false")],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -1408,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn file_drift_results_modify_reports_convergence() {
+    fn file_drift_results_patch_reports_convergence() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let drifted = config_dir.join("drifted.json");
@@ -1419,9 +1419,9 @@ mod tests {
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![
-                modify_spec(drifted, "telemetry: false"),
-                modify_spec(converged, "telemetry: false"),
-                modify_spec(missing, "telemetry: false"),
+                patch_spec(drifted, "telemetry: false"),
+                patch_spec(converged, "telemetry: false"),
+                patch_spec(missing, "telemetry: false"),
             ],
             permissions: HashMap::new(),
         });
@@ -1430,14 +1430,14 @@ mod tests {
 
         assert_eq!(results.len(), 3);
         assert!(!results[0].matches);
-        assert_eq!(results[0].actual, "content differs from modify spec");
+        assert_eq!(results[0].actual, "content differs from patch spec");
         assert!(results[1].matches);
         assert!(!results[2].matches);
         assert_eq!(results[2].actual, "missing");
     }
 
     #[test]
-    fn file_drift_results_reports_an_unevaluable_modify_as_drift_not_an_error() {
+    fn file_drift_results_reports_an_unevaluable_patch_as_drift_not_an_error() {
         // A read-only scan covers every resource: one target cfgd cannot parse
         // must be reported as drift, not abort the run and hide the rest.
         let dir = tempfile::tempdir().unwrap();
@@ -1449,8 +1449,8 @@ mod tests {
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![
-                modify_spec(broken, "telemetry: false"),
-                modify_spec(converged, "telemetry: false"),
+                patch_spec(broken, "telemetry: false"),
+                patch_spec(converged, "telemetry: false"),
             ],
             permissions: HashMap::new(),
         });
@@ -1462,9 +1462,7 @@ mod tests {
         assert_eq!(results.len(), 2, "every file still reports a result");
         assert!(!results[0].matches);
         assert!(
-            results[0]
-                .actual
-                .starts_with("cannot evaluate modify spec:"),
+            results[0].actual.starts_with("cannot evaluate patch spec:"),
             "the failure is surfaced per-file, got: {}",
             results[0].actual
         );
@@ -1477,14 +1475,14 @@ mod tests {
     }
 
     #[test]
-    fn diff_reports_an_unevaluable_modify_without_aborting() {
+    fn diff_reports_an_unevaluable_patch_without_aborting() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
         let broken = config_dir.join("broken.json");
         fs::write(&broken, "{ this is not json").unwrap();
 
         let resolved = make_resolved(FilesSpec {
-            managed: vec![modify_spec(broken, "telemetry: false")],
+            managed: vec![patch_spec(broken, "telemetry: false")],
             permissions: HashMap::new(),
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -1493,10 +1491,10 @@ mod tests {
             .diff(&resolved.merged, &printer)
             .expect("an unevaluable file must not fail the diff");
 
-        assert!(has_diff, "an unevaluable Modify file counts as drift");
+        assert!(has_diff, "an unevaluable Patch file counts as drift");
         let output = buf.lock().unwrap();
         assert!(
-            output.contains("cannot evaluate modify spec"),
+            output.contains("cannot evaluate patch spec"),
             "the reason is printed, got: {output}"
         );
     }

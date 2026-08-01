@@ -82,9 +82,9 @@ pub struct ResolvedFile {
     /// Unix permission bits (e.g. "600", "644") to apply after deployment.
     pub permissions: Option<String>,
     /// Partial-file merge configuration, present exactly when `strategy` is
-    /// `Modify`. A relative `modify.script` resolves against the module's
-    /// directory (see `ModifyBinding::module`).
-    pub modify: Option<crate::config::ModifySpec>,
+    /// `Patch`. A relative `patch.script` resolves against the module's
+    /// directory (see `PatchBinding::module`).
+    pub patch: Option<crate::config::PatchSpec>,
 }
 
 /// A root of source-delivered module bodies, derived from a subscribed

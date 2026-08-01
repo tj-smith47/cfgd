@@ -9123,7 +9123,7 @@ fn action_type_str_file_variants() {
             origin: "local".into(),
             strategy: cfgd_core::config::FileStrategy::default(),
             source_hash: None,
-            modify: None,
+            patch: None,
         })),
         "create"
     );
@@ -9136,7 +9136,7 @@ fn action_type_str_file_variants() {
             origin: "local".into(),
             strategy: cfgd_core::config::FileStrategy::default(),
             source_hash: None,
-            modify: None,
+            patch: None,
         })),
         "update"
     );
@@ -9414,7 +9414,7 @@ fn build_plan_output_with_phase_filter() {
                     origin: "local".into(),
                     strategy: cfgd_core::config::FileStrategy::default(),
                     source_hash: None,
-                    modify: None,
+                    patch: None,
                 })],
             },
         ],
@@ -9523,7 +9523,7 @@ fn filter_plan_skip_file_by_target() {
                     origin: "local".into(),
                     strategy: cfgd_core::config::FileStrategy::default(),
                     source_hash: None,
-                    modify: None,
+                    patch: None,
                 }),
                 Action::File(FileAction::Create {
                     source: "/tmp/b".into(),
@@ -9531,7 +9531,7 @@ fn filter_plan_skip_file_by_target() {
                     origin: "local".into(),
                     strategy: cfgd_core::config::FileStrategy::default(),
                     source_hash: None,
-                    modify: None,
+                    patch: None,
                 }),
             ],
         }],
@@ -11639,21 +11639,21 @@ fn cmd_diff_with_module() {
 }
 
 #[test]
-fn cmd_diff_module_modify_shows_the_merge_the_target_is_missing() {
+fn cmd_diff_module_patch_shows_the_merge_the_target_is_missing() {
     // Drives `cmd_diff_module`'s module-file loop (reached via `cmd_diff`'s
-    // module-filter delegation): a `Modify` file has no source to render, so
+    // module-filter delegation): a `Patch` file has no source to render, so
     // its diff must come from evaluating the merge against the target.
     let target_dir = tempfile::tempdir().unwrap();
     let target = target_dir.path().join("settings.json");
     let module_yaml = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          telemetry: false\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-patch-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: patch\n      patch:\n        ensure:\n          telemetry: false\n",
         cfgd_core::to_posix_string(&target)
     );
     let h = CliTestHarness::builder()
-        .module("diff-modify-mod", &module_yaml)
+        .module("diff-patch-mod", &module_yaml)
         .build();
 
-    super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-modify-mod"), false).unwrap();
+    super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-patch-mod"), false).unwrap();
     let output = h.output();
     assert!(
         output.contains("telemetry"),
@@ -11661,7 +11661,7 @@ fn cmd_diff_module_modify_shows_the_merge_the_target_is_missing() {
     );
     assert!(
         output.contains("File drift detected"),
-        "a missing Modify target is drift, got: {output}"
+        "a missing Patch target is drift, got: {output}"
     );
     assert!(
         !target.exists(),
@@ -11670,27 +11670,27 @@ fn cmd_diff_module_modify_shows_the_merge_the_target_is_missing() {
 }
 
 #[test]
-fn cmd_diff_full_profile_modify_reports_no_drift_when_converged() {
+fn cmd_diff_full_profile_patch_reports_no_drift_when_converged() {
     // Drives `cmd_diff`'s own module-file loop (the no-module-filter,
     // full-profile path) with a target that already satisfies the merge.
     let target_dir = tempfile::tempdir().unwrap();
     let target = target_dir.path().join("settings.json");
     std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
     let module_yaml = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          telemetry: false\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-patch-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: patch\n      patch:\n        ensure:\n          telemetry: false\n",
         cfgd_core::to_posix_string(&target)
     );
-    let profile_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - diff-modify-mod\n";
+    let profile_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - diff-patch-mod\n";
     let h = CliTestHarness::builder()
         .profile("default", profile_yaml)
-        .module("diff-modify-mod", &module_yaml)
+        .module("diff-patch-mod", &module_yaml)
         .build();
 
     super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
     let output = h.output();
     assert!(
         output.contains("No file drift"),
-        "a converged Modify target must not report drift, got: {output}"
+        "a converged Patch target must not report drift, got: {output}"
     );
 }
 
@@ -14383,7 +14383,7 @@ fn filter_plan_only_keeps_matching_phase() {
                     origin: "profile".into(),
                     strategy: config::FileStrategy::Copy,
                     source_hash: None,
-                    modify: None,
+                    patch: None,
                 })],
             },
         ],
@@ -14524,7 +14524,7 @@ fn action_path_file_create() {
         origin: "profile".into(),
         strategy: config::FileStrategy::Copy,
         source_hash: None,
-        modify: None,
+        patch: None,
     });
     let path = super::action_path(&PhaseName::Files, &action);
     assert_eq!(path, "files:/home/user/.bashrc");
@@ -15178,7 +15178,7 @@ fn action_path_file_update() {
         origin: "profile".into(),
         strategy: config::FileStrategy::Copy,
         source_hash: None,
-        modify: None,
+        patch: None,
     });
     let path = super::action_path(&PhaseName::Files, &action);
     assert_eq!(path, "files:/home/user/.bashrc");
@@ -17883,7 +17883,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
     let items = cfgd_core::config::PolicyItems {
         files: vec![
             ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "src/foo".to_string(),
                 target: std::path::PathBuf::from("/etc/foo"),
                 strategy: None,
@@ -17893,7 +17893,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
                 permissions: None,
             },
             ManagedFileSpec {
-                modify: None,
+                patch: None,
                 source: "src/bar".to_string(),
                 target: std::path::PathBuf::from("/etc/bar"),
                 strategy: None,
@@ -17933,7 +17933,7 @@ fn count_policy_items_sums_packages_files_env_and_system() {
             ..Default::default()
         }),
         files: vec![cfgd_core::config::ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: "src/foo".to_string(),
             target: std::path::PathBuf::from("/etc/foo"),
             strategy: None,

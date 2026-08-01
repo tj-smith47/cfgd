@@ -92,8 +92,8 @@
                 "type": "string"
               }
             ],
-            "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
-            "name": "modify",
+            "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+            "name": "patch",
             "required": false,
             "type": "object"
           },
@@ -110,7 +110,7 @@
             "type": "boolean"
           },
           {
-            "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+            "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
             "name": "source",
             "required": false,
             "type": "string"
@@ -413,8 +413,8 @@
                     "type": "string"
                   }
                 ],
-                "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
-                "name": "modify",
+                "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                "name": "patch",
                 "required": false,
                 "type": "object"
               },
@@ -431,7 +431,7 @@
                 "type": "boolean"
               },
               {
-                "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                 "name": "source",
                 "required": false,
                 "type": "string"
@@ -988,8 +988,8 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
-                    "name": "modify",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -1006,7 +1006,7 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
                     "required": false,
                     "type": "string"
@@ -1438,8 +1438,8 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
-                    "name": "modify",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -1456,7 +1456,7 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
                     "required": false,
                     "type": "string"
@@ -1888,8 +1888,8 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
-                    "name": "modify",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -1906,7 +1906,7 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
                     "required": false,
                     "type": "string"
@@ -2338,8 +2338,8 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Modify`. Required when `strategy` is `Modify`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
-                    "name": "modify",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -2356,7 +2356,7 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Modify`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
                     "required": false,
                     "type": "string"
@@ -3061,7 +3061,7 @@
         "type": "object"
       },
       {
-        "description": "Global default file deployment strategy. Per-file overrides take precedence. `Modify` is rejected here: it is defined by a per-file `modify:` block, which a file inheriting the global default cannot have.",
+        "description": "Global default file deployment strategy. Per-file overrides take precedence. `Patch` is rejected here: it is defined by a per-file `patch:` block, which a file inheriting the global default cannot have.",
         "name": "fileStrategy",
         "required": false,
         "type": "string"

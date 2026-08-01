@@ -156,44 +156,44 @@ pub enum FileError {
     )]
     EncryptionStrategyIncompatible { path: PathBuf, strategy: String },
 
-    #[error("strategy 'Modify' for {path} requires a 'modify' block")]
-    ModifyBlockMissing { path: PathBuf },
+    #[error("strategy 'Patch' for {path} requires a 'patch' block")]
+    PatchBlockMissing { path: PathBuf },
 
     #[error(
-        "cannot infer a modify format from the extension of {path} — set 'modify.format' explicitly (ini, json, yaml, toml)"
+        "cannot infer a patch format from the extension of {path} — set 'patch.format' explicitly (ini, json, yaml, toml)"
     )]
-    ModifyFormatUnknown { path: PathBuf },
+    PatchFormatUnknown { path: PathBuf },
 
-    #[error("modify target {path} is not valid {format}: {message}")]
-    ModifyParse {
+    #[error("patch target {path} is not valid {format}: {message}")]
+    PatchParse {
         path: PathBuf,
         format: String,
         message: String,
     },
 
-    #[error("failed to serialize the modified {format} content for {path}: {message}")]
-    ModifySerialize {
+    #[error("failed to serialize the patched {format} content for {path}: {message}")]
+    PatchSerialize {
         path: PathBuf,
         format: String,
         message: String,
     },
 
-    #[error("modify 'ensure' for {path} ({format}) is invalid: {message}")]
-    ModifyEnsureShape {
+    #[error("patch 'ensure' for {path} ({format}) is invalid: {message}")]
+    PatchEnsureShape {
         path: PathBuf,
         format: String,
         message: String,
     },
 
-    #[error("modify script '{script}' failed for {path}: {message}")]
-    ModifyScriptFailed {
+    #[error("patch script '{script}' failed for {path}: {message}")]
+    PatchScriptFailed {
         path: PathBuf,
         script: String,
         message: String,
     },
 
-    #[error("modify block for {path} must set exactly one of 'ensure' or 'script'")]
-    ModifySpecInvalid { path: PathBuf },
+    #[error("patch block for {path} must set exactly one of 'ensure' or 'script'")]
+    PatchSpecInvalid { path: PathBuf },
 }
 
 #[derive(Debug, thiserror::Error)]

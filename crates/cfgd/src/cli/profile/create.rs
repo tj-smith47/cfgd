@@ -153,7 +153,7 @@ pub fn cmd_profile_create(
     let file_entries: Vec<config::ManagedFileSpec> = copied
         .iter()
         .map(|(basename, deploy_target)| config::ManagedFileSpec {
-            modify: None,
+            patch: None,
             source: format!("profiles/{}/files/{}", name, basename),
             target: deploy_target.clone(),
             strategy: None,

@@ -55,7 +55,7 @@ pub(crate) use profile_spec::profile_spec_from_value;
 pub use profile_spec::{
     AptSpec, BackupSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint,
     EncryptionMode, EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec,
-    ManagedFileSpec, MergeSpec, ModifyFormat, ModifySpec, NpmSpec, PackagesSpec, ProfileDocument,
+    ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, PatchFormat, PatchSpec, ProfileDocument,
     ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec, render_backup_name_pattern,
     validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
 };

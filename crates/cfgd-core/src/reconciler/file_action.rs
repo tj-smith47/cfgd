@@ -2,7 +2,7 @@ use crate::config::FileStrategy;
 use crate::errors::{FileError, Result};
 use crate::providers::FileAction;
 
-use super::modify::{ModifyBinding, evaluate_modify};
+use super::patch::{PatchBinding, evaluate_patch};
 use super::types::ReconcileContext;
 
 pub(super) fn apply_file_action_direct(
@@ -15,32 +15,30 @@ pub(super) fn apply_file_action_direct(
             source,
             target,
             strategy,
-            modify,
+            patch,
             ..
         }
         | FileAction::Update {
             source,
             target,
             strategy,
-            modify,
+            patch,
             ..
         } => {
-            // `Modify` rewrites the target's own content, so it is computed
+            // `Patch` rewrites the target's own content, so it is computed
             // before the remove-then-deploy sequence below deletes the very
             // bytes it reads.
-            let modified = match strategy {
-                FileStrategy::Modify => {
-                    let spec = modify
-                        .as_ref()
-                        .ok_or_else(|| FileError::ModifyBlockMissing {
-                            path: target.clone(),
-                        })?;
-                    let binding = ModifyBinding::profile(
+            let patched = match strategy {
+                FileStrategy::Patch => {
+                    let spec = patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
+                        path: target.clone(),
+                    })?;
+                    let binding = PatchBinding::profile(
                         config_dir,
                         profile_name,
                         ReconcileContext::Reconcile,
                     );
-                    Some(evaluate_modify(spec, target, &binding.context())?.modified)
+                    Some(evaluate_patch(spec, target, &binding.context())?.patched)
                 }
                 _ => None,
             };
@@ -61,8 +59,8 @@ pub(super) fn apply_file_action_direct(
                 FileStrategy::Copy | FileStrategy::Template => {
                     std::fs::copy(source, target)?;
                 }
-                FileStrategy::Modify => {
-                    crate::atomic_write_str(target, modified.as_deref().unwrap_or_default())?;
+                FileStrategy::Patch => {
+                    crate::atomic_write_str(target, patched.as_deref().unwrap_or_default())?;
                 }
             }
             Ok(())
@@ -91,14 +89,14 @@ impl FileAction {
                 origin,
                 strategy,
                 source_hash,
-                modify,
+                patch,
             } => FileAction::Create {
                 source: source.clone(),
                 target: target.clone(),
                 origin: origin.clone(),
                 strategy: *strategy,
                 source_hash: source_hash.clone(),
-                modify: modify.clone(),
+                patch: patch.clone(),
             },
             FileAction::Update {
                 source,
@@ -107,7 +105,7 @@ impl FileAction {
                 origin,
                 strategy,
                 source_hash,
-                modify,
+                patch,
             } => FileAction::Update {
                 source: source.clone(),
                 target: target.clone(),
@@ -115,7 +113,7 @@ impl FileAction {
                 origin: origin.clone(),
                 strategy: *strategy,
                 source_hash: source_hash.clone(),
-                modify: modify.clone(),
+                patch: patch.clone(),
             },
             FileAction::Delete { target, origin } => FileAction::Delete {
                 target: target.clone(),

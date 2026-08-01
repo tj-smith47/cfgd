@@ -199,7 +199,7 @@ pub(in crate::cli) fn parse_package_flag(
 /// explicit `--profile`, else the config's active profile, else `"unknown"`.
 ///
 /// Module-only commands never resolve a profile, but the scripts they run
-/// (a `modify.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
+/// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
 /// so the name must be the real one wherever the config knows it. Pass `cfg`
 /// when it is already loaded to avoid a second read.
 pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {

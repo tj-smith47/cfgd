@@ -20,7 +20,7 @@ fn file_create(target: &str) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Symlink,
         source_hash: None,
-        modify: None,
+        patch: None,
     })
 }
 
@@ -32,7 +32,7 @@ fn file_update(target: &str) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Copy,
         source_hash: None,
-        modify: None,
+        patch: None,
     })
 }
 
@@ -313,7 +313,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
-                    modify: None,
+                    patch: None,
                 },
                 cfgd_core::modules::ResolvedFile {
                     source: PathBuf::from("/m/.vimrc"),
@@ -322,7 +322,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
-                    modify: None,
+                    patch: None,
                 },
             ],
         },
@@ -1159,18 +1159,18 @@ fn apply_backup_choice_adopt_leaves_action_unchanged() {
     );
 }
 
-// --- unmanaged-file prompt: Modify adopts in place ---
+// --- unmanaged-file prompt: Patch adopts in place ---
 
-fn modify_update(target: &Path) -> Action {
+fn patch_update(target: &Path) -> Action {
     Action::File(FileAction::Update {
         source: PathBuf::new(),
         target: target.to_path_buf(),
         diff: "--- old\n+++ new\n".to_string(),
         origin: "test".to_string(),
-        strategy: FileStrategy::Modify,
+        strategy: FileStrategy::Patch,
         source_hash: None,
-        modify: Some(cfgd_core::config::ModifySpec {
-            format: Some(cfgd_core::config::ModifyFormat::Json),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: Some(cfgd_core::config::PatchFormat::Json),
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
         }),
@@ -1185,7 +1185,7 @@ fn copy_update(target: &Path) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Copy,
         source_hash: None,
-        modify: None,
+        patch: None,
     })
 }
 
@@ -1194,14 +1194,14 @@ fn one_phase_plan(actions: Vec<Action>) -> Plan {
 }
 
 #[test]
-fn unmanaged_prompt_never_backs_up_a_modify_target() {
-    // A `Modify` target is unmanaged by definition on the first apply. Renaming
+fn unmanaged_prompt_never_backs_up_a_patch_target() {
+    // A `Patch` target is unmanaged by definition on the first apply. Renaming
     // it away would make the merge read empty content and write only the
     // ensured keys — destroying the content the strategy exists to preserve.
     let tmp = tempfile::tempdir().unwrap();
-    let modify_target = tmp.path().join("settings.json");
+    let patch_target = tmp.path().join("settings.json");
     let copy_target = tmp.path().join("zshrc");
-    std::fs::write(&modify_target, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
+    std::fs::write(&patch_target, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
     std::fs::write(&copy_target, "old").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
@@ -1209,28 +1209,25 @@ fn unmanaged_prompt_never_backs_up_a_modify_target() {
         Printer::for_test_doc_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Select(
             "Backup (save as .cfgd-backup, then overwrite)".into(),
         )]);
-    let mut plan = one_phase_plan(vec![
-        modify_update(&modify_target),
-        copy_update(&copy_target),
-    ]);
+    let mut plan = one_phase_plan(vec![patch_update(&patch_target), copy_update(&copy_target)]);
 
     handle_unmanaged_file_targets(&mut plan, tmp.path(), &state, &printer, false).unwrap();
 
     assert!(
-        modify_target.exists(),
-        "a Modify target must stay in place for the merge to read"
+        patch_target.exists(),
+        "a Patch target must stay in place for the merge to read"
     );
     assert_eq!(
-        std::fs::read_to_string(&modify_target).unwrap(),
+        std::fs::read_to_string(&patch_target).unwrap(),
         "{\n  \"runtimeToken\": \"keep-me\"\n}\n",
-        "a Modify target must not be touched by the unmanaged-file prompt"
+        "a Patch target must not be touched by the unmanaged-file prompt"
     );
     assert!(
         !tmp.path().join("settings.json.cfgd-backup").exists(),
-        "no sidecar should be created for a Modify target"
+        "no sidecar should be created for a Patch target"
     );
-    // The single queued answer went to the non-Modify action, proving the
-    // Modify one never prompted.
+    // The single queued answer went to the non-Patch action, proving the
+    // Patch one never prompted.
     assert!(
         tmp.path().join("zshrc.cfgd-backup").exists(),
         "a Copy target still honours the Backup choice"
@@ -1238,7 +1235,7 @@ fn unmanaged_prompt_never_backs_up_a_modify_target() {
 }
 
 #[test]
-fn unmanaged_prompt_skips_modify_module_files() {
+fn unmanaged_prompt_skips_patch_module_files() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("hosts");
     std::fs::write(&target, "127.0.0.1 localhost\n").unwrap();
@@ -1252,11 +1249,11 @@ fn unmanaged_prompt_skips_modify_module_files() {
         source: PathBuf::new(),
         target: target.clone(),
         is_git_source: false,
-        strategy: Some(FileStrategy::Modify),
+        strategy: Some(FileStrategy::Patch),
         permissions: None,
         encryption: None,
-        modify: Some(cfgd_core::config::ModifySpec {
-            format: Some(cfgd_core::config::ModifyFormat::Ini),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: Some(cfgd_core::config::PatchFormat::Ini),
             ensure: Some(serde_yaml::from_str("core:\n  editor: vim").unwrap()),
             script: None,
         }),
@@ -1271,10 +1268,10 @@ fn unmanaged_prompt_skips_modify_module_files() {
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
         "127.0.0.1 localhost\n",
-        "a module-deployed Modify target must not be renamed away"
+        "a module-deployed Patch target must not be renamed away"
     );
     assert!(
         !tmp.path().join("hosts.cfgd-backup").exists(),
-        "no sidecar should be created for a module Modify target"
+        "no sidecar should be created for a module Patch target"
     );
 }

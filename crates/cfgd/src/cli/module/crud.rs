@@ -122,7 +122,7 @@ pub fn cmd_module_create(
     let file_entries: Vec<config::ModuleFileEntry> = copied
         .iter()
         .map(|(basename, target)| config::ModuleFileEntry {
-            modify: None,
+            patch: None,
             source: format!("files/{}", basename),
             target: target.display().to_string(),
             strategy: None,
@@ -473,7 +473,7 @@ pub fn cmd_module_update_local(
             add_to_gitignore(&config_dir, &format!("modules/{}/files/{}", name, basename))?;
         }
         doc.spec.files.push(config::ModuleFileEntry {
-            modify: None,
+            patch: None,
             source: format!("files/{}", basename),
             target: target.display().to_string(),
             strategy: None,

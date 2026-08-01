@@ -52,7 +52,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 toml = "1.0"
-# Format-preserving TOML editing for the `Modify` file strategy: a plain
+# Format-preserving TOML editing for the `Patch` file strategy: a plain
 # `toml` round-trip would discard the target's comments and key ordering.
 toml_edit = "0.25"
 # JSON Schema generation for the published editor-config schemas

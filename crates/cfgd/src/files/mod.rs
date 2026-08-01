@@ -14,7 +14,7 @@ mod template;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use plan::{modify_drift_result, module_modify_binding, render_modify_diff};
+pub(crate) use plan::{module_patch_binding, patch_drift_result, render_patch_diff};
 pub(crate) use template::is_tera_template;
 
 /// Concrete FileManager implementation for cfgd.
@@ -31,7 +31,7 @@ pub struct CfgdFileManager {
     /// Global default file deployment strategy.
     global_strategy: FileStrategy,
     /// Name of the resolved profile, stamped into `CFGD_PROFILE` for
-    /// `modify.script` filters.
+    /// `patch.script` filters.
     profile_name: String,
 }
 

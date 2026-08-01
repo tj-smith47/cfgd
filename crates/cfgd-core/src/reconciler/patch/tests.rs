@@ -1,41 +1,41 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::config::{ModifyFormat, ModifySpec};
+use crate::config::{PatchFormat, PatchSpec};
 use crate::errors::{CfgdError, FileError};
 
-fn spec(format: Option<ModifyFormat>, ensure: &str) -> ModifySpec {
-    ModifySpec {
+fn spec(format: Option<PatchFormat>, ensure: &str) -> PatchSpec {
+    PatchSpec {
         format,
         ensure: Some(serde_yaml::from_str(ensure).expect("ensure fixture parses")),
         script: None,
     }
 }
 
-fn script_spec(script: &str) -> ModifySpec {
-    ModifySpec {
+fn script_spec(script: &str) -> PatchSpec {
+    PatchSpec {
         format: None,
         ensure: None,
         script: Some(script.to_string()),
     }
 }
 
-fn ctx_for(dir: &Path) -> ModifyContext<'_> {
-    ModifyContext::new(dir).with_working_dir(dir)
+fn ctx_for(dir: &Path) -> PatchContext<'_> {
+    PatchContext::new(dir).with_working_dir(dir)
 }
 
-fn apply(current: &str, spec: &ModifySpec, target: &str) -> String {
+fn apply(current: &str, spec: &PatchSpec, target: &str) -> String {
     let path = PathBuf::from(target);
     let dir = std::env::current_dir().expect("cwd");
-    compute_modified(current, spec, &path, &ModifyContext::new(&dir))
-        .unwrap_or_else(|e| panic!("compute_modified failed: {e}"))
+    compute_patched(current, spec, &path, &PatchContext::new(&dir))
+        .unwrap_or_else(|e| panic!("compute_patched failed: {e}"))
 }
 
-fn apply_err(current: &str, spec: &ModifySpec, target: &str) -> CfgdError {
+fn apply_err(current: &str, spec: &PatchSpec, target: &str) -> CfgdError {
     let path = PathBuf::from(target);
     let dir = std::env::current_dir().expect("cwd");
-    compute_modified(current, spec, &path, &ModifyContext::new(&dir))
-        .expect_err("expected compute_modified to fail")
+    compute_patched(current, spec, &path, &PatchContext::new(&dir))
+        .expect_err("expected compute_patched to fail")
 }
 
 fn assert_file_err(err: &CfgdError, matcher: impl Fn(&FileError) -> bool, expected: &str) {
@@ -48,14 +48,14 @@ fn assert_file_err(err: &CfgdError, matcher: impl Fn(&FileError) -> bool, expect
 fn assert_ensure_shape(err: &CfgdError) {
     assert_file_err(
         err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
 }
 
 /// Applying the same `ensure` twice must produce byte-identical output — a
 /// merge that cannot re-read what it wrote grows the target on every reconcile.
-fn assert_converges(current: &str, spec: &ModifySpec, target: &str) -> String {
+fn assert_converges(current: &str, spec: &PatchSpec, target: &str) -> String {
     let once = apply(current, spec, target);
     let twice = apply(&once, spec, target);
     assert_eq!(once, twice, "second pass changed the file (non-convergent)");
@@ -69,13 +69,13 @@ fn assert_converges(current: &str, spec: &ModifySpec, target: &str) -> String {
 #[test]
 fn infer_format_maps_known_extensions() {
     let cases = [
-        ("app.ini", ModifyFormat::Ini),
-        ("app.INI", ModifyFormat::Ini),
-        ("app.json", ModifyFormat::Json),
-        ("app.yaml", ModifyFormat::Yaml),
-        ("app.yml", ModifyFormat::Yaml),
-        ("app.YML", ModifyFormat::Yaml),
-        ("app.toml", ModifyFormat::Toml),
+        ("app.ini", PatchFormat::Ini),
+        ("app.INI", PatchFormat::Ini),
+        ("app.json", PatchFormat::Json),
+        ("app.yaml", PatchFormat::Yaml),
+        ("app.yml", PatchFormat::Yaml),
+        ("app.YML", PatchFormat::Yaml),
+        ("app.toml", PatchFormat::Toml),
     ];
     for (name, expected) in cases {
         assert_eq!(
@@ -98,11 +98,11 @@ fn unknown_extension_without_explicit_format_is_typed_error() {
     let err = apply_err("", &spec(None, "user:\n  name: x\n"), "/etc/hosts");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyFormatUnknown { .. }),
-        "ModifyFormatUnknown",
+        |e| matches!(e, FileError::PatchFormatUnknown { .. }),
+        "PatchFormatUnknown",
     );
     assert!(
-        err.to_string().contains("modify.format"),
+        err.to_string().contains("patch.format"),
         "error should name the escape hatch: {err}"
     );
 }
@@ -112,7 +112,7 @@ fn explicit_format_overrides_the_extension() {
     // A `.json` target explicitly declared as INI is parsed as INI.
     let out = apply(
         "[core]\nvalue = 1\n",
-        &spec(Some(ModifyFormat::Ini), "core:\n  value: 2\n"),
+        &spec(Some(PatchFormat::Ini), "core:\n  value: 2\n"),
         "/tmp/app.json",
     );
     assert_eq!(out, "[core]\nvalue = 2\n");
@@ -120,10 +120,10 @@ fn explicit_format_overrides_the_extension() {
 
 #[test]
 fn resolve_format_prefers_the_explicit_field() {
-    let s = spec(Some(ModifyFormat::Toml), "a: 1");
+    let s = spec(Some(PatchFormat::Toml), "a: 1");
     assert_eq!(
         resolve_format(&s, Path::new("x.ini")).expect("explicit format wins"),
-        ModifyFormat::Toml
+        PatchFormat::Toml
     );
 }
 
@@ -133,48 +133,48 @@ fn resolve_format_prefers_the_explicit_field() {
 
 #[test]
 fn neither_ensure_nor_script_is_typed_error() {
-    let s = ModifySpec {
-        format: Some(ModifyFormat::Json),
+    let s = PatchSpec {
+        format: Some(PatchFormat::Json),
         ensure: None,
         script: None,
     };
     let err = apply_err("{}", &s, "/tmp/a.json");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifySpecInvalid { .. }),
-        "ModifySpecInvalid",
+        |e| matches!(e, FileError::PatchSpecInvalid { .. }),
+        "PatchSpecInvalid",
     );
 }
 
 #[test]
 fn both_ensure_and_script_is_typed_error() {
-    let s = ModifySpec {
-        format: Some(ModifyFormat::Json),
+    let s = PatchSpec {
+        format: Some(PatchFormat::Json),
         ensure: Some(serde_yaml::from_str("a: 1").expect("fixture")),
         script: Some("cat".to_string()),
     };
     let err = apply_err("{}", &s, "/tmp/a.json");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifySpecInvalid { .. }),
-        "ModifySpecInvalid",
+        |e| matches!(e, FileError::PatchSpecInvalid { .. }),
+        "PatchSpecInvalid",
     );
 }
 
 #[test]
 fn non_mapping_ensure_is_rejected_for_every_format() {
     for (format, target) in [
-        (ModifyFormat::Ini, "/tmp/a.ini"),
-        (ModifyFormat::Json, "/tmp/a.json"),
-        (ModifyFormat::Yaml, "/tmp/a.yaml"),
-        (ModifyFormat::Toml, "/tmp/a.toml"),
+        (PatchFormat::Ini, "/tmp/a.ini"),
+        (PatchFormat::Json, "/tmp/a.json"),
+        (PatchFormat::Yaml, "/tmp/a.yaml"),
+        (PatchFormat::Toml, "/tmp/a.toml"),
     ] {
         let s = spec(Some(format), "- just\n- a list\n");
         let err = apply_err("", &s, target);
         assert_file_err(
             &err,
-            |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-            "ModifyEnsureShape",
+            |e| matches!(e, FileError::PatchEnsureShape { .. }),
+            "PatchEnsureShape",
         );
     }
 }
@@ -408,8 +408,8 @@ fn ini_rejects_nested_mappings() {
     );
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
     assert!(
         err.to_string().contains("user.name"),
@@ -422,8 +422,8 @@ fn ini_rejects_list_values() {
     let err = apply_err("", &spec(None, "core:\n  paths: [a, b]\n"), "/tmp/app.ini");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
 }
 
@@ -432,8 +432,8 @@ fn ini_rejects_null_values() {
     let err = apply_err("", &spec(None, "core:\n  editor:\n"), "/tmp/app.ini");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
 }
 
@@ -442,8 +442,8 @@ fn ini_rejects_non_string_section_names() {
     let err = apply_err("", &spec(None, "42:\n  a: b\n"), "/tmp/app.ini");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
 }
 
@@ -452,8 +452,8 @@ fn ini_rejects_non_string_key_names() {
     let err = apply_err("", &spec(None, "core:\n  42: b\n"), "/tmp/app.ini");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
 }
 
@@ -808,8 +808,8 @@ fn toml_invalid_current_content_is_a_typed_error() {
     let err = apply_err("this is [not toml\n", &spec(None, "a: 1\n"), "/tmp/a.toml");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyParse { .. }),
-        "ModifyParse",
+        |e| matches!(e, FileError::PatchParse { .. }),
+        "PatchParse",
     );
     assert!(err.to_string().contains("not valid toml"), "{err}");
 }
@@ -819,8 +819,8 @@ fn toml_rejects_null_values() {
     let err = apply_err("", &spec(None, "build:\n  jobs:\n"), "/tmp/a.toml");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+        |e| matches!(e, FileError::PatchEnsureShape { .. }),
+        "PatchEnsureShape",
     );
     assert!(err.to_string().contains("no null"), "{err}");
 }
@@ -931,8 +931,8 @@ fn json_invalid_current_content_is_a_typed_error() {
     let err = apply_err("{not json", &spec(None, "a: 1\n"), "/tmp/a.json");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyParse { .. }),
-        "ModifyParse",
+        |e| matches!(e, FileError::PatchParse { .. }),
+        "PatchParse",
     );
 }
 
@@ -941,8 +941,8 @@ fn json_non_object_current_content_is_a_typed_error() {
     let err = apply_err("[1, 2, 3]", &spec(None, "a: 1\n"), "/tmp/a.json");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyParse { .. }),
-        "ModifyParse",
+        |e| matches!(e, FileError::PatchParse { .. }),
+        "PatchParse",
     );
     assert!(err.to_string().contains("not an object"), "{err}");
 }
@@ -1065,7 +1065,7 @@ fn json_target_with_nested_duplicate_keys_takes_the_last_occurrence() {
 
 #[test]
 fn json_preserves_the_targets_key_order() {
-    // The whole point of `Modify` is leaving untouched content alone; a
+    // The whole point of `Patch` is leaving untouched content alone; a
     // `serde_json::Value` round-trip would re-sort a user's settings.json
     // alphabetically. Asserted on the raw text — re-parsing hides ordering.
     let current = r#"{"zeta": 1, "alpha": {"nested": true, "aaa": 2}, "middle": 3}"#;
@@ -1168,8 +1168,8 @@ fn yaml_invalid_current_content_is_a_typed_error() {
     let err = apply_err("a: [unclosed\n", &spec(None, "b: 1\n"), "/tmp/a.yaml");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyParse { .. }),
-        "ModifyParse",
+        |e| matches!(e, FileError::PatchParse { .. }),
+        "PatchParse",
     );
 }
 
@@ -1194,8 +1194,8 @@ fn yaml_multi_document_input_is_a_typed_error() {
     let err = apply_err("a: 1\n---\nb: 2\n", &spec(None, "c: 3\n"), "/tmp/a.yaml");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyParse { .. }),
-        "ModifyParse",
+        |e| matches!(e, FileError::PatchParse { .. }),
+        "PatchParse",
     );
 }
 
@@ -1230,8 +1230,8 @@ fn yaml_non_mapping_current_content_is_a_typed_error() {
     let err = apply_err("- one\n- two\n", &spec(None, "b: 1\n"), "/tmp/a.yaml");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyParse { .. }),
-        "ModifyParse",
+        |e| matches!(e, FileError::PatchParse { .. }),
+        "PatchParse",
     );
     assert!(err.to_string().contains("not a mapping"), "{err}");
 }
@@ -1246,7 +1246,7 @@ fn script_that_cannot_run_is_a_typed_error_with_context() {
     // `sh -c` and `cmd /C`, so the failure surfaces as a typed error either way.
     let dir = tempfile::tempdir().expect("tempdir");
     let target = PathBuf::from("/tmp/app.ini");
-    let err = compute_modified(
+    let err = compute_patched(
         "current\n",
         &script_spec("./definitely-not-a-real-script"),
         &target,
@@ -1255,8 +1255,8 @@ fn script_that_cannot_run_is_a_typed_error_with_context() {
     .expect_err("missing script must fail");
     assert_file_err(
         &err,
-        |e| matches!(e, FileError::ModifyScriptFailed { .. }),
-        "ModifyScriptFailed",
+        |e| matches!(e, FileError::PatchScriptFailed { .. }),
+        "PatchScriptFailed",
     );
     assert!(
         err.to_string().contains("definitely-not-a-real-script"),
@@ -1265,28 +1265,28 @@ fn script_that_cannot_run_is_a_typed_error_with_context() {
 }
 
 #[test]
-fn evaluate_modify_reads_the_target_and_reports_convergence() {
+fn evaluate_patch_reads_the_target_and_reports_convergence() {
     let dir = tempfile::tempdir().expect("tempdir");
     let target = dir.path().join("settings.json");
     std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").expect("seed target");
 
     let ensure = spec(None, "telemetry: false");
     let converged =
-        evaluate_modify(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
+        evaluate_patch(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
     assert!(converged.is_up_to_date());
-    assert_eq!(converged.current, converged.modified);
+    assert_eq!(converged.current, converged.patched);
 
     std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").expect("drift the target");
     let drifted =
-        evaluate_modify(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
+        evaluate_patch(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
     assert!(!drifted.is_up_to_date());
-    assert!(drifted.modified.contains("false"));
+    assert!(drifted.patched.contains("false"));
 }
 
 #[test]
-fn evaluate_modify_treats_a_missing_target_as_empty() {
+fn evaluate_patch_treats_a_missing_target_as_empty() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let outcome = evaluate_modify(
+    let outcome = evaluate_patch(
         &spec(None, "telemetry: false"),
         &dir.path().join("absent.json"),
         &ctx_for(dir.path()),
@@ -1297,11 +1297,11 @@ fn evaluate_modify_treats_a_missing_target_as_empty() {
 }
 
 #[test]
-fn evaluate_modify_surfaces_an_unreadable_target() {
+fn evaluate_patch_surfaces_an_unreadable_target() {
     let dir = tempfile::tempdir().expect("tempdir");
     // A directory where a file is expected: readable path, unreadable
     // content. Treating it as empty would overwrite it on apply.
-    let err = evaluate_modify(
+    let err = evaluate_patch(
         &spec(None, "telemetry: false"),
         dir.path(),
         &ctx_for(dir.path()),
@@ -1345,7 +1345,7 @@ fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
 fn for_origin_binds_a_module_file_to_its_module_directory() {
     let module_dir = tempfile::tempdir().expect("tempdir");
     let modules = vec![module_at(module_dir.path())];
-    let binding = ModifyBinding::for_origin(
+    let binding = PatchBinding::for_origin(
         Path::new("/config"),
         "work",
         crate::reconciler::ReconcileContext::Apply,
@@ -1358,7 +1358,7 @@ fn for_origin_binds_a_module_file_to_its_module_directory() {
 
 #[test]
 fn for_origin_binds_a_profile_file_to_the_config_directory() {
-    let binding = ModifyBinding::for_origin(
+    let binding = PatchBinding::for_origin(
         Path::new("/config"),
         "work",
         crate::reconciler::ReconcileContext::Apply,
@@ -1374,7 +1374,7 @@ fn for_origin_binds_a_profile_file_to_the_config_directory() {
 /// command. The unresolvable origin must surface as a typed error instead.
 #[test]
 fn for_origin_rejects_an_origin_naming_an_absent_module() {
-    let err = ModifyBinding::for_origin(
+    let err = PatchBinding::for_origin(
         Path::new("/config"),
         "work",
         crate::reconciler::ReconcileContext::Apply,
@@ -1416,7 +1416,7 @@ mod unix_script {
             "filter.sh",
             "#!/bin/sh\ncat\necho '127.0.0.1 added.local'\n",
         );
-        let out = compute_modified(
+        let out = compute_patched(
             "127.0.0.1 localhost\n",
             &script_spec("filter.sh"),
             Path::new("/etc/hosts"),
@@ -1431,7 +1431,7 @@ mod unix_script {
         let dir = tempfile::tempdir().expect("tempdir");
         write_script(dir.path(), "passthrough.sh", "#!/bin/sh\ncat\n");
         let big = "line of text that is reasonably long\n".repeat(20_000);
-        let out = compute_modified(
+        let out = compute_patched(
             &big,
             &script_spec("passthrough.sh"),
             Path::new("/etc/hosts"),
@@ -1449,7 +1449,7 @@ mod unix_script {
             "seed.sh",
             "#!/bin/sh\nif [ -z \"$(cat)\" ]; then echo empty; else echo nonempty; fi\n",
         );
-        let out = compute_modified(
+        let out = compute_patched(
             "",
             &script_spec("seed.sh"),
             Path::new("/etc/hosts"),
@@ -1467,7 +1467,7 @@ mod unix_script {
             "fail.sh",
             "#!/bin/sh\necho 'refusing: target is managed elsewhere' >&2\nexit 3\n",
         );
-        let err = compute_modified(
+        let err = compute_patched(
             "content\n",
             &script_spec("fail.sh"),
             Path::new("/etc/hosts"),
@@ -1476,8 +1476,8 @@ mod unix_script {
         .expect_err("non-zero exit must fail");
         assert_file_err(
             &err,
-            |e| matches!(e, FileError::ModifyScriptFailed { .. }),
-            "ModifyScriptFailed",
+            |e| matches!(e, FileError::PatchScriptFailed { .. }),
+            "PatchScriptFailed",
         );
         let text = err.to_string();
         assert!(text.contains("exit 3"), "carries exit code: {text}");
@@ -1492,7 +1492,7 @@ mod unix_script {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("noexec.sh");
         std::fs::write(&path, "#!/bin/sh\ncat\n").expect("write");
-        let err = compute_modified(
+        let err = compute_patched(
             "content\n",
             &script_spec("noexec.sh"),
             Path::new("/etc/hosts"),
@@ -1501,8 +1501,8 @@ mod unix_script {
         .expect_err("non-executable script must fail");
         assert_file_err(
             &err,
-            |e| matches!(e, FileError::ModifyScriptFailed { .. }),
-            "ModifyScriptFailed",
+            |e| matches!(e, FileError::PatchScriptFailed { .. }),
+            "PatchScriptFailed",
         );
         let text = err.to_string();
         assert!(text.contains("not executable"), "explains the fix: {text}");
@@ -1515,8 +1515,8 @@ mod unix_script {
         let script_dir = dir.path().to_path_buf();
         write_script(&script_dir, "filter.sh", "#!/bin/sh\ncat\n");
         let gone = dir.path().join("not-there");
-        let ctx = ModifyContext::new(&script_dir).with_working_dir(&gone);
-        let err = compute_modified(
+        let ctx = PatchContext::new(&script_dir).with_working_dir(&gone);
+        let err = compute_patched(
             "content\n",
             &script_spec("filter.sh"),
             Path::new("/etc/hosts"),
@@ -1525,8 +1525,8 @@ mod unix_script {
         .expect_err("missing working directory must fail");
         assert_file_err(
             &err,
-            |e| matches!(e, FileError::ModifyScriptFailed { .. }),
-            "ModifyScriptFailed",
+            |e| matches!(e, FileError::PatchScriptFailed { .. }),
+            "PatchScriptFailed",
         );
         let text = err.to_string();
         assert!(
@@ -1553,7 +1553,7 @@ mod unix_script {
         );
         let spec = script_spec("ensure-hosts-entry.sh");
         let run = |input: &str| {
-            compute_modified(input, &spec, Path::new("/etc/hosts"), &ctx_for(dir.path()))
+            compute_patched(input, &spec, Path::new("/etc/hosts"), &ctx_for(dir.path()))
                 .expect("filter succeeds")
         };
         let once = run("127.0.0.1 localhost\n");
@@ -1575,8 +1575,8 @@ mod unix_script {
                 let sub = root.join(format!("t{n}"));
                 std::fs::create_dir_all(&sub).expect("create subdir");
                 write_script(&sub, "filter.sh", "#!/bin/sh\ncat\n");
-                let ctx = ModifyContext::new(&sub).with_working_dir(&sub);
-                compute_modified(
+                let ctx = PatchContext::new(&sub).with_working_dir(&sub);
+                compute_patched(
                     "payload\n",
                     &script_spec("filter.sh"),
                     Path::new("/etc/hosts"),
@@ -1597,10 +1597,10 @@ mod unix_script {
     fn script_timeout_is_a_typed_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_script(dir.path(), "hang.sh", "#!/bin/sh\nsleep 30\n");
-        let ctx = ModifyContext::new(dir.path())
+        let ctx = PatchContext::new(dir.path())
             .with_working_dir(dir.path())
             .with_timeout(std::time::Duration::from_millis(200));
-        let err = compute_modified(
+        let err = compute_patched(
             "content\n",
             &script_spec("hang.sh"),
             Path::new("/etc/hosts"),
@@ -1609,8 +1609,8 @@ mod unix_script {
         .expect_err("hanging script must time out");
         assert_file_err(
             &err,
-            |e| matches!(e, FileError::ModifyScriptFailed { .. }),
-            "ModifyScriptFailed",
+            |e| matches!(e, FileError::PatchScriptFailed { .. }),
+            "PatchScriptFailed",
         );
         assert!(err.to_string().contains("timed out"), "{err}");
     }
@@ -1624,10 +1624,10 @@ mod unix_script {
             "#!/bin/sh\necho \"$CFGD_MODULE_NAME\"\n",
         );
         let env = vec![("CFGD_MODULE_NAME".to_string(), "demo".to_string())];
-        let ctx = ModifyContext::new(dir.path())
+        let ctx = PatchContext::new(dir.path())
             .with_working_dir(dir.path())
             .with_env(&env);
-        let out = compute_modified("", &script_spec("env.sh"), Path::new("/etc/hosts"), &ctx)
+        let out = compute_patched("", &script_spec("env.sh"), Path::new("/etc/hosts"), &ctx)
             .expect("filter succeeds");
         assert_eq!(out, "demo\n");
     }
@@ -1644,7 +1644,7 @@ mod unix_script {
             "env.sh",
             "#!/bin/sh\necho \"[${CFGD_MODULE_NAME}]\"\n",
         );
-        let out = compute_modified(
+        let out = compute_patched(
             "",
             &script_spec("env.sh"),
             Path::new("/etc/hosts"),
@@ -1664,14 +1664,14 @@ mod unix_script {
         write_script(module_dir.path(), "env.sh", ENV_ECHO);
 
         let module = module_at(module_dir.path());
-        let binding = ModifyBinding::module(
+        let binding = PatchBinding::module(
             Path::new("/config"),
             "work",
             crate::reconciler::ReconcileContext::Apply,
             &module,
         );
         let out = crate::with_test_home(home.path(), || {
-            compute_modified(
+            compute_patched(
                 "",
                 &script_spec("env.sh"),
                 Path::new("/etc/hosts"),
@@ -1679,7 +1679,7 @@ mod unix_script {
             )
             .expect("filter succeeds")
         });
-        assert_eq!(out, "[hosts-mod|build.internal|work|modify]\n");
+        assert_eq!(out, "[hosts-mod|build.internal|work|patch]\n");
     }
 
     #[test]
@@ -1688,13 +1688,13 @@ mod unix_script {
         let home = tempfile::tempdir().expect("tempdir");
         write_script(config_dir.path(), "env.sh", ENV_ECHO);
 
-        let binding = ModifyBinding::profile(
+        let binding = PatchBinding::profile(
             config_dir.path(),
             "work",
             crate::reconciler::ReconcileContext::Apply,
         );
         let out = crate::with_test_home(home.path(), || {
-            compute_modified(
+            compute_patched(
                 "",
                 &script_spec("env.sh"),
                 Path::new("/etc/hosts"),
@@ -1702,13 +1702,13 @@ mod unix_script {
             )
             .expect("filter succeeds")
         });
-        assert_eq!(out, "[||work|modify]\n");
+        assert_eq!(out, "[||work|patch]\n");
     }
 
     #[test]
     fn script_runs_as_an_inline_command() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let out = compute_modified(
+        let out = compute_patched(
             "b\na\n",
             &script_spec("sort"),
             Path::new("/etc/hosts"),
@@ -1725,11 +1725,11 @@ mod unix_script {
         std::fs::create_dir_all(&home).expect("create home");
         write_script(dir.path(), "pwd.sh", "#!/bin/sh\npwd\n");
         let out = crate::with_test_home(&home, || {
-            compute_modified(
+            compute_patched(
                 "",
                 &script_spec("pwd.sh"),
                 Path::new("/etc/hosts"),
-                &ModifyContext::new(dir.path()),
+                &PatchContext::new(dir.path()),
             )
         })
         .expect("filter succeeds");

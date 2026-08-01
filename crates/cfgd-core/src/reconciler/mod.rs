@@ -8,9 +8,9 @@ mod env_files;
 mod file_action;
 mod files;
 mod format;
-mod modify;
 mod modules;
 mod packages;
+mod patch;
 mod plan;
 mod restore;
 mod rollback;
@@ -27,11 +27,11 @@ mod tests;
 pub use apply::action_matches_phase_filter;
 pub use env_engine::launchd_env_plist;
 pub use format::{format_action_description, format_plan_items};
-pub use modify::{
-    ModifyBinding, ModifyContext, ModifyOutcome, compute_modified, evaluate_modify, infer_format,
-    modify_failure_detail, resolve_format,
-};
 pub use packages::stale_tracked_packages;
+pub use patch::{
+    PatchBinding, PatchContext, PatchOutcome, compute_patched, evaluate_patch, infer_format,
+    patch_failure_detail, resolve_format,
+};
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,
