@@ -40,7 +40,7 @@
         },
         "namePattern": {
           "default": "{filename}.{timestamp}",
-          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`,\nand `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are\nrejected at parse time. A literal `/` nests the snapshot in a\nsubdirectory of the destination; `.` and `..` segments are rejected.\nDefaults to `\"{filename}.{timestamp}\"`.",
+          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`,\nand `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are\nrejected at parse time. A literal `/` nests the snapshot in a\nsubdirectory of the destination. At run time the rendered value must be\nrelative and every segment must name something: `.` and `..` segments,\nempty segments (`a//b`, `daily/`), rooted values (`/daily`, `C:/daily`,\n`C:daily`, `\\\\server\\share`), and `:` anywhere are all rejected. Windows\nshapes are rejected on every platform, so a pattern is valid everywhere\nor nowhere. A rejection names the `{filename}` it interpolated, so a\ncolon in the source filename points at itself. Defaults to\n`\"{filename}.{timestamp}\"`.",
           "type": "string"
         },
         "postBackup": {
@@ -74,7 +74,7 @@
           ]
         },
         "source": {
-          "description": "File or directory to snapshot. A leading `~` expands to the home\ndirectory. Must not contain, or sit inside, `destination`.",
+          "description": "File or directory to snapshot. A leading `~` expands to the home\ndirectory. Must not contain, or sit inside, the resolved `destination` —\na nested pair is rejected before any copy, with symlinks resolved on both\nsides. Its filename is what `{filename}` interpolates, so a source whose\nfilename contains `:` (legal on Unix, a drive and data-stream separator\non Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
           "type": "string"
         }
       },

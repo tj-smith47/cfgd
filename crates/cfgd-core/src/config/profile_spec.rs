@@ -942,7 +942,11 @@ pub struct BackupSpec {
     /// `\`) or traversal segments (`.`, `..`).
     pub name: String,
     /// File or directory to snapshot. A leading `~` expands to the home
-    /// directory. Must not contain, or sit inside, `destination`.
+    /// directory. Must not contain, or sit inside, the resolved `destination` —
+    /// a nested pair is rejected before any copy, with symlinks resolved on both
+    /// sides. Its filename is what `{filename}` interpolates, so a source whose
+    /// filename contains `:` (legal on Unix, a drive and data-stream separator
+    /// on Windows) needs an explicit `namePattern` that leaves `{filename}` out.
     pub source: PathBuf,
     /// Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`
     /// when omitted — resolved by the backup engine, not at parse time, since
@@ -952,8 +956,14 @@ pub struct BackupSpec {
     /// Filename template for each snapshot. Supports `{name}`, `{filename}`,
     /// and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are
     /// rejected at parse time. A literal `/` nests the snapshot in a
-    /// subdirectory of the destination; `.` and `..` segments are rejected.
-    /// Defaults to `"{filename}.{timestamp}"`.
+    /// subdirectory of the destination. At run time the rendered value must be
+    /// relative and every segment must name something: `.` and `..` segments,
+    /// empty segments (`a//b`, `daily/`), rooted values (`/daily`, `C:/daily`,
+    /// `C:daily`, `\\server\share`), and `:` anywhere are all rejected. Windows
+    /// shapes are rejected on every platform, so a pattern is valid everywhere
+    /// or nowhere. A rejection names the `{filename}` it interpolated, so a
+    /// colon in the source filename points at itself. Defaults to
+    /// `"{filename}.{timestamp}"`.
     #[serde(default = "default_backup_name_pattern")]
     pub name_pattern: String,
     /// When to run this backup: a duration interval (e.g. `"6h"`) or a cron
