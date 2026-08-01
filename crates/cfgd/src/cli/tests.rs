@@ -6502,9 +6502,9 @@ fn default_device_id_returns_the_hostname_string() {
 
 #[test]
 fn empty_resolved_profile_contains_module_name() {
-    let resolved = super::empty_resolved_profile("my-module");
+    let resolved = super::empty_resolved_profile("my-module", "work");
     assert_eq!(resolved.merged.modules, vec!["my-module".to_string()]);
-    assert!(resolved.layers.is_empty());
+    assert_eq!(resolved.profile_name(), "work");
     assert!(resolved.merged.packages.brew.is_none());
     assert!(resolved.merged.env.is_empty());
     assert!(resolved.merged.secrets.is_empty());
@@ -10318,10 +10318,10 @@ fn cmd_plan_module_only_no_profile() {
 
 #[test]
 fn empty_resolved_profile_has_module() {
-    let resolved = super::empty_resolved_profile("my-mod");
+    let resolved = super::empty_resolved_profile("my-mod", "work");
     assert_eq!(resolved.merged.modules, vec!["my-mod".to_string()]);
     assert!(resolved.merged.env.is_empty());
-    assert!(resolved.layers.is_empty());
+    assert_eq!(resolved.profile_name(), "work");
 }
 
 // --- known_manager_names ---

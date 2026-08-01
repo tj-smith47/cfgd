@@ -86,6 +86,7 @@ impl<'a> ModifyContext<'a> {
 /// constructors encode the only two correct answers — a module-deployed file
 /// resolves against the module's directory, a profile-declared file against the
 /// config directory.
+#[derive(Debug)]
 pub struct ModifyBinding {
     script_dir: PathBuf,
     env: Vec<(String, String)>,
@@ -135,24 +136,29 @@ impl ModifyBinding {
 
     /// Binding for a file whose owner is known only as an [`Origin`] — the
     /// effective-state view, where profile files and module files arrive in one
-    /// list. An origin naming a module that is not in `modules` falls back to
-    /// the profile binding rather than failing: the file is still evaluable,
-    /// only its script anchoring is less specific.
+    /// list.
+    ///
+    /// An origin naming a module absent from `modules` is an error, not a
+    /// fallback to the profile binding: that would anchor the script at the
+    /// config directory instead of the module directory, and a relative
+    /// `script:` that resolves nowhere is run as an inline command — the exact
+    /// silent misbehaviour the binding exists to prevent.
     pub fn for_origin(
         config_dir: &Path,
         profile_name: &str,
         context: ReconcileContext,
         modules: &[ResolvedModule],
         origin: &Origin,
-    ) -> Self {
-        let module = match origin {
-            Origin::Module(name) => modules.iter().find(|m| &m.name == name),
-            Origin::Profile => None,
+    ) -> Result<Self> {
+        let name = match origin {
+            Origin::Module(name) => name,
+            Origin::Profile => return Ok(Self::profile(config_dir, profile_name, context)),
         };
-        match module {
-            Some(m) => Self::module(config_dir, profile_name, context, m),
-            None => Self::profile(config_dir, profile_name, context),
-        }
+        let module = modules
+            .iter()
+            .find(|m| &m.name == name)
+            .ok_or_else(|| crate::errors::ModuleError::NotFound { name: name.clone() })?;
+        Ok(Self::module(config_dir, profile_name, context, module))
     }
 
     /// Borrow the binding as an execution context for [`compute_modified`] /
@@ -178,6 +184,17 @@ impl ModifyOutcome {
     pub fn is_up_to_date(&self) -> bool {
         self.current == self.modified
     }
+}
+
+/// Wording shared by every read-only surface that could not evaluate a `Modify`
+/// spec, so `diff`, `verify`, `status` and a compliance snapshot describe the
+/// same failure identically. Collapsed to one line because it lands in a status
+/// subject or a compliance detail.
+pub fn modify_failure_detail(error: &crate::errors::CfgdError) -> String {
+    format!(
+        "cannot evaluate modify spec: {}",
+        crate::output::collapse_to_subject_line(error)
+    )
 }
 
 /// Read `target` and compute what `spec` would make of it.

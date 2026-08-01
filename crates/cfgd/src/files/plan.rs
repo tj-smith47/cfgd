@@ -9,7 +9,9 @@ use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{FileAction, FileDriftResult};
-use cfgd_core::reconciler::{ModifyBinding, ModifyOutcome, ReconcileContext, evaluate_modify};
+use cfgd_core::reconciler::{
+    ModifyBinding, ModifyOutcome, ReconcileContext, evaluate_modify, modify_failure_detail,
+};
 
 use super::is_file_encrypted;
 use super::template::is_tera_template;
@@ -294,8 +296,8 @@ impl super::CfgdFileManager {
         for managed in &profile.files.managed {
             if managed.strategy == Some(FileStrategy::Modify) {
                 let target_path = expand_tilde(&managed.target);
-                let outcome = self.evaluate(managed, &target_path, ReconcileContext::Reconcile)?;
-                if render_modify_diff(&target_path, &outcome, printer) {
+                let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
+                if render_modify_diff(&target_path, evaluated, printer) {
                     has_diffs = true;
                 }
                 continue;
@@ -386,8 +388,8 @@ impl super::CfgdFileManager {
         for managed in &profile.files.managed {
             if managed.strategy == Some(FileStrategy::Modify) {
                 let target_path = expand_tilde(&managed.target);
-                let outcome = self.evaluate(managed, &target_path, ReconcileContext::Reconcile)?;
-                results.push(modify_drift_result(&target_path, &outcome));
+                let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
+                results.push(modify_drift_result(&target_path, evaluated));
                 continue;
             }
 
@@ -583,9 +585,19 @@ pub(crate) fn module_modify_binding(
 /// merge would create. Shared by the profile-file and module-file diff paths.
 pub(crate) fn render_modify_diff(
     target: &Path,
-    outcome: &ModifyOutcome,
+    evaluated: Result<ModifyOutcome>,
     printer: &Printer,
 ) -> bool {
+    let outcome = match evaluated {
+        Ok(o) => o,
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!("{}: {}", target.display_posix(), modify_failure_detail(&e)),
+            );
+            return true;
+        }
+    };
     if outcome.is_up_to_date() {
         return false;
     }
@@ -601,7 +613,27 @@ pub(crate) fn render_modify_diff(
 
 /// Drift outcome for one `Modify` file: converged when re-running the merge over
 /// the target's current content would change nothing.
-pub(crate) fn modify_drift_result(target: &Path, outcome: &ModifyOutcome) -> FileDriftResult {
+///
+/// An evaluation failure (an unparseable target, a filter that exits non-zero)
+/// is reported as drift rather than propagated: read-only surfaces scan every
+/// resource, and one broken filter must not blind the operator to unrelated
+/// results. Write paths keep propagating the error — nothing may be written on
+/// a guess.
+pub(crate) fn modify_drift_result(
+    target: &Path,
+    evaluated: Result<ModifyOutcome>,
+) -> FileDriftResult {
+    let outcome = match evaluated {
+        Ok(o) => o,
+        Err(e) => {
+            return FileDriftResult {
+                target: target.display_posix(),
+                matches: false,
+                expected: "content satisfies modify spec".to_string(),
+                actual: modify_failure_detail(&e),
+            };
+        }
+    };
     let matches = outcome.is_up_to_date();
     FileDriftResult {
         target: target.display_posix(),
@@ -1402,5 +1434,70 @@ mod tests {
         assert!(results[1].matches);
         assert!(!results[2].matches);
         assert_eq!(results[2].actual, "missing");
+    }
+
+    #[test]
+    fn file_drift_results_reports_an_unevaluable_modify_as_drift_not_an_error() {
+        // A read-only scan covers every resource: one target cfgd cannot parse
+        // must be reported as drift, not abort the run and hide the rest.
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let broken = config_dir.join("broken.json");
+        let converged = config_dir.join("converged.json");
+        fs::write(&broken, "{ this is not json").unwrap();
+        fs::write(&converged, "{\n  \"telemetry\": false\n}\n").unwrap();
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![
+                modify_spec(broken, "telemetry: false"),
+                modify_spec(converged, "telemetry: false"),
+            ],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let results = fm
+            .file_drift_results(&resolved.merged)
+            .expect("one unevaluable file must not fail the whole scan");
+
+        assert_eq!(results.len(), 2, "every file still reports a result");
+        assert!(!results[0].matches);
+        assert!(
+            results[0]
+                .actual
+                .starts_with("cannot evaluate modify spec:"),
+            "the failure is surfaced per-file, got: {}",
+            results[0].actual
+        );
+        assert!(
+            !results[0].actual.contains('\n'),
+            "the detail is collapsed to one line, got: {}",
+            results[0].actual
+        );
+        assert!(results[1].matches, "unrelated results stay visible");
+    }
+
+    #[test]
+    fn diff_reports_an_unevaluable_modify_without_aborting() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let broken = config_dir.join("broken.json");
+        fs::write(&broken, "{ this is not json").unwrap();
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![modify_spec(broken, "telemetry: false")],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let has_diff = fm
+            .diff(&resolved.merged, &printer)
+            .expect("an unevaluable file must not fail the diff");
+
+        assert!(has_diff, "an unevaluable Modify file counts as drift");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("cannot evaluate modify spec"),
+            "the reason is printed, got: {output}"
+        );
     }
 }

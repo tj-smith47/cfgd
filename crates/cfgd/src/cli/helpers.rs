@@ -195,11 +195,46 @@ pub(in crate::cli) fn parse_package_flag(
     (None, s.to_string())
 }
 
+/// Best-effort name of the profile a module-only command runs under: the
+/// explicit `--profile`, else the config's active profile, else `"unknown"`.
+///
+/// Module-only commands never resolve a profile, but the scripts they run
+/// (a `modify.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
+/// so the name must be the real one wherever the config knows it. Pass `cfg`
+/// when it is already loaded to avoid a second read.
+pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {
+    if let Some(p) = cli.profile.as_deref() {
+        return p.to_string();
+    }
+    let from_loaded = cfg.and_then(|c| c.active_profile().ok().map(str::to_string));
+    from_loaded
+        .or_else(|| {
+            config::load_config(&cli.config)
+                .ok()
+                .and_then(|c| c.active_profile().ok().map(str::to_string))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Build an empty ResolvedProfile for module-only operations that don't need
 /// a real profile (status --module, verify --module, apply --module without profile).
-pub(in crate::cli) fn empty_resolved_profile(module_name: &str) -> ResolvedProfile {
+///
+/// The single synthesized layer exists to carry `profile_name`: it is what
+/// [`ResolvedProfile::profile_name`] reports, and therefore what a module's
+/// scripts see as `CFGD_PROFILE`. Its spec is empty, so the layer contributes
+/// nothing to the merged profile.
+pub(in crate::cli) fn empty_resolved_profile(
+    module_name: &str,
+    profile_name: &str,
+) -> ResolvedProfile {
     ResolvedProfile {
-        layers: Vec::new(),
+        layers: vec![cfgd_core::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: profile_name.to_string(),
+            priority: 0,
+            policy: cfgd_core::config::LayerPolicy::Local,
+            spec: cfgd_core::config::ProfileSpec::default(),
+        }],
         merged: MergedProfile {
             modules: vec![module_name.to_string()],
             ..Default::default()

@@ -99,11 +99,49 @@ fn parse_package_flag_no_known_managers_always_bare() {
 
 #[test]
 fn empty_resolved_profile_contains_only_named_module() {
-    let rp = empty_resolved_profile("mymod");
-    assert!(rp.layers.is_empty());
+    let rp = empty_resolved_profile("mymod", "work");
     assert_eq!(rp.merged.modules, vec!["mymod".to_string()]);
     // All other merged fields are default-empty.
     assert!(rp.merged.env.is_empty());
+    assert!(rp.merged.packages.brew.is_none());
+}
+
+/// The synthesized layer exists only to carry the profile name: a module-only
+/// command's scripts must see the real `CFGD_PROFILE`, never the `"unknown"`
+/// fallback `ResolvedProfile::profile_name` reports for a layerless profile.
+#[test]
+fn empty_resolved_profile_reports_the_requested_profile_name() {
+    let rp = empty_resolved_profile("mymod", "work");
+    assert_eq!(rp.profile_name(), "work");
+    assert_eq!(rp.layers.len(), 1);
+    assert!(rp.layers[0].spec.modules.is_empty());
+    assert!(rp.layers[0].spec.env.is_empty());
+}
+
+#[test]
+fn active_profile_name_prefers_the_explicit_flag() {
+    let dir = tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("config.yaml");
+    std::fs::write(&cfg_path, CONFIG_YAML).expect("write config");
+    let mut cli = make_cli(cfg_path);
+    cli.profile = Some("laptop".to_string());
+    assert_eq!(active_profile_name(&cli, None), "laptop");
+}
+
+#[test]
+fn active_profile_name_falls_back_to_the_configured_active_profile() {
+    let dir = tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("config.yaml");
+    std::fs::write(&cfg_path, CONFIG_YAML).expect("write config");
+    let cli = make_cli(cfg_path);
+    assert_eq!(active_profile_name(&cli, None), "default");
+}
+
+#[test]
+fn active_profile_name_reports_unknown_without_a_config() {
+    let dir = tempdir().expect("tempdir");
+    let cli = make_cli(dir.path().join("missing.yaml"));
+    assert_eq!(active_profile_name(&cli, None), "unknown");
 }
 
 // ---------------------------------------------------------------------------
@@ -704,7 +742,7 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
 
     let cli = make_cli(config_path.clone());
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module");
+    let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
 
     let result = compose_with_sources(
@@ -849,7 +887,7 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     cli.cache_dir = Some(tmp.path().join("cache"));
 
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module");
+    let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
 
     let result = compose_with_sources(
@@ -915,7 +953,7 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     cli.cache_dir = Some(tmp.path().join("cache"));
 
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module");
+    let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
 
     let result = compose_with_sources(
@@ -965,7 +1003,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module");
+    let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
 
     // Prime the cache with a refresh so the cache-only read path has a cache
@@ -1098,7 +1136,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module");
+    let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
 
     // refresh = true (apply/plan path) primes the cache AND resolves.

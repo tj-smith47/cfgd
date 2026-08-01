@@ -1588,6 +1588,35 @@ fn managed_file_spec_modify_block_without_modify_strategy_rejected() {
     );
 }
 
+/// `encryption` and `private` both constrain the SOURCE file a strategy
+/// deploys. `Modify` has no source, so honouring either is impossible — the
+/// parser must reject the pair rather than silently ignore the flag.
+#[test]
+fn managed_file_spec_modify_rejects_encryption() {
+    let yaml = "target: /tmp/a.ini\nstrategy: modify\nmodify:\n  ensure:\n    a: b\nencryption:\n  backend: sops\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'encryption' is not supported with strategy 'modify'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn managed_file_spec_modify_rejects_private() {
+    let yaml =
+        "target: /tmp/a.ini\nstrategy: modify\nprivate: true\nmodify:\n  ensure:\n    a: b\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert!(spec.private);
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'private' is not supported with strategy 'modify'"),
+        "unexpected error: {err}"
+    );
+}
+
 #[test]
 fn managed_file_spec_modify_strategy_without_modify_block_rejected() {
     let yaml = "target: /tmp/a.ini\nstrategy: modify\n";

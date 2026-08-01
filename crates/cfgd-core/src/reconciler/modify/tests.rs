@@ -1264,6 +1264,133 @@ fn script_that_cannot_run_is_a_typed_error_with_context() {
     );
 }
 
+#[test]
+fn evaluate_modify_reads_the_target_and_reports_convergence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("settings.json");
+    std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").expect("seed target");
+
+    let ensure = spec(None, "telemetry: false");
+    let converged =
+        evaluate_modify(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
+    assert!(converged.is_up_to_date());
+    assert_eq!(converged.current, converged.modified);
+
+    std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").expect("drift the target");
+    let drifted =
+        evaluate_modify(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
+    assert!(!drifted.is_up_to_date());
+    assert!(drifted.modified.contains("false"));
+}
+
+#[test]
+fn evaluate_modify_treats_a_missing_target_as_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let outcome = evaluate_modify(
+        &spec(None, "telemetry: false"),
+        &dir.path().join("absent.json"),
+        &ctx_for(dir.path()),
+    )
+    .expect("a missing target reads as empty");
+    assert_eq!(outcome.current, "");
+    assert!(!outcome.is_up_to_date());
+}
+
+#[test]
+fn evaluate_modify_surfaces_an_unreadable_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A directory where a file is expected: readable path, unreadable
+    // content. Treating it as empty would overwrite it on apply.
+    let err = evaluate_modify(
+        &spec(None, "telemetry: false"),
+        dir.path(),
+        &ctx_for(dir.path()),
+    )
+    .expect_err("an unreadable target must not read as empty");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::File(crate::errors::FileError::Io { .. })
+        ),
+        "expected a typed IO error, got: {err:?}"
+    );
+}
+
+/// Resolved module rooted at `dir` declaring one env var.
+fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
+    crate::modules::ResolvedModule {
+        name: "hosts-mod".to_string(),
+        packages: Vec::new(),
+        files: Vec::new(),
+        env: vec![crate::config::EnvVar {
+            name: "BUILD_HOST".to_string(),
+            value: "build.internal".to_string(),
+        }],
+        aliases: Vec::new(),
+        system: std::collections::HashMap::new(),
+        pre_apply_scripts: Vec::new(),
+        post_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        depends: Vec::new(),
+        dir: dir.to_path_buf(),
+        platform_skip_reason: None,
+        origin: None,
+    }
+}
+
+#[test]
+fn for_origin_binds_a_module_file_to_its_module_directory() {
+    let module_dir = tempfile::tempdir().expect("tempdir");
+    let modules = vec![module_at(module_dir.path())];
+    let binding = ModifyBinding::for_origin(
+        Path::new("/config"),
+        "work",
+        crate::reconciler::ReconcileContext::Apply,
+        &modules,
+        &crate::effective::Origin::Module("hosts-mod".to_string()),
+    )
+    .expect("a known module resolves");
+    assert_eq!(binding.script_dir, module_dir.path());
+}
+
+#[test]
+fn for_origin_binds_a_profile_file_to_the_config_directory() {
+    let binding = ModifyBinding::for_origin(
+        Path::new("/config"),
+        "work",
+        crate::reconciler::ReconcileContext::Apply,
+        &[],
+        &crate::effective::Origin::Profile,
+    )
+    .expect("the profile origin never needs a module");
+    assert_eq!(binding.script_dir, Path::new("/config"));
+}
+
+/// Falling back to the profile binding here would anchor the filter at the
+/// config directory, silently turning a relative `script:` into an inline
+/// command. The unresolvable origin must surface as a typed error instead.
+#[test]
+fn for_origin_rejects_an_origin_naming_an_absent_module() {
+    let err = ModifyBinding::for_origin(
+        Path::new("/config"),
+        "work",
+        crate::reconciler::ReconcileContext::Apply,
+        &[],
+        &crate::effective::Origin::Module("ghost".to_string()),
+    )
+    .expect_err("an unknown module must not fall back to the profile binding");
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(crate::errors::ModuleError::NotFound { ref name }) if name == "ghost"
+        ),
+        "expected a typed ModuleError::NotFound, got: {err:?}"
+    );
+}
+
 #[cfg(unix)]
 mod unix_script {
     use super::*;
@@ -1527,31 +1654,6 @@ mod unix_script {
         assert_eq!(out, "[]\n");
     }
 
-    /// Resolved module rooted at `dir` declaring one env var.
-    fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
-        crate::modules::ResolvedModule {
-            name: "hosts-mod".to_string(),
-            packages: Vec::new(),
-            files: Vec::new(),
-            env: vec![crate::config::EnvVar {
-                name: "BUILD_HOST".to_string(),
-                value: "build.internal".to_string(),
-            }],
-            aliases: Vec::new(),
-            system: std::collections::HashMap::new(),
-            pre_apply_scripts: Vec::new(),
-            post_apply_scripts: Vec::new(),
-            pre_reconcile_scripts: Vec::new(),
-            post_reconcile_scripts: Vec::new(),
-            on_change_scripts: Vec::new(),
-            on_drift_scripts: Vec::new(),
-            depends: Vec::new(),
-            dir: dir.to_path_buf(),
-            platform_skip_reason: None,
-            origin: None,
-        }
-    }
-
     const ENV_ECHO: &str =
         "#!/bin/sh\necho \"[${CFGD_MODULE_NAME}|${BUILD_HOST}|${CFGD_PROFILE}|${CFGD_PHASE}]\"\n";
 
@@ -1601,58 +1703,6 @@ mod unix_script {
             .expect("filter succeeds")
         });
         assert_eq!(out, "[||work|modify]\n");
-    }
-
-    #[test]
-    fn evaluate_modify_reads_the_target_and_reports_convergence() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let target = dir.path().join("settings.json");
-        std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").expect("seed target");
-
-        let ensure = spec(None, "telemetry: false");
-        let converged =
-            evaluate_modify(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
-        assert!(converged.is_up_to_date());
-        assert_eq!(converged.current, converged.modified);
-
-        std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").expect("drift the target");
-        let drifted =
-            evaluate_modify(&ensure, &target, &ctx_for(dir.path())).expect("evaluate succeeds");
-        assert!(!drifted.is_up_to_date());
-        assert!(drifted.modified.contains("false"));
-    }
-
-    #[test]
-    fn evaluate_modify_treats_a_missing_target_as_empty() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let outcome = evaluate_modify(
-            &spec(None, "telemetry: false"),
-            &dir.path().join("absent.json"),
-            &ctx_for(dir.path()),
-        )
-        .expect("a missing target reads as empty");
-        assert_eq!(outcome.current, "");
-        assert!(!outcome.is_up_to_date());
-    }
-
-    #[test]
-    fn evaluate_modify_surfaces_an_unreadable_target() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // A directory where a file is expected: readable path, unreadable
-        // content. Treating it as empty would overwrite it on apply.
-        let err = evaluate_modify(
-            &spec(None, "telemetry: false"),
-            dir.path(),
-            &ctx_for(dir.path()),
-        )
-        .expect_err("an unreadable target must not read as empty");
-        assert!(
-            matches!(
-                err,
-                crate::errors::CfgdError::File(crate::errors::FileError::Io { .. })
-            ),
-            "expected a typed IO error, got: {err:?}"
-        );
     }
 
     #[test]

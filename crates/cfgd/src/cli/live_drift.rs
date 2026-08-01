@@ -61,12 +61,12 @@ pub(super) fn module_file_verify_results(
                 // content would change nothing.
                 Some(spec) => {
                     let binding = module_modify_binding(config_dir, resolved, module);
-                    let outcome = cfgd_core::reconciler::evaluate_modify(
+                    let evaluated = cfgd_core::reconciler::evaluate_modify(
                         spec,
                         &file.target,
                         &binding.context(),
-                    )?;
-                    crate::files::modify_drift_result(&file.target, &outcome)
+                    );
+                    crate::files::modify_drift_result(&file.target, evaluated)
                 }
                 None => fm.file_drift_one(&file.source, &file.target, None)?,
             };
@@ -440,6 +440,40 @@ mod tests {
         assert_eq!(results[0].resource_type, "module");
         assert!(results[0].resource_id.starts_with("accmod/"));
         assert!(results[1].matches, "converged Modify target must pass");
+    }
+
+    #[test]
+    fn module_file_verify_results_reports_an_unevaluable_modify_as_drift() {
+        // `cfgd verify` / `status --exit-code` scan every resource: a target
+        // cfgd cannot parse is drift, not a reason to abort and hide the rest.
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{ this is not json").unwrap();
+
+        let resolved = resolved_with_file(dir.path().join("unused.txt"));
+        let mut modules = vec![module_with_file(
+            "accmod",
+            std::path::PathBuf::new(),
+            broken,
+        )];
+        modules[0].files[0].strategy = Some(FileStrategy::Modify);
+        modules[0].files[0].modify = Some(cfgd_core::config::ModifySpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+        });
+
+        let results = module_file_verify_results(dir.path(), &resolved, &modules)
+            .expect("one unevaluable file must not fail the scan");
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].matches);
+        assert!(
+            results[0]
+                .actual
+                .starts_with("cannot evaluate modify spec:"),
+            "the failure is surfaced per-file, got: {}",
+            results[0].actual
+        );
     }
 
     #[test]

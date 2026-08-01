@@ -775,8 +775,18 @@ pub(crate) fn validate_file_modify_shape(
     strategy: Option<FileStrategy>,
     modify: Option<&ModifySpec>,
     encryption_declared: bool,
+    private: bool,
 ) -> Result<()> {
     let is_modify = matches!(strategy, Some(FileStrategy::Modify));
+    // `private` marks the SOURCE file local-only (gitignored, skipped where it
+    // is absent). `Modify` has no source, so the flag can only ever be a no-op
+    // that reads as a promise the strategy never keeps.
+    if is_modify && private {
+        return Err(ConfigError::Invalid {
+            message: format!("{subject}: 'private' is not supported with strategy 'modify'"),
+        }
+        .into());
+    }
     // Every `encryption` mode constrains the SOURCE file a strategy deploys
     // ("must be encrypted in the repo"). `Modify` has no source — it rewrites
     // the target's own plaintext structure — so the constraint could only be
@@ -834,6 +844,7 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
             spec.strategy,
             spec.modify.as_ref(),
             spec.encryption.is_some(),
+            spec.private,
         )?;
     }
     Ok(())

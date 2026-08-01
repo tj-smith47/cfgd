@@ -266,14 +266,17 @@ pub fn collect_file_checks(
             // converged when re-running its merge over the target's current
             // content would change nothing.
             // A snapshot never writes, so the scripts see `CFGD_CONTEXT=reconcile`.
-            let binding = crate::reconciler::ModifyBinding::for_origin(
+            let evaluated = crate::reconciler::ModifyBinding::for_origin(
                 config_dir,
                 profile_name,
                 crate::reconciler::ReconcileContext::Reconcile,
                 modules,
                 &file.origin,
-            );
-            match crate::reconciler::evaluate_modify(spec, &target, &binding.context()) {
+            )
+            .and_then(|binding| {
+                crate::reconciler::evaluate_modify(spec, &target, &binding.context())
+            });
+            match evaluated {
                 Ok(outcome) if outcome.is_up_to_date() => checks.push(ComplianceCheck {
                     category: "file-content".into(),
                     target: Some(to_posix_string(&target)),
@@ -292,7 +295,11 @@ pub fn collect_file_checks(
                     category: "file-content".into(),
                     target: Some(to_posix_string(&target)),
                     status: ComplianceStatus::Warning,
-                    detail: Some(format!("cannot evaluate modify spec: {}{}", e, suffix)),
+                    detail: Some(format!(
+                        "{}{}",
+                        crate::reconciler::modify_failure_detail(&e),
+                        suffix
+                    )),
                     ..Default::default()
                 }),
             }

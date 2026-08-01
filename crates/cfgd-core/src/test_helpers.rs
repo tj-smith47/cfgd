@@ -1493,6 +1493,12 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 /// [`CwdGuard`]) — so the two can never overlap and every spawner is covered
 /// with no per-test attribute. Spawns run fully parallel with each other; only
 /// an active mutation window blocks them.
+///
+/// Both halves are re-entrant *per thread*, tracked by the thread-locals below.
+/// The one shape they cannot cover is cross-thread: a thread holding the
+/// exclusive guard that waits on a helper thread which spawns (a raw
+/// `spawn_blocking`, say) deadlocks, because the helper has neither flag. Keep
+/// a mutation window on one thread.
 static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
 
 thread_local! {
@@ -1536,27 +1542,39 @@ impl Drop for SpawnEnvGuard {
 }
 
 /// Exclusive guard for a test that mutates the process-global spawn
-/// environment: emptying/replacing `PATH`, or changing the working directory
-/// (which [`CwdGuard`] does for you). Declare it *before* the `EnvVarGuard`
-/// that mutates `PATH` so it drops last, bracketing the entire window.
+/// environment: emptying/replacing `PATH` (which [`install_named_path_shim`]
+/// does for you), or changing the working directory (which [`CwdGuard`] does).
+/// Declare it *before* the `EnvVarGuard` that mutates `PATH` so it drops last,
+/// bracketing the entire window.
 ///
 /// Spawning while holding it is safe — the shared guard degrades to a no-op on
 /// a thread that already holds this one — though an empty-`PATH` test spawning
-/// a shell contradicts its own premise. See [`PATH_ENV_LOCK`].
+/// a shell contradicts its own premise.
+///
+/// Re-entrant per thread, exactly like [`script_spawn_path_guard`]: combining a
+/// [`CwdGuard`] with a PATH shim, or nesting either, is a natural thing for a
+/// test to do and must not deadlock a write-preferring `RwLock` against itself.
+/// The inner acquisitions are no-ops and the lock is released when the
+/// outermost guard drops. See [`PATH_ENV_LOCK`] for the cross-thread limit.
 pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
+    if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get) {
+        return ExclusiveEnvGuard { guard: None };
+    }
     let guard = PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner());
     SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(true));
-    ExclusiveEnvGuard { _guard: guard }
+    ExclusiveEnvGuard { guard: Some(guard) }
 }
 
 /// Exclusive spawn-environment guard. See [`path_env_mutation_guard`].
 pub struct ExclusiveEnvGuard {
-    _guard: RwLockWriteGuard<'static, ()>,
+    guard: Option<RwLockWriteGuard<'static, ()>>,
 }
 
 impl Drop for ExclusiveEnvGuard {
     fn drop(&mut self) {
-        SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+        if self.guard.is_some() {
+            SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+        }
     }
 }
 
@@ -2262,6 +2280,29 @@ mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// The spawn-environment guards must compose: a test that pins the working
+    /// directory *and* puts a shim on `PATH` is natural, and both halves take
+    /// the exclusive guard. Without per-thread re-entrancy this deadlocks a
+    /// write-preferring `RwLock` against itself and hangs the suite with no
+    /// timeout, so this test only ever passes or never returns.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_env_guards_compose_without_deadlocking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+        let (_shim_dir, _shim) = install_named_path_shim("cfgd-fake-tool", 0, "", "");
+        let _nested_cwd = CwdGuard::set(dir.path()).expect("nested cwd guard");
+        let _nested_excl = path_env_mutation_guard();
+        // A spawn inside the window degrades to a no-op guard rather than
+        // blocking on the exclusive holder's own lock.
+        let _spawn = script_spawn_path_guard();
+        assert_eq!(
+            std::fs::canonicalize(std::env::current_dir().expect("cwd")).expect("canonicalize"),
+            std::fs::canonicalize(dir.path()).expect("canonicalize"),
+            "the innermost guard still owns the working directory"
+        );
+    }
 
     #[test]
     fn mock_file_manager_records_calls() {

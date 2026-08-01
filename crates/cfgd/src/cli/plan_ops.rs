@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
+use cfgd_core::config::FileStrategy;
 use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
@@ -604,6 +605,19 @@ pub(in crate::cli) fn is_unmanaged_file(
     true
 }
 
+/// Whether a strategy adopts an existing unmanaged target in place instead of
+/// replacing it.
+///
+/// `Modify` merges into the target's own bytes, so the unmanaged-file prompt
+/// must never fire for it: every one of its choices is wrong. "Adopt
+/// (overwrite)" misdescribes a merge, and "Backup" renames the target away
+/// *before* apply — the merge would then read an empty current content and
+/// write only the ensured keys, destroying exactly the content the strategy
+/// exists to preserve.
+fn adopts_in_place(strategy: FileStrategy) -> bool {
+    matches!(strategy, FileStrategy::Modify)
+}
+
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -622,11 +636,20 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
         while i < phase.actions.len() {
             // Profile file actions
             if let reconciler::Action::File(
-                FileAction::Create { target, .. } | FileAction::Update { target, .. },
+                FileAction::Create {
+                    target, strategy, ..
+                }
+                | FileAction::Update {
+                    target, strategy, ..
+                },
             ) = &phase.actions[i]
             {
                 let target = target.clone();
-                if is_unmanaged_file(&target, config_dir, state) && !auto_yes {
+                let strategy = *strategy;
+                if !adopts_in_place(strategy)
+                    && is_unmanaged_file(&target, config_dir, state)
+                    && !auto_yes
+                {
                     let choice = prompt_backup_choice(&target, None, printer, &options)?;
                     apply_backup_choice(choice, &target, &mut phase.actions[i], printer)?;
                 }
@@ -639,7 +662,8 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                 let needs_prompt = !auto_yes
                     && files.iter().any(|f| {
                         let t = cfgd_core::expand_tilde(&f.target);
-                        is_unmanaged_file(&t, config_dir, state)
+                        !f.strategy.is_some_and(adopts_in_place)
+                            && is_unmanaged_file(&t, config_dir, state)
                     });
                 if needs_prompt {
                     let module_name = ma.module_name.clone();
@@ -649,7 +673,9 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                         let mut j = 0;
                         while j < files.len() {
                             let file_target = cfgd_core::expand_tilde(&files[j].target);
-                            if is_unmanaged_file(&file_target, config_dir, state) {
+                            if !files[j].strategy.is_some_and(adopts_in_place)
+                                && is_unmanaged_file(&file_target, config_dir, state)
+                            {
                                 let choice = prompt_backup_choice(
                                     &file_target,
                                     Some(&module_name),

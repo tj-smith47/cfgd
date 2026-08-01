@@ -300,6 +300,10 @@ everything else in the target survives byte-for-byte where the format allows it.
 A missing target is treated as empty content: `ensure` writes a minimal document,
 `script` receives empty stdin.
 
+`Modify` has no source file, so the source-file options are rejected rather than
+silently ignored: `encryption` and `private` are both validation errors on a
+`Modify` entry, and `source` itself is optional (and unused).
+
 #### `ensure` — structured merge
 
 `ensure` is deep-merged into the target. Nested mappings merge recursively; a
@@ -431,8 +435,15 @@ works without a script file:
 Scripts run with the same `CFGD_*` environment lifecycle hooks receive
 (`CFGD_PHASE=modify`, plus `CFGD_MODULE_NAME` / `CFGD_MODULE_DIR` and the
 module's `env` for a module-owned file), in the user's home directory, under the
-standard script timeout. Write the script to be idempotent: cfgd runs it on every
-reconcile.
+standard script timeout.
+
+**The filter must be a pure stdin → stdout transform.** cfgd decides whether a
+`Modify` file has converged by *running* it, so every read-only command executes
+it too — `cfgd plan`, `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`,
+`cfgd apply --dry-run`, and a compliance snapshot. A filter that installs
+packages, writes files, or takes a lock will do so on a command the user expects
+to change nothing, and a slow one makes every one of those commands slow. Write
+it to be idempotent for the same reason: cfgd runs it on every reconcile.
 
 #### When a `Modify` file fails
 

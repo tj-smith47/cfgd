@@ -1095,16 +1095,13 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
     }
 
     let output = crate::command_output_with_timeout(
-        std::process::Command::new("git")
-            .args([
-                "-C",
-                &repo_dir.display().to_string(),
-                "log",
-                "--format=%G?",
-                "-1",
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped()),
+        crate::git_cmd_local().args([
+            "-C",
+            &repo_dir.display().to_string(),
+            "log",
+            "--format=%G?",
+            "-1",
+        ]),
         crate::COMMAND_TIMEOUT,
     )
     .map_err(|e| SourceError::SignatureVerificationFailed {

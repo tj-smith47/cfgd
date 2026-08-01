@@ -122,7 +122,8 @@ pub fn run_apply(
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
-                let resolved = empty_resolved_profile(mod_name);
+                let resolved =
+                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
                 printer.kv_block([
                     ("Config".to_string(), cli.config.display_posix()),
                     ("Profile".to_string(), "(module-only)".to_string()),

@@ -148,6 +148,7 @@ pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
             entry.strategy,
             entry.modify.as_ref(),
             entry.encryption.is_some(),
+            entry.private,
         )?;
     }
     Ok(())
@@ -413,6 +414,34 @@ spec: {}
         assert!(
             err.to_string()
                 .contains("only valid when strategy is 'modify'")
+        );
+    }
+
+    /// See the `ManagedFileSpec` counterparts: a `Modify` entry has no source
+    /// file, so neither `encryption` nor `private` can be honoured.
+    #[test]
+    fn module_file_entry_modify_rejects_encryption() {
+        let yaml = "target: /tmp/a.ini\nstrategy: modify\nmodify:\n  ensure:\n    a: b\nencryption:\n  backend: sops\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'encryption' is not supported with strategy 'modify'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn module_file_entry_modify_rejects_private() {
+        let yaml =
+            "target: /tmp/a.ini\nstrategy: modify\nprivate: true\nmodify:\n  ensure:\n    a: b\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(entry.private);
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'private' is not supported with strategy 'modify'"),
+            "unexpected error: {err}"
         );
     }
 

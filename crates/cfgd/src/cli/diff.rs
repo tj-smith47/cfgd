@@ -20,11 +20,11 @@ fn diff_module_file(
     match &file.modify {
         Some(spec) => {
             let binding = crate::files::module_modify_binding(config_dir, resolved, module);
-            let outcome =
-                cfgd_core::reconciler::evaluate_modify(spec, &file.target, &binding.context())?;
+            let evaluated =
+                cfgd_core::reconciler::evaluate_modify(spec, &file.target, &binding.context());
             Ok(crate::files::render_modify_diff(
                 &file.target,
-                &outcome,
+                evaluated,
                 printer,
             ))
         }
@@ -217,7 +217,7 @@ fn cmd_diff_module(
         // carry no tera origin (None). `diff_one` emits at top level, so no
         // section is opened here (matches the full path's structure).
         printer.status_simple(Role::Info, "Files");
-        let resolved = empty_resolved_profile(mod_name);
+        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
             for file in &module.files {

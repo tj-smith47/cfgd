@@ -29,7 +29,7 @@ pub use env_engine::launchd_env_plist;
 pub use format::{format_action_description, format_plan_items};
 pub use modify::{
     ModifyBinding, ModifyContext, ModifyOutcome, compute_modified, evaluate_modify, infer_format,
-    resolve_format,
+    modify_failure_detail, resolve_format,
 };
 pub use packages::stale_tracked_packages;
 pub use restore::{RestoreOutcome, restore_file_from_backup};
