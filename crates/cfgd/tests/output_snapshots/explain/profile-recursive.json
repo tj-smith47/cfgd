@@ -46,7 +46,7 @@
       "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
       "name": "envScope",
       "required": false,
-      "type": "object"
+      "type": "string"
     },
     {
       "children": [
@@ -64,7 +64,7 @@
                   "description": "When encryption must be enforced. Defaults to `InRepo`.",
                   "name": "mode",
                   "required": false,
-                  "type": "object"
+                  "type": "string"
                 }
               ],
               "description": "Encryption settings for this file.",
@@ -84,7 +84,7 @@
                   "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                   "name": "format",
                   "required": false,
-                  "type": "object"
+                  "type": "string"
                 },
                 {
                   "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -120,7 +120,7 @@
               "description": "Per-file deployment strategy override. If None, uses the global default.",
               "name": "strategy",
               "required": false,
-              "type": "object"
+              "type": "string"
             },
             {
               "description": "",

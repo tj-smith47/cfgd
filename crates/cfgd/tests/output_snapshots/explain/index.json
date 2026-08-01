@@ -63,7 +63,7 @@
                 "description": "When encryption must be enforced. Defaults to `InRepo`.",
                 "name": "mode",
                 "required": false,
-                "type": "object"
+                "type": "string"
               }
             ],
             "description": "Encryption settings for this module file.",
@@ -83,7 +83,7 @@
                 "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                 "name": "format",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -119,7 +119,7 @@
             "description": "Per-file deployment strategy override. If None, uses the global default.",
             "name": "strategy",
             "required": false,
-            "type": "object"
+            "type": "string"
           },
           {
             "description": "",
@@ -310,7 +310,7 @@
         "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
         "name": "envScope",
         "required": false,
-        "type": "object"
+        "type": "string"
       },
       {
         "children": [
@@ -328,7 +328,7 @@
                     "description": "When encryption must be enforced. Defaults to `InRepo`.",
                     "name": "mode",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   }
                 ],
                 "description": "Encryption settings for this file.",
@@ -348,7 +348,7 @@
                     "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                     "name": "format",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -384,7 +384,7 @@
                 "description": "Per-file deployment strategy override. If None, uses the global default.",
                 "name": "strategy",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "",
@@ -809,7 +809,7 @@
                     "description": "If set, restrict which encryption mode is acceptable.",
                     "name": "mode",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "Glob patterns or explicit paths that must be encrypted.",
@@ -903,7 +903,7 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
@@ -923,7 +923,7 @@
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                         "name": "format",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       },
                       {
                         "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -959,7 +959,7 @@
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -1353,7 +1353,7 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
@@ -1373,7 +1373,7 @@
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                         "name": "format",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       },
                       {
                         "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -1409,7 +1409,7 @@
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -1803,7 +1803,7 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
@@ -1823,7 +1823,7 @@
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                         "name": "format",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       },
                       {
                         "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -1859,7 +1859,7 @@
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -2253,7 +2253,7 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
@@ -2273,7 +2273,7 @@
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
                         "name": "format",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       },
                       {
                         "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
@@ -2309,7 +2309,7 @@
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -2888,7 +2888,7 @@
                 "description": "Policy for daemon auto-reconciliation of detected drift. `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't apply (safe default), `Prompt` = future interactive approval.",
                 "name": "driftPolicy",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "",
@@ -2914,7 +2914,7 @@
                     "description": "Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.",
                     "name": "driftPolicy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -3070,7 +3070,7 @@
             "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
             "name": "sshStrictHostKeyChecking",
             "required": false,
-            "type": "object"
+            "type": "string"
           },
           {
             "description": "",
@@ -3178,7 +3178,7 @@
                 "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
                 "name": "sshStrictHostKeyChecking",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "",
@@ -3440,7 +3440,7 @@
             "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`.",
             "name": "policy",
             "required": false,
-            "type": "object"
+            "type": "string"
           },
           {
             "children": [
@@ -3448,7 +3448,7 @@
                 "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy).",
                 "name": "policy",
                 "required": false,
-                "type": "object"
+                "type": "string"
               }
             ],
             "description": "Update policy for authored skills. Defaults to inheriting `policy`.",
@@ -3943,7 +3943,7 @@
         "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
         "name": "mountPolicy",
         "required": false,
-        "type": "object"
+        "type": "string"
       },
       {
         "description": "",

@@ -1020,6 +1020,37 @@ mod tests {
         serde_yaml::from_str::<FileStrategy>("move").expect_err("unknown FileStrategy must error");
     }
 
+    /// `FileStrategy::ALL` is hand-written next to the enum, and nothing about
+    /// adding a variant forces it to be updated — a variant present in the enum
+    /// and in the `case_insensitive_enum!` token list but absent from `ALL`
+    /// would silently vanish from the published `spec.fileStrategy` schema.
+    ///
+    /// The macro embeds its own token list in serde's `unknown_variant` error,
+    /// so parsing that message recovers the deserializer's real accepted set
+    /// and pins `ALL` against it from the other direction.
+    #[test]
+    fn file_strategy_all_matches_the_deserializers_accepted_tokens() {
+        let err = serde_yaml::from_str::<FileStrategy>("definitely-not-a-strategy")
+            .expect_err("unknown FileStrategy must error");
+        let message = err.to_string();
+        let listed = message
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("error must list the accepted tokens, got: {message}"))
+            .1;
+        let accepted: std::collections::BTreeSet<&str> = listed
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::trim)
+            .collect();
+        let declared: std::collections::BTreeSet<&str> =
+            FileStrategy::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            declared, accepted,
+            "FileStrategy::ALL and the case_insensitive_enum! token list disagree"
+        );
+    }
+
     #[test]
     fn file_strategy_serializes_canonical_pascalcase() {
         let s = serde_yaml::to_string(&FileStrategy::Symlink).expect("serialize");

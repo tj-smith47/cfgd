@@ -666,8 +666,8 @@ fn is_object(schema: &Value) -> bool {
 
 /// Map a (resolved) schema to cfgd's type description: `[]<inner>` for arrays,
 /// `object` for objects/maps, otherwise the JSON instance type (`string`,
-/// `integer`, `boolean`, …). Falls back to `object` when no type is declared
-/// (e.g. enums, untyped maps).
+/// `integer`, `boolean`, …). Falls back to `object` when no type can be
+/// determined (untyped maps, a union of genuinely different types).
 fn type_description(
     schema: &Value,
     ctx: SchemaCtx,
@@ -679,6 +679,9 @@ fn type_description(
     }
     if is_object(schema) {
         return "object".to_string();
+    }
+    if let Some(member) = union_member_type(schema, ctx, visited) {
+        return member;
     }
     match schema.as_object().and_then(|o| o.get("type")) {
         Some(Value::String(t)) => t.clone(),
@@ -692,6 +695,52 @@ fn type_description(
             .unwrap_or_else(|| "object".to_string()),
         _ => "object".to_string(),
     }
+}
+
+/// Type description of a `oneOf`/`anyOf` whose members all describe the same
+/// instance type.
+///
+/// schemars renders a unit-variant enum as a `oneOf` of `const` members and an
+/// `Option<T>` as an `anyOf` of `T` and `null`, neither of which carries a
+/// top-level `type` — without this every such field renders as `object`, so
+/// `cfgd explain` typed the same `FileStrategy` two different ways depending on
+/// whether the field happened to have an inline schema.
+///
+/// `null` members are skipped: they encode optionality, not a type. A union of
+/// genuinely different types has no single answer and yields `None`, leaving
+/// the caller's `object` fallback in place.
+fn union_member_type(
+    schema: &Value,
+    ctx: SchemaCtx,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let obj = schema.as_object()?;
+    let members = obj
+        .get("oneOf")
+        .or_else(|| obj.get("anyOf"))
+        .and_then(Value::as_array)?;
+    let mut found: Option<String> = None;
+    for member in members {
+        if is_null_schema(member) {
+            continue;
+        }
+        let descent = RefDescent::enter(member, visited);
+        // A member that `$ref`s back onto the descent path cannot be described
+        // without recursing forever; treat the whole union as undecidable.
+        if !descent.safe() {
+            descent.leave(visited);
+            return None;
+        }
+        let resolved = resolve_ref(member, ctx);
+        let desc = type_description(&resolved, ctx, visited);
+        descent.leave(visited);
+        match &found {
+            None => found = Some(desc),
+            Some(prev) if *prev == desc => {}
+            Some(_) => return None,
+        }
+    }
+    found
 }
 
 /// Type description of an array element, guarding the element `$ref` against a
@@ -785,6 +834,77 @@ mod tests {
             "packages should be a slice type, got {}",
             packages.type_desc
         );
+    }
+
+    /// schemars renders a unit-variant enum as a `oneOf` of `const` members
+    /// with no top-level `type`. Reporting those as `object` told the operator
+    /// to write a mapping where a bare string belongs.
+    #[test]
+    fn unit_variant_enum_fields_report_their_instance_type() {
+        let entry = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Profile" && !e.crd)
+            .expect("Profile kind is registered");
+        let env_scope = entry
+            .field_tree()
+            .into_iter()
+            .find(|f| f.name == "envScope")
+            .expect("envScope is a Profile field");
+        assert_eq!(env_scope.type_desc, "string");
+    }
+
+    /// Type description of the named property of an inline JSON schema.
+    fn type_desc_of(schema: serde_json::Value, field: &str) -> String {
+        let schema: Schema = serde_json::from_value(schema).expect("schema parses");
+        field_tree_from_schema(&schema)
+            .into_iter()
+            .find(|f| f.name == field)
+            .unwrap_or_else(|| panic!("{field} present"))
+            .type_desc
+    }
+
+    /// `Option<T>` is an `anyOf` of `T` and `null`. The `null` member encodes
+    /// optionality, not a type, so it must not defeat the union.
+    #[test]
+    fn optional_scalar_fields_report_the_non_null_member_type() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "maybe": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "count": { "anyOf": [{ "type": "integer" }, { "type": "null" }] },
+            }
+        });
+        assert_eq!(type_desc_of(schema.clone(), "maybe"), "string");
+        assert_eq!(type_desc_of(schema, "count"), "integer");
+    }
+
+    /// A union of genuinely different types has no single answer, so the walk
+    /// must keep its `object` fallback rather than picking a member at random.
+    #[test]
+    fn a_mixed_type_union_stays_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "either": { "anyOf": [{ "type": "string" }, { "type": "integer" }] }
+            }
+        });
+        assert_eq!(type_desc_of(schema, "either"), "object");
+    }
+
+    /// An `Option<SomeObject>` union must still resolve through the member
+    /// `$ref` to `object` — the union handling may not shortcut a `$ref`.
+    #[test]
+    fn optional_object_fields_stay_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "nested": { "anyOf": [{ "$ref": "#/$defs/Inner" }, { "type": "null" }] }
+            },
+            "$defs": {
+                "Inner": { "type": "object", "properties": { "a": { "type": "string" } } }
+            }
+        });
+        assert_eq!(type_desc_of(schema, "nested"), "object");
     }
 
     // A deliberately self-referential pair of types. `edge` and `target` are
