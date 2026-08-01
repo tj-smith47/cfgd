@@ -924,20 +924,25 @@ pub struct ScriptSpec {
 /// A declarative backup: snapshot `source` (a file or directory) into
 /// `destination`, retaining the newest `retention` snapshots.
 ///
-/// The shape is validated at parse time and executed by
-/// [`crate::backup::run_backup`]; the CLI surface (`cfgd backup ...`) and the
-/// daemon scheduling that drive that engine are not yet implemented.
+/// The shape is validated at parse time and executed by the backup engine. The
+/// CLI surface (`cfgd backup ...`) and the daemon scheduling that drive that
+/// engine are not yet implemented.
+//
+// Every `///` line on this struct and its fields is copied verbatim into
+// schemas/cfgd-profile.schema.json, which editors render as YAML completion
+// help. Keep them plain prose: a rustdoc intra-doc link renders as literal
+// `[`name`]` noise to a user who has no rustdoc to follow it to.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackupSpec {
-    /// Unique identifier for this backup within `spec.backups`. Keys the
-    /// `destination` default, run records, and CLI selection — uniqueness is
-    /// enforced by [`validate_backup_specs`]. Becomes a directory component
-    /// (`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank,
-    /// and free of path separators (`/`, `\`) or traversal segments (`.`,
-    /// `..`) — enforced by [`validate_backup_specs`].
+    /// Unique identifier for this backup within `spec.backups`, unique across
+    /// the list. Keys the `destination` default, run records, and CLI
+    /// selection. Becomes a directory component (`<state_dir>/backups/<name>/`),
+    /// so it must be non-empty, non-blank, and free of path separators (`/`,
+    /// `\`) or traversal segments (`.`, `..`).
     pub name: String,
-    /// File or directory to snapshot.
+    /// File or directory to snapshot. A leading `~` expands to the home
+    /// directory. Must not contain, or sit inside, `destination`.
     pub source: PathBuf,
     /// Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`
     /// when omitted — resolved by the backup engine, not at parse time, since
@@ -945,33 +950,34 @@ pub struct BackupSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<PathBuf>,
     /// Filename template for each snapshot. Supports `{name}`, `{filename}`,
-    /// and `{timestamp}` (UTC, formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`]).
-    /// See [`render_backup_name_pattern`]. Unknown `{var}` tokens are rejected
-    /// at parse time by [`validate_backup_specs`]. Defaults to
-    /// `"{filename}.{timestamp}"`.
+    /// and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are
+    /// rejected at parse time. A literal `/` nests the snapshot in a
+    /// subdirectory of the destination; `.` and `..` segments are rejected.
+    /// Defaults to `"{filename}.{timestamp}"`.
     #[serde(default = "default_backup_name_pattern")]
     pub name_pattern: String,
-    /// When to run this backup: a `parse_duration_str` interval (e.g. `"6h"`)
-    /// or a cron expression, validated by [`validate_backup_specs`]. Cron
-    /// expressions may be 5-field (`minute hour day month weekday`, e.g.
-    /// `"0 3 * * *"`) or 6-field with a leading seconds field
-    /// (`second minute hour day month weekday`, e.g. `"30 0 3 * * *"`).
-    /// Omitted means "run on every apply".
+    /// When to run this backup: a duration interval (e.g. `"6h"`) or a cron
+    /// expression, validated at parse time. Cron expressions may be 5-field
+    /// (`minute hour day month weekday`, e.g. `"0 3 * * *"`) or 6-field with a
+    /// leading seconds field (`second minute hour day month weekday`, e.g.
+    /// `"30 0 3 * * *"`). Omitted means "run on every apply".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
-    /// Number of newest snapshots to keep for this backup; older snapshots
-    /// are pruned. Must be at least 1 (`0` would keep no backups, which is a
-    /// misconfiguration rather than a supported "unlimited" mode — enforced
-    /// by [`validate_backup_specs`]). Defaults to 10.
+    /// Number of newest snapshots to keep for this backup; older snapshots are
+    /// pruned from disk and from the run history. Must be at least 1 (`0` would
+    /// keep no backups, which is a misconfiguration rather than a supported
+    /// "unlimited" mode). Defaults to 10.
     #[serde(default = "default_backup_retention")]
     #[schemars(range(min = 1))]
     pub retention: u32,
     /// Scripts run before the snapshot is taken (e.g. stop a service that
-    /// holds `source` open so the snapshot is consistent).
+    /// holds `source` open so the snapshot is consistent). A failure skips the
+    /// snapshot and records a failed run; `postBackup` still runs.
     #[serde(default)]
     pub pre_backup: Vec<ScriptEntry>,
-    /// Scripts run after the snapshot completes (e.g. restart the service
-    /// stopped by `preBackup`).
+    /// Scripts run after the copy step (e.g. restart the service stopped by
+    /// `preBackup`). Always attempted, including after a failed `preBackup` or
+    /// a failed copy.
     #[serde(default)]
     pub post_backup: Vec<ScriptEntry>,
 }

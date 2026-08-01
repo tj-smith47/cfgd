@@ -374,7 +374,7 @@ fn a_failed_copy_still_writes_a_run_row() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn pre_hook_failure_aborts_the_unit_and_records_a_failed_run() {
+fn pre_hook_failure_skips_the_snapshot_but_still_runs_post_hooks() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, b"payload").expect("write source");
@@ -389,14 +389,33 @@ fn pre_hook_failure_aborts_the_unit_and_records_a_failed_run() {
     assert!(!record.has_artifact());
     let error = record.error.clone().expect("failure detail");
     assert!(error.contains("preBackup"), "phase missing from: {error}");
+    // A half-run preBackup list is exactly when the machine is left stopped, so
+    // postBackup — the thing that restarts it — must still get its chance.
     assert!(
-        !marker.exists(),
-        "postBackup ran even though preBackup aborted the unit"
+        marker.exists(),
+        "postBackup must run even when preBackup failed"
     );
     assert!(
         snapshots(&snapshot_dir(&h, "db")).is_empty(),
-        "an aborted unit wrote a snapshot"
+        "a skipped snapshot still wrote to the destination"
     );
+}
+
+#[test]
+fn a_failed_pre_hook_and_a_failed_post_hook_are_both_recorded() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let mut s = spec("db", &source);
+    s.pre_backup = vec![hook("exit 7")];
+    s.post_backup = vec![hook("exit 9")];
+
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    let error = record.error.clone().expect("failure detail");
+    assert!(error.contains("preBackup"), "pre failure lost: {error}");
+    assert!(error.contains("postBackup"), "post failure lost: {error}");
 }
 
 #[test]
@@ -492,7 +511,7 @@ fn hooks_see_the_backup_phase_in_the_environment() {
 }
 
 #[test]
-fn a_continue_on_error_pre_hook_still_aborts_the_unit() {
+fn a_continue_on_error_pre_hook_still_skips_the_snapshot() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, b"payload").expect("write source");
@@ -505,8 +524,8 @@ fn a_continue_on_error_pre_hook_still_aborts_the_unit() {
 
     let record = h.run(&s);
 
-    // continueOnError governs the rest of the hook LIST, not the unit: the
-    // second hook runs, but the recorded failure still aborts the snapshot.
+    // continueOnError governs the rest of the hook LIST, not the snapshot: the
+    // second hook runs, but the recorded failure still skips the copy.
     assert!(marker.exists(), "continueOnError did not continue the list");
     assert_eq!(record.status, BackupRunStatus::Failed);
     assert!(
@@ -671,6 +690,352 @@ fn a_manually_deleted_snapshot_still_has_its_row_pruned() {
 }
 
 // ---------------------------------------------------------------------------
+// Pruning containment
+// ---------------------------------------------------------------------------
+
+/// Plant a row whose `destination_path` names `victim`, then run enough
+/// backups to push it past retention. Nothing outside the destination may be
+/// touched, whatever the DB says.
+fn prune_with_planted_row(h: &Harness, victim: &Path) -> BackupRunRecord {
+    let planted = h
+        .store
+        .record_backup_run(&BackupRunDraft {
+            name: "db".to_string(),
+            source: "/var/lib/app/data.db".to_string(),
+            destination_path: Some(crate::to_posix_string(victim)),
+            size_bytes: Some(1),
+            status: BackupRunStatus::Success,
+            error: None,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+        })
+        .expect("plant the row");
+
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let mut s = spec("db", &source);
+    s.retention = 1;
+    s.name_pattern = "snapshot-0".to_string();
+    h.run(&s);
+    planted
+}
+
+#[test]
+fn pruning_never_deletes_a_recorded_path_outside_the_destination() {
+    let h = Harness::new();
+    let victim = h.root.join("precious.txt");
+    std::fs::write(&victim, b"not-a-snapshot").expect("write victim");
+
+    let planted = prune_with_planted_row(&h, &victim);
+
+    assert!(
+        victim.exists(),
+        "pruning deleted a path outside the destination"
+    );
+    assert_eq!(
+        std::fs::read(&victim).expect("victim readable"),
+        b"not-a-snapshot"
+    );
+    // The row is dropped so a stale entry cannot re-warn forever, but the file
+    // it named is left for the operator.
+    let rows = h.store.backup_runs("db").expect("history");
+    assert!(
+        !rows.iter().any(|r| r.id == planted.id),
+        "the out-of-destination row was kept: {rows:?}"
+    );
+}
+
+#[test]
+fn pruning_never_recursively_deletes_a_directory_outside_the_destination() {
+    let h = Harness::new();
+    let victim = h.root.join("precious-tree");
+    std::fs::create_dir_all(victim.join("nested")).expect("victim tree");
+    std::fs::write(victim.join("nested/data.txt"), b"keep me").expect("victim file");
+
+    prune_with_planted_row(&h, &victim);
+
+    assert!(
+        victim.join("nested/data.txt").exists(),
+        "pruning recursively deleted a directory outside the destination"
+    );
+}
+
+#[test]
+fn an_out_of_destination_row_does_not_consume_a_retention_slot() {
+    let h = Harness::new();
+    let victim = h.root.join("precious.txt");
+    std::fs::write(&victim, b"not-a-snapshot").expect("write victim");
+
+    prune_with_planted_row(&h, &victim);
+
+    // retention = 1 and one foreign row: the real snapshot must survive, not be
+    // evicted by a row that names something this unit never wrote.
+    assert_eq!(snapshots(&snapshot_dir(&h, "db")), vec!["snapshot-0"]);
+    assert!(victim.exists());
+}
+
+#[test]
+fn pruning_ignores_a_row_that_walks_out_through_a_relative_segment() {
+    let h = Harness::new();
+    let victim = h.root.join("precious.txt");
+    std::fs::write(&victim, b"not-a-snapshot").expect("write victim");
+    // A hand-edited row prefixed with the destination but escaping through `..`
+    // — string containment would pass it; component checking must not. The
+    // destination is created up front so the assertion below can resolve the
+    // path: getting the `..` count wrong would aim the escape at nothing and
+    // silently turn this into a test that proves nothing.
+    let destination = snapshot_dir(&h, "db");
+    std::fs::create_dir_all(&destination).expect("destination");
+    let escaping = destination
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("precious.txt");
+    assert!(
+        escaping.exists(),
+        "the escape path must resolve to the victim for this test to mean anything"
+    );
+
+    prune_with_planted_row(&h, &escaping);
+
+    assert!(victim.exists(), "a '..' row escaped the containment gate");
+}
+
+#[test]
+fn pruning_removes_an_empty_directory_a_nested_pattern_left_behind() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let mut s = spec("db", &source);
+    s.retention = 1;
+
+    s.name_pattern = "daily/first".to_string();
+    h.run(&s);
+    s.name_pattern = "weekly/second".to_string();
+    h.run(&s);
+
+    let dest = snapshot_dir(&h, "db");
+    assert!(
+        !dest.join("daily").exists(),
+        "the emptied intermediate directory was left behind"
+    );
+    assert!(dest.join("weekly/second").exists());
+}
+
+#[test]
+fn is_snapshot_within_admits_only_plain_descendants() {
+    let dest = Path::new("/state/backups/db");
+    assert!(is_snapshot_within(
+        Path::new("/state/backups/db/snap"),
+        dest
+    ));
+    assert!(is_snapshot_within(
+        Path::new("/state/backups/db/daily/snap"),
+        dest
+    ));
+    // The destination itself is not a snapshot.
+    assert!(!is_snapshot_within(dest, dest));
+    // A sibling whose name merely starts with the destination's.
+    assert!(!is_snapshot_within(
+        Path::new("/state/backups/db-old/snap"),
+        dest
+    ));
+    assert!(!is_snapshot_within(Path::new("/etc/passwd"), dest));
+    assert!(!is_snapshot_within(
+        Path::new("/state/backups/db/../../precious"),
+        dest
+    ));
+    assert!(!is_snapshot_within(Path::new("relative/snap"), dest));
+}
+
+#[test]
+fn is_at_or_within_treats_equal_paths_as_contained() {
+    let root = Path::new("/home/u/Pictures");
+    assert!(is_at_or_within(root, root));
+    assert!(is_at_or_within(Path::new("/home/u/Pictures/backups"), root));
+    assert!(!is_at_or_within(Path::new("/home/u/Pictures-old"), root));
+    assert!(!is_at_or_within(Path::new("/home/u"), root));
+}
+
+// ---------------------------------------------------------------------------
+// Source / destination containment
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_destination_inside_the_source_is_rejected_before_any_copy() {
+    let h = Harness::new();
+    let source = h.root.join("Pictures");
+    std::fs::create_dir_all(&source).expect("source tree");
+    std::fs::write(source.join("a.jpg"), b"jpeg").expect("source file");
+    let mut s = spec("photos", &source);
+    s.destination = Some(source.join("backups"));
+
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    let error = record.error.clone().expect("failure detail");
+    assert!(
+        error.contains("is inside source"),
+        "unhelpful error: {error}"
+    );
+    assert!(
+        !source.join("backups").exists(),
+        "the rejected destination was created anyway"
+    );
+    assert_eq!(
+        std::fs::read_dir(&source).expect("source readable").count(),
+        1,
+        "the source tree was modified by a rejected backup"
+    );
+}
+
+#[test]
+fn a_destination_two_levels_inside_the_source_is_rejected() {
+    let h = Harness::new();
+    let source = h.root.join("Pictures");
+    std::fs::create_dir_all(&source).expect("source tree");
+    let mut s = spec("photos", &source);
+    s.destination = Some(source.join("archive").join("backups"));
+
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    assert!(!source.join("archive").exists());
+}
+
+#[test]
+fn a_destination_equal_to_the_source_is_rejected() {
+    let h = Harness::new();
+    let source = h.root.join("Pictures");
+    std::fs::create_dir_all(&source).expect("source tree");
+    let mut s = spec("photos", &source);
+    s.destination = Some(source.clone());
+
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    assert!(
+        record
+            .error
+            .unwrap_or_default()
+            .contains("is inside source")
+    );
+}
+
+#[test]
+fn a_snapshot_path_that_would_clobber_the_source_is_rejected() {
+    let h = Harness::new();
+    let dest = h.root.join("backups");
+    std::fs::create_dir_all(&dest).expect("dest");
+    let source = dest.join("data.db");
+    std::fs::write(&source, b"the only copy").expect("write source");
+    let mut s = spec("db", &source);
+    s.destination = Some(dest.clone());
+    // Renders to exactly the source's own filename inside its own directory.
+    s.name_pattern = "{filename}".to_string();
+
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    let error = record.error.clone().expect("failure detail");
+    assert!(error.contains("collides with source"), "got: {error}");
+    assert_eq!(
+        std::fs::read(&source).expect("source survives"),
+        b"the only copy"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Permissions
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn directory_snapshots_carry_the_source_directory_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new();
+    let source = h.root.join("dotssh");
+    std::fs::create_dir_all(source.join("private")).expect("tree");
+    std::fs::write(source.join("private/id_ed25519"), b"key").expect("key");
+    std::fs::set_permissions(
+        source.join("private/id_ed25519"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("chmod key");
+    std::fs::set_permissions(
+        source.join("private"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("chmod inner");
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).expect("chmod root");
+
+    let record = h.run(&spec("dotssh", &source));
+
+    let dest = PathBuf::from(record.destination_path.expect("artifact"));
+    let mode = |p: &Path| {
+        std::fs::metadata(p)
+            .unwrap_or_else(|e| panic!("stat {}: {e}", p.posix()))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&dest), 0o700, "snapshot root lost the source mode");
+    assert_eq!(
+        mode(&dest.join("private")),
+        0o700,
+        "nested directory lost the source mode"
+    );
+    assert_eq!(mode(&dest.join("private/id_ed25519")), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_default_destination_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+
+    h.run(&spec("db", &source));
+
+    let mode = std::fs::metadata(snapshot_dir(&h, "db"))
+        .expect("stat destination")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "the default destination is group/world readable"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_explicit_destination_keeps_the_users_own_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let dest = h.root.join("shared");
+    std::fs::create_dir_all(&dest).expect("dest");
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).expect("chmod dest");
+    let mut s = spec("db", &source);
+    s.destination = Some(dest.clone());
+
+    h.run(&s);
+
+    let mode = std::fs::metadata(&dest)
+        .expect("stat destination")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o755, "cfgd re-chmodded a user-chosen destination");
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot naming
 // ---------------------------------------------------------------------------
 
@@ -681,6 +1046,50 @@ fn snapshot_name_rejects_a_traversing_pattern() {
     let err = snapshot_name(&s, Path::new("/var/lib/app/data.db"))
         .expect_err("traversal must be rejected");
     assert!(err.to_string().contains("'..'"), "got: {err}");
+}
+
+/// A `namePattern` rendering to a directory reference makes the snapshot target
+/// a directory that already exists — clearing it to make way for the rename
+/// would empty it first and fail afterwards.
+#[test]
+fn snapshot_name_rejects_every_directory_reference_pattern() {
+    for pattern in [".", "a/.", "./x", "a/../b", "..", "a//b", "daily/"] {
+        let mut s = spec("db", Path::new("/var/lib/app/data.db"));
+        s.name_pattern = pattern.to_string();
+        match snapshot_name(&s, Path::new("/var/lib/app/data.db")) {
+            Err(_) => {}
+            Ok(rendered) => panic!(
+                "pattern {pattern:?} was accepted and rendered {}",
+                rendered.posix()
+            ),
+        }
+    }
+}
+
+#[test]
+fn a_dot_name_pattern_leaves_every_retained_snapshot_intact() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let mut s = spec("db", &source);
+    s.name_pattern = "keeper".to_string();
+    h.run(&s);
+    assert_eq!(snapshots(&snapshot_dir(&h, "db")), vec!["keeper"]);
+
+    s.name_pattern = ".".to_string();
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    assert!(!record.has_artifact());
+    assert_eq!(
+        snapshots(&snapshot_dir(&h, "db")),
+        vec!["keeper"],
+        "a '.' pattern destroyed the destination's contents"
+    );
+    assert_eq!(
+        std::fs::read(snapshot_dir(&h, "db").join("keeper")).expect("keeper survives"),
+        b"payload"
+    );
 }
 
 #[test]

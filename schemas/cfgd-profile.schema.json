@@ -25,7 +25,7 @@
     },
     "BackupSpec": {
       "additionalProperties": false,
-      "description": "A declarative backup: snapshot `source` (a file or directory) into\n`destination`, retaining the newest `retention` snapshots.\n\nThe shape is validated at parse time and executed by\n[`crate::backup::run_backup`]; the CLI surface (`cfgd backup ...`) and the\ndaemon scheduling that drive that engine are not yet implemented.",
+      "description": "A declarative backup: snapshot `source` (a file or directory) into\n`destination`, retaining the newest `retention` snapshots.\n\nThe shape is validated at parse time and executed by the backup engine. The\nCLI surface (`cfgd backup ...`) and the daemon scheduling that drive that\nengine are not yet implemented.",
       "properties": {
         "destination": {
           "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`\nwhen omitted — resolved by the backup engine, not at parse time, since\nthe state dir depends on runtime scope/overrides.",
@@ -35,17 +35,17 @@
           ]
         },
         "name": {
-          "description": "Unique identifier for this backup within `spec.backups`. Keys the\n`destination` default, run records, and CLI selection — uniqueness is\nenforced by [`validate_backup_specs`]. Becomes a directory component\n(`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank,\nand free of path separators (`/`, `\\`) or traversal segments (`.`,\n`..`) — enforced by [`validate_backup_specs`].",
+          "description": "Unique identifier for this backup within `spec.backups`, unique across\nthe list. Keys the `destination` default, run records, and CLI\nselection. Becomes a directory component (`<state_dir>/backups/<name>/`),\nso it must be non-empty, non-blank, and free of path separators (`/`,\n`\\`) or traversal segments (`.`, `..`).",
           "type": "string"
         },
         "namePattern": {
           "default": "{filename}.{timestamp}",
-          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`,\nand `{timestamp}` (UTC, formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`]).\nSee [`render_backup_name_pattern`]. Unknown `{var}` tokens are rejected\nat parse time by [`validate_backup_specs`]. Defaults to\n`\"{filename}.{timestamp}\"`.",
+          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`,\nand `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are\nrejected at parse time. A literal `/` nests the snapshot in a\nsubdirectory of the destination; `.` and `..` segments are rejected.\nDefaults to `\"{filename}.{timestamp}\"`.",
           "type": "string"
         },
         "postBackup": {
           "default": [],
-          "description": "Scripts run after the snapshot completes (e.g. restart the service\nstopped by `preBackup`).",
+          "description": "Scripts run after the copy step (e.g. restart the service stopped by\n`preBackup`). Always attempted, including after a failed `preBackup` or\na failed copy.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -53,7 +53,7 @@
         },
         "preBackup": {
           "default": [],
-          "description": "Scripts run before the snapshot is taken (e.g. stop a service that\nholds `source` open so the snapshot is consistent).",
+          "description": "Scripts run before the snapshot is taken (e.g. stop a service that\nholds `source` open so the snapshot is consistent). A failure skips the\nsnapshot and records a failed run; `postBackup` still runs.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -61,20 +61,20 @@
         },
         "retention": {
           "default": 10,
-          "description": "Number of newest snapshots to keep for this backup; older snapshots\nare pruned. Must be at least 1 (`0` would keep no backups, which is a\nmisconfiguration rather than a supported \"unlimited\" mode — enforced\nby [`validate_backup_specs`]). Defaults to 10.",
+          "description": "Number of newest snapshots to keep for this backup; older snapshots are\npruned from disk and from the run history. Must be at least 1 (`0` would\nkeep no backups, which is a misconfiguration rather than a supported\n\"unlimited\" mode). Defaults to 10.",
           "format": "uint32",
           "minimum": 1,
           "type": "integer"
         },
         "schedule": {
-          "description": "When to run this backup: a `parse_duration_str` interval (e.g. `\"6h\"`)\nor a cron expression, validated by [`validate_backup_specs`]. Cron\nexpressions may be 5-field (`minute hour day month weekday`, e.g.\n`\"0 3 * * *\"`) or 6-field with a leading seconds field\n(`second minute hour day month weekday`, e.g. `\"30 0 3 * * *\"`).\nOmitted means \"run on every apply\".",
+          "description": "When to run this backup: a duration interval (e.g. `\"6h\"`) or a cron\nexpression, validated at parse time. Cron expressions may be 5-field\n(`minute hour day month weekday`, e.g. `\"0 3 * * *\"`) or 6-field with a\nleading seconds field (`second minute hour day month weekday`, e.g.\n`\"30 0 3 * * *\"`). Omitted means \"run on every apply\".",
           "type": [
             "string",
             "null"
           ]
         },
         "source": {
-          "description": "File or directory to snapshot.",
+          "description": "File or directory to snapshot. A leading `~` expands to the home\ndirectory. Must not contain, or sit inside, `destination`.",
           "type": "string"
         }
       },

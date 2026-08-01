@@ -280,6 +280,26 @@ pub enum BackupError {
         message: String,
     },
 
+    #[error(
+        "backup '{name}': destination {} is inside source {} — every snapshot would be copied into the next one, without end; move the destination outside the source",
+        .destination.posix(), .source_path.posix()
+    )]
+    DestinationInsideSource {
+        name: String,
+        source_path: PathBuf,
+        destination: PathBuf,
+    },
+
+    #[error(
+        "backup '{name}': the snapshot path {} collides with source {} — taking it would destroy the data being backed up; change namePattern or destination",
+        .snapshot.posix(), .source_path.posix()
+    )]
+    SnapshotCollidesWithSource {
+        name: String,
+        source_path: PathBuf,
+        snapshot: PathBuf,
+    },
+
     #[error("backup '{name}': {phase} hook failed: {message}")]
     HookFailed {
         name: String,

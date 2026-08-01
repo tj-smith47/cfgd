@@ -671,6 +671,37 @@ fn copy_dir_recursive_copies_tree() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn copy_dir_recursive_preserves_directory_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let dst_path = dst.path().join("copy");
+    std::fs::create_dir_all(src.path().join("private")).unwrap();
+    std::fs::write(src.path().join("private/secret"), "s").unwrap();
+    std::fs::set_permissions(
+        src.path().join("private"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+
+    copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode(&dst_path.join("private")),
+        0o700,
+        "a 0700 source directory must not land as a 0755 copy"
+    );
+    // A restrictive mode is applied after the walk, so its children still copied.
+    assert_eq!(
+        std::fs::read_to_string(dst_path.join("private/secret")).unwrap(),
+        "s"
+    );
+}
+
 #[test]
 fn dir_size_sums_the_whole_tree() {
     let dir = tempfile::tempdir().unwrap();

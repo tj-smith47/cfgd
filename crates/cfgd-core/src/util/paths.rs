@@ -853,7 +853,12 @@ pub fn dir_size(path: &std::path::Path) -> std::result::Result<u64, std::io::Err
 }
 
 /// Recursively copy a directory from source to target.
+///
 /// Skips symlinks to prevent symlink-following attacks and infinite loops.
+/// `fs::copy` already carries file modes across; each directory's mode is
+/// applied too (Unix), so a `0700` tree does not land as a `0755` copy that
+/// exposes what the original protected. Windows has no mode bits, so the copy
+/// inherits the destination's inherited ACL there.
 pub fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
@@ -873,6 +878,27 @@ pub fn copy_dir_recursive(
             std::fs::copy(entry.path(), &dst_path)?;
         }
     }
+    // Applied after the walk: a restrictive source mode (0500, 0300) set on the
+    // way in would block writing the very children being copied.
+    copy_dir_mode(src, dst)?;
+    Ok(())
+}
+
+/// Apply `src`'s directory mode to `dst`. No-op on Windows.
+#[cfg(unix)]
+fn copy_dir_mode(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::result::Result<(), std::io::Error> {
+    let mode = std::fs::metadata(src)?.permissions();
+    std::fs::set_permissions(dst, mode)
+}
+
+#[cfg(not(unix))]
+fn copy_dir_mode(
+    _src: &std::path::Path,
+    _dst: &std::path::Path,
+) -> std::result::Result<(), std::io::Error> {
     Ok(())
 }
 

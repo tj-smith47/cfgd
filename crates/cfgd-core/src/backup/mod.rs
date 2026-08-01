@@ -37,6 +37,7 @@ pub struct BackupUnit<'a> {
     profile_name: &'a str,
     state_dir: &'a Path,
     context: ReconcileContext,
+    abort: Option<&'a crate::AbortFlag>,
 }
 
 impl<'a> BackupUnit<'a> {
@@ -54,6 +55,7 @@ impl<'a> BackupUnit<'a> {
             profile_name,
             state_dir,
             context: ReconcileContext::Apply,
+            abort: None,
         }
     }
 
@@ -61,6 +63,16 @@ impl<'a> BackupUnit<'a> {
     /// Only affects `$CFGD_CONTEXT` inside the hooks.
     pub fn with_context(mut self, context: ReconcileContext) -> Self {
         self.context = context;
+        self
+    }
+
+    /// Let SIGINT/SIGTERM cooperatively kill an in-flight hook.
+    ///
+    /// A `preBackup` that stops a service can run for minutes; without the flag
+    /// the executor has no way to learn the operator asked to stop, and Ctrl-C
+    /// is ignored until the hook's own timeout fires.
+    pub fn with_abort(mut self, abort: &'a crate::AbortFlag) -> Self {
+        self.abort = Some(abort);
         self
     }
 
@@ -102,16 +114,22 @@ struct Artifact {
 /// the run from being *recorded at all* (a state-DB error) — at that point
 /// there is no record to return.
 ///
-/// - A `preBackup` hook failure aborts the unit. No copy is attempted, no
-///   `postBackup` hook runs, and the run is recorded `Failed` with no artifact.
-/// - `postBackup` hooks are attempted after the copy step **whether or not the
-///   copy succeeded**, because they typically restart whatever `preBackup`
-///   stopped; skipping them on a failed copy would leave the machine down.
+/// - A `preBackup` hook failure aborts the **snapshot**: no copy is attempted
+///   and the run is recorded `Failed` with no artifact. It does not abort the
+///   unit — see the next rule.
+/// - `postBackup` hooks are attempted on **every** path: after a good copy,
+///   after a failed copy, and after a failed `preBackup`. They are normally the
+///   counterpart that restarts whatever `preBackup` stopped, and a hook list
+///   that failed halfway (service already down, flush failed) is exactly when
+///   leaving them unrun strands the machine.
 /// - A `postBackup` failure *after a good copy* leaves the run `Success` with
 ///   [`BackupRunRecord::error`] set. The snapshot is complete and restorable,
 ///   so it must stay retention-eligible; marking the run `Failed` would strand
 ///   a valid artifact that pruning can never reclaim. Callers gate their exit
 ///   code on [`BackupRunRecord::is_clean`], which is false for such a run.
+///
+/// Every failure of a run is joined into `error` with `; ` — a pre-hook, copy,
+/// and post-hook failure in one run all reach the record.
 ///
 /// Retention pruning runs after the record is written, so the run just taken
 /// counts toward `spec.retention`.
@@ -124,42 +142,39 @@ pub fn run_backup(
     let started_at = crate::utc_now_iso8601();
     let source = unit.source();
 
-    if let Err(e) = run_hooks(unit, &spec.pre_backup, ScriptPhase::PreBackup, printer) {
-        let record = finish(
-            store,
-            unit,
-            &source,
-            started_at,
-            None,
-            Some(collapse_to_subject_line(&e)),
-            BackupRunStatus::Failed,
-        )?;
-        prune_retention(store, spec, printer);
-        return Ok(record);
+    let pre_error = run_hooks(unit, &spec.pre_backup, ScriptPhase::PreBackup, printer).err();
+    // A failed `preBackup` means the source is not in the state the hook was
+    // meant to put it in, so a snapshot of it would be untrustworthy.
+    let copy_outcome = match pre_error {
+        Some(_) => None,
+        None => Some(take_snapshot(unit, &source)),
+    };
+    let post_error = run_hooks(unit, &spec.post_backup, ScriptPhase::PostBackup, printer).err();
+
+    let mut failures = Vec::new();
+    if let Some(e) = pre_error {
+        failures.push(collapse_to_subject_line(&e));
+    }
+    let artifact = match copy_outcome {
+        Some(Ok(artifact)) => Some(artifact),
+        Some(Err(e)) => {
+            failures.push(collapse_to_subject_line(&e));
+            None
+        }
+        None => None,
+    };
+    if let Some(e) = post_error {
+        failures.push(collapse_to_subject_line(&e));
     }
 
-    let copy_outcome = take_snapshot(unit, &source);
-
-    // Always attempted: `postBackup` is the counterpart that restarts what
-    // `preBackup` stopped, so a failed copy must not leave it unrun.
-    let post_error = run_hooks(unit, &spec.post_backup, ScriptPhase::PostBackup, printer)
-        .err()
-        .map(|e| collapse_to_subject_line(&e));
-
-    let (status, artifact, error) = match copy_outcome {
-        Ok(artifact) => (BackupRunStatus::Success, Some(artifact), post_error),
-        Err(copy_error) => {
-            let mut message = collapse_to_subject_line(&copy_error);
-            if let Some(post) = post_error {
-                message.push_str("; ");
-                message.push_str(&post);
-            }
-            (BackupRunStatus::Failed, None, Some(message))
-        }
+    let status = match artifact {
+        Some(_) => BackupRunStatus::Success,
+        None => BackupRunStatus::Failed,
     };
+    let error = (!failures.is_empty()).then(|| failures.join("; "));
 
     let record = finish(store, unit, &source, started_at, artifact, error, status)?;
-    prune_retention(store, spec, printer);
+    prune_retention(store, unit, printer);
     Ok(record)
 }
 
@@ -228,7 +243,7 @@ fn run_hooks(
             crate::PROFILE_SCRIPT_TIMEOUT,
             printer,
             None,
-            None,
+            unit.abort,
         );
         if let Err(e) = outcome {
             let failure = BackupError::HookFailed {
@@ -277,7 +292,31 @@ fn take_snapshot(
         }
     };
 
-    let target = unit.destination_dir().join(snapshot_name(spec, source)?);
+    let destination = unit.destination_dir();
+    // A destination under the source turns the copy into a tree that grows into
+    // itself: `copy_dir_recursive` creates the staging directory before reading
+    // the source, so the walk finds it and descends forever. Checked before any
+    // filesystem write, so a misconfiguration costs nothing.
+    if is_at_or_within(&destination, source) {
+        return Err(BackupError::DestinationInsideSource {
+            name: spec.name.clone(),
+            source_path: source.to_path_buf(),
+            destination,
+        });
+    }
+
+    let target = destination.join(snapshot_name(spec, source)?);
+    // A snapshot path that is (or contains) the source would have the source
+    // deleted by `remove_existing` on the way to publishing the snapshot, and
+    // would later be deleted outright by retention pruning.
+    if is_at_or_within(source, &target) {
+        return Err(BackupError::SnapshotCollidesWithSource {
+            name: spec.name.clone(),
+            source_path: source.to_path_buf(),
+            snapshot: target,
+        });
+    }
+
     let copy_failed = |e: std::io::Error| BackupError::CopyFailed {
         name: spec.name.clone(),
         path: target.clone(),
@@ -287,17 +326,79 @@ fn take_snapshot(
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(copy_failed)?;
     }
+    // The default destination lives under the state dir and holds copies of
+    // whatever the user pointed at — possibly `~/.ssh`. Owner-only keeps a
+    // sensitive snapshot from being readable through a 0755 parent even though
+    // the snapshot itself carries the source's mode. An explicit `destination:`
+    // is the user's own directory and keeps their umask.
+    if spec.destination.is_none() {
+        restrict_to_owner(&destination);
+    }
 
     let size_bytes = if meta.is_dir() {
         copy_dir_snapshot(source, &target).map_err(copy_failed)?
     } else {
-        copy_file_snapshot(source, &target).map_err(copy_failed)?
+        copy_file_snapshot(source, &meta, &target).map_err(copy_failed)?
     };
 
     Ok(Artifact {
         path: target,
         size_bytes,
     })
+}
+
+/// Posix-folded view of a path, so containment comparisons behave identically
+/// on Windows (`\`) and Unix (`/`) and against the posix-folded strings the
+/// state store holds.
+fn posix_path(path: &Path) -> PathBuf {
+    PathBuf::from(crate::to_posix_string(path))
+}
+
+/// Whether `path` is `root` or a descendant of it, judged lexically.
+///
+/// Lexical rather than `canonicalize`: the paths compared here routinely do not
+/// exist yet (a snapshot target) or no longer exist (a pruning candidate), and
+/// `canonicalize` fails on both.
+fn is_at_or_within(path: &Path, root: &Path) -> bool {
+    posix_path(path).starts_with(posix_path(root))
+}
+
+/// Whether `path` is a snapshot **inside** `destination`: strictly below it, and
+/// reached only through plain name components.
+///
+/// The gate before any pruning delete. A row naming the destination itself, a
+/// path outside it, or a path that walks through `.`/`..` fails — so a stale
+/// row (the user changed `destination:`), a same-named backup from another
+/// profile, or a hand-edited `state.db` can never make pruning delete something
+/// this unit did not write.
+fn is_snapshot_within(path: &Path, destination: &Path) -> bool {
+    let folded = posix_path(path);
+    let Ok(rest) = folded.strip_prefix(posix_path(destination)) else {
+        return false;
+    };
+    let mut components = rest.components().peekable();
+    if components.peek().is_none() {
+        return false;
+    }
+    components.all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Best-effort `0700` on a directory cfgd owns. No-op on Windows, and a failure
+/// is logged rather than raised — the snapshot itself is unaffected.
+fn restrict_to_owner(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::warn!(
+                dir = %dir.posix(),
+                error = %e,
+                "backup: could not restrict the default destination to owner-only",
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Render `namePattern` into the snapshot's path component(s).
@@ -334,21 +435,43 @@ fn snapshot_name(spec: &BackupSpec, source: &Path) -> std::result::Result<PathBu
             "it is absolute; namePattern is relative to the destination".to_string(),
         ));
     }
-    crate::validate_no_traversal(&path).map_err(invalid)?;
+    // Judged on the raw rendered string, NOT `Path::components()`: the component
+    // iterator normalizes `.` away, so `"a/."` would read as one plain component
+    // while the joined path still ends in `/.` — and clearing a `/.`-suffixed
+    // directory empties it before the call reports failure. Every segment must
+    // be a plain name.
+    for segment in rendered.split(['/', '\\']) {
+        if segment.is_empty() {
+            return Err(invalid(
+                "it has an empty path segment; every segment must name something".to_string(),
+            ));
+        }
+        if segment == "." || segment == ".." {
+            return Err(invalid(format!(
+                "the segment '{segment}' is a directory reference, not a name"
+            )));
+        }
+    }
     Ok(path)
 }
 
 /// Copy a file to `target` atomically: stream into a sibling temp file, fsync,
-/// then rename over the destination.
-fn copy_file_snapshot(source: &Path, target: &Path) -> std::io::Result<u64> {
+/// then rename over the destination and fsync the directory.
+///
+/// `meta` is the source metadata the caller already stat'd; re-reading it here
+/// would both cost a syscall and widen the window in which the source's mode
+/// could change between the check and the copy.
+fn copy_file_snapshot(
+    source: &Path,
+    meta: &std::fs::Metadata,
+    target: &Path,
+) -> std::io::Result<u64> {
     let parent = target.parent().unwrap_or(Path::new("."));
     let mut input = std::fs::File::open(source)?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     let size = std::io::copy(&mut input, tmp.as_file_mut())?;
     tmp.as_file().sync_all()?;
-    if let Ok(meta) = std::fs::metadata(source)
-        && let Err(e) = tmp.as_file().set_permissions(meta.permissions())
-    {
+    if let Err(e) = tmp.as_file().set_permissions(meta.permissions()) {
         tracing::warn!(
             target = %target.posix(),
             error = %e,
@@ -357,7 +480,26 @@ fn copy_file_snapshot(source: &Path, target: &Path) -> std::io::Result<u64> {
     }
     remove_existing(target)?;
     tmp.persist(target).map_err(|e| e.error)?;
+    sync_dir(parent);
     Ok(size)
+}
+
+/// fsync a directory so a just-completed rename survives a power loss.
+///
+/// Best-effort: the snapshot's bytes are already durable, and a filesystem that
+/// refuses to open a directory (Windows, some network mounts) simply keeps the
+/// weaker ordering guarantee its rename already provides.
+fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    if let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
+        tracing::debug!(
+            dir = %dir.posix(),
+            error = %e,
+            "backup: could not fsync the destination directory after rename",
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Copy a directory tree to `target`, publishing it with a single rename.
@@ -383,6 +525,9 @@ fn copy_dir_snapshot(source: &Path, target: &Path) -> std::io::Result<u64> {
     if let Err(e) = std::fs::rename(&staging, target) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
+    }
+    if let Some(parent) = target.parent() {
+        sync_dir(parent);
     }
     crate::dir_size(target)
 }
@@ -431,16 +576,37 @@ fn remove_existing(path: &Path) -> std::io::Result<()> {
 /// problem (a busy file, a permission change) must not turn a good backup into
 /// a reported failure. A row whose artifact could not be deleted is left in
 /// place so the next run retries it.
-fn prune_retention(store: &StateStore, spec: &BackupSpec, printer: &Printer) {
+///
+/// Nothing is deleted from disk unless [`is_snapshot_within`] confirms the
+/// recorded path is inside *this unit's* destination. A row that fails that gate
+/// is dropped from the table without a single filesystem call, so a stale or
+/// foreign row bounds the table instead of aiming a recursive delete.
+fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer) {
+    let spec = unit.spec;
+    let destination = unit.destination_dir();
     let runs = match store.backup_runs(&spec.name) {
         Ok(runs) => runs,
         Err(e) => {
-            tracing::warn!(
-                backup = %spec.name,
-                error = %e,
-                "backup: retention prune skipped — could not read run history",
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "backup '{}': retention prune skipped — could not read run history: {}",
+                    spec.name,
+                    collapse_to_subject_line(&e)
+                ),
             );
             return;
+        }
+    };
+
+    let warn = |message: String| printer.status_simple(Role::Warn, message);
+    let drop_row = |id: i64| {
+        if let Err(e) = store.delete_backup_run(id) {
+            warn(format!(
+                "backup '{}': could not delete run record {id}: {}",
+                spec.name,
+                collapse_to_subject_line(&e)
+            ));
         }
     };
 
@@ -449,6 +615,23 @@ fn prune_retention(store: &StateStore, spec: &BackupSpec, printer: &Printer) {
     let mut kept_failures = 0;
     // `backup_runs` is newest-first, so the first `keep` of each class survive.
     for run in &runs {
+        // Containment first, ahead of the retention accounting: a foreign row
+        // must neither reach a delete nor occupy a slot that a real snapshot
+        // needs, or stale rows would crowd out the runs the user asked to keep.
+        if let Some(path) = &run.destination_path
+            && !is_snapshot_within(Path::new(path), &destination)
+        {
+            warn(format!(
+                "backup '{}': run {} records a snapshot outside the destination {} ({path}); \
+                 dropping the record and leaving the path untouched — delete it yourself if it is stale",
+                spec.name,
+                run.id,
+                destination.posix(),
+            ));
+            drop_row(run.id);
+            continue;
+        }
+
         let counter = if run.has_artifact() {
             &mut kept_artifacts
         } else {
@@ -458,26 +641,36 @@ fn prune_retention(store: &StateStore, spec: &BackupSpec, printer: &Printer) {
             *counter += 1;
             continue;
         }
-        if let Some(path) = &run.destination_path
-            && let Err(e) = remove_existing(Path::new(path))
-        {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "backup '{}': could not prune snapshot {path}: {}",
+
+        if let Some(path) = &run.destination_path {
+            let path = Path::new(path);
+            if let Err(e) = remove_existing(path) {
+                warn(format!(
+                    "backup '{}': could not prune snapshot {}: {}",
                     spec.name,
+                    path.posix(),
                     collapse_to_subject_line(&e)
-                ),
-            );
-            continue;
+                ));
+                continue;
+            }
+            prune_empty_parents(path, &destination);
         }
-        if let Err(e) = store.delete_backup_run(run.id) {
-            tracing::warn!(
-                backup = %spec.name,
-                run_id = run.id,
-                error = %e,
-                "backup: pruned snapshot but could not delete its run record",
-            );
+        drop_row(run.id);
+    }
+}
+
+/// Remove now-empty directories a nested `namePattern` left behind, walking up
+/// to but never including `destination`.
+///
+/// `remove_dir` only succeeds on an empty directory, so a parent still holding
+/// another snapshot stops the walk on its own — no emptiness check is needed,
+/// and no non-empty directory can be removed by this path.
+fn prune_empty_parents(snapshot: &Path, destination: &Path) {
+    let mut current = snapshot.parent();
+    while let Some(dir) = current {
+        if !is_snapshot_within(dir, destination) || std::fs::remove_dir(dir).is_err() {
+            return;
         }
+        current = dir.parent();
     }
 }
