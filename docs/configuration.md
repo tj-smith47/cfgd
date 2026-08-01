@@ -321,12 +321,25 @@ files:
 
 The format decides how much of the target's original text survives:
 
-| Format | Engine | Comments & layout | Notes |
-|---|---|---|---|
-| `Ini` | line-preserving editor | preserved | Two levels: section → key → value |
-| `Toml` | `toml_edit` | preserved | Nested tables, arrays, inline tables |
-| `Json` | `serde_json` | n/a (JSON has no comments) | Rewritten as 2-space pretty JSON |
-| `Yaml` | `serde_yaml` | **not preserved** | The document is reflowed |
+| Format | Engine | Comments | Key order | Notes |
+|---|---|---|---|---|
+| `Ini` | line-preserving editor | preserved | preserved | Two levels: section → key → value |
+| `Toml` | `toml_edit` | preserved | preserved | Nested tables, arrays, inline tables |
+| `Json` | `serde_json` | n/a (JSON has none) | preserved | Reindented as 2-space pretty JSON |
+| `Yaml` | `serde_yaml` | **lost** | preserved | The document is reflowed |
+
+A trailing comment behaves differently in the two comment-preserving formats,
+because their editors work at different levels. TOML keeps a comment attached to
+the value it trails, so an updated key keeps a comment that may now be stale:
+
+```toml
+jobs = 4 # tuned for the build box     →     jobs = 8 # tuned for the build box
+```
+
+INI replaces everything after `=`, so a trailing comment is dropped along with
+the old value (INI dialects disagree about whether `;`/`#` even starts a comment
+there, so cfgd never tries to keep part of a value). Comments on their *own*
+line are untouched in both.
 
 > **YAML comment caveat.** The YAML engine parses the target and re-serializes
 > it, so comments, blank lines, anchors, and key order are lost — only the data
@@ -366,8 +379,15 @@ INI specifics, which follow from editing lines rather than reparsing the file:
   neighbouring keys' style (`key = value` vs `key=value`). CRLF files stay CRLF.
 - Anything after `=` is replaced, including a trailing `; comment` — INI dialects
   disagree on whether that starts a comment, so cfgd never keeps part of a value.
-- A duplicated key is rewritten at every occurrence, so the ensured value wins
-  regardless of which duplicate the consuming parser honours.
+- A duplicated key is rewritten at every occurrence, and a repeated `[section]`
+  header is edited in every block, so the ensured value wins regardless of which
+  duplicate the consuming parser honours (`git config` and `systemd` take the
+  last). A key that is missing everywhere is added to the last block.
+- Section names, key names, and values must survive being written and read back:
+  a name containing `=`, `[`, `]`, or a line break, a name padded with
+  whitespace, and a multi-line value are all rejected with a typed error. INI
+  has no escape syntax, so writing one would make the merge unable to find its
+  own key again and re-append it on every reconcile.
 
 #### `script` — pipe the file through a command
 
@@ -385,9 +405,13 @@ engine for, and for edits that must preserve YAML comments.
 
 ```sh
 #!/bin/sh
-# scripts/ensure-hosts-entry.sh — idempotent: reads the file, writes it back
-cat
-grep -q '10.0.0.5 build.internal' || echo '10.0.0.5 build.internal'
+# scripts/ensure-hosts-entry.sh
+# Read stdin ONCE into a variable: a second `cat` would see EOF, the guard
+# would always fail, and the entry would be appended on every reconcile.
+content=$(cat)
+printf '%s\n' "$content"
+printf '%s\n' "$content" | grep -q '10.0.0.5 build.internal' \
+  || echo '10.0.0.5 build.internal'
 ```
 
 Like a lifecycle `run:`, `script:` is a path relative to the module (or config)

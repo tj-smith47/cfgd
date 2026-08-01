@@ -52,8 +52,13 @@ impl<'a> ModifyContext<'a> {
         self
     }
 
-    /// Inject `env` into the script's process environment (the `CFGD_*`
-    /// metadata a lifecycle script receives, plus the module's `spec.env`).
+    /// Inject `env` into the script's process environment.
+    ///
+    /// Required for a filter to see the `CFGD_*` metadata a lifecycle script
+    /// gets: cfgd-core cannot synthesize it here (it needs the config dir,
+    /// profile name, and phase), so a dispatch site must pass the output of
+    /// `build_module_script_env` through. Without it the script runs with only
+    /// the inherited process environment.
     pub fn with_env(mut self, env: &'a [(String, String)]) -> Self {
         self.env = env;
         self
@@ -205,19 +210,26 @@ fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
 // JSON
 // ---------------------------------------------------------------------------
 
+/// Merge into JSON *through* `serde_yaml::Value`, not `serde_json::Value`.
+///
+/// `serde_json::Map` is a `BTreeMap` unless the workspace-wide `preserve_order`
+/// feature is on, so a `serde_json::Value` round-trip would silently re-sort a
+/// user's `settings.json` alphabetically. `serde_yaml::Mapping` is insertion-
+/// ordered, and serializing it straight into `serde_json`'s writer (no
+/// intermediate `Value`) emits the keys in document order. That keeps the
+/// promise this strategy makes about leaving untouched content alone, reuses
+/// the shared [`crate::deep_merge_yaml`], and costs the workspace nothing —
+/// enabling `preserve_order` would have reordered every generated schema and
+/// CRD in the repo.
 fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay_map = ensure_mapping(ensure, target, ModifyFormat::Json)?;
-    let overlay = yaml_to_json(
-        &serde_yaml::Value::Mapping(overlay_map.clone()),
-        target,
-        ModifyFormat::Json,
-    )?;
-    let mut doc: serde_json::Value = if current.trim().is_empty() {
-        serde_json::Value::Object(serde_json::Map::new())
+    let overlay = ensure_mapping(ensure, target, ModifyFormat::Json)?;
+    let mut doc: serde_yaml::Value = if current.trim().is_empty() {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
-        serde_json::from_str(current).map_err(|e| parse_error(target, ModifyFormat::Json, e))?
+        serde_json::from_str::<serde_yaml::Value>(current)
+            .map_err(|e| parse_error(target, ModifyFormat::Json, e))?
     };
-    if !doc.is_object() {
+    if !doc.is_mapping() {
         return Err(parse_error(
             target,
             ModifyFormat::Json,
@@ -225,72 +237,35 @@ fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
         )
         .into());
     }
-    deep_merge_json(&mut doc, &overlay);
+    validate_json_keys(overlay, target, "")?;
+    crate::deep_merge_yaml(&mut doc, &serde_yaml::Value::Mapping(overlay.clone()));
     let mut out = serde_json::to_string_pretty(&doc)
         .map_err(|e| serialize_error(target, ModifyFormat::Json, e))?;
     out.push('\n');
     Ok(out)
 }
 
-/// Deep merge two JSON values. Objects merge recursively; every other type is
-/// replaced by the overlay. Mirrors [`crate::deep_merge_yaml`] so the two
-/// structured formats behave identically.
-fn deep_merge_json(base: &mut serde_json::Value, overlay: &serde_json::Value) {
-    match (base, overlay) {
-        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
-            for (key, value) in overlay_map {
-                match base_map.get_mut(key) {
-                    Some(base_value) => deep_merge_json(base_value, value),
-                    None => {
-                        base_map.insert(key.clone(), value.clone());
-                    }
-                }
-            }
+/// Reject a non-string key anywhere in a JSON `ensure` overlay.
+///
+/// JSON object keys are strings, so a `42:` key would be *written* as `"42"`
+/// but the next pass reads the target back with a string key while the overlay
+/// still carries a number — the merge would not recognize its own output and
+/// would append a duplicate on every reconcile.
+fn validate_json_keys(overlay: &serde_yaml::Mapping, target: &Path, prefix: &str) -> Result<()> {
+    for (key, value) in overlay {
+        let Some(name) = key.as_str() else {
+            return Err(shape_error(
+                target,
+                ModifyFormat::Json,
+                format!("object keys must be strings, but {prefix}{key:?} is not"),
+            )
+            .into());
+        };
+        if let serde_yaml::Value::Mapping(nested) = value {
+            validate_json_keys(nested, target, &format!("{prefix}{name}."))?;
         }
-        (base, overlay) => *base = overlay.clone(),
     }
-}
-
-fn yaml_to_json(
-    value: &serde_yaml::Value,
-    target: &Path,
-    format: ModifyFormat,
-) -> Result<serde_json::Value> {
-    Ok(match value {
-        serde_yaml::Value::Null => serde_json::Value::Null,
-        serde_yaml::Value::Bool(b) => serde_json::Value::Bool(*b),
-        serde_yaml::Value::Number(n) => number_to_json(n)
-            .ok_or_else(|| shape_error(target, format, format!("unrepresentable number: {n:?}")))?,
-        serde_yaml::Value::String(s) => serde_json::Value::String(s.clone()),
-        serde_yaml::Value::Sequence(seq) => serde_json::Value::Array(
-            seq.iter()
-                .map(|v| yaml_to_json(v, target, format))
-                .collect::<Result<Vec<_>>>()?,
-        ),
-        serde_yaml::Value::Mapping(map) => {
-            let mut out = serde_json::Map::new();
-            for (k, v) in map {
-                let key = k
-                    .as_str()
-                    .ok_or_else(|| shape_error(target, format, "object keys must be strings"))?;
-                out.insert(key.to_string(), yaml_to_json(v, target, format)?);
-            }
-            serde_json::Value::Object(out)
-        }
-        serde_yaml::Value::Tagged(tagged) => yaml_to_json(&tagged.value, target, format)?,
-    })
-}
-
-fn number_to_json(n: &serde_yaml::Number) -> Option<serde_json::Value> {
-    if let Some(i) = n.as_i64() {
-        return Some(serde_json::Value::Number(i.into()));
-    }
-    if let Some(u) = n.as_u64() {
-        return Some(serde_json::Value::Number(u.into()));
-    }
-    n.as_f64()
-        .and_then(serde_json::Number::from_f64)
-        .map(serde_json::Value::Number)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +356,7 @@ fn merge_toml_table(
             },
             _ => {
                 let new_value = yaml_to_toml(value, target)?;
-                set_toml_value(table.entry(key), new_value);
+                set_toml_value(table, key, new_value);
             }
         }
     }
@@ -424,22 +399,38 @@ fn merge_toml_inline_table(
     Ok(())
 }
 
-/// Assign a value into a table entry, carrying over the existing value's decor
-/// so an updated key keeps its surrounding whitespace and trailing comment.
-fn set_toml_value(entry: toml_edit::Entry<'_>, new_value: toml_edit::Value) {
-    match entry {
-        toml_edit::Entry::Occupied(mut occupied) => {
-            let item = occupied.get_mut();
-            let decor = item.as_value().map(|old| old.decor().clone());
-            let mut replacement = new_value;
-            if let Some(decor) = decor {
-                *replacement.decor_mut() = decor;
-            }
-            *item = toml_edit::Item::Value(replacement);
+/// Assign a value into a table, carrying over the existing value's decor so an
+/// updated key keeps its surrounding whitespace and trailing comment.
+///
+/// A key that previously held a *table* has no value decor to inherit, and the
+/// key's own decor came from a `[header]` context, so the render would collapse
+/// to `key= 5`. Those get an explicit `key = value` decor instead.
+fn set_toml_value(table: &mut toml_edit::Table, key: &str, new_value: toml_edit::Value) {
+    let previous = table.get(key);
+    let inherited = previous
+        .and_then(toml_edit::Item::as_value)
+        .map(|old| old.decor().clone());
+    let replacing_non_value = previous.is_some() && inherited.is_none();
+
+    let mut replacement = new_value;
+    if let Some(decor) = inherited {
+        *replacement.decor_mut() = decor;
+    } else if replacing_non_value {
+        *replacement.decor_mut() = toml_edit::Decor::new(" ", "");
+    }
+
+    // Mutate the slot rather than re-inserting: `Table::insert` replaces the
+    // stored `Key` too, and an own-line comment above the key lives in that
+    // key's decor — re-inserting would silently delete it.
+    match table.get_mut(key) {
+        Some(item) => *item = toml_edit::Item::Value(replacement),
+        None => {
+            table.insert(key, toml_edit::Item::Value(replacement));
         }
-        toml_edit::Entry::Vacant(vacant) => {
-            vacant.insert(toml_edit::Item::Value(new_value));
-        }
+    }
+
+    if replacing_non_value && let Some(mut existing_key) = table.key_mut(key) {
+        *existing_key.leaf_decor_mut() = toml_edit::Decor::new("", " ");
     }
 }
 
@@ -454,13 +445,18 @@ fn yaml_to_toml(value: &serde_yaml::Value, target: &Path) -> Result<toml_edit::V
         serde_yaml::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 toml_edit::Value::from(i)
-            } else if let Some(f) = n.as_f64() {
+            } else if n.is_f64()
+                && let Some(f) = n.as_f64()
+            {
                 toml_edit::Value::from(f)
             } else {
+                // TOML integers are signed 64-bit. Falling through to `as_f64`
+                // would silently round a `u64` above `i64::MAX`, writing a
+                // different number than the spec asked for.
                 return Err(shape_error(
                     target,
                     ModifyFormat::Toml,
-                    format!("unrepresentable number: {n:?}"),
+                    format!("{n} is outside TOML's signed 64-bit integer range"),
                 )
                 .into());
             }
@@ -511,16 +507,19 @@ fn merge_ini(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result
         })?;
         match value {
             serde_yaml::Value::Mapping(section) => {
+                validate_ini_name(name, "section name", target)?;
                 let mut pairs = Vec::with_capacity(section.len());
                 for (k, v) in section {
                     let k = k.as_str().ok_or_else(|| {
                         shape_error(target, ModifyFormat::Ini, "key names must be strings")
                     })?;
+                    validate_ini_name(k, "key name", target)?;
                     pairs.push((k, ini_scalar(v, target, &format!("{name}.{k}"))?));
                 }
                 doc.set_section_keys(name, &pairs);
             }
             other => {
+                validate_ini_name(name, "key name", target)?;
                 let rendered = ini_scalar(other, target, name)?;
                 doc.set_global_key(name, &rendered);
             }
@@ -529,13 +528,73 @@ fn merge_ini(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result
     Ok(doc.render())
 }
 
+/// Characters that would make a rendered INI name unreadable by
+/// [`ini_key_name`] / [`ini_section_name`] on the next pass.
+const INI_NAME_FORBIDDEN: &[char] = &['\n', '\r', '=', '[', ']'];
+
+/// Reject a section or key name that cannot survive a write/read round-trip.
+///
+/// INI has no escape syntax: a name carrying a newline, `=`, or a bracket
+/// renders a line the parser reads back as a *different* name (or as no key at
+/// all), so the merge would never find it again and every reconcile would
+/// append another copy — unbounded growth of a user-owned file with no error.
+/// Padding is rejected for the same reason: the readers trim, so `" x"` would
+/// never match the `" x = v"` line it just wrote.
+fn validate_ini_name(name: &str, what: &str, target: &Path) -> Result<()> {
+    if name.is_empty() || name.trim() != name {
+        return Err(shape_error(
+            target,
+            ModifyFormat::Ini,
+            format!("{what} '{name}' must not be empty or padded with whitespace"),
+        )
+        .into());
+    }
+    if let Some(bad) = name.chars().find(|c| INI_NAME_FORBIDDEN.contains(c)) {
+        return Err(shape_error(
+            target,
+            ModifyFormat::Ini,
+            format!(
+                "{what} '{}' contains {} — INI has no escape syntax for it",
+                name.escape_debug(),
+                describe_ini_char(bad)
+            ),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn describe_ini_char(c: char) -> String {
+    match c {
+        '\n' => "a newline".to_string(),
+        '\r' => "a carriage return".to_string(),
+        other => format!("'{other}'"),
+    }
+}
+
 /// Render an `ensure` value as an INI value. INI has no native list or nested
 /// mapping syntax, so those are rejected rather than guessed at.
 fn ini_scalar(value: &serde_yaml::Value, target: &Path, key: &str) -> Result<String> {
     match value {
         serde_yaml::Value::Bool(b) => Ok(b.to_string()),
         serde_yaml::Value::Number(n) => Ok(n.to_string()),
-        serde_yaml::Value::String(s) => Ok(s.clone()),
+        serde_yaml::Value::String(s) => {
+            // A value carrying a line break would render extra lines that the
+            // next pass reads as unrelated content (or as a bogus `[section]`),
+            // so the key would be re-appended on every reconcile.
+            if let Some(bad) = s.chars().find(|c| *c == '\n' || *c == '\r') {
+                return Err(shape_error(
+                    target,
+                    ModifyFormat::Ini,
+                    format!(
+                        "value for '{key}' contains {} — an INI value is a single line",
+                        describe_ini_char(bad)
+                    ),
+                )
+                .into());
+            }
+            Ok(s.clone())
+        }
         serde_yaml::Value::Tagged(tagged) => ini_scalar(&tagged.value, target, key),
         serde_yaml::Value::Null => Err(shape_error(
             target,
@@ -610,18 +669,28 @@ impl IniDoc {
         (0, end)
     }
 
-    /// Half-open line range of `name`'s body (excluding its header line).
-    fn section_range(&self, name: &str) -> Option<(usize, usize)> {
-        let header = self
-            .lines
-            .iter()
-            .position(|l| ini_section_name(l) == Some(name))?;
-        let end = self.lines[header + 1..]
-            .iter()
-            .position(|l| ini_section_name(l).is_some())
-            .map(|offset| header + 1 + offset)
-            .unwrap_or(self.lines.len());
-        Some((header + 1, end))
+    /// Half-open line ranges of every block declared under `name`, in document
+    /// order, each excluding its own header line.
+    ///
+    /// A file may repeat a header (`git config` and `systemd` both allow it and
+    /// read the LAST value); editing only the first block would leave a later
+    /// duplicate overriding the ensured value while cfgd reported success.
+    fn section_ranges(&self, name: &str) -> Vec<(usize, usize)> {
+        let headers: Vec<usize> = (0..self.lines.len())
+            .filter(|idx| ini_section_name(&self.lines[*idx]).is_some())
+            .collect();
+        let mut ranges = Vec::new();
+        for (position, &header) in headers.iter().enumerate() {
+            if ini_section_name(&self.lines[header]) != Some(name) {
+                continue;
+            }
+            let end = headers
+                .get(position + 1)
+                .copied()
+                .unwrap_or(self.lines.len());
+            ranges.push((header + 1, end));
+        }
+        ranges
     }
 
     fn set_global_key(&mut self, key: &str, value: &str) {
@@ -629,8 +698,9 @@ impl IniDoc {
         if self.update_in_range(start, end, key, value) {
             return;
         }
-        let sep = self.separator_style(start, end);
-        let line = format!("{key}{sep}{value}{}", self.newline_suffix());
+        self.normalize_blank_document();
+        let (start, end) = self.global_range();
+        let line = self.render_key_line(start, end, key, value);
         let at = match self.last_key_line(start, end) {
             Some(idx) => idx + 1,
             // No global keys yet: land below a leading comment banner rather
@@ -648,38 +718,81 @@ impl IniDoc {
     }
 
     fn set_section_keys(&mut self, section: &str, pairs: &[(&str, String)]) {
-        let Some((start, end)) = self.section_range(section) else {
-            self.append_section(section, pairs);
-            return;
-        };
-        let mut end = end;
         for (key, value) in pairs {
-            if self.update_in_range(start, end, key, value) {
+            // Recomputed per key: an insert shifts every later line index, and
+            // `append_section` on the first key creates the block the rest land in.
+            let ranges = self.section_ranges(section);
+            let Some(&(last_start, last_end)) = ranges.last() else {
+                self.append_section(section, key, value);
+                continue;
+            };
+
+            let mut found = false;
+            for (start, end) in ranges {
+                if self.update_in_range(start, end, key, value) {
+                    found = true;
+                }
+            }
+            if found {
                 continue;
             }
-            let sep = self.separator_style(start, end);
-            let line = format!("{key}{sep}{value}{}", self.newline_suffix());
-            let at = match self.last_key_line(start, end) {
+
+            // Insert into the LAST block for the name so last-wins parsers see
+            // the ensured value; first-wins parsers see it too, as it is then
+            // the only occurrence.
+            let line = self.render_key_line(last_start, last_end, key, value);
+            let at = match self.last_key_line(last_start, last_end) {
                 Some(idx) => idx + 1,
-                None => start,
+                None => last_start,
             };
             self.lines.insert(at, line);
-            end += 1;
             self.trailing_newline = true;
         }
     }
 
-    fn append_section(&mut self, section: &str, pairs: &[(&str, String)]) {
+    fn append_section(&mut self, section: &str, key: &str, value: &str) {
+        self.normalize_blank_document();
         let nl = self.newline_suffix();
-        if self.lines.iter().any(|l| !l.trim().is_empty()) {
+        if !self.lines.is_empty() {
             self.lines.push(nl.to_string());
         }
         self.lines.push(format!("[{section}]{nl}"));
-        let sep = self.separator_style(0, self.lines.len());
-        for (key, value) in pairs {
-            self.lines.push(format!("{key}{sep}{value}{nl}"));
-        }
+        let line = self.render_key_line(0, self.lines.len(), key, value);
+        self.lines.push(line);
         self.trailing_newline = true;
+    }
+
+    /// A whitespace-only target is an empty document, not one with blank lines
+    /// worth preserving — keeping them would prefix the file with a blank line.
+    fn normalize_blank_document(&mut self) {
+        if self.lines.iter().all(|l| l.trim().is_empty()) {
+            self.lines.clear();
+        }
+    }
+
+    /// Render a new `key = value` line in the surrounding block's own style:
+    /// its leading indentation and its spacing around `=`.
+    fn render_key_line(&self, start: usize, end: usize, key: &str, value: &str) -> String {
+        let indent = self
+            .sampled(start, end, ini_line_indent)
+            .unwrap_or_default();
+        let sep = self
+            .sampled(start, end, ini_separator_style)
+            .unwrap_or_else(|| " = ".to_string());
+        format!("{indent}{key}{sep}{value}{}", self.newline_suffix())
+    }
+
+    /// Read a style property off the first `key = value` line in the range,
+    /// falling back to the first one anywhere in the document.
+    fn sampled(&self, start: usize, end: usize, extract: fn(&str) -> String) -> Option<String> {
+        let first_key_line = |range: std::ops::Range<usize>| {
+            range
+                .into_iter()
+                .find(|idx| self.lines.get(*idx).and_then(|l| ini_key_name(l)).is_some())
+        };
+        first_key_line(start..end.min(self.lines.len()))
+            .or_else(|| first_key_line(0..self.lines.len()))
+            .map(|idx| extract(&self.lines[idx]))
     }
 
     /// Rewrite every occurrence of `key` in the range; returns whether any
@@ -704,26 +817,24 @@ impl IniDoc {
             .rev()
             .find(|idx| ini_key_name(&self.lines[*idx]).is_some())
     }
+}
 
-    /// `key = value` or `key=value`, whichever the neighbouring keys use.
-    fn separator_style(&self, start: usize, end: usize) -> &'static str {
-        let sample = (start..end.min(self.lines.len()))
-            .find(|idx| ini_key_name(&self.lines[*idx]).is_some())
-            .or_else(|| {
-                (0..self.lines.len()).find(|idx| ini_key_name(&self.lines[*idx]).is_some())
-            });
-        match sample {
-            Some(idx) => {
-                let line = self.lines[idx].trim_end_matches('\r');
-                match line.find('=') {
-                    Some(eq) if line[..eq].ends_with(' ') => " = ",
-                    Some(_) => "=",
-                    None => " = ",
-                }
-            }
-            None => " = ",
-        }
+/// `" = "` or `"="`, whichever the sampled line uses.
+fn ini_separator_style(line: &str) -> String {
+    let line = line.trim_end_matches('\r');
+    match line.find('=') {
+        Some(eq) if line[..eq].ends_with(' ') => " = ".to_string(),
+        Some(_) => "=".to_string(),
+        None => " = ".to_string(),
     }
+}
+
+/// The sampled line's leading whitespace, so a new key in a tab-indented
+/// `.gitconfig` keeps the file's indentation instead of hugging the margin.
+fn ini_line_indent(line: &str) -> String {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect()
 }
 
 fn is_comment_or_blank(line: &str) -> bool {
@@ -732,10 +843,20 @@ fn is_comment_or_blank(line: &str) -> bool {
 }
 
 /// The section name of a `[name]` header line, or `None` for any other line.
+///
+/// A trailing `; comment` / `# comment` after the `]` is part of the header, not
+/// a reason to stop recognizing it — missing that would make cfgd append a
+/// duplicate `[name]` block instead of editing the one already there. The
+/// header line itself is never rewritten, so the comment survives untouched.
 fn ini_section_name(line: &str) -> Option<&str> {
     let trimmed = line.trim();
-    let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?;
-    Some(inner.trim())
+    let rest = trimmed.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let tail = rest[close + 1..].trim();
+    if !tail.is_empty() && !tail.starts_with(';') && !tail.starts_with('#') {
+        return None;
+    }
+    Some(rest[..close].trim())
 }
 
 /// The key of a `key = value` line, or `None` for comments, blanks, headers,
@@ -788,6 +909,19 @@ fn run_script(
         }
     };
 
+    let failed = |message: String| -> crate::errors::CfgdError {
+        FileError::ModifyScriptFailed {
+            path: target.to_path_buf(),
+            script: script.to_string(),
+            message,
+        }
+        .into()
+    };
+
+    // Every way the filter can fail lands in the same typed variant, so the
+    // error always names the target being modified — a bare `Io`/`Config` error
+    // from the executor would say which *script* broke but not which file the
+    // operator was trying to change.
     let outcome = run_filter_script(
         script,
         ctx.script_dir,
@@ -795,32 +929,25 @@ fn run_script(
         ctx.env,
         current,
         ctx.timeout,
-    )?;
+    )
+    .map_err(|e| failed(e.to_string()))?;
 
     if outcome.timed_out {
-        return Err(FileError::ModifyScriptFailed {
-            path: target.to_path_buf(),
-            script: script.to_string(),
-            message: format!("timed out after {}s", ctx.timeout.as_secs()),
-        }
-        .into());
+        return Err(failed(format!(
+            "timed out after {}s",
+            ctx.timeout.as_secs()
+        )));
     }
     if !outcome.success {
         let exit = match outcome.exit_code {
             Some(code) => format!("exit {code}"),
             None => "killed by signal".to_string(),
         };
-        let message = if outcome.stderr.is_empty() {
+        return Err(failed(if outcome.stderr.is_empty() {
             exit
         } else {
             format!("{exit}: {}", outcome.stderr)
-        };
-        return Err(FileError::ModifyScriptFailed {
-            path: target.to_path_buf(),
-            script: script.to_string(),
-            message,
-        }
-        .into());
+        }));
     }
     Ok(outcome.stdout)
 }

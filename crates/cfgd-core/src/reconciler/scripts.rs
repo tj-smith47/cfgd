@@ -184,44 +184,7 @@ pub(crate) fn execute_script(
     };
     let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
 
-    // A stale `working_dir` (e.g. a tempdir from a prior `cfgd init` test that was
-    // cleaned up off tmpfs) would otherwise surface as a cryptic `io error: No such
-    // file or directory (os error 2)` from `cmd.spawn()` — naming neither the path
-    // nor the script. Probe with a single metadata syscall so the failure mode
-    // points at the actual offender.
-    match std::fs::metadata(working_dir) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(meta) => {
-            let kind = if meta.is_file() { "file" } else { "other" };
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' cannot run: working directory is not a directory ({}): {}",
-                    run_str,
-                    kind,
-                    working_dir.posix()
-                ),
-            }));
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' cannot run: working directory does not exist: {}",
-                    run_str,
-                    working_dir.posix()
-                ),
-            }));
-        }
-        Err(e) => {
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' cannot run: working directory inaccessible ({}): {}",
-                    run_str,
-                    e,
-                    working_dir.posix()
-                ),
-            }));
-        }
-    }
+    ensure_working_dir(run_str, working_dir)?;
 
     let label = format!("Running script: {}", run_str);
 
@@ -385,7 +348,9 @@ pub(crate) fn execute_script(
             cmd.stdin(std::process::Stdio::inherit());
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::inherit());
-            let status = cmd.status()?;
+            // Spawn-then-wait rather than `status()`: identical semantics with
+            // stdio already inherited, but it routes through the ETXTBSY retry.
+            let status = spawn_retry_on_busy(&mut cmd)?.wait()?;
             if !status.success() {
                 let exit_code = status.code().unwrap_or(-1);
                 return Err(CfgdError::Config(ConfigError::Invalid {
@@ -416,7 +381,7 @@ pub(crate) fn execute_script(
     // (e.g. `shell: bash` on a FreeBSD base that ships only POSIX sh) or
     // because a `spec.env` PATH entry overwrote PATH. Name the real causes
     // instead of a bare os error 2.
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = spawn_retry_on_busy(&mut cmd).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CfgdError::Config(ConfigError::Invalid {
                 message: format!(
@@ -579,6 +544,63 @@ pub(crate) fn execute_script(
     }
 }
 
+/// Reject a working directory that cannot host a script before spawning.
+///
+/// A stale `working_dir` (e.g. a tempdir from a prior `cfgd init` test that was
+/// cleaned up off tmpfs) would otherwise surface as a cryptic `io error: No such
+/// file or directory (os error 2)` from `cmd.spawn()` — naming neither the path
+/// nor the script. One metadata syscall makes the failure point at the offender.
+fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()> {
+    let invalid = |message: String| CfgdError::Config(ConfigError::Invalid { message });
+    match std::fs::metadata(working_dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(meta) => {
+            let kind = if meta.is_file() { "file" } else { "other" };
+            Err(invalid(format!(
+                "script '{}' cannot run: working directory is not a directory ({}): {}",
+                run_str,
+                kind,
+                working_dir.posix()
+            )))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(invalid(format!(
+            "script '{}' cannot run: working directory does not exist: {}",
+            run_str,
+            working_dir.posix()
+        ))),
+        Err(e) => Err(invalid(format!(
+            "script '{}' cannot run: working directory inaccessible ({}): {}",
+            run_str,
+            e,
+            working_dir.posix()
+        ))),
+    }
+}
+
+/// Spawn a command, retrying briefly while the OS reports the executable busy.
+///
+/// A `fork` in any other thread duplicates every open write descriptor, so a
+/// script this process just finished writing can still be held open by an
+/// unrelated child when we `exec` it — the kernel answers `ETXTBSY`. The window
+/// closes the instant the racing child execs (its descriptors are `CLOEXEC`),
+/// so a short bounded retry converges where a single attempt fails at random.
+/// Every other spawn error is returned untouched on the first attempt.
+fn spawn_retry_on_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    const ATTEMPTS: u32 = 5;
+    let mut delay = std::time::Duration::from_millis(10);
+    let mut outcome = cmd.spawn();
+    for _ in 1..ATTEMPTS {
+        match &outcome {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
+            _ => return outcome,
+        }
+        std::thread::sleep(delay);
+        delay *= 2;
+        outcome = cmd.spawn();
+    }
+    outcome
+}
+
 /// Result of running a script as a content filter (see [`run_filter_script`]).
 pub(crate) struct FilterScriptOutcome {
     /// Everything the script wrote to stdout — the new file content.
@@ -617,6 +639,8 @@ pub(crate) fn run_filter_script(
     // interpreter resolution and spawn. Compiled out of release builds.
     #[cfg(any(test, feature = "test-helpers"))]
     let _path_guard = crate::test_helpers::script_spawn_path_guard();
+
+    ensure_working_dir(run_str, working_dir)?;
 
     let resolved = if std::path::Path::new(run_str).is_relative() {
         script_dir.join(run_str)
@@ -658,7 +682,7 @@ pub(crate) fn run_filter_script(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn()?;
+    let mut child = spawn_retry_on_busy(&mut cmd)?;
 
     // Feed stdin from its own thread while stdout/stderr drain on theirs: a
     // filter whose output exceeds the pipe buffer would deadlock against a

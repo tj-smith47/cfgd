@@ -45,6 +45,23 @@ fn assert_file_err(err: &CfgdError, matcher: impl Fn(&FileError) -> bool, expect
     }
 }
 
+fn assert_ensure_shape(err: &CfgdError) {
+    assert_file_err(
+        err,
+        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
+        "ModifyEnsureShape",
+    );
+}
+
+/// Applying the same `ensure` twice must produce byte-identical output — a
+/// merge that cannot re-read what it wrote grows the target on every reconcile.
+fn assert_converges(current: &str, spec: &ModifySpec, target: &str) -> String {
+    let once = apply(current, spec, target);
+    let twice = apply(&once, spec, target);
+    assert_eq!(once, twice, "second pass changed the file (non-convergent)");
+    once
+}
+
 // ---------------------------------------------------------------------------
 // Format inference
 // ---------------------------------------------------------------------------
@@ -447,6 +464,155 @@ fn ini_section_header_with_surrounding_whitespace_is_matched() {
     assert_eq!(out, "  [user]  \nname = New\n");
 }
 
+#[test]
+fn ini_section_header_with_trailing_comment_is_edited_not_duplicated() {
+    let current = "[a] ; hi\nx = 1\n";
+    let out = assert_converges(current, &spec(None, "a:\n  x: 9\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a] ; hi\nx = 9\n");
+}
+
+#[test]
+fn ini_section_header_with_trailing_hash_comment_is_recognized() {
+    let current = "[a] # hi\nx = 1\n";
+    let out = apply(current, &spec(None, "a:\n  x: 9\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a] # hi\nx = 9\n");
+}
+
+#[test]
+fn ini_bracketed_line_with_trailing_junk_is_not_a_header() {
+    // `[a] junk` is not a header, so `a.x` must create a real `[a]` section
+    // rather than editing inside the junk line's block.
+    let current = "[a] junk\nx = 1\n";
+    let out = apply(current, &spec(None, "a:\n  x: 9\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a] junk\nx = 1\n\n[a]\nx = 9\n");
+}
+
+#[test]
+fn ini_duplicate_section_headers_are_all_updated() {
+    // git/systemd/configparser read the LAST value; editing only the first
+    // block would leave the ensured value overridden while cfgd reports success.
+    let current = "[a]\nx = 1\n\n[b]\ny = 2\n\n[a]\nx = 99\n";
+    let out = assert_converges(current, &spec(None, "a:\n  x: 9\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a]\nx = 9\n\n[b]\ny = 2\n\n[a]\nx = 9\n");
+}
+
+#[test]
+fn ini_missing_key_is_added_to_the_last_duplicate_section() {
+    let current = "[a]\nx = 1\n\n[a]\nx = 2\n";
+    let out = apply(current, &spec(None, "a:\n  z: 3\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a]\nx = 1\n\n[a]\nx = 2\nz = 3\n");
+}
+
+#[test]
+fn ini_updates_an_existing_key_in_a_crlf_file() {
+    // Exercises the `\r` strip/re-append branch of the value replacer, which
+    // the add-only CRLF test never reaches.
+    let current = "[user]\r\nname = Old\r\nemail = keep@example.com\r\n";
+    let out = assert_converges(current, &spec(None, "user:\n  name: New\n"), "/tmp/app.ini");
+    assert_eq!(out, "[user]\r\nname = New\r\nemail = keep@example.com\r\n");
+}
+
+#[test]
+fn ini_new_key_adopts_the_files_indentation() {
+    let current = "[user]\n\tname = Ada\n";
+    let out = apply(
+        current,
+        &spec(None, "user:\n  email: ada@example.com\n"),
+        "/tmp/app.ini",
+    );
+    assert_eq!(out, "[user]\n\tname = Ada\n\temail = ada@example.com\n");
+}
+
+#[test]
+fn ini_update_keeps_the_lines_existing_indentation() {
+    let current = "[user]\n\tname = Old\n";
+    let out = assert_converges(current, &spec(None, "user:\n  name: New\n"), "/tmp/app.ini");
+    assert_eq!(out, "[user]\n\tname = New\n");
+}
+
+#[test]
+fn ini_whitespace_only_target_gains_no_leading_blank_line() {
+    let out = apply("\n", &spec(None, "a:\n  x: 9\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a]\nx = 9\n");
+}
+
+#[test]
+fn ini_whitespace_only_target_takes_a_global_key_cleanly() {
+    let out = apply("\n\n", &spec(None, "verbose: true\n"), "/tmp/app.ini");
+    assert_eq!(out, "verbose = true\n");
+}
+
+#[test]
+fn ini_rejects_a_value_containing_a_newline() {
+    // Writing it would inject a bogus `[evil]` section that the next pass
+    // cannot read back, re-appending forever.
+    let err = apply_err(
+        "",
+        &spec(None, "a:\n  x: \"line1\\n[evil]\\nz = 1\"\n"),
+        "/tmp/app.ini",
+    );
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("a.x"), "names the key: {err}");
+    assert!(err.to_string().contains("newline"), "{err}");
+}
+
+#[test]
+fn ini_rejects_a_value_containing_a_carriage_return() {
+    let err = apply_err("", &spec(None, "a:\n  x: \"one\\rtwo\"\n"), "/tmp/app.ini");
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("carriage return"), "{err}");
+}
+
+#[test]
+fn ini_rejects_a_key_name_containing_an_equals_sign() {
+    // `x=y = 1` reads back as key `x`, so the merge would never find `x=y`.
+    let err = apply_err("", &spec(None, "a:\n  \"x=y\": 1\n"), "/tmp/app.ini");
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("no escape syntax"), "{err}");
+}
+
+#[test]
+fn ini_rejects_key_and_section_names_with_structural_characters() {
+    for ensure in [
+        "a:\n  \"x[1]\": 1\n",
+        "a:\n  \"x\\ny\": 1\n",
+        "\"a\\n[evil]\\nz\":\n  x: 1\n",
+        "\"a]b\":\n  x: 1\n",
+    ] {
+        let err = apply_err("", &spec(None, ensure), "/tmp/app.ini");
+        assert_ensure_shape(&err);
+    }
+}
+
+#[test]
+fn ini_rejects_padded_and_empty_names() {
+    for ensure in [
+        "a:\n  \" x\": 1\n",
+        "a:\n  \"x \": 1\n",
+        "a:\n  \"\": 1\n",
+        "\" a\":\n  x: 1\n",
+        "\"\":\n  x: 1\n",
+        "\" verbose\": true\n",
+    ] {
+        let err = apply_err("", &spec(None, ensure), "/tmp/app.ini");
+        assert_ensure_shape(&err);
+        assert!(
+            err.to_string().contains("empty or padded"),
+            "explains why: {err}"
+        );
+    }
+}
+
+#[test]
+fn ini_values_are_literal_not_templated() {
+    let out = assert_converges(
+        "",
+        &spec(None, "core:\n  editor: \"{{ tera }} ${SHELL} $HOME\"\n"),
+        "/tmp/app.ini",
+    );
+    assert_eq!(out, "[core]\neditor = {{ tera }} ${SHELL} $HOME\n");
+}
+
 // ---------------------------------------------------------------------------
 // TOML
 // ---------------------------------------------------------------------------
@@ -629,11 +795,43 @@ fn toml_rejects_null_values() {
 #[test]
 fn toml_rejects_non_string_keys() {
     let err = apply_err("", &spec(None, "42: value\n"), "/tmp/a.toml");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+    assert_ensure_shape(&err);
+}
+
+#[test]
+fn toml_replaces_a_table_with_a_scalar_keeping_normal_spacing() {
+    let current = "[build]\njobs = 4\n";
+    let out = assert_converges(current, &spec(None, "build: 5\n"), "/tmp/a.toml");
+    assert_eq!(out, "build = 5\n");
+}
+
+#[test]
+fn toml_replaces_an_array_of_tables_with_a_table() {
+    let current = "[[bin]]\nname = \"one\"\n\n[[bin]]\nname = \"two\"\n";
+    let out = assert_converges(current, &spec(None, "bin:\n  name: only\n"), "/tmp/a.toml");
+    assert_eq!(out, "[bin]\nname = \"only\"\n");
+}
+
+#[test]
+fn toml_rejects_integers_beyond_the_signed_64_bit_range() {
+    // Falling through to f64 would silently write a different number.
+    let err = apply_err(
+        "",
+        &spec(None, "build:\n  jobs: 18446744073709551615\n"),
+        "/tmp/a.toml",
     );
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("64-bit integer range"), "{err}");
+}
+
+#[test]
+fn toml_values_are_literal_not_templated() {
+    let out = assert_converges(
+        "",
+        &spec(None, "build:\n  target: \"{{ tera }}\"\n"),
+        "/tmp/a.toml",
+    );
+    assert_eq!(out, "[build]\ntarget = \"{{ tera }}\"\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -718,12 +916,70 @@ fn json_non_object_current_content_is_a_typed_error() {
 
 #[test]
 fn json_rejects_non_string_keys() {
+    // Writing `42` as `"42"` would make the next pass compare a string key
+    // against a number key and append a duplicate on every reconcile.
     let err = apply_err("{}", &spec(None, "42: value\n"), "/tmp/a.json");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::ModifyEnsureShape { .. }),
-        "ModifyEnsureShape",
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("must be strings"), "{err}");
+}
+
+#[test]
+fn json_rejects_a_non_string_key_nested_in_the_overlay() {
+    let err = apply_err("{}", &spec(None, "editor:\n  42: value\n"), "/tmp/a.json");
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("editor."), "names the path: {err}");
+}
+
+#[test]
+fn json_rejects_a_structured_key() {
+    let err = apply_err("{}", &spec(None, "? [a, b]\n: value\n"), "/tmp/a.json");
+    assert_ensure_shape(&err);
+}
+
+#[test]
+fn json_preserves_the_targets_key_order() {
+    // The whole point of `Modify` is leaving untouched content alone; a
+    // `serde_json::Value` round-trip would re-sort a user's settings.json
+    // alphabetically. Asserted on the raw text — re-parsing hides ordering.
+    let current = r#"{"zeta": 1, "alpha": {"nested": true, "aaa": 2}, "middle": 3}"#;
+    let out = assert_converges(
+        current,
+        &spec(None, "alpha:\n  nested: false\n"),
+        "/tmp/settings.json",
     );
+    assert_eq!(
+        out,
+        "{\n  \"zeta\": 1,\n  \"alpha\": {\n    \"nested\": false,\n    \"aaa\": 2\n  },\n  \"middle\": 3\n}\n"
+    );
+}
+
+#[test]
+fn json_appends_new_keys_after_the_existing_ones() {
+    let out = apply(
+        r#"{"zeta": 1, "alpha": 2}"#,
+        &spec(None, "beta: 3\n"),
+        "/tmp/a.json",
+    );
+    assert_eq!(
+        out,
+        "{\n  \"zeta\": 1,\n  \"alpha\": 2,\n  \"beta\": 3\n}\n"
+    );
+}
+
+#[test]
+fn json_preserves_integers_beyond_the_signed_64_bit_range() {
+    let out = apply(
+        r#"{"big": 18446744073709551615}"#,
+        &spec(None, "other: 1\n"),
+        "/tmp/a.json",
+    );
+    assert!(out.contains("18446744073709551615"), "exact u64: {out}");
+}
+
+#[test]
+fn json_values_are_literal_not_templated() {
+    let out = assert_converges("{}", &spec(None, "editor: \"{{ tera }}\"\n"), "/tmp/a.json");
+    assert_eq!(out, "{\n  \"editor\": \"{{ tera }}\"\n}\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +1044,42 @@ fn yaml_invalid_current_content_is_a_typed_error() {
         |e| matches!(e, FileError::ModifyParse { .. }),
         "ModifyParse",
     );
+}
+
+#[test]
+fn yaml_multi_document_input_is_a_typed_error() {
+    let err = apply_err("a: 1\n---\nb: 2\n", &spec(None, "c: 3\n"), "/tmp/a.yaml");
+    assert_file_err(
+        &err,
+        |e| matches!(e, FileError::ModifyParse { .. }),
+        "ModifyParse",
+    );
+}
+
+#[test]
+fn yaml_values_are_literal_not_templated() {
+    let out = assert_converges("", &spec(None, "greeting: \"{{ name }}\"\n"), "/tmp/a.yaml");
+    assert_eq!(out, "greeting: '{{ name }}'\n");
+}
+
+#[test]
+fn json_and_yaml_merges_agree_on_the_same_structure() {
+    // Both formats route through `deep_merge_yaml`; this pins that they cannot
+    // drift apart in nesting or replacement semantics.
+    let ensure = "a:\n  b: 2\nlist: [9]\n";
+    let json = apply(
+        r#"{"a": {"b": 1, "keep": true}, "list": [1, 2], "other": "x"}"#,
+        &spec(None, ensure),
+        "/tmp/a.json",
+    );
+    let yaml = apply(
+        "a:\n  b: 1\n  keep: true\nlist:\n- 1\n- 2\nother: x\n",
+        &spec(None, ensure),
+        "/tmp/a.yaml",
+    );
+    let from_json: serde_yaml::Value = serde_json::from_str(&json).expect("json parses");
+    let from_yaml: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parses");
+    assert_eq!(from_json, from_yaml);
 }
 
 #[test]
@@ -926,7 +1218,7 @@ mod unix_script {
     }
 
     #[test]
-    fn script_non_executable_file_is_a_typed_error() {
+    fn script_non_executable_file_is_a_typed_error_naming_the_target() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("noexec.sh");
         std::fs::write(&path, "#!/bin/sh\ncat\n").expect("write");
@@ -937,10 +1229,98 @@ mod unix_script {
             &ctx_for(dir.path()),
         )
         .expect_err("non-executable script must fail");
-        assert!(
-            err.to_string().contains("not executable"),
-            "explains the fix: {err}"
+        assert_file_err(
+            &err,
+            |e| matches!(e, FileError::ModifyScriptFailed { .. }),
+            "ModifyScriptFailed",
         );
+        let text = err.to_string();
+        assert!(text.contains("not executable"), "explains the fix: {text}");
+        assert!(text.contains("/etc/hosts"), "names the target: {text}");
+    }
+
+    #[test]
+    fn script_with_a_missing_working_directory_names_the_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_dir = dir.path().to_path_buf();
+        write_script(&script_dir, "filter.sh", "#!/bin/sh\ncat\n");
+        let gone = dir.path().join("not-there");
+        let ctx = ModifyContext::new(&script_dir).with_working_dir(&gone);
+        let err = compute_modified(
+            "content\n",
+            &script_spec("filter.sh"),
+            Path::new("/etc/hosts"),
+            &ctx,
+        )
+        .expect_err("missing working directory must fail");
+        assert_file_err(
+            &err,
+            |e| matches!(e, FileError::ModifyScriptFailed { .. }),
+            "ModifyScriptFailed",
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("working directory does not exist"),
+            "names the real cause: {text}"
+        );
+        assert!(text.contains("/etc/hosts"), "names the target: {text}");
+    }
+
+    #[test]
+    fn documented_hosts_filter_example_is_idempotent() {
+        // Ground-truths the `ensure-hosts-entry.sh` block in
+        // docs/configuration.md: a filter that drains stdin with a bare `cat`
+        // appends its entry on every reconcile.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_script(
+            dir.path(),
+            "ensure-hosts-entry.sh",
+            "#!/bin/sh\n\
+             content=$(cat)\n\
+             printf '%s\\n' \"$content\"\n\
+             printf '%s\\n' \"$content\" | grep -q '10.0.0.5 build.internal' \\\n\
+               || echo '10.0.0.5 build.internal'\n",
+        );
+        let spec = script_spec("ensure-hosts-entry.sh");
+        let run = |input: &str| {
+            compute_modified(input, &spec, Path::new("/etc/hosts"), &ctx_for(dir.path()))
+                .expect("filter succeeds")
+        };
+        let once = run("127.0.0.1 localhost\n");
+        assert_eq!(once, "127.0.0.1 localhost\n10.0.0.5 build.internal\n");
+        assert_eq!(run(&once), once, "second pass appended again");
+    }
+
+    #[test]
+    fn freshly_written_scripts_run_under_concurrent_spawns() {
+        // Guards the ETXTBSY retry: sibling threads forking while this thread
+        // execs a just-written script used to fail at random with
+        // "Text file busy". Each thread writes its own script and runs it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let mut handles = Vec::new();
+        for n in 0..8 {
+            let root = root.clone();
+            handles.push(std::thread::spawn(move || {
+                let sub = root.join(format!("t{n}"));
+                std::fs::create_dir_all(&sub).expect("create subdir");
+                write_script(&sub, "filter.sh", "#!/bin/sh\ncat\n");
+                let ctx = ModifyContext::new(&sub).with_working_dir(&sub);
+                compute_modified(
+                    "payload\n",
+                    &script_spec("filter.sh"),
+                    Path::new("/etc/hosts"),
+                    &ctx,
+                )
+            }));
+        }
+        for handle in handles {
+            let out = handle
+                .join()
+                .expect("thread did not panic")
+                .expect("filter succeeds");
+            assert_eq!(out, "payload\n");
+        }
     }
 
     #[test]
@@ -980,6 +1360,28 @@ mod unix_script {
         let out = compute_modified("", &script_spec("env.sh"), Path::new("/etc/hosts"), &ctx)
             .expect("filter succeeds");
         assert_eq!(out, "demo\n");
+    }
+
+    #[test]
+    fn default_context_injects_no_cfgd_environment() {
+        // Pins the default: cfgd-core cannot synthesize the CFGD_* metadata (it
+        // needs the config dir, profile, and phase), so a dispatch site must
+        // pass `build_module_script_env` output via `with_env`. A wiring change
+        // that forgets it shows up here as an empty value, not a silent gap.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_script(
+            dir.path(),
+            "env.sh",
+            "#!/bin/sh\necho \"[${CFGD_MODULE_NAME}]\"\n",
+        );
+        let out = compute_modified(
+            "",
+            &script_spec("env.sh"),
+            Path::new("/etc/hosts"),
+            &ctx_for(dir.path()),
+        )
+        .expect("filter succeeds");
+        assert_eq!(out, "[]\n");
     }
 
     #[test]
