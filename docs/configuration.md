@@ -480,6 +480,11 @@ below), and `cfgd paths` prints the resolved values on any host.
 | **Cache** (source cache, module cache) | platform-native cache dir — Linux `$XDG_CACHE_HOME/cfgd` or `~/.cache/cfgd`, macOS `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`. Sources live under `<cache>/sources`, modules under `<cache>/modules`. |
 | **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
 
+`spec.backups[].schedule` (see [spec.backups[]](spec/profile.md#specbackups)) accepts a
+`parse_duration_str` interval (e.g. `6h`) or a cron expression — 5-field
+(`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field
+(`second minute hour day month weekday`, e.g. `30 0 3 * * *`).
+
 The **config** platform default per OS (used only when `XDG_CONFIG_HOME` is
 unset):
 

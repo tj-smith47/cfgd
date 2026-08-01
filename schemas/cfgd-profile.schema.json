@@ -35,7 +35,7 @@
           ]
         },
         "name": {
-          "description": "Unique identifier for this backup within `spec.backups`. Keys the\n`destination` default, run records, and CLI selection — uniqueness is\nenforced by [`validate_backup_specs`].",
+          "description": "Unique identifier for this backup within `spec.backups`. Keys the\n`destination` default, run records, and CLI selection — uniqueness is\nenforced by [`validate_backup_specs`]. Becomes a directory component\n(`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank,\nand free of path separators (`/`, `\\`) or traversal segments (`.`,\n`..`) — enforced by [`validate_backup_specs`].",
           "type": "string"
         },
         "namePattern": {
@@ -61,13 +61,13 @@
         },
         "retention": {
           "default": 10,
-          "description": "Number of newest snapshots to keep for this backup; older snapshots\nare pruned. Defaults to 10.",
+          "description": "Number of newest snapshots to keep for this backup; older snapshots\nare pruned. Must be at least 1 (`0` would keep no backups, which is a\nmisconfiguration rather than a supported \"unlimited\" mode — enforced\nby [`validate_backup_specs`]). Defaults to 10.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
         "schedule": {
-          "description": "When to run this backup: a `parse_duration_str` interval (e.g. `\"6h\"`)\nor a cron expression (e.g. `\"0 3 * * *\"`), validated by\n[`validate_backup_specs`]. Omitted means \"run on every apply\".",
+          "description": "When to run this backup: a `parse_duration_str` interval (e.g. `\"6h\"`)\nor a cron expression, validated by [`validate_backup_specs`]. Cron\nexpressions may be 5-field (`minute hour day month weekday`, e.g.\n`\"0 3 * * *\"`) or 6-field with a leading seconds field\n(`second minute hour day month weekday`, e.g. `\"30 0 3 * * *\"`).\nOmitted means \"run on every apply\".",
           "type": [
             "string",
             "null"

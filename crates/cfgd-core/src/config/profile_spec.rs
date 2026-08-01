@@ -932,7 +932,10 @@ pub struct ScriptSpec {
 pub struct BackupSpec {
     /// Unique identifier for this backup within `spec.backups`. Keys the
     /// `destination` default, run records, and CLI selection — uniqueness is
-    /// enforced by [`validate_backup_specs`].
+    /// enforced by [`validate_backup_specs`]. Becomes a directory component
+    /// (`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank,
+    /// and free of path separators (`/`, `\`) or traversal segments (`.`,
+    /// `..`) — enforced by [`validate_backup_specs`].
     pub name: String,
     /// File or directory to snapshot.
     pub source: PathBuf,
@@ -949,12 +952,17 @@ pub struct BackupSpec {
     #[serde(default = "default_backup_name_pattern")]
     pub name_pattern: String,
     /// When to run this backup: a `parse_duration_str` interval (e.g. `"6h"`)
-    /// or a cron expression (e.g. `"0 3 * * *"`), validated by
-    /// [`validate_backup_specs`]. Omitted means "run on every apply".
+    /// or a cron expression, validated by [`validate_backup_specs`]. Cron
+    /// expressions may be 5-field (`minute hour day month weekday`, e.g.
+    /// `"0 3 * * *"`) or 6-field with a leading seconds field
+    /// (`second minute hour day month weekday`, e.g. `"30 0 3 * * *"`).
+    /// Omitted means "run on every apply".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
     /// Number of newest snapshots to keep for this backup; older snapshots
-    /// are pruned. Defaults to 10.
+    /// are pruned. Must be at least 1 (`0` would keep no backups, which is a
+    /// misconfiguration rather than a supported "unlimited" mode — enforced
+    /// by [`validate_backup_specs`]). Defaults to 10.
     #[serde(default = "default_backup_retention")]
     pub retention: u32,
     /// Scripts run before the snapshot is taken (e.g. stop a service that
@@ -1037,6 +1045,35 @@ fn validate_backup_name_pattern(subject: &str, pattern: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a backup `name`: it becomes a directory component
+/// (`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank, and
+/// free of path separators or traversal segments.
+fn validate_backup_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        return Err(ConfigError::Invalid {
+            message: "backup name must not be empty or whitespace-only".to_string(),
+        }
+        .into());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "backup name '{name}' must not contain path separators ('/' or '\\'); it is used as a directory component (<state_dir>/backups/<name>/)"
+            ),
+        }
+        .into());
+    }
+    if name == "." || name == ".." {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "backup name '{name}' must not be a path traversal segment ('.' or '..')"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Validate a backup `schedule`: it must parse as either a
 /// [`crate::parse_duration_str`] interval or a `croner` cron expression.
 /// Naming both attempted interpretations' errors on failure so a typo in
@@ -1058,12 +1095,14 @@ fn validate_backup_schedule(subject: &str, schedule: &str) -> Result<()> {
     .into())
 }
 
-/// Validate `spec.backups[]`: `name` unique across the list, `namePattern`
-/// references only known variables, and `schedule` (when set) parses as an
-/// interval or a cron expression.
+/// Validate `spec.backups[]`: `name` is non-empty, path-safe, and unique
+/// across the list; `namePattern` references only known variables;
+/// `schedule` (when set) parses as an interval or a cron expression; and
+/// `retention` is at least 1.
 pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
     let mut seen_names = std::collections::HashSet::new();
     for spec in specs {
+        validate_backup_name(&spec.name)?;
         let subject = format!("backup '{}'", spec.name);
         if !seen_names.insert(spec.name.as_str()) {
             return Err(ConfigError::Invalid {
@@ -1077,6 +1116,14 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
         validate_backup_name_pattern(&subject, &spec.name_pattern)?;
         if let Some(schedule) = &spec.schedule {
             validate_backup_schedule(&subject, schedule)?;
+        }
+        if spec.retention == 0 {
+            return Err(ConfigError::Invalid {
+                message: format!(
+                    "{subject}: retention must be at least 1 (0 would keep no backups); omit the field to use the default of 10"
+                ),
+            }
+            .into());
         }
     }
     Ok(())
@@ -1323,6 +1370,96 @@ postBackup:
     }
 
     #[test]
+    fn validate_backup_specs_rejects_empty_name() {
+        let specs = vec![BackupSpec {
+            name: "".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        let err = validate_backup_specs(&specs).expect_err("empty name must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("must not be empty"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_whitespace_only_name() {
+        let specs = vec![BackupSpec {
+            name: "   ".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        let err = validate_backup_specs(&specs).expect_err("whitespace-only name must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("must not be empty"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_name_with_separator() {
+        for bad in ["a/b", "a\\b"] {
+            let specs = vec![BackupSpec {
+                name: bad.into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            }];
+            let err = validate_backup_specs(&specs)
+                .expect_err("name with a path separator must be rejected");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(bad) && msg.contains("path separators"),
+                "got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_traversal_name() {
+        let specs = vec![BackupSpec {
+            name: "..".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        let err = validate_backup_specs(&specs).expect_err("'..' name must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("traversal segment"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_dashes_and_dots_in_name() {
+        let specs = vec![BackupSpec {
+            name: "openlist-db.v2".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        validate_backup_specs(&specs)
+            .expect("a name with internal dashes and dots should validate");
+    }
+
+    #[test]
     fn validate_backup_specs_rejects_duplicate_names() {
         let specs = vec![
             BackupSpec {
@@ -1399,7 +1536,12 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_accepts_good_cron_schedule() {
-        for schedule in ["0 3 * * *", "*/15 * * * *", "0 0 1 * *"] {
+        for schedule in [
+            "0 3 * * *",
+            "*/15 * * * *",
+            "0 0 1 * *",
+            "30 0 3 * * *", // 6-field with a leading seconds field
+        ] {
             let specs = vec![BackupSpec {
                 name: "db".into(),
                 source: PathBuf::from("/a"),
@@ -1433,6 +1575,38 @@ postBackup:
             msg.contains("not a valid interval") && msg.contains("not a valid cron expression"),
             "expected message naming both attempted interpretations, got: {msg}"
         );
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_zero_retention() {
+        let specs = vec![BackupSpec {
+            name: "db".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: 0,
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        let err = validate_backup_specs(&specs).expect_err("retention 0 must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("retention must be at least 1"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_retention_of_one() {
+        let specs = vec![BackupSpec {
+            name: "db".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: 1,
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        validate_backup_specs(&specs).expect("retention of 1 should validate");
     }
 
     #[test]

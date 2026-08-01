@@ -749,12 +749,12 @@ are not yet implemented.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. Must be unique across the list. |
+| `name` | string | Yes | | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. Must be unique across the list, non-empty/non-blank, and free of path separators (`/`, `\`) or traversal segments (`.`, `..`) — it becomes the directory component `<state_dir>/backups/<name>/`. Validated at parse time. |
 | `source` | string (path) | Yes | | File or directory to snapshot. |
 | `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. |
-| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression (e.g. `0 3 * * *`), validated at parse time. Omitted means "run on every apply". |
-| `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned. |
+| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`). Omitted means "run on every apply". |
+| `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
 | `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. |
 | `postBackup` | list | No | `[]` | Scripts run after the snapshot completes. Same shape as [spec.scripts](#specscripts) entries. |
 
