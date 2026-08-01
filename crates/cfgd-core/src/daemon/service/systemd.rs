@@ -1,6 +1,30 @@
 use super::super::*;
 use crate::PathDisplayExt;
 
+/// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
+///
+/// systemd splits `ExecStart` on whitespace unless a token is quoted, so an
+/// operator-chosen `--state-dir '/srv/my state'` would otherwise reach clap as
+/// two arguments and the unit would die at argument validation before the
+/// daemon ever started. Three separate systemd rules apply:
+///
+/// - `%` introduces a unit specifier (`%h`, `%i`) — doubled to pass through.
+/// - `$` introduces variable expansion — doubled to pass through.
+/// - whitespace, quotes, and backslashes need a double-quoted string with
+///   C-style escapes.
+pub(crate) fn systemd_quote(token: &str) -> String {
+    let literal = token.replace('%', "%%").replace('$', "$$");
+    let needs_quotes = literal.is_empty()
+        || literal
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '\\'));
+    if !needs_quotes {
+        return literal;
+    }
+    let escaped = literal.replace('\\', r"\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 /// Generate systemd unit file content for the daemon service.
 ///
 /// `dirs` carries the process-level `--state-dir` / `--runtime-dir` the install
@@ -19,9 +43,9 @@ pub(crate) fn generate_systemd_unit(
     dirs: &DaemonDirOverrides,
 ) -> String {
     let mut args = vec![
-        binary.display().to_string(),
+        binary.display().to_string(), // native-ok: argv token for this host
         "--config".to_string(),
-        config_path.display().to_string(),
+        config_path.display().to_string(), // native-ok: argv token for this host
     ];
     if let Some(p) = profile {
         args.push("--profile".to_string());
@@ -33,11 +57,15 @@ pub(crate) fn generate_systemd_unit(
     }
     for (flag, dir) in service_dir_flags(dirs) {
         args.push(flag.to_string());
-        args.push(dir.display().to_string());
+        args.push(dir.display().to_string()); // native-ok: argv token for this host
     }
     args.push("--quiet".to_string());
     args.push("daemon".to_string());
-    let exec_start = args.join(" ");
+    let exec_start = args
+        .iter()
+        .map(|a| systemd_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     if scope == crate::Scope::System {
         format!(
@@ -463,6 +491,63 @@ mod tests {
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(!unit.contains("--profile"));
+    }
+
+    #[test]
+    fn systemd_quote_leaves_an_ordinary_token_untouched() {
+        // The packaging golden and every default install depend on this: a
+        // plain path must render byte-identically to the unquoted form.
+        for tok in [
+            "/usr/local/bin/cfgd",
+            "--config",
+            "daemon",
+            "/etc/cfgd/config.yaml",
+        ] {
+            assert_eq!(systemd_quote(tok), tok);
+        }
+    }
+
+    #[test]
+    fn systemd_quote_wraps_a_token_systemd_would_split() {
+        assert_eq!(systemd_quote("/srv/my state"), "\"/srv/my state\"");
+        assert_eq!(systemd_quote(""), "\"\"");
+        assert_eq!(systemd_quote("a\tb"), "\"a\tb\"");
+    }
+
+    #[test]
+    fn systemd_quote_escapes_what_systemd_reads_as_syntax() {
+        // Inside a double-quoted ExecStart token systemd applies C-style
+        // escapes, so `\` and `"` have to be escaped or the token ends early.
+        assert_eq!(systemd_quote(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(systemd_quote(r"a\b"), r#""a\\b""#);
+        // `%` is a unit specifier and `$` a variable expansion, both expanded
+        // whether or not the token is quoted — doubling is the only escape.
+        assert_eq!(systemd_quote("/srv/100%cfgd"), "/srv/100%%cfgd");
+        assert_eq!(systemd_quote("/srv/$HOME"), "/srv/$$HOME");
+    }
+
+    #[test]
+    fn generate_systemd_unit_quotes_a_state_dir_containing_a_space() {
+        // `cfgd --state-dir '/srv/my state' daemon install` previously wrote an
+        // ExecStart systemd split into two arguments; the service then died at
+        // clap validation before the daemon ever ran.
+        let unit = generate_systemd_unit(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+            crate::Scope::User,
+            &DaemonDirOverrides {
+                state_dir: Some(PathBuf::from("/srv/my state")),
+                runtime_dir: Some(PathBuf::from("/run/my cfgd")),
+            },
+        );
+        assert!(
+            unit.contains(
+                "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml \
+                 --state-dir \"/srv/my state\" --runtime-dir \"/run/my cfgd\" --quiet daemon"
+            ),
+            "got: {unit}"
+        );
     }
 
     #[test]

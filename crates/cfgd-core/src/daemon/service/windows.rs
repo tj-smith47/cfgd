@@ -21,6 +21,9 @@ pub fn service_binpath_argv(
 ) -> Vec<String> {
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+    // native-ok: argv tokens the SCM hands back to this host's own binary, so
+    // they must carry this host's separators — the one place a cfgd path
+    // string is deliberately NOT folded to `/`.
     let config_str = crate::strip_windows_verbatim(&config_abs.display().to_string()).to_string();
 
     let mut argv = vec![
@@ -39,6 +42,7 @@ pub fn service_binpath_argv(
     }
     for (flag, dir) in super::service_dir_flags(dirs) {
         argv.push(flag.to_string());
+        // native-ok: argv token for this host (see `config_str` above)
         argv.push(crate::strip_windows_verbatim(&dir.display().to_string()).to_string());
     }
     if enable_event_log {

@@ -35,7 +35,7 @@
           ]
         },
         "name": {
-          "description": "Unique identifier for this backup within `spec.backups`, unique across\nthe list. Keys the `destination` default, run records, and CLI\nselection. Becomes a directory component (`<state_dir>/backups/<name>/`),\nso it must be non-empty, non-blank, and free of path separators (`/`,\n`\\`) or traversal segments (`.`, `..`).",
+          "description": "Unique identifier for this backup within `spec.backups`, unique across\nthe list. Keys the `destination` default, run records, and CLI\nselection. Becomes a directory component (`<state_dir>/backups/<name>/`)\nand a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must\nbe non-empty, non-blank, a single segment (no `/` or `\\`), not a\ndirectory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and\nfree of `:` anywhere — a drive and NTFS data-stream separator on Windows.\nWindows shapes are rejected on every platform so a name written on one\nOS stays valid on the others.",
           "type": "string"
         },
         "namePattern": {

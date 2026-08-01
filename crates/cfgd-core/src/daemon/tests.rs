@@ -4,6 +4,13 @@ use super::*;
 use super::drift::*;
 use crate::test_helpers::{test_printer, test_state};
 
+/// A never-raised abort flag with a `'static` lifetime, so a `ReconcileCtx`
+/// built by a helper can borrow one without the caller owning it.
+fn never_abort() -> &'static crate::AbortFlag {
+    static FLAG: std::sync::OnceLock<crate::AbortFlag> = std::sync::OnceLock::new();
+    FLAG.get_or_init(crate::AbortFlag::new)
+}
+
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
     notifier: &'a Arc<Notifier>,
@@ -23,6 +30,7 @@ fn quiet_reconcile_ctx<'a>(
         auto_apply_override: None,
         drift_policy_override: None,
         scope: crate::Scope::User,
+        abort: never_abort(),
     }
 }
 
@@ -6148,6 +6156,88 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
+    // `systemctl stop cfgd` mid-auto-apply must stop the reconcile the way it
+    // stops a CLI apply. A throwaway flag nobody raises would let this run to
+    // completion — and, with a profile script in the plan, wait out
+    // PROFILE_SCRIPT_TIMEOUT before the daemon could exit.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let source = tmp.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let target = tmp.path().join("dst.txt");
+    let hooks = DriftingFileHooks {
+        source,
+        target: target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let abort = Arc::new(crate::AbortFlag::new());
+    abort.set(143);
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let ab = Arc::clone(&abort);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &hooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+                module_filter: None,
+                auto_apply_override: None,
+                drift_policy_override: None,
+                scope: crate::Scope::User,
+                abort: &ab,
+            },
+        );
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !target.exists(),
+        "an aborted auto-apply must not perform the copy"
+    );
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    let record = store
+        .last_apply()
+        .unwrap()
+        .expect("the aborted run must still be recorded");
+    assert_eq!(
+        record.status,
+        crate::state::ApplyStatus::Aborted,
+        "the reconcile apply must record the cooperative abort, not success"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     // DriftPolicy::Auto + FileAction::Create with nonexistent source →
     // copy fails, exercising the auto-apply partial-failure notification branch.
@@ -10092,7 +10182,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None, 0, false);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, None);
         assert_eq!(lines, vec!["reconcile=300s".to_string()]);
     }
 
@@ -10109,7 +10199,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None, 0, false);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, None);
         assert_eq!(
             lines,
             vec![
@@ -10136,7 +10226,7 @@ mod harness {
             &parsed,
             Some(StdDuration::from_secs(900)),
             0,
-            false,
+            None,
         );
         assert_eq!(
             lines,
@@ -10776,7 +10866,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None, 0, false);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, None);
         assert_eq!(
             lines,
             vec![
@@ -10803,7 +10893,7 @@ mod harness {
             &parsed,
             Some(StdDuration::from_secs(600)),
             0,
-            false,
+            None,
         );
         assert_eq!(
             lines,
@@ -12793,6 +12883,7 @@ mod handle_reconcile_extra_branches {
                     auto_apply_override: Some(false),
                     drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
                     scope: crate::Scope::User,
+                    abort: never_abort(),
                 },
             );
         })
@@ -13094,7 +13185,7 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{make_test_ctx, make_triggers, sighup_ctx};
+    use super::harness::{NoopHooks, make_test_ctx, make_triggers, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
         BackupSchedule, BackupTask, BackupTimers, ResolvedBackupTasks, build_backup_tasks,
@@ -13978,6 +14069,114 @@ mod backup_timers {
     }
 
     #[test]
+    fn a_startup_that_cannot_resolve_the_profile_still_arms_a_retry() {
+        // Startup is the one moment with no prior set to keep, so an
+        // unresolvable profile costs every timer. Without a retry the daemon
+        // runs indefinitely with zero backups — healthy in every other respect
+        // — and only a restart or a manual SIGHUP brings them back.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        // Saved mid-edit: the file exists, and does not parse.
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "spec:\n  backups:\n   - name: [unclosed\n",
+        )
+        .unwrap();
+
+        let hooks = NoopHooks;
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+            None,
+        )
+        .expect("a broken profile must not stop the daemon from starting");
+
+        assert_eq!(setup.backup_timers.len(), 0);
+        assert_eq!(
+            setup.backup_timers.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::ProfileUnresolved),
+            "the banner must name the profile, not blame source composition"
+        );
+        assert!(
+            setup.backup_timers.next_deadline().is_some(),
+            "an empty startup set must still wake the loop to re-resolve"
+        );
+    }
+
+    #[test]
+    fn a_degraded_resolution_is_adopted_when_nothing_is_running() {
+        // The keep-the-running-set rule protects timers that exist. With none,
+        // refusing would pin a daemon that booted on an unresolvable profile at
+        // zero timers for as long as composition stayed down — the sticky-empty
+        // failure the retry exists to end.
+        let now = Instant::now();
+        let mut set = BackupTimers::empty_with_retry(now);
+        assert_eq!(set.len(), 0);
+
+        let summary = set
+            .apply_resolved(
+                ResolvedBackupTasks {
+                    tasks: vec![task("db", Path::new("/tmp/a"), "1s", now)],
+                    degraded: true,
+                },
+                now,
+            )
+            .expect("adopting a set from nothing is a reload worth reporting");
+        assert_eq!(summary.added, 1);
+        assert_eq!(set.len(), 1);
+        assert!(
+            set.is_degraded(),
+            "adopting a partial set must keep the retry armed"
+        );
+        assert!(
+            set.tasks()[0].next_fire() > now + StdDuration::from_secs(60),
+            "an adopted degraded set gets the same first-fire deferral a degraded startup does"
+        );
+    }
+
+    #[test]
+    fn a_degraded_resolution_is_still_refused_while_timers_are_running() {
+        let now = Instant::now();
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: vec![
+                    task("db", Path::new("/tmp/a"), "1h", now),
+                    task("home", Path::new("/tmp/b"), "6h", now),
+                ],
+                degraded: false,
+            },
+            now,
+        );
+
+        assert!(
+            set.apply_resolved(
+                ResolvedBackupTasks {
+                    tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
+                    degraded: true,
+                },
+                now,
+            )
+            .is_none(),
+            "a degraded resolution must not retire the source-delivered timer"
+        );
+        assert_eq!(set.len(), 2);
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
+        );
+    }
+
+    #[test]
     fn the_startup_banner_says_when_the_timer_set_is_degraded() {
         let parsed = ParsedDaemonConfig {
             reconcile_interval: StdDuration::from_secs(300),
@@ -13990,17 +14189,37 @@ mod backup_timers {
             notify_method: NotifyMethod::Stdout,
             webhook_url: None,
         };
-        let clean = crate::daemon::format_interval_lines(&parsed, None, 2, false);
+        let clean = crate::daemon::format_interval_lines(&parsed, None, 2, None);
         assert!(clean.iter().any(|l| l == "backups=2 scheduled"));
 
-        let degraded = crate::daemon::format_interval_lines(&parsed, None, 2, true);
         // "backups=2 scheduled" alone is a lie when a source's third one is
-        // missing from the set.
+        // missing from the set — and the two degraded causes need different
+        // remedies, so the banner names which one it hit.
+        let sources = crate::daemon::format_interval_lines(
+            &parsed,
+            None,
+            2,
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable),
+        );
         assert!(
-            degraded
+            sources
                 .iter()
                 .any(|l| l == "backups=2 scheduled (source composition unavailable)"),
-            "got: {degraded:?}"
+            "got: {sources:?}"
+        );
+
+        let profile = crate::daemon::format_interval_lines(
+            &parsed,
+            None,
+            0,
+            Some(crate::daemon::backup::DegradedReason::ProfileUnresolved),
+        );
+        assert!(
+            profile
+                .iter()
+                .any(|l| l == "backups=0 scheduled (profile unresolved)"),
+            "a profile that would not resolve must not be reported as a source \
+             problem, got: {profile:?}"
         );
     }
 }

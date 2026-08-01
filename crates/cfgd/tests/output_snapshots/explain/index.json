@@ -295,7 +295,7 @@
             "type": "string"
           },
           {
-            "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank, and free of path separators (`/`, `\\`) or traversal segments (`.`, `..`).",
+            "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty, non-blank, a single segment (no `/` or `\\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.",
             "name": "name",
             "required": true,
             "type": "string"

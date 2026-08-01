@@ -936,9 +936,13 @@ pub struct ScriptSpec {
 pub struct BackupSpec {
     /// Unique identifier for this backup within `spec.backups`, unique across
     /// the list. Keys the `destination` default, run records, and CLI
-    /// selection. Becomes a directory component (`<state_dir>/backups/<name>/`),
-    /// so it must be non-empty, non-blank, and free of path separators (`/`,
-    /// `\`) or traversal segments (`.`, `..`).
+    /// selection. Becomes a directory component (`<state_dir>/backups/<name>/`)
+    /// and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must
+    /// be non-empty, non-blank, a single segment (no `/` or `\`), not a
+    /// directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and
+    /// free of `:` anywhere — a drive and NTFS data-stream separator on Windows.
+    /// Windows shapes are rejected on every platform so a name written on one
+    /// OS stays valid on the others.
     pub name: String,
     /// File or directory to snapshot. A leading `~` expands to the home
     /// directory. Must not contain, or sit inside, the resolved `destination` —
@@ -1065,9 +1069,14 @@ fn validate_backup_name_pattern(subject: &str, pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a backup `name`: it becomes a directory component
-/// (`<state_dir>/backups/<name>/`), so it must be non-empty, non-blank, and
-/// free of path separators or traversal segments.
+/// Validate a backup `name`.
+///
+/// The name is a directory component (`<state_dir>/backups/<name>/`), a lock
+/// filename (`<state_dir>/locks/backup-<name>.lock`), and the key the retention
+/// pass prunes by — three roots cfgd creates and later deletes wholesale — so it
+/// goes through [`crate::validate_plain_name`], the shared gate for exactly that
+/// class. Only the single-component rule is checked here on top: `validate_plain_name`
+/// accepts a nested `daily/2026`, which a backup name must not be.
 fn validate_backup_name(name: &str) -> Result<()> {
     if name.trim().is_empty() {
         return Err(ConfigError::Invalid {
@@ -1083,10 +1092,10 @@ fn validate_backup_name(name: &str) -> Result<()> {
         }
         .into());
     }
-    if name == "." || name == ".." {
+    if let Err(why) = crate::validate_plain_name(name) {
         return Err(ConfigError::Invalid {
             message: format!(
-                "backup name '{name}' must not be a path traversal segment ('.' or '..')"
+                "backup name '{name}' is not usable as a name: {why}; it becomes a directory component (<state_dir>/backups/<name>/) and a lock file (<state_dir>/locks/backup-<name>.lock)"
             ),
         }
         .into());
@@ -1460,7 +1469,71 @@ postBackup:
         }];
         let err = validate_backup_specs(&specs).expect_err("'..' name must be rejected");
         let msg = format!("{err}");
-        assert!(msg.contains("traversal segment"), "got: {msg}");
+        assert!(msg.contains("directory reference"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_colon_in_name() {
+        // `:` is a drive separator and an NTFS alternate-data-stream separator
+        // on Windows, so `<state_dir>/backups/db:1/` and
+        // `<state_dir>/locks/backup-db:1.lock` are not the paths they read as
+        // there. `validate_plain_name` refuses the shape on every host so a
+        // name authored on Linux does not detonate on a Windows machine that
+        // syncs the same profile.
+        for bad in [
+            "db:1",
+            "C:daily",
+            ":leading",
+            "trailing:",
+            "20260801T120000Z:snap",
+        ] {
+            let specs = vec![BackupSpec {
+                name: bad.into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            }];
+            let err = validate_backup_specs(&specs)
+                .expect_err(&format!("a ':' in '{bad}' must be rejected"));
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(bad) && msg.contains(':'),
+                "the message must name the value and the offending character, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_backup_specs_keeps_ordinary_names_legal() {
+        // The `validate_plain_name` convergence must reject ONLY the newly
+        // unsafe shapes: every name shape that was legal before stays legal.
+        for good in [
+            "docs",
+            "openlist-db.v2",
+            "a..b",
+            "weekly_2026",
+            "Backup 1",
+            "état",
+            "-leading-dash",
+            "..leading-dots",
+        ] {
+            let specs = vec![BackupSpec {
+                name: good.into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            }];
+            validate_backup_specs(&specs)
+                .unwrap_or_else(|e| panic!("'{good}' must stay legal, got: {e}"));
+        }
     }
 
     #[test]

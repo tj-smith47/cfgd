@@ -613,24 +613,44 @@ fn backup_timestamp_span(window: &[char]) -> Option<usize> {
 fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
     // The engine allows one writer per unit. `backup run` with no name must not
     // abandon the rest of the set over one unit another process holds — but the
-    // command still fails, because a run the user asked for did not happen.
+    // command still exits nonzero, because a run the user asked for did not
+    // happen. Driven through `run_backup_run` because the nonzero exit is a
+    // `process::exit` in `cmd_backup_run`, which would take the test binary
+    // with it.
     let (config_dir, state_dir, _source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
     let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
 
-    let err = cmd_backup_run(&cli, &printer, None).unwrap_err();
+    let outcome = cfgd::cli::backup::run_backup_run(&cli, &printer, None)
+        .expect("a busy unit is an outcome, not an error");
     drop(printer);
+
+    assert_eq!(
+        outcome.busy,
+        vec!["docs".to_string()],
+        "the busy unit must be carried out to the exit-code decision"
+    );
+    assert!(
+        !outcome.fully_clean(),
+        "a run the user asked for did not happen — the command must exit nonzero"
+    );
 
     let human = strip_ansi(&cap.human());
     assert!(
-        human.contains("already running"),
+        human.contains("already running") && human.contains("docs"),
         "the busy unit must be reported: {human}"
     );
+    // `apply` renders the same event as Skipped; the unit IS being backed up,
+    // just not by us. Only the exit code distinguishes the two surfaces.
     assert!(
-        err.to_string().contains("docs") && err.to_string().contains("already running"),
-        "the command must fail naming the busy unit: {err}"
+        human.contains("— backup 'docs'"),
+        "a busy unit renders with the Skipped role, matching apply: {human:?}"
+    );
+    assert!(
+        !human.contains("✗ backup 'docs'"),
+        "a busy unit is not a failed backup: {human:?}"
     );
     assert!(
         !state_dir.path().join("backups").join("docs").exists(),
@@ -642,6 +662,33 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
             .count(),
         1,
         "one unit's collision must not abandon the rest of the set"
+    );
+}
+
+#[test]
+fn backup_run_json_payload_marks_the_busy_unit_skipped() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+
+    let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
+
+    cfgd::cli::backup::run_backup_run(&cli, &printer, None).expect("busy is not an error");
+    drop(printer);
+
+    let payload = cap.json().expect("backup run doc carries a payload");
+    let entries = payload.as_array().expect("array payload");
+    let docs = entries
+        .iter()
+        .find(|e| e["name"] == "docs")
+        .expect("the busy unit stays in the payload");
+    assert_eq!(docs["status"], "skipped");
+    assert_eq!(docs["clean"], false);
+    assert!(
+        docs["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("already running")),
+        "the payload must say why: {docs}"
     );
 }
 

@@ -687,11 +687,12 @@ pub(super) fn build_pre_loop_setup(
         .unwrap_or(parsed.sync_interval);
 
     let now = std::time::Instant::now();
-    // A profile that will not resolve leaves the daemon with no timers AND no
-    // retry: the reconcile path reports the same failure every tick, so a
-    // second voice repeating it every five minutes buys nothing. Composition
-    // failure is the opposite — invisible elsewhere, and self-healing — so
-    // `BackupTimers::new` arms the retry for it.
+    // Both failure shapes arm the retry, because startup has no prior timer set
+    // to fall back on: a profile that will not resolve yet (saved mid-edit, or
+    // owed by a source the sync task is about to fetch) costs every timer until
+    // it does, and only the retry gets them back without a restart. The reconcile
+    // path reports the same profile failure every tick, so the retry stays quiet
+    // in `tracing` rather than repeating it on the operator's terminal.
     let backup_timers = match backup::resolve_backup_tasks(
         &cfg,
         config_path,
@@ -705,9 +706,9 @@ pub(super) fn build_pre_loop_setup(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: profile resolution failed — no scheduled backups installed"
+                "backup timers: profile resolution failed — no scheduled backups installed, retrying"
             );
-            BackupTimers::empty()
+            BackupTimers::empty_with_retry(now)
         }
     };
 
@@ -931,7 +932,7 @@ pub(super) async fn run_daemon_with(
         &setup.parsed,
         setup.compliance_interval,
         setup.backup_timers.len(),
-        setup.backup_timers.is_degraded(),
+        setup.backup_timers.degraded_reason(),
     );
     print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
 
@@ -1183,7 +1184,7 @@ pub(super) fn format_interval_lines(
     parsed: &ParsedDaemonConfig,
     compliance_interval: Option<Duration>,
     scheduled_backups: usize,
-    backups_degraded: bool,
+    backups_degraded: Option<backup::DegradedReason>,
 ) -> Vec<String> {
     let mut intervals = vec![format!(
         "reconcile={}s",
@@ -1200,16 +1201,13 @@ pub(super) fn format_interval_lines(
     if let Some(interval) = compliance_interval {
         intervals.push(format!("compliance={}s", interval.as_secs()));
     }
-    if scheduled_backups > 0 || backups_degraded {
+    if scheduled_backups > 0 || backups_degraded.is_some() {
         // The degraded note rides the count because the count alone is
-        // misleading: it is the LOCALLY-declared set, and an operator reading
-        // "backups=2 scheduled" has no way to tell that a source's third one is
-        // missing until it fails to happen.
-        let note = if backups_degraded {
-            " (source composition unavailable)"
-        } else {
-            ""
-        };
+        // misleading: it is whatever survived a partial resolution, and an
+        // operator reading "backups=2 scheduled" has no way to tell that a
+        // source's third one is missing until it fails to happen. The two
+        // causes are named apart because they need different remedies.
+        let note = backups_degraded.map_or("", backup::DegradedReason::banner_note);
         intervals.push(format!("backups={scheduled_backups} scheduled{note}"));
     }
     intervals

@@ -338,6 +338,28 @@ pub(super) struct ResolvedBackupTasks {
     pub(super) degraded: bool,
 }
 
+/// Why a timer set is degraded. The two have different blast radii and
+/// different operator remedies, so the startup banner names which one it is
+/// rather than reporting one degraded state that could mean either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DegradedReason {
+    /// The profile itself would not resolve, so there are no timers at all.
+    ProfileUnresolved,
+    /// The profile resolved but source composition did not, so the set on hand
+    /// is the locally-declared one and may be missing source-delivered units.
+    SourcesUnavailable,
+}
+
+impl DegradedReason {
+    /// Suffix appended to the banner's `backups=` count.
+    pub(super) fn banner_note(self) -> &'static str {
+        match self {
+            Self::ProfileUnresolved => " (profile unresolved)",
+            Self::SourcesUnavailable => " (source composition unavailable)",
+        }
+    }
+}
+
 /// The daemon's scheduled-backup timers, plus the re-resolve deadline that a
 /// degraded resolution arms.
 ///
@@ -347,7 +369,10 @@ pub(super) struct ResolvedBackupTasks {
 /// second SIGHUP.
 pub(crate) struct BackupTimers {
     tasks: Vec<BackupTask>,
+    /// Set together with `degraded` — a retry exists exactly when the set is
+    /// degraded, and never otherwise.
     retry_at: Option<Instant>,
+    degraded: Option<DegradedReason>,
 }
 
 impl BackupTimers {
@@ -377,15 +402,38 @@ impl BackupTimers {
                 task.defer_until(deadline);
             }
         }
-        Self { tasks, retry_at }
+        Self {
+            tasks,
+            retry_at,
+            degraded: degraded.then_some(DegradedReason::SourcesUnavailable),
+        }
     }
 
-    /// An empty set with no retry armed — the shape used when the daemon could
-    /// not resolve a profile at all.
+    /// An empty set with no retry armed. Production never builds one — every
+    /// startup path either resolves a set or arms a retry via
+    /// [`Self::empty_with_retry`] — so it exists as the neutral fixture for
+    /// loop tests that are not about backups at all.
+    #[cfg(test)]
     pub(super) fn empty() -> Self {
         Self {
             tasks: Vec::new(),
             retry_at: None,
+            degraded: None,
+        }
+    }
+
+    /// An empty set that WILL re-resolve — the shape used when the daemon could
+    /// not resolve a profile at all.
+    ///
+    /// Startup is the one moment with no prior set to fall back on, so the
+    /// failure costs every timer. A profile saved mid-edit, or one a source the
+    /// sync task is about to fetch still owes, must not leave the daemon
+    /// permanently backup-less until someone notices and restarts it.
+    pub(super) fn empty_with_retry(now: Instant) -> Self {
+        Self {
+            tasks: Vec::new(),
+            retry_at: Some(now + RESOLVE_RETRY),
+            degraded: Some(DegradedReason::ProfileUnresolved),
         }
     }
 
@@ -401,8 +449,17 @@ impl BackupTimers {
         &self.tasks
     }
 
+    /// Whether the set is degraded at all. Production reads
+    /// [`Self::degraded_reason`] instead, because the banner names the cause;
+    /// tests that only care that a retry was armed use this.
+    #[cfg(test)]
     pub(super) fn is_degraded(&self) -> bool {
-        self.retry_at.is_some()
+        self.degraded.is_some()
+    }
+
+    /// What is missing, when the set is degraded.
+    pub(super) fn degraded_reason(&self) -> Option<DegradedReason> {
+        self.degraded
     }
 
     /// The soonest thing the loop must wake for: a fire, or the re-resolve.
@@ -421,8 +478,9 @@ impl BackupTimers {
     /// Schedule another re-resolve. Used when the resolution could not even be
     /// attempted (config load / profile failure), where there is no
     /// `ResolvedBackupTasks` to hand to [`Self::apply_resolved`].
-    pub(super) fn arm_retry(&mut self, now: Instant) {
+    pub(super) fn arm_retry(&mut self, now: Instant, reason: DegradedReason) {
         self.retry_at = Some(now + RESOLVE_RETRY);
+        self.degraded = Some(reason);
     }
 
     /// Consume every fire that is due, returning the units to run.
@@ -447,22 +505,40 @@ impl BackupTimers {
 
     /// Adopt a re-resolution (SIGHUP or retry).
     ///
-    /// A DEGRADED resolution is refused: swapping the local-only set in would
-    /// silently retire every source-delivered timer ("N removed") and could
-    /// substitute a different spec for a unit a source overrides, and the
-    /// running set is strictly better evidence of the machine's intent than a
-    /// set built from half the inputs. The retry is re-armed instead, so a
-    /// transient failure still converges without operator action.
+    /// A DEGRADED resolution is refused while timers are running: swapping the
+    /// local-only set in would silently retire every source-delivered timer
+    /// ("N removed") and could substitute a different spec for a unit a source
+    /// overrides, and the running set is strictly better evidence of the
+    /// machine's intent than a set built from half the inputs. The retry is
+    /// re-armed instead, so a transient failure still converges without
+    /// operator action.
+    ///
+    /// With NO timers running there is nothing to protect, so a degraded
+    /// resolution is adopted on exactly the terms [`Self::new`] adopts one at
+    /// startup — first fires deferred one retry window, retry still armed.
+    /// Refusing here instead would pin a daemon that booted with an
+    /// unresolvable profile at zero timers for as long as composition stays
+    /// down, which is the sticky-empty failure the retry exists to end.
     pub(super) fn apply_resolved(
         &mut self,
         resolved: ResolvedBackupTasks,
         now: Instant,
     ) -> Option<BackupReloadSummary> {
         if resolved.degraded {
+            if self.tasks.is_empty() {
+                *self = Self::new(resolved, now);
+                return (!self.tasks.is_empty()).then_some(BackupReloadSummary {
+                    added: self.tasks.len(),
+                    removed: 0,
+                    rescheduled: 0,
+                });
+            }
             self.retry_at = Some(now + RESOLVE_RETRY);
+            self.degraded = Some(DegradedReason::SourcesUnavailable);
             return None;
         }
         self.retry_at = None;
+        self.degraded = None;
         Some(reload_backup_tasks(&mut self.tasks, resolved.tasks))
     }
 }

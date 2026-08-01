@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::backup::{
-    BackupReloadSummary, BackupTimers, resolve_backup_tasks, run_scheduled_backup,
+    BackupReloadSummary, BackupTimers, DegradedReason, resolve_backup_tasks, run_scheduled_backup,
 };
 use super::reconcile::{ReconcileCtx, handle_reconcile};
 use super::sync::{handle_compliance_snapshot, handle_sync, handle_version_check};
@@ -221,6 +221,7 @@ pub(super) async fn handle_file_change_tick(
         let state_dir = ctx.state_dir_override.clone();
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
+        let abort = Arc::clone(&ctx.abort);
         crate::spawn_blocking_with_test_home(move || {
             handle_reconcile(
                 &cp,
@@ -236,6 +237,7 @@ pub(super) async fn handle_file_change_tick(
                     auto_apply_override: None,
                     drift_policy_override: None,
                     scope,
+                    abort: &abort,
                 },
             );
         })
@@ -275,6 +277,7 @@ pub(super) async fn handle_reconcile_tick(
             let state_dir = ctx.state_dir_override.clone();
             let printer = Arc::clone(&ctx.printer);
             let scope = ctx.scope;
+            let abort = Arc::clone(&ctx.abort);
             crate::spawn_blocking_with_test_home(move || {
                 handle_reconcile(
                     &cp,
@@ -290,6 +293,7 @@ pub(super) async fn handle_reconcile_tick(
                         auto_apply_override: None,
                         drift_policy_override: None,
                         scope,
+                        abort: &abort,
                     },
                 );
             })
@@ -318,6 +322,7 @@ pub(super) async fn handle_reconcile_tick(
             let printer = Arc::clone(&ctx.printer);
             let module_name = entity_name.clone();
             let scope = ctx.scope;
+            let abort = Arc::clone(&ctx.abort);
             crate::spawn_blocking_with_test_home(move || {
                 handle_reconcile(
                     &cp,
@@ -333,6 +338,7 @@ pub(super) async fn handle_reconcile_tick(
                         auto_apply_override: Some(task_auto_apply),
                         drift_policy_override: Some(task_drift_policy),
                         scope,
+                        abort: &abort,
                     },
                 );
             })
@@ -418,7 +424,8 @@ fn refresh_backup_timers(
             let summary = timers.apply_resolved(resolved, now);
             if degraded {
                 tracing::warn!(
-                    "backup timers: source composition unavailable — keeping the running timer set, retrying"
+                    adopted = summary.is_some(),
+                    "backup timers: source composition unavailable — retrying"
                 );
             }
             summary
@@ -428,7 +435,7 @@ fn refresh_backup_timers(
                 error = %e,
                 "backup timers: profile resolution failed — keeping the running timer set, retrying"
             );
-            timers.arm_retry(now);
+            timers.arm_retry(now, DegradedReason::ProfileUnresolved);
             None
         }
     }
@@ -469,7 +476,7 @@ pub(super) async fn handle_backup_tick(
                     error = %e,
                     "backup timers: config reload failed — keeping the running timer set, retrying"
                 );
-                backup_timers.arm_retry(now);
+                backup_timers.arm_retry(now, DegradedReason::ProfileUnresolved);
             }
         }
     }

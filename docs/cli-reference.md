@@ -714,13 +714,15 @@ lists every valid name. A run that recorded a failure — a bad copy, or `postBa
 a good one — also exits nonzero.
 
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
-rather than interleaved: `backup run` reports the holding process and exits `1`, while the other
-units it was asked to run still run. See
+rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
+other units it was asked to run still run. See
 [One run at a time](backups.md#run-semantics).
 
 Structured output (`-o json`) payload for `backup run`: an array of
 `{ name, status, clean, destinationPath?, error? }`, where `status` is `success`, `failed`, or
-`skipped` (the unit was already running). For `backup list`: an array of
+`skipped` (the unit was already running). A refused unit does not add a second document to stdout —
+the payload is always one JSON value and the nonzero exit code carries the failure. For
+`backup list`: an array of
 `{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean? }`.
 
 `backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`

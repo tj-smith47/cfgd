@@ -240,6 +240,13 @@ partial set:
 #            keeping the 2 running schedule(s), retrying automatically"
 ```
 
+The same retry covers startup: a daemon that boots while its profile is
+unreadable starts with no backup timers, reports `backups=0 scheduled (profile
+unresolved)` in its banner, and re-resolves on its own — it does not sit
+backup-less until someone restarts it. With no timers running there is nothing
+to protect, so the first resolution that produces a set is adopted even if
+sources are still unavailable.
+
 Fields that **require a daemon restart** to take effect:
 - `profile` (active-profile change)
 - `sources` list (add / remove / re-prioritize)

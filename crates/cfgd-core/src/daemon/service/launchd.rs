@@ -18,6 +18,10 @@ pub(crate) fn generate_launchd_plist(
     // Every value interpolated into the plist is XML-escaped: a path or
     // profile name carrying `&` or `<` otherwise produces a plist launchd
     // refuses to parse, and the service silently never loads.
+    //
+    // native-ok: every path below renders as an argv token this host's own
+    // binary receives back from launchd, so it must carry this host's
+    // separators rather than being folded to `/`.
     let mut args = vec![
         format!(
             "<string>{}</string>",

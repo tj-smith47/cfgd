@@ -325,15 +325,16 @@ same unit is firing is refused rather than interleaved:
 $ cfgd backup run openlist-db
 Run Backups
 
-✗ backup 'openlist-db' — already running (pid 4127)
-Error: backup 'openlist-db' is already running (pid 4127); wait for it to finish or stop the other run
+— backup 'openlist-db' — already running (pid 4127)
 $ echo $?
 1
 ```
 
-Each surface reports the collision in its own idiom: `cfgd backup run` fails (you asked for a run
-and did not get one), while `cfgd apply` and the daemon's timer report a skip and carry on — the
-unit *is* being backed up, just not by them.
+Every surface renders the collision the same way — a **skip**, because the unit *is* being backed
+up, just not by the caller. Only the exit code differs: `cfgd backup run` exits `1` (you asked for a
+run and did not get one), while `cfgd apply` and the daemon's timer carry on unaffected. Under
+`-o json` the unit appears in the payload with `"status": "skipped"`, and that payload stays a
+single JSON document — the nonzero exit carries the failure, not a second error object.
 
 ## Daemon scheduling
 
@@ -390,6 +391,15 @@ Timer behaviour:
   ```console
   ✓ Intervals: reconcile=300s, backups=2 scheduled (source composition unavailable)
   ```
+
+  If the profile itself will not resolve there are no timers to install at all — but the retry is
+  armed just the same, and the banner names that cause rather than blaming the sources:
+
+  ```console
+  ✓ Intervals: reconcile=300s, backups=0 scheduled (profile unresolved)
+  ```
+
+  Either way the daemon recovers on its own, with no restart and no manual `SIGHUP`:
 
   ```console
   ✓ Backup schedules restored: 3 scheduled
