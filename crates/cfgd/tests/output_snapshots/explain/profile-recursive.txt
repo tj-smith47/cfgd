@@ -10,6 +10,15 @@ FIELDS (under spec)
   aliases
     command <string> (required) — 
     name <string> (required)    — 
+  backups
+    destination <string>       — Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.
+    name <string> (required)   — Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection — uniqueness is enforced by [`validate_backup_specs`].
+    namePattern <string>       — Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`]). See [`render_backup_name_pattern`]. Unknown `{var}` tokens are rejected at parse time by [`validate_backup_specs`]. Defaults to `"{filename}.{timestamp}"`.
+    postBackup <[]object>      — Scripts run after the snapshot completes (e.g. restart the service stopped by `preBackup`).
+    preBackup <[]object>       — Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent).
+    retention <integer>        — Number of newest snapshots to keep for this backup; older snapshots are pruned. Defaults to 10.
+    schedule <string>          — When to run this backup: a `parse_duration_str` interval (e.g. `"6h"`) or a cron expression (e.g. `"0 3 * * *"`), validated by [`validate_backup_specs`]. Omitted means "run on every apply".
+    source <string> (required) — File or directory to snapshot.
   env
     name <string> (required)  — 
     value <string> (required) — 
@@ -93,6 +102,7 @@ FIELDS (under spec)
     target <string>            — 
     template <string>          — 
   aliases <[]object>  — 
+  backups <[]object>  — 
   env <[]object>      — 
   envScope <string>   — How far `spec.env` exports reach across the current user's environment. Omitted means "inherit" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.
   files <object>      — 

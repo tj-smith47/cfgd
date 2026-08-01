@@ -25,6 +25,62 @@
     {
       "children": [
         {
+          "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.",
+          "name": "destination",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection — uniqueness is enforced by [`validate_backup_specs`].",
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`]). See [`render_backup_name_pattern`]. Unknown `{var}` tokens are rejected at parse time by [`validate_backup_specs`]. Defaults to `\"{filename}.{timestamp}\"`.",
+          "name": "namePattern",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "Scripts run after the snapshot completes (e.g. restart the service stopped by `preBackup`).",
+          "name": "postBackup",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent).",
+          "name": "preBackup",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned. Defaults to 10.",
+          "name": "retention",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "When to run this backup: a `parse_duration_str` interval (e.g. `\"6h\"`) or a cron expression (e.g. `\"0 3 * * *\"`), validated by [`validate_backup_specs`]. Omitted means \"run on every apply\".",
+          "name": "schedule",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "File or directory to snapshot.",
+          "name": "source",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "description": "",
+      "name": "backups",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "children": [
+        {
           "description": "",
           "name": "name",
           "required": true,

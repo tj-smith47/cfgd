@@ -2244,6 +2244,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
         system: spec.system.clone(),
         secrets: spec.secrets.clone(),
         scripts: spec.scripts.clone().unwrap_or_default(),
+        backups: spec.backups.clone(),
     };
 
     crate::config::ResolvedProfile {

@@ -55,6 +55,12 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (y, m, d)
 }
 
+/// `strftime`-style UTC timestamp format for `spec.backups[]` snapshot
+/// filenames (rendered via the `{timestamp}` `namePattern` variable). Fixed
+/// here so the backup engine (a later phase) and the schema/docs agree on one
+/// format without re-deriving it.
+pub const BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%SZ";
+
 /// Parse a duration string like "30s", "5m", "1h", or a plain number (as seconds).
 ///
 /// Returns an error description on invalid input.

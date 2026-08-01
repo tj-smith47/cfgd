@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
-    EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec, SecretSpec,
-    validate_managed_file_specs, validate_secret_specs,
+    BackupSpec, EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec,
+    SecretSpec, validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -61,6 +61,7 @@ pub struct MergedProfile {
     pub system: HashMap<String, serde_yaml::Value>,
     pub secrets: Vec<SecretSpec>,
     pub scripts: ScriptSpec,
+    pub backups: Vec<BackupSpec>,
 }
 
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
@@ -84,6 +85,7 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
+    validate_backup_specs(&merged.backups)?;
 
     Ok(ResolvedProfile { layers, merged })
 }
@@ -138,6 +140,7 @@ fn resolve_inheritance_order(
 /// - secrets: append (deduplicated by target)
 /// - scripts: append in order
 /// - system: deep merge (later overrides at leaf level)
+/// - backups: append (deduplicated by name, later overrides)
 pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     let mut merged = MergedProfile::default();
 
@@ -221,6 +224,15 @@ pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
                 .extend(scripts.post_reconcile.clone());
             merged.scripts.on_drift.extend(scripts.on_drift.clone());
             merged.scripts.on_change.extend(scripts.on_change.clone());
+        }
+
+        // Backups: append, deduplicate by name (later layer overrides)
+        for backup in &spec.backups {
+            if let Some(existing) = merged.backups.iter_mut().find(|b| b.name == backup.name) {
+                *existing = backup.clone();
+            } else {
+                merged.backups.push(backup.clone());
+            }
         }
     }
 

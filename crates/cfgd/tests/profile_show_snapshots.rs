@@ -123,6 +123,7 @@ fn happy_resolved() -> ResolvedProfile {
                 },
             ],
             scripts: Default::default(),
+            backups: Vec::new(),
         },
     }
 }

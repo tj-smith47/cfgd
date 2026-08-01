@@ -53,10 +53,11 @@ pub use parse::{
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub(crate) use profile_spec::profile_spec_from_value;
 pub use profile_spec::{
-    AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EncryptionMode,
-    EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec, ManagedFileSpec, MergeSpec,
-    ModifyFormat, ModifySpec, NpmSpec, PackagesSpec, ProfileDocument, ProfileMetadata, ProfileSpec,
-    ScriptSpec, SecretSpec, SnapSpec, validate_managed_file_specs, validate_secret_specs,
+    AptSpec, BackupSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint,
+    EncryptionMode, EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec,
+    ManagedFileSpec, MergeSpec, ModifyFormat, ModifySpec, NpmSpec, PackagesSpec, ProfileDocument,
+    ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec, render_backup_name_pattern,
+    validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
 };
 pub use resolve::{
     ALL_MANAGER_NAMES, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer, ResolvedProfile,

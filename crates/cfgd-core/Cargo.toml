@@ -59,6 +59,9 @@ toml_edit = "0.25"
 # (schemas/*.schema.json). Derived on the config document types so the
 # schemas are generated from the Rust structs and can never silently drift.
 schemars = "1.2"
+# Cron expression parsing for `spec.backups[].schedule` — validated at parse
+# time as a fallback when the value isn't a `parse_duration_str` interval.
+croner = "3"
 
 # Output & Theming
 console = "0.16"

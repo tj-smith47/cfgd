@@ -476,7 +476,7 @@ below), and `cfgd paths` prints the resolved values on any host.
 | Data | Default location |
 |---|---|
 | **Config** (`cfgd.yaml`, `profiles/`, `files/`, `modules.lock`) | `$XDG_CONFIG_HOME/cfgd` if set, else the platform default below |
-| **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
+| **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential, backups) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
 | **Cache** (source cache, module cache) | platform-native cache dir — Linux `$XDG_CACHE_HOME/cfgd` or `~/.cache/cfgd`, macOS `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`. Sources live under `<cache>/sources`, modules under `<cache>/modules`. |
 | **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
 

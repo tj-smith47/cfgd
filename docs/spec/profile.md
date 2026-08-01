@@ -190,6 +190,7 @@ spec:
 | `system` | map | No | `{}` | System configurator settings. Keys map to configurator names; values are configurator-specific. See [spec.system](#specsystem). |
 | `secrets` | list | No | `[]` | Secret references to decrypt and place on disk. See [spec.secrets[]](#specsecrets). |
 | `scripts` | object | No | | Lifecycle scripts (pre/post apply, pre/post reconcile, onChange, onDrift). See [spec.scripts](#specscripts). |
+| `backups` | list | No | `[]` | Declarative file/directory snapshot backups. See [spec.backups[]](#specbackups). |
 
 ---
 
@@ -740,6 +741,43 @@ Paths are relative to the config root directory. If the path resolves to an exis
 
 ---
 
+### spec.backups[]
+
+Declarative snapshot backups of a file or directory. The shape is validated at parse time; the
+backup engine, CLI surface (`cfgd backup ...`), and daemon scheduling that actually take snapshots
+are not yet implemented.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. Must be unique across the list. |
+| `source` | string (path) | Yes | | File or directory to snapshot. |
+| `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written. The default is resolved by the backup engine at run time, not at parse time. |
+| `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. |
+| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression (e.g. `0 3 * * *`), validated at parse time. Omitted means "run on every apply". |
+| `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned. |
+| `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. |
+| `postBackup` | list | No | `[]` | Scripts run after the snapshot completes. Same shape as [spec.scripts](#specscripts) entries. |
+
+**Example:**
+```yaml
+backups:
+  - name: openlist-db
+    source: /var/lib/openlist/data.db     # file or directory
+    destination: ~/backups/openlist       # optional; default <state_dir>/backups/<name>/
+    namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
+    schedule: "0 3 * * *"                 # optional; cron expr OR interval ("6h"); omitted → runs on every apply
+    retention: 7                          # optional; default 10; newest N kept per backup
+    preBackup:                            # optional; existing ScriptEntry shape
+      - run: systemctl stop openlist
+    postBackup:
+      - run: systemctl start openlist
+```
+
+CRD parity for `spec.backups[]` is not yet implemented — this field is available in the YAML/TOML
+profile config path only.
+
+---
+
 ## Profile Inheritance and Merge Semantics
 
 When a profile lists `inherits`, cfgd resolves the full ancestor chain depth-first, then merges
@@ -757,3 +795,4 @@ all layers in resolution order (earliest ancestor first, current profile last).
 | `system` | Deep merge — child keys overwrite parent keys at the leaf level. |
 | `secrets` | Append, deduplicated by `target`. |
 | `scripts` | Append in order — parent scripts run before child scripts. |
+| `backups` | Append, deduplicated by `name`; later layer overrides. |

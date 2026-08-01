@@ -473,6 +473,21 @@ spec:
     # optional, default: []
     onChange:
       - scripts/on-change.sh
+
+  # Declarative snapshot backups of a file or directory. Schema is validated
+  # at parse time; the engine that takes snapshots is not yet implemented.
+  # optional, default: []
+  backups:
+    - name: openlist-db                     # required, string — unique across spec.backups
+      source: /var/lib/openlist/data.db     # required, string — file or directory to snapshot
+      destination: ~/backups/openlist       # optional, default: <state_dir>/backups/<name>/
+      namePattern: "{filename}.{timestamp}" # optional, default: "{filename}.{timestamp}" — vars {name} {filename} {timestamp}
+      schedule: "0 3 * * *"                 # optional, string — cron expression or interval (e.g. "6h"); omitted runs on every apply
+      retention: 7                          # optional, integer, default: 10 — newest N snapshots kept
+      preBackup:                            # optional, default: [] — same shape as scripts
+        - run: systemctl stop openlist
+      postBackup:                           # optional, default: [] — same shape as scripts
+        - run: systemctl start openlist
 "#;
 
 const CONFIG_SCHEMA: &str = r#"# cfgd Config schema — cfgd.io/v1alpha1

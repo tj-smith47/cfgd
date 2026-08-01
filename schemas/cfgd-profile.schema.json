@@ -23,6 +23,67 @@
       },
       "type": "object"
     },
+    "BackupSpec": {
+      "additionalProperties": false,
+      "description": "A declarative backup: snapshot `source` (a file or directory) into\n`destination`, retaining the newest `retention` snapshots.\n\nThe shape is validated at parse time; the backup engine, CLI surface\n(`cfgd backup ...`), and daemon scheduling that actually take snapshots\nare not yet implemented.",
+      "properties": {
+        "destination": {
+          "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`\nwhen omitted — resolved by the backup engine, not at parse time, since\nthe state dir depends on runtime scope/overrides.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Unique identifier for this backup within `spec.backups`. Keys the\n`destination` default, run records, and CLI selection — uniqueness is\nenforced by [`validate_backup_specs`].",
+          "type": "string"
+        },
+        "namePattern": {
+          "default": "{filename}.{timestamp}",
+          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`,\nand `{timestamp}` (UTC, formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`]).\nSee [`render_backup_name_pattern`]. Unknown `{var}` tokens are rejected\nat parse time by [`validate_backup_specs`]. Defaults to\n`\"{filename}.{timestamp}\"`.",
+          "type": "string"
+        },
+        "postBackup": {
+          "default": [],
+          "description": "Scripts run after the snapshot completes (e.g. restart the service\nstopped by `preBackup`).",
+          "items": {
+            "$ref": "#/definitions/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "preBackup": {
+          "default": [],
+          "description": "Scripts run before the snapshot is taken (e.g. stop a service that\nholds `source` open so the snapshot is consistent).",
+          "items": {
+            "$ref": "#/definitions/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "retention": {
+          "default": 10,
+          "description": "Number of newest snapshots to keep for this backup; older snapshots\nare pruned. Defaults to 10.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schedule": {
+          "description": "When to run this backup: a `parse_duration_str` interval (e.g. `\"6h\"`)\nor a cron expression (e.g. `\"0 3 * * *\"`), validated by\n[`validate_backup_specs`]. Omitted means \"run on every apply\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "File or directory to snapshot.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "type": "object"
+    },
     "BrewSpec": {
       "additionalProperties": false,
       "properties": {
@@ -574,6 +635,13 @@
           "default": [],
           "items": {
             "$ref": "#/definitions/ShellAlias"
+          },
+          "type": "array"
+        },
+        "backups": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BackupSpec"
           },
           "type": "array"
         },

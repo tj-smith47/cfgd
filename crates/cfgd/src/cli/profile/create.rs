@@ -244,6 +244,7 @@ pub fn cmd_profile_create(
             system,
             secrets,
             scripts,
+            backups: Vec::new(),
         },
     };
 

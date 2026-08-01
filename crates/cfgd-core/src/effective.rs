@@ -232,6 +232,7 @@ mod tests {
             system: HashMap::new(),
             secrets: Vec::new(),
             scripts: crate::config::ScriptSpec::default(),
+            backups: Vec::new(),
         }
     }
 

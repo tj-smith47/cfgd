@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::{
-    EnvVar, ProfileLayer, ResolvedProfile, validate_managed_file_specs, validate_secret_specs,
+    EnvVar, ProfileLayer, ResolvedProfile, validate_backup_specs, validate_managed_file_specs,
+    validate_secret_specs,
 };
 use crate::errors::{CfgdError, CompositionError, Result};
 
@@ -107,6 +108,7 @@ pub fn compose(
     // Validate secrets from all sources (catches invalid specs from ConfigSources)
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
+    validate_backup_specs(&merged.backups)?;
 
     Ok(CompositionResult {
         resolved: ResolvedProfile {

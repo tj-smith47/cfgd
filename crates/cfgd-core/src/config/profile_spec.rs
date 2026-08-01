@@ -288,6 +288,9 @@ pub struct ProfileSpec {
 
     #[serde(default)]
     pub scripts: Option<ScriptSpec>,
+
+    #[serde(default)]
+    pub backups: Vec<BackupSpec>,
 }
 
 /// How far `spec.env` exports reach across the current user's environment.
@@ -918,6 +921,167 @@ pub struct ScriptSpec {
     pub on_change: Vec<ScriptEntry>,
 }
 
+/// A declarative backup: snapshot `source` (a file or directory) into
+/// `destination`, retaining the newest `retention` snapshots.
+///
+/// The shape is validated at parse time; the backup engine, CLI surface
+/// (`cfgd backup ...`), and daemon scheduling that actually take snapshots
+/// are not yet implemented.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BackupSpec {
+    /// Unique identifier for this backup within `spec.backups`. Keys the
+    /// `destination` default, run records, and CLI selection — uniqueness is
+    /// enforced by [`validate_backup_specs`].
+    pub name: String,
+    /// File or directory to snapshot.
+    pub source: PathBuf,
+    /// Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`
+    /// when omitted — resolved by the backup engine, not at parse time, since
+    /// the state dir depends on runtime scope/overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<PathBuf>,
+    /// Filename template for each snapshot. Supports `{name}`, `{filename}`,
+    /// and `{timestamp}` (UTC, formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`]).
+    /// See [`render_backup_name_pattern`]. Unknown `{var}` tokens are rejected
+    /// at parse time by [`validate_backup_specs`]. Defaults to
+    /// `"{filename}.{timestamp}"`.
+    #[serde(default = "default_backup_name_pattern")]
+    pub name_pattern: String,
+    /// When to run this backup: a `parse_duration_str` interval (e.g. `"6h"`)
+    /// or a cron expression (e.g. `"0 3 * * *"`), validated by
+    /// [`validate_backup_specs`]. Omitted means "run on every apply".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// Number of newest snapshots to keep for this backup; older snapshots
+    /// are pruned. Defaults to 10.
+    #[serde(default = "default_backup_retention")]
+    pub retention: u32,
+    /// Scripts run before the snapshot is taken (e.g. stop a service that
+    /// holds `source` open so the snapshot is consistent).
+    #[serde(default)]
+    pub pre_backup: Vec<ScriptEntry>,
+    /// Scripts run after the snapshot completes (e.g. restart the service
+    /// stopped by `preBackup`).
+    #[serde(default)]
+    pub post_backup: Vec<ScriptEntry>,
+}
+
+fn default_backup_name_pattern() -> String {
+    "{filename}.{timestamp}".to_string()
+}
+
+fn default_backup_retention() -> u32 {
+    10
+}
+
+/// The only `{var}` tokens a backup `namePattern` may reference.
+const BACKUP_NAME_PATTERN_VARS: &[&str] = &["name", "filename", "timestamp"];
+
+/// Extract every `{var}` placeholder token from a `namePattern` string, in
+/// order of appearance (duplicates included, unclosed `{` ignored).
+fn name_pattern_vars(pattern: &str) -> Vec<&str> {
+    let mut vars = Vec::new();
+    let mut rest = pattern;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        match after.find('}') {
+            Some(close) => {
+                vars.push(&after[..close]);
+                rest = &after[close + 1..];
+            }
+            None => break,
+        }
+    }
+    vars
+}
+
+/// Render a backup `namePattern` by substituting `{name}`, `{filename}`, and
+/// `{timestamp}` with the supplied values. `timestamp` should already be
+/// formatted per [`crate::BACKUP_TIMESTAMP_FORMAT`] — this function does no
+/// formatting of its own, only substitution.
+///
+/// Unknown `{var}` tokens are rejected at config-parse time by
+/// [`validate_backup_specs`], so every token reaching this function is one of
+/// the three known variables.
+pub fn render_backup_name_pattern(
+    pattern: &str,
+    name: &str,
+    filename: &str,
+    timestamp: &str,
+) -> String {
+    pattern
+        .replace("{name}", name)
+        .replace("{filename}", filename)
+        .replace("{timestamp}", timestamp)
+}
+
+/// Validate a backup `namePattern`: every `{var}` token must be one of
+/// `name`/`filename`/`timestamp`.
+fn validate_backup_name_pattern(subject: &str, pattern: &str) -> Result<()> {
+    for var in name_pattern_vars(pattern) {
+        if !BACKUP_NAME_PATTERN_VARS.contains(&var) {
+            let valid = BACKUP_NAME_PATTERN_VARS
+                .iter()
+                .map(|v| format!("{{{v}}}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ConfigError::Invalid {
+                message: format!(
+                    "{subject}: namePattern references unknown variable '{{{var}}}'; valid variables are {valid}"
+                ),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Validate a backup `schedule`: it must parse as either a
+/// [`crate::parse_duration_str`] interval or a `croner` cron expression.
+/// Naming both attempted interpretations' errors on failure so a typo in
+/// either form is diagnosable from the message alone.
+fn validate_backup_schedule(subject: &str, schedule: &str) -> Result<()> {
+    let duration_err = match crate::parse_duration_str(schedule) {
+        Ok(_) => return Ok(()),
+        Err(e) => e,
+    };
+    let cron_err = match schedule.parse::<croner::Cron>() {
+        Ok(_) => return Ok(()),
+        Err(e) => e,
+    };
+    Err(ConfigError::Invalid {
+        message: format!(
+            "{subject}: schedule '{schedule}' is not a valid interval ({duration_err}) and not a valid cron expression ({cron_err})"
+        ),
+    }
+    .into())
+}
+
+/// Validate `spec.backups[]`: `name` unique across the list, `namePattern`
+/// references only known variables, and `schedule` (when set) parses as an
+/// interval or a cron expression.
+pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
+    let mut seen_names = std::collections::HashSet::new();
+    for spec in specs {
+        let subject = format!("backup '{}'", spec.name);
+        if !seen_names.insert(spec.name.as_str()) {
+            return Err(ConfigError::Invalid {
+                message: format!(
+                    "duplicate backup name '{}': names must be unique across spec.backups",
+                    spec.name
+                ),
+            }
+            .into());
+        }
+        validate_backup_name_pattern(&subject, &spec.name_pattern)?;
+        if let Some(schedule) = &spec.schedule {
+            validate_backup_schedule(&subject, schedule)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,5 +1273,227 @@ mod tests {
     fn encryption_mode_rejects_garbage() {
         serde_yaml::from_str::<EncryptionMode>("never")
             .expect_err("unknown EncryptionMode must error");
+    }
+
+    // --- BackupSpec ---
+
+    #[test]
+    fn backup_spec_parses_pinned_design_shape() {
+        let yaml = r#"
+name: openlist-db
+source: /var/lib/openlist/data.db
+destination: ~/backups/openlist
+namePattern: "{filename}.{timestamp}"
+schedule: "0 3 * * *"
+retention: 7
+preBackup:
+  - run: systemctl stop openlist
+postBackup:
+  - run: systemctl start openlist
+"#;
+        let spec: BackupSpec = serde_yaml::from_str(yaml).expect("pinned shape should parse");
+        assert_eq!(spec.name, "openlist-db");
+        assert_eq!(spec.source, PathBuf::from("/var/lib/openlist/data.db"));
+        assert_eq!(spec.destination, Some(PathBuf::from("~/backups/openlist")));
+        assert_eq!(spec.name_pattern, "{filename}.{timestamp}");
+        assert_eq!(spec.schedule.as_deref(), Some("0 3 * * *"));
+        assert_eq!(spec.retention, 7);
+        assert_eq!(spec.pre_backup.len(), 1);
+        assert_eq!(spec.post_backup.len(), 1);
+    }
+
+    #[test]
+    fn backup_spec_only_name_and_source_required() {
+        let yaml = "name: db\nsource: /var/lib/db\n";
+        let spec: BackupSpec = serde_yaml::from_str(yaml).expect("minimal spec should parse");
+        assert_eq!(spec.destination, None);
+        assert_eq!(spec.name_pattern, "{filename}.{timestamp}");
+        assert_eq!(spec.schedule, None);
+        assert_eq!(spec.retention, 10);
+        assert!(spec.pre_backup.is_empty());
+        assert!(spec.post_backup.is_empty());
+    }
+
+    #[test]
+    fn backup_spec_rejects_unknown_field() {
+        let yaml = "name: db\nsource: /var/lib/db\nbogus: 1\n";
+        let err = serde_yaml::from_str::<BackupSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogus");
+        assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_duplicate_names() {
+        let specs = vec![
+            BackupSpec {
+                name: "db".into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            },
+            BackupSpec {
+                name: "db".into(),
+                source: PathBuf::from("/b"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            },
+        ];
+        let err = validate_backup_specs(&specs).expect_err("duplicate names must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("duplicate backup name"), "got: {msg}");
+        assert!(msg.contains("'db'"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_unique_names() {
+        let specs = vec![
+            BackupSpec {
+                name: "db".into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            },
+            BackupSpec {
+                name: "config".into(),
+                source: PathBuf::from("/b"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: None,
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            },
+        ];
+        validate_backup_specs(&specs).expect("unique names should validate");
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_good_interval_schedule() {
+        for schedule in ["30s", "5m", "1h", "1d", "3600"] {
+            let specs = vec![BackupSpec {
+                name: "db".into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: Some(schedule.to_string()),
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            }];
+            validate_backup_specs(&specs)
+                .unwrap_or_else(|e| panic!("interval '{schedule}' should validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_good_cron_schedule() {
+        for schedule in ["0 3 * * *", "*/15 * * * *", "0 0 1 * *"] {
+            let specs = vec![BackupSpec {
+                name: "db".into(),
+                source: PathBuf::from("/a"),
+                destination: None,
+                name_pattern: default_backup_name_pattern(),
+                schedule: Some(schedule.to_string()),
+                retention: default_backup_retention(),
+                pre_backup: vec![],
+                post_backup: vec![],
+            }];
+            validate_backup_specs(&specs)
+                .unwrap_or_else(|e| panic!("cron '{schedule}' should validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_bad_schedule_naming_both_attempts() {
+        let specs = vec![BackupSpec {
+            name: "db".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: Some("not-a-schedule".into()),
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        let err = validate_backup_specs(&specs).expect_err("garbage schedule must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a valid interval") && msg.contains("not a valid cron expression"),
+            "expected message naming both attempted interpretations, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_backup_specs_rejects_unknown_name_pattern_var() {
+        let specs = vec![BackupSpec {
+            name: "db".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: "{bogus}.bak".into(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        let err = validate_backup_specs(&specs).expect_err("unknown var must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("{bogus}"), "got: {msg}");
+        assert!(
+            msg.contains("{name}") && msg.contains("{filename}") && msg.contains("{timestamp}"),
+            "expected message naming the valid var set, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_all_known_name_pattern_vars() {
+        let specs = vec![BackupSpec {
+            name: "db".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: "{name}-{filename}-{timestamp}".into(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        validate_backup_specs(&specs).expect("known vars should validate");
+    }
+
+    #[test]
+    fn render_backup_name_pattern_substitutes_all_vars() {
+        let rendered = render_backup_name_pattern(
+            "{name}/{filename}.{timestamp}",
+            "openlist-db",
+            "data.db",
+            "20260801T120000Z",
+        );
+        assert_eq!(rendered, "openlist-db/data.db.20260801T120000Z");
+    }
+
+    #[test]
+    fn render_backup_name_pattern_default_shape() {
+        let rendered =
+            render_backup_name_pattern(&default_backup_name_pattern(), "db", "data.db", "TS");
+        assert_eq!(rendered, "data.db.TS");
+    }
+
+    #[test]
+    fn render_backup_name_pattern_repeated_var() {
+        // Duplicate `{name}` tokens both substitute — `replace` is global, not
+        // first-match-only.
+        let rendered = render_backup_name_pattern("{name}-{name}", "db", "f", "ts");
+        assert_eq!(rendered, "db-db");
     }
 }
