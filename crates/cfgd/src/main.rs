@@ -101,7 +101,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(false)
         || expanded.iter().any(|a| a == "--yes");
 
-    let brontes_cfg = brontes::Config::default().tool_name_prefix("cfgd");
+    let brontes_cfg = cfgd::mcp::brontes::config();
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
     let augmented = cli::Cli::command().subcommand(mcp_command);
     let matches = augmented.clone().get_matches_from(&expanded);

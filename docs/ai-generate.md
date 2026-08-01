@@ -186,6 +186,15 @@ For persistent configuration, add the export to your shell RC file (outside of c
 
 ## MCP Server Setup
 
+cfgd ships two MCP servers, for two different jobs:
+
+| Command | Serves | Use it for |
+|---|---|---|
+| `cfgd mcp-server` | 18 purpose-built generation tools (scan, inspect, write YAML) | AI-guided authoring — the rest of this section |
+| `cfgd mcp` | cfgd's own CLI, as tools | Driving cfgd itself: reconcile, inspect drift, manage sources |
+
+`cfgd mcp` is covered in [Serving the CLI itself](#serving-the-cli-itself) below.
+
 `cfgd mcp-server` exposes the same generation tools over the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). This lets any MCP-compatible AI client (Claude Code, Cursor, etc.) call cfgd's scan and write tools directly — without the embedded CLI client.
 
 ### What MCP Is
@@ -281,6 +290,66 @@ Prompts are ready-made conversation starters the client can inject:
 | `cfgd_generate` | `mode` (full/module/profile), `name` | AI-guided full generation or scoped to one component |
 | `cfgd_generate_module` | `name` (required) | Generate a module for a specific tool |
 | `cfgd_generate_profile` | `name` (required) | Generate a profile |
+
+## Serving the CLI Itself
+
+`cfgd mcp` is a second server, built on [brontes](https://github.com/tj-smith47/brontes), that turns cfgd's own command tree into tools. Where `mcp-server` helps an assistant *write* config, `mcp` lets it *run* cfgd — plan a reconcile, read drift, pull a source.
+
+```sh
+cfgd mcp claude enable       # register with Claude Desktop (also: vscode, cursor, zed)
+cfgd mcp start               # stdio, for a client that spawns the process
+cfgd mcp stream --port 8080  # streamable HTTP, for a shared or remote client
+cfgd mcp tools               # dump the tool list to mcp-tools.json for inspection
+cfgd mcp tools --groups      # list the groups below
+```
+
+### What It Serves by Default
+
+cfgd's tree walks out to 86 tools, which is more list than a client's context should spend on one server. A server started with no selection flags serves the **core** group — the nine commands for reconciling a machine:
+
+```
+apply  plan  status  diff  verify  log  rollback  doctor  paths
+```
+
+`mcp-server`, `daemon run`, `man`, `completion`, and the `$EDITOR`-blocking `* edit` commands are never served: each either hangs a tool call or starts a second server inside this one.
+
+### Widening
+
+Selections union, so `--group` adds to the default rather than replacing it, and `--all` drops the default to serve the whole tree:
+
+```sh
+cfgd mcp tools                  # 9  — the default
+cfgd mcp tools --group secrets  # 12 — core plus secrets
+cfgd mcp tools --group modules  # 28 — core plus modules
+cfgd mcp tools --all            # 86 — everything
+```
+
+| Group | Covers |
+|---|---|
+| `core` | Reconcile this machine: preview, apply, inspect drift, roll back |
+| `sources` | Where config comes from: remotes, sync, pending decisions, upgrades |
+| `modules` | Author, publish and consume cfgd modules |
+| `profiles` | Per-machine profile selection and authoring |
+| `secrets` | Encrypt and decrypt sops-managed secrets |
+| `authoring` | Scaffolding, CRD validation, schema docs, aliases, skills |
+| `fleet` | Device-gateway enrollment, daemon lifecycle, compliance evidence |
+| `image` | Pack a host directory into an OCI image |
+
+The same flags work on `mcp start`, `mcp stream`, and `mcp <editor> enable` — the editor installers write them into the argv they register, so a trim survives the install.
+
+### Safety Hints and Long Runs
+
+Every tool carries annotations a client can gate on: `plan` is `readOnlyHint`, `apply` is `destructiveHint`, and the `* remove` / `rollback` commands are marked non-idempotent. A client can prompt on a write without prompting on a preview.
+
+Eleven commands routinely run for minutes — `apply`, `sync`, `pull`, `upgrade`, `image pack`, the `module build/pull/push/upgrade` set, and daemon install/uninstall. Those return a task handle rather than holding the request open, so a client that speaks the MCP tasks extension can poll for progress and cancel.
+
+### Structured Output
+
+Every command's flags are on the tool schema, including `--output`, so an assistant can ask for machine-readable results instead of parsing rendered text:
+
+```json
+{"name": "cfgd_status", "arguments": {"flags": {"output": "json"}}}
+```
 
 ## Security Model
 

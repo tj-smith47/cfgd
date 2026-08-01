@@ -168,6 +168,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 **For developers:**
 - [One-command bootstrap](docs/bootstrap.md) — `cfgd init --from <repo> --apply` on a new machine, done
 - [AI-guided generation](docs/ai-generate.md) — `cfgd generate` scans your system and builds profiles/modules; MCP server for AI editor integration
+- [MCP server](docs/ai-generate.md#serving-the-cli-itself) — `cfgd mcp` serves the CLI itself as tools, so an assistant can reconcile a machine, not just write config for one
 - [Authoring skills](docs/skill.md) — `cfgd skill install` teaches your coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) to author high-quality cfgd resources
 - [Shareable modules](docs/modules.md) — cross-platform dev environment packages with dependency resolution and registries
 - [15 package managers](docs/packages.md) — brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
@@ -211,7 +212,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
 | [Installation](docs/installation.md) | All install channels (Homebrew, install script, winget, scoop, chocolatey, cargo, direct download) |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
-| [AI Generate](docs/ai-generate.md) | AI-guided config generation, MCP server setup |
+| [AI Generate](docs/ai-generate.md) | AI-guided config generation, both MCP servers (`mcp-server` for authoring, `mcp` for driving the CLI) |
 | [Authoring Skills](docs/skill.md) | `cfgd skill` installer, provider target matrix, the quality bar, generate-vs-skill |
 | [Releasing](docs/releasing.md) | CI-cut release pipeline, pre-release checklist, done-definition, failure recovery |
 
