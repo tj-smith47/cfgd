@@ -697,6 +697,26 @@ cfgd decide accept --source acme-corp      # accept all from source
 cfgd decide accept --all                   # accept everything
 ```
 
+## Backup Commands
+
+Run or inspect declarative backups (`spec.backups[]`). See [backups.md](backups.md) for the full
+field reference and run semantics.
+
+```sh
+cfgd backup run                # run every backup declared in the active profile
+cfgd backup run openlist-db    # run just the named backup
+cfgd backup list                # inventory + last-run status (alias: ls)
+cfgd --output json backup list
+```
+
+An unknown name given to `cfgd backup run` is exit code `6` (see [Exit Codes](#exit-codes)) and
+lists every valid name. A run that recorded a failure — a bad copy, or `postBackup` erroring after
+a good one — also exits nonzero.
+
+Structured output (`-o json`) payload for `backup run`: an array of
+`{ name, status, clean, destinationPath?, error? }`. For `backup list`: an array of
+`{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean? }`.
+
 ## Image Commands
 
 ### `cfgd image pack <DIR> <ARTIFACT>`
@@ -855,12 +875,12 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). | Any command whose `Result` resolves to a non-config error. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)). | Any command whose `Result` resolves to a non-config error. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run <missing>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | `apply` ran but at least one action failed (partial or total). | `cfgd apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |

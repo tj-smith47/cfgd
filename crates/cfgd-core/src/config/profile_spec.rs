@@ -924,9 +924,10 @@ pub struct ScriptSpec {
 /// A declarative backup: snapshot `source` (a file or directory) into
 /// `destination`, retaining the newest `retention` snapshots.
 ///
-/// The shape is validated at parse time and executed by the backup engine. The
-/// CLI surface (`cfgd backup ...`) and the daemon scheduling that drive that
-/// engine are not yet implemented.
+/// The shape is validated at parse time and run by the backup engine.
+/// Schedule-less backups (no `schedule`) run automatically on every
+/// `cfgd apply`; every backup — scheduled or not — can also be run directly
+/// with `cfgd backup run [name]`.
 //
 // Every `///` line on this struct and its fields is copied verbatim into
 // schemas/cfgd-profile.schema.json, which editors render as YAML completion

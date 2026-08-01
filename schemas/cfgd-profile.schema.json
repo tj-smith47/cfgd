@@ -25,7 +25,7 @@
     },
     "BackupSpec": {
       "additionalProperties": false,
-      "description": "A declarative backup: snapshot `source` (a file or directory) into\n`destination`, retaining the newest `retention` snapshots.\n\nThe shape is validated at parse time and executed by the backup engine. The\nCLI surface (`cfgd backup ...`) and the daemon scheduling that drive that\nengine are not yet implemented.",
+      "description": "A declarative backup: snapshot `source` (a file or directory) into\n`destination`, retaining the newest `retention` snapshots.\n\nThe shape is validated at parse time and run by the backup engine.\nSchedule-less backups (no `schedule`) run automatically on every\n`cfgd apply`; every backup — scheduled or not — can also be run directly\nwith `cfgd backup run [name]`.",
       "properties": {
         "destination": {
           "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`\nwhen omitted — resolved by the backup engine, not at parse time, since\nthe state dir depends on runtime scope/overrides.",

@@ -309,6 +309,19 @@ pub enum BackupError {
         phase: &'static str,
         message: String,
     },
+
+    /// `cfgd backup run <name>` (or the daemon) named a backup that is not in
+    /// the active profile's `spec.backups[]`. `valid` lists every declared
+    /// name so the caller can render "did you mean" without a second lookup.
+    #[error(
+        "backup '{name}' not found{}",
+        if .valid.is_empty() {
+            String::new()
+        } else {
+            format!(" — valid backups: {}", .valid.join(", "))
+        }
+    )]
+    UnknownName { name: String, valid: Vec<String> },
 }
 
 #[derive(Debug, thiserror::Error)]

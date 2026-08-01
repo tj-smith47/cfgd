@@ -176,14 +176,28 @@ pub fn cmd_plan(
         strip_scripts_from_plan(&mut plan);
     }
 
+    // Schedule-less backups run on every apply, unconditionally of the
+    // reconciler diff — surface them in the preview so `plan` never omits
+    // work a real apply would do.
+    let pending_backups: Vec<String> = effective_resolved
+        .merged
+        .backups
+        .iter()
+        .filter(|b| b.schedule.is_none())
+        .map(|b| b.name.clone())
+        .collect();
+
     display_plan_preview(
         &plan,
         printer,
         &state,
-        &args.context,
-        phase_filter.as_ref(),
-        dry_run_fm.as_ref(),
-        &scope,
+        &PlanPreviewArgs {
+            context: &args.context,
+            phase_filter: phase_filter.as_ref(),
+            dry_run_fm: dry_run_fm.as_ref(),
+            scope: &scope,
+            pending_backups: &pending_backups,
+        },
     );
 
     Ok(())

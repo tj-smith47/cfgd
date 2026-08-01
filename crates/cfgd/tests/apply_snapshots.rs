@@ -46,6 +46,7 @@ fn happy_output() -> ApplyOutput {
         succeeded: 3,
         failed: 0,
         source_commits,
+        backups: vec![],
     }
 }
 

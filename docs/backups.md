@@ -5,11 +5,6 @@ retaining the newest N and pruning the rest. It is the "keep a copy of my app's 
 touch it" surface — distinct from the automatic pre-overwrite `file_backups` that power
 `cfgd rollback` (see [File Safety](safety.md#file-backups)).
 
-> **Not yet reachable.** The engine described here is implemented and tested, but nothing drives
-> it yet: the `cfgd backup ...` command surface and the daemon scheduling that honours `schedule`
-> are separate, unlanded work. Declaring `spec.backups[]` today validates the config and nothing
-> more.
-
 | | `spec.backups[]` (this document) | Pre-overwrite backups |
 |---|---|---|
 | Declared by | you, in a profile | nobody — automatic |
@@ -39,6 +34,54 @@ spec:
 That declaration snapshots `data.db` into `<state_dir>/backups/openlist-db/` as
 `data.db.20260801T031500Z`, keeps the newest 7, and stops/starts the service around the copy so
 the snapshot is consistent.
+
+## CLI
+
+A schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the
+reconciler's file/package/module phases (skipped in `--dry-run`, shown in the plan preview
+instead). A scheduled backup runs only via `cfgd backup run` or the daemon.
+
+```console
+$ cfgd backup run
+Run Backups
+  ✓ backup 'openlist-db'
+  ✓ backup 'weekly'
+
+$ cfgd backup run openlist-db
+Run Backups
+  ✓ backup 'openlist-db'
+
+$ cfgd backup run missing-name
+Error: Backup 'missing-name' not found
+  hint: valid backups: openlist-db, weekly
+
+$ cfgd backup list
+Backups
+
+Name          Source                       Schedule    Retention  Last Run
+─────────────────────────────────────────────────────────────────────────
+openlist-db   /var/lib/openlist/data.db    -           7          success @ 2026-08-01T03:15:00Z
+weekly        ~/Pictures                   0 3 * * *   3          never
+
+$ cfgd --output json backup run openlist-db
+[
+  {
+    "name": "openlist-db",
+    "status": "success",
+    "clean": true,
+    "destinationPath": "/home/me/.local/state/cfgd/backups/openlist-db/data.db.20260801T031500Z"
+  }
+]
+```
+
+`cfgd backup run [name]` runs every declared backup when `name` is omitted, or just the named one.
+An unknown name is a typed error (exit code `6`, see [Exit Codes](cli-reference.md#exit-codes))
+that lists every valid name, and a run whose snapshot did not complete cleanly — see
+[Run Semantics](#run-semantics) for what "clean" means — also exits nonzero so a script can
+detect it without parsing output.
+
+`cfgd backup list` (alias `ls`) shows every declared backup and its last recorded run; both
+commands honor the global `-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers.
 
 ## Field Reference
 
@@ -245,7 +288,8 @@ rsync -a --delete ~/.local/state/cfgd/backups/photos/Pictures.20260801T031500Z/ 
 
 ## Limitations
 
-- No command or scheduler drives the engine yet — see the note at the top.
+- Scheduled backups (`schedule` set) are not yet driven by the daemon — only `cfgd backup run`
+  reaches them explicitly today.
 - Snapshots are full copies — no incremental, deduplicating, or compressed modes.
 - Symlinks inside a directory source are skipped rather than recreated.
 - Concurrent runs of one backup are unsupported (see above).

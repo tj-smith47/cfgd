@@ -1,0 +1,6 @@
+Backups
+
+Name    Source                          Schedule   Retention  Last Run
+──────────────────────────────────────────────────────────────────────
+docs    <SOURCE>  -          3          never   
+weekly  <SOURCE>  0 3 * * *  3          never   

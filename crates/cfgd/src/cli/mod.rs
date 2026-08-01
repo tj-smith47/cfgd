@@ -1,5 +1,6 @@
 pub mod alias;
 pub mod apply;
+pub mod backup;
 pub mod checkin;
 pub mod compliance;
 pub mod config_cmd;
@@ -645,6 +646,15 @@ pub enum Command {
         command: SourceCommand,
     },
 
+    /// Run declarative backups (`spec.backups[]`)
+    #[command(
+        long_about = "Run or inspect declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs only via this command or the daemon.\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd --output json backup list"
+    )]
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+
     /// Check for and install updates
     #[command(
         long_about = "Check for, download, and install a newer cfgd release.\n\nWith --check, exit codes are:\n  0  already at latest version\n  1  network / IO error\n  2  update available (action needed, not an error)\n\ncfgd downloads the release archive and verifies its `<archive>.sha256`\nchecksum. When the `cosign` CLI is installed and the release attaches a\ncosign bundle, it also verifies the keyless cosign signature over that\nchecksum — proving the artifact came from cfgd's GitHub release workflow\n(Sigstore: Fulcio certificate + OIDC identity, recorded in the Rekor\ntransparency log; no public key to distribute). If cosign is missing or no\nbundle is attached, verification falls back to SHA256-only with a loud\nwarning (the human warning surfaces it, but a structured-output consumer\nmight miss it). Pass --require-cosign (or set CFGD_REQUIRE_COSIGN=1) to fail\nthe upgrade instead of falling back — recommended for unattended / CI\nupdates where a tampered GitHub asset would otherwise pass.\n\nExamples:\n  cfgd upgrade\n  cfgd upgrade --check\n  cfgd upgrade --require-cosign\n  CFGD_REQUIRE_COSIGN=1 cfgd upgrade"
@@ -1090,6 +1100,19 @@ pub enum SourceCommand {
         #[arg(value_hint = clap::ValueHint::FilePath)]
         source: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommand {
+    /// Run one declarative backup, or every declared backup when name is omitted
+    Run {
+        /// Backup name (default: run every backup declared in the active profile)
+        name: Option<String>,
+    },
+
+    /// List declared backups and their last recorded run
+    #[command(alias = "ls")]
+    List,
 }
 
 #[derive(Subcommand)]
@@ -2138,6 +2161,10 @@ pub fn execute(
                 version.as_deref(),
             ),
             SourceCommand::Validate { source } => validate::cmd_source_validate(printer, source),
+        },
+        Command::Backup { command } => match command {
+            BackupCommand::Run { name } => backup::cmd_backup_run(cli, printer, name.as_deref()),
+            BackupCommand::List => backup::cmd_backup_list(cli, printer),
         },
         Command::Explain {
             resource,

@@ -12,6 +12,7 @@ use brontes::{Config, TaskMode, ToolAnnotations};
 const READ_ONLY: &[&str] = &[
     "alias list",
     "alias show",
+    "backup list",
     "clusterconfigpolicy validate",
     "compliance",
     "compliance diff",
@@ -61,6 +62,7 @@ const INTERACTIVE: &[&str] = &[
 /// Commands that create or update local state without removing anything.
 const ADDITIVE: &[&str] = &[
     "alias set",
+    "backup run",
     "compliance export",
     "config set",
     "daemon install",
@@ -146,6 +148,7 @@ const GROUPS: &[(&str, &str, &[&str])] = &[
         "Reconcile this machine: preview, apply, inspect drift, roll back",
         &[
             "apply", "plan", "status", "diff", "verify", "log", "rollback", "doctor", "paths",
+            "backup",
         ],
     ),
     (

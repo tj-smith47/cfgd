@@ -219,6 +219,37 @@ pub fn plan_args_module(name: &str) -> PlanArgs {
     }
 }
 
+/// Build a tempdir-backed profile with zero managed files/modules (so the
+/// reconciler plan is always empty) and two `spec.backups[]` entries: `docs`
+/// (schedule-less — runs on every apply) and `weekly` (`schedule: "0 3 * * *"`
+/// — daemon/explicit-run only). Both snapshot the same source file so a test
+/// can tell which one actually ran by checking which destination directory
+/// gained a snapshot.
+///
+/// Returns `(config_dir, state_dir, source_file)`.
+pub fn backup_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let source_file = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+    std::fs::write(&source_file, "hello backup").unwrap();
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      retention: 3\n    - name: weekly\n      source: {}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
+        source_file.display(),
+        source_file.display(),
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir, source_file)
+}
+
 // ---------------------------------------------------------------------------
 // Source-sync fixtures (cmd_sync).
 //

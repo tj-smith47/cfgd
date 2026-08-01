@@ -9368,7 +9368,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None);
+    let output = super::build_plan_output(&plan, "apply", None, &[]);
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -9387,7 +9387,7 @@ fn build_plan_output_with_actions() {
         }],
         warnings: vec!["something".into()],
     };
-    let output = super::build_plan_output(&plan, "reconcile", None);
+    let output = super::build_plan_output(&plan, "reconcile", None, &[]);
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -9421,7 +9421,7 @@ fn build_plan_output_with_phase_filter() {
         warnings: vec![],
     };
     // Filter to only Files phase
-    let output = super::build_plan_output(&plan, "apply", Some(&reconciler::PhaseName::Files));
+    let output = super::build_plan_output(&plan, "apply", Some(&reconciler::PhaseName::Files), &[]);
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");

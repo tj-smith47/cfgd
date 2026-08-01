@@ -40,6 +40,11 @@ pub struct ApplyOutput {
     pub failed: usize,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub source_commits: HashMap<String, String>,
+    /// Schedule-less `spec.backups[]` runs executed alongside this apply.
+    /// Empty (and omitted from the wire) on the no-op paths and whenever the
+    /// profile declares no schedule-less backups.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub backups: Vec<BackupRunOutput>,
 }
 
 impl ApplyOutput {
@@ -50,6 +55,7 @@ impl ApplyOutput {
             succeeded: 0,
             failed: 0,
             source_commits: HashMap::new(),
+            backups: Vec::new(),
         }
     }
 
@@ -60,6 +66,7 @@ impl ApplyOutput {
             succeeded: 0,
             failed: 0,
             source_commits: HashMap::new(),
+            backups: Vec::new(),
         }
     }
 }
@@ -150,6 +157,14 @@ pub struct PlanOutput {
     pub total_actions: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Names of schedule-less `spec.backups[]` entries that a non-dry-run
+    /// apply would run alongside this plan. Backups are not reconciler
+    /// actions (no diff against desired state — they always run), so they
+    /// are reported here rather than folded into `total_actions`. Empty (and
+    /// omitted from the wire) when the profile declares none, or every
+    /// declared backup carries a `schedule`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending_backups: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -309,6 +324,59 @@ pub struct SourceListEntry {
     pub version: Option<String>,
     pub status: String,
     pub last_fetched: Option<String>,
+}
+
+/// One `spec.backups[]` entry plus its last recorded run, for
+/// `cfgd backup list`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupListEntry {
+    pub name: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    pub retention: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    /// `Some(false)` when the last run wrote a snapshot but a `postBackup`
+    /// hook still failed (`BackupRunRecord::is_clean() == false`) — lets a
+    /// structured consumer gate on cleanliness without parsing
+    /// `lastRunStatus` text. `None` when there is no recorded run yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_clean: Option<bool>,
+}
+
+/// Outcome of one unit run by `cfgd backup run`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRunOutput {
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+    /// [`cfgd_core::state::BackupRunRecord::is_clean`] — the run wrote a
+    /// snapshot AND every hook succeeded. `false` on a run that recorded
+    /// `Success` but a `postBackup` hook still failed.
+    pub clean: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
+    fn from(record: &cfgd_core::state::BackupRunRecord) -> Self {
+        Self {
+            name: record.name.clone(),
+            status: match record.status {
+                cfgd_core::state::BackupRunStatus::Success => "success".to_string(),
+                cfgd_core::state::BackupRunStatus::Failed => "failed".to_string(),
+            },
+            destination_path: record.destination_path.clone(),
+            clean: record.is_clean(),
+            error: record.error.clone(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -522,6 +590,10 @@ mod tests {
             json.get("sourceCommits").is_none(),
             "sourceCommits must be skipped when HashMap is empty"
         );
+        assert!(
+            json.get("backups").is_none(),
+            "backups must be skipped when Vec is empty"
+        );
     }
 
     #[test]
@@ -533,6 +605,29 @@ mod tests {
         assert_eq!(json["failed"], json!(0));
         assert!(json.get("applyId").is_none());
         assert!(json.get("sourceCommits").is_none());
+        assert!(json.get("backups").is_none());
+    }
+
+    #[test]
+    fn apply_output_with_backups_includes_backup_results() {
+        let v = ApplyOutput {
+            status: "partial".to_string(),
+            apply_id: Some(7),
+            succeeded: 2,
+            failed: 0,
+            source_commits: HashMap::new(),
+            backups: vec![BackupRunOutput {
+                name: "photos".to_string(),
+                status: "success".to_string(),
+                destination_path: Some("/backups/photos/20260801T000000Z".to_string()),
+                clean: false,
+                error: Some("postBackup hook failed".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["backups"][0]["name"], json!("photos"));
+        assert_eq!(json["backups"][0]["clean"], json!(false));
+        assert_eq!(json["backups"][0]["error"], json!("postBackup hook failed"));
     }
 
     #[test]
@@ -545,6 +640,7 @@ mod tests {
             succeeded: 3,
             failed: 1,
             source_commits: commits,
+            backups: Vec::new(),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["status"], json!("success"));
@@ -754,6 +850,7 @@ mod tests {
             }],
             total_actions: 1,
             warnings: vec![],
+            pending_backups: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -761,6 +858,10 @@ mod tests {
         assert!(
             json.get("warnings").is_none(),
             "warnings must be skipped when Vec is empty"
+        );
+        assert!(
+            json.get("pendingBackups").is_none(),
+            "pendingBackups must be skipped when Vec is empty"
         );
         let phases = json["phases"].as_array().expect("phases is array");
         assert_eq!(phases.len(), 1);
@@ -776,9 +877,23 @@ mod tests {
             phases: vec![],
             total_actions: 0,
             warnings: vec!["missing tool".to_string()],
+            pending_backups: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
+    }
+
+    #[test]
+    fn plan_output_includes_pending_backups_when_present() {
+        let v = PlanOutput {
+            context: "default".to_string(),
+            phases: vec![],
+            total_actions: 0,
+            warnings: vec![],
+            pending_backups: vec!["photos".to_string()],
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["pendingBackups"], json!(["photos"]));
     }
 
     #[test]

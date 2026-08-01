@@ -1,0 +1,13 @@
+[
+  {
+    "name": "docs",
+    "retention": 3,
+    "source": "<SOURCE>"
+  },
+  {
+    "name": "weekly",
+    "retention": 3,
+    "schedule": "0 3 * * *",
+    "source": "<SOURCE>"
+  }
+]

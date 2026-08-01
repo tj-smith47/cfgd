@@ -270,15 +270,29 @@ pub fn run_apply(
         strip_scripts_from_plan(&mut plan);
     }
 
+    // Schedule-less backups run on every non-dry-run apply, unconditionally
+    // of the reconciler diff — computed once here so both the dry-run
+    // preview and the real run below use the exact same list.
+    let pending_backups: Vec<String> = effective_resolved
+        .merged
+        .backups
+        .iter()
+        .filter(|b| b.schedule.is_none())
+        .map(|b| b.name.clone())
+        .collect();
+
     if dry_run {
         display_plan_preview(
             &plan,
             printer,
             &state,
-            &args.context,
-            phase_filter.as_ref(),
-            dry_run_fm.as_ref(),
-            &scope,
+            &PlanPreviewArgs {
+                context: &args.context,
+                phase_filter: phase_filter.as_ref(),
+                dry_run_fm: dry_run_fm.as_ref(),
+                scope: &scope,
+                pending_backups: &pending_backups,
+            },
         );
         // Preview orphaned custom-manager packages a real apply would prune
         // (read-only — execute nothing here). Same gating + query as the apply
@@ -320,7 +334,11 @@ pub fn run_apply(
         !plan.is_empty()
     };
 
-    if !has_actions {
+    // A schedule-less backup runs on every apply regardless of reconciler
+    // diff, so a converged machine (the common case once a fleet is settled)
+    // must not short-circuit here — that would silently starve backups of
+    // the cadence "every apply" promises.
+    if !has_actions && pending_backups.is_empty() {
         report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
@@ -328,51 +346,58 @@ pub fn run_apply(
 
     let start = std::time::Instant::now();
 
-    // Show what will change, nested under a section so each phase's items
-    // render at the section's indent. The preview honours the same
-    // action-level filter as the executor so users see exactly what's about
-    // to run.
-    {
-        let preview = printer.section("Plan preview");
-        for phase_item in &plan.phases {
-            let items = reconciler::format_plan_items(phase_item);
-            let displayed: Vec<&String> = if let Some(ref pf) = phase_filter {
-                phase_item
-                    .actions
-                    .iter()
-                    .zip(items.iter())
-                    .filter_map(|(a, item)| {
-                        reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
-                            .then_some(item)
-                    })
-                    .collect()
-            } else {
-                items.iter().collect()
-            };
-            if displayed.is_empty() {
-                continue;
+    // Both the preview and the confirmation gate are about the reconciler's
+    // file/package/module diff. A backup-only apply (has_actions == false,
+    // pending_backups non-empty) has no diff to preview or confirm — showing
+    // an empty "Plan preview" section and prompting "Apply these changes?"
+    // over nothing would confuse the one case this exists to serve.
+    if has_actions {
+        // Show what will change, nested under a section so each phase's items
+        // render at the section's indent. The preview honours the same
+        // action-level filter as the executor so users see exactly what's about
+        // to run.
+        {
+            let preview = printer.section("Plan preview");
+            for phase_item in &plan.phases {
+                let items = reconciler::format_plan_items(phase_item);
+                let displayed: Vec<&String> = if let Some(ref pf) = phase_filter {
+                    phase_item
+                        .actions
+                        .iter()
+                        .zip(items.iter())
+                        .filter_map(|(a, item)| {
+                            reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
+                                .then_some(item)
+                        })
+                        .collect()
+                } else {
+                    items.iter().collect()
+                };
+                if displayed.is_empty() {
+                    continue;
+                }
+                let phase_sec = preview.section(phase_item.name.display_name());
+                for item in displayed {
+                    phase_sec.bullet(item);
+                }
             }
-            let phase_sec = preview.section(phase_item.name.display_name());
-            for item in displayed {
-                phase_sec.bullet(item);
+            for w in &plan.warnings {
+                preview.status_simple(Role::Warn, w);
             }
         }
-        for w in &plan.warnings {
-            preview.status_simple(Role::Warn, w);
-        }
-    }
 
-    // Confirm
-    if !yes {
-        // Closed-TTY / non-interactive defaults to "no" — apply is destructive
-        // and silence is treated as decline, not as approval.
-        let confirmed = printer
-            .prompt_confirm("Apply these changes?")
-            .unwrap_or(false);
-        if !confirmed {
-            printer.status_simple(Role::Info, "Aborted");
-            printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
-            return Ok(ApplyOutcome::success());
+        // Confirm
+        if !yes {
+            // Closed-TTY / non-interactive defaults to "no" — apply is destructive
+            // and silence is treated as decline, not as approval.
+            let confirmed = printer
+                .prompt_confirm("Apply these changes?")
+                .unwrap_or(false);
+            if !confirmed {
+                printer.status_simple(Role::Info, "Aborted");
+                printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
+                return Ok(ApplyOutcome::success());
+            }
         }
     }
 
@@ -430,7 +455,7 @@ pub fn run_apply(
         });
     }
 
-    let status = print_apply_result(&result, printer, Some(start.elapsed()));
+    let mut status = print_apply_result(&result, printer, Some(start.elapsed()));
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {
@@ -446,12 +471,60 @@ pub fn run_apply(
         }
     }
 
-    // Prune old backups — keep last 10 applies' worth. Best-effort: failures
-    // here (SQLite locked, disk full, permission denied) are surfaced as a
-    // warn-level log so unbounded backup growth on a stuck filesystem is
-    // observable instead of silent.
+    // Prune old rollback backups (per-apply pre-image snapshots, distinct from
+    // `spec.backups[]` below) — keep last 10 applies' worth. Best-effort:
+    // failures here (SQLite locked, disk full, permission denied) are
+    // surfaced as a warn-level log so unbounded growth on a stuck filesystem
+    // is observable instead of silent.
     if let Err(e) = state.prune_old_backups(10) {
         tracing::warn!(error = %e, "failed to prune old backups");
+    }
+
+    // Run every schedule-less `spec.backups[]` entry. Not a reconciler action
+    // (no diff against desired state — they always run), and independent of
+    // the reconcile outcome above, so they run here unconditionally rather
+    // than being folded into `plan`/`result`. A dirty run (good snapshot, but
+    // a failed post-hook) is user-declared work, so — unlike the best-effort
+    // pruning above — it downgrades a `Success` apply to `Partial` and drives
+    // the process exit code the same way a failed reconciler action would.
+    let mut backup_outputs = Vec::with_capacity(pending_backups.len());
+    if !pending_backups.is_empty() {
+        let profile_name = active_profile_name(cli, Some(&cfg));
+        let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+        for backup_name in &pending_backups {
+            let Some(spec) = effective_resolved
+                .merged
+                .backups
+                .iter()
+                .find(|b| &b.name == backup_name)
+            else {
+                continue;
+            };
+            let unit =
+                cfgd_core::backup::BackupUnit::new(spec, &config_dir, &profile_name, &state_dir)
+                    .with_abort(&abort);
+            let record = cfgd_core::backup::run_backup(&unit, &state, printer)?;
+            let subject = format!("backup '{}'", record.name);
+            let role = if record.is_clean() {
+                Role::Ok
+            } else if record.status == cfgd_core::state::BackupRunStatus::Success {
+                Role::Warn
+            } else {
+                Role::Fail
+            };
+            match &record.error {
+                Some(e) => {
+                    printer
+                        .status(role, subject)
+                        .detail(cfgd_core::output::collapse_to_subject_line(e));
+                }
+                None => printer.status_simple(role, subject),
+            }
+            if !record.is_clean() && matches!(status, cfgd_core::state::ApplyStatus::Success) {
+                status = cfgd_core::state::ApplyStatus::Partial;
+            }
+            backup_outputs.push(BackupRunOutput::from(&record));
+        }
     }
 
     let output = ApplyOutput {
@@ -460,6 +533,7 @@ pub fn run_apply(
         succeeded: result.succeeded(),
         failed: result.failed(),
         source_commits,
+        backups: backup_outputs,
     };
     printer.emit(Doc::new().with_data(&output));
 

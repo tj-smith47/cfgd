@@ -195,6 +195,7 @@ pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
     phase_filter: Option<&PhaseName>,
+    pending_backups: &[String],
 ) -> PlanOutput {
     let mut phases = Vec::new();
     for phase_item in &plan.phases {
@@ -226,6 +227,7 @@ pub(in crate::cli) fn build_plan_output(
         phases,
         total_actions,
         warnings: plan.warnings.clone(),
+        pending_backups: pending_backups.to_vec(),
     }
 }
 
@@ -376,15 +378,32 @@ pub(in crate::cli) fn report_no_in_scope_actions(
     }
 }
 
+/// Bundles `display_plan_preview`'s non-core arguments (everything but the
+/// plan/printer/state it acts on) so the call stays under clippy's
+/// too-many-arguments budget as fields accrue.
+#[derive(Clone, Copy)]
+pub(in crate::cli) struct PlanPreviewArgs<'a> {
+    pub context: &'a str,
+    pub phase_filter: Option<&'a PhaseName>,
+    pub dry_run_fm: Option<&'a CfgdFileManager>,
+    pub scope: &'a ScopeReport,
+    pub pending_backups: &'a [String],
+}
+
 pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
     state: &cfgd_core::state::StateStore,
-    context: &str,
-    phase_filter: Option<&PhaseName>,
-    dry_run_fm: Option<&CfgdFileManager>,
-    scope: &ScopeReport,
+    args: &PlanPreviewArgs<'_>,
 ) {
+    let PlanPreviewArgs {
+        context,
+        phase_filter,
+        dry_run_fm,
+        scope,
+        pending_backups,
+    } = *args;
+
     // Show pending decisions (not included in this plan)
     if let Ok(pending) = state.pending_decisions()
         && !pending.is_empty()
@@ -402,7 +421,7 @@ pub(in crate::cli) fn display_plan_preview(
     }
 
     // Build structured output
-    let plan_output = build_plan_output(plan, context, phase_filter);
+    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups);
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
     // doc's data payload and skip the human render.
@@ -413,6 +432,17 @@ pub(in crate::cli) fn display_plan_preview(
 
     // Table mode display
     display_plan_table(plan, printer, phase_filter);
+
+    // Schedule-less backups are not reconciler actions (they always run, no
+    // diff against desired state), so they never appear in `display_plan_table`
+    // above — surface them separately so a preview doesn't silently omit work
+    // a real (non-dry-run) apply would do.
+    if !pending_backups.is_empty() {
+        let section = printer.section("Backups (run on apply)");
+        for name in pending_backups {
+            section.status_simple(Role::Info, name);
+        }
+    }
 
     // Show diffs for file updates
     if let Some(fm) = dry_run_fm {

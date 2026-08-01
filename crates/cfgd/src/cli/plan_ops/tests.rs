@@ -693,7 +693,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None);
+    let output = build_plan_output(&plan, "my-machine", None, &[]);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -722,7 +722,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", Some(&PhaseName::Files));
+    let output = build_plan_output(&plan, "ctx", Some(&PhaseName::Files), &[]);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
@@ -745,7 +745,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     let actions = &output.phases[0].actions;
     let sourced = actions
@@ -782,7 +782,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
     for phase in &output.phases {
         for action in &phase.actions {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -803,7 +803,7 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());

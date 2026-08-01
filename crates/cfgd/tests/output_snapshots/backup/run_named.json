@@ -1,0 +1,8 @@
+[
+  {
+    "clean": true,
+    "destinationPath": "<STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>",
+    "name": "docs",
+    "status": "success"
+  }
+]

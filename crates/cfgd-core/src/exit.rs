@@ -31,7 +31,7 @@
 //! [`NotFound`]: ExitCode::NotFound
 //! [`ApplyFailed`]: ExitCode::ApplyFailed
 
-use crate::errors::{CfgdError, ConfigError, ModuleError, SourceError};
+use crate::errors::{BackupError, CfgdError, ConfigError, ModuleError, SourceError};
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +84,7 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         CfgdError::Module(ModuleError::RegistryNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Backup(BackupError::UnknownName { .. }) => ExitCode::NotFound,
         // A source-delivered module carrying disallowed scripts is a policy
         // violation in the resolved config, not a missing resource — it maps to
         // ConfigInvalid (4), matching how composition constraint violations are
@@ -241,6 +242,15 @@ mod tests {
         let err = CfgdError::Source(crate::errors::SourceError::ProfileNotFound {
             name: "acme".into(),
             profile: "dev".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn backup_unknown_name_maps_to_not_found() {
+        let err = CfgdError::Backup(crate::errors::BackupError::UnknownName {
+            name: "openlist-db".into(),
+            valid: vec!["photos".into()],
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
     }
