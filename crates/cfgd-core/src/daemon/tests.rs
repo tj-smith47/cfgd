@@ -14449,5 +14449,20 @@ mod backup_timers {
             "a profile that would not resolve must not be reported as a source \
              problem, got: {profile:?}"
         );
+
+        let unreadable_config = crate::daemon::format_interval_lines(
+            &parsed,
+            None,
+            0,
+            Some(crate::daemon::backup::DegradedReason::ConfigUnreadable),
+        );
+        assert!(
+            unreadable_config
+                .iter()
+                .any(|l| l == "backups=0 scheduled (config unreadable)"),
+            "a top-level config that would not parse must render its own label, \
+             not borrow the profile-unresolved or source-composition wording, \
+             got: {unreadable_config:?}"
+        );
     }
 }
