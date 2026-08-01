@@ -313,16 +313,19 @@ apply  plan  status  diff  verify  log  rollback  doctor  paths
 
 `mcp-server`, `daemon run`, `man`, `completion`, and the `$EDITOR`-blocking `* edit` commands are never served: each either hangs a tool call or starts a second server inside this one.
 
-### Widening
+### Widening and Narrowing
 
-Selections union, so `--group` adds to the default rather than replacing it, and `--all` drops the default to serve the whole tree:
+Selections union, so `--group` adds to the default rather than replacing it. Hiding the default is how you get under it:
 
 ```sh
-cfgd mcp tools                  # 9  — the default
-cfgd mcp tools --group secrets  # 12 — core plus secrets
-cfgd mcp tools --group modules  # 28 — core plus modules
-cfgd mcp tools --all            # 86 — everything
+cfgd mcp tools                                     # 9  — the default
+cfgd mcp tools --group secrets                     # 12 — core plus secrets
+cfgd mcp tools --group modules                     # 28 — core plus modules
+cfgd mcp tools --group modules --hide-group core   # 19 — modules alone
+cfgd mcp tools --all                               # 86 — everything
 ```
+
+`--hide-group core` on its own is refused: narrowing has to say what it narrows *to*, and an empty selection would mean "serve everything except core".
 
 | Group | Covers |
 |---|---|
