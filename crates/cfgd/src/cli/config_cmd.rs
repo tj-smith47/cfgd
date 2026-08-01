@@ -882,6 +882,29 @@ spec:
         );
     }
 
+    /// `config set` validates the document it is about to write, so the global
+    /// `Modify` rejection reaches the CLI surface too — the file is left
+    /// untouched rather than written into a state every apply would fail on.
+    #[test]
+    fn cmd_config_set_rejects_modify_as_the_global_file_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_sample_config(dir.path());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let cli = test_cli_for(path.clone());
+        let printer = test_printer();
+
+        let err = cmd_config_set(&cli, &printer, "fileStrategy", "Modify").unwrap_err();
+        assert!(
+            err.to_string().contains("fileStrategy"),
+            "expected the fileStrategy rejection, got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "a rejected set must not write the config"
+        );
+    }
+
     #[test]
     fn cmd_config_set_invalid_key_path_errs() {
         let dir = tempfile::tempdir().unwrap();

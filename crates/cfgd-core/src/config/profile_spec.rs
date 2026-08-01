@@ -616,6 +616,41 @@ case_insensitive_enum!(FileStrategy {
     "Modify" => FileStrategy::Modify,
 });
 
+impl FileStrategy {
+    /// Every variant, in declaration order. Keep in step with the enum and the
+    /// `case_insensitive_enum!` token list above.
+    pub const ALL: &'static [FileStrategy] = &[
+        FileStrategy::Symlink,
+        FileStrategy::Copy,
+        FileStrategy::Template,
+        FileStrategy::Hardlink,
+        FileStrategy::Modify,
+    ];
+
+    /// Canonical PascalCase spelling — what cfgd serializes and what the
+    /// published editor schemas offer.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileStrategy::Symlink => "Symlink",
+            FileStrategy::Copy => "Copy",
+            FileStrategy::Template => "Template",
+            FileStrategy::Hardlink => "Hardlink",
+            FileStrategy::Modify => "Modify",
+        }
+    }
+
+    /// Whether the strategy is meaningful as the global `spec.fileStrategy`
+    /// default.
+    ///
+    /// `Modify` is not: it is defined by a per-file `modify:` block, which a
+    /// file inheriting the global default cannot have. The config parser and
+    /// the published schema both derive their accepted value set from this, so
+    /// an editor and `cfgd` can never disagree about it.
+    pub fn valid_as_global_default(self) -> bool {
+        !matches!(self, FileStrategy::Modify)
+    }
+}
+
 /// File format used to interpret and re-serialize a `Modify`-strategy target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum ModifyFormat {

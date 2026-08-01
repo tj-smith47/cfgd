@@ -1495,10 +1495,12 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 /// an active mutation window blocks them.
 ///
 /// Both halves are re-entrant *per thread*, tracked by the thread-locals below.
-/// The one shape they cannot cover is cross-thread: a thread holding the
-/// exclusive guard that waits on a helper thread which spawns (a raw
-/// `spawn_blocking`, say) deadlocks, because the helper has neither flag. Keep
-/// a mutation window on one thread.
+/// Two shapes they cannot cover. Cross-thread: a thread holding the exclusive
+/// guard that waits on a helper thread which spawns (a raw `spawn_blocking`,
+/// say) deadlocks, because the helper has neither flag — keep a mutation window
+/// on one thread. And shared-then-exclusive on one thread: a read guard cannot
+/// upgrade to a write guard, so [`path_env_mutation_guard`] `debug_assert!`s
+/// that no shared guard is held rather than silently allowing the mutation.
 static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
 
 thread_local! {
@@ -1556,7 +1558,20 @@ impl Drop for SpawnEnvGuard {
 /// test to do and must not deadlock a write-preferring `RwLock` against itself.
 /// The inner acquisitions are no-ops and the lock is released when the
 /// outermost guard drops. See [`PATH_ENV_LOCK`] for the cross-thread limit.
+///
+/// The one order that cannot be made re-entrant is shared-then-exclusive: a
+/// thread holding [`script_spawn_path_guard`]'s read guard cannot upgrade to
+/// the write guard, and degrading to a no-op would be worse than the hang it
+/// avoids — it would let a `PATH`/cwd mutation run while the in-flight spawn
+/// this lock exists to protect is still resolving its program. Take the
+/// exclusive guard first, or not inside a spawn.
 pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
+    debug_assert!(
+        SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) == 0,
+        "path_env_mutation_guard() taken while holding the shared spawn guard: \
+         a read guard cannot upgrade to a write guard, so this deadlocks. \
+         Take the exclusive guard before the spawn, not during it."
+    );
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get) {
         return ExclusiveEnvGuard { guard: None };
     }
@@ -2302,6 +2317,17 @@ mod tests {
             std::fs::canonicalize(dir.path()).expect("canonicalize"),
             "the innermost guard still owns the working directory"
         );
+    }
+
+    /// The one order re-entrancy cannot rescue: a read guard cannot upgrade to
+    /// a write guard. Without the assertion this hangs; with it the misuse is a
+    /// loud panic naming the fix.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "while holding the shared spawn guard")]
+    fn taking_the_exclusive_guard_inside_a_spawn_guard_panics() {
+        let _shared = script_spawn_path_guard();
+        let _exclusive = path_env_mutation_guard();
     }
 
     #[test]

@@ -71,7 +71,11 @@ pub struct ConfigSpec {
     pub modules: Option<ModulesConfig>,
 
     /// Global default file deployment strategy. Per-file overrides take precedence.
+    ///
+    /// `Modify` is rejected here: it is defined by a per-file `modify:` block,
+    /// which a file inheriting the global default cannot have.
     #[serde(default)]
+    #[schemars(schema_with = "global_file_strategy_schema")]
     pub file_strategy: FileStrategy,
 
     /// Security settings for source signature verification.
@@ -94,6 +98,25 @@ pub struct ConfigSpec {
     /// Update policy for the cfgd binary and authored skills.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
+}
+
+/// Schema for `spec.fileStrategy`: the [`FileStrategy`] variants minus `Modify`.
+///
+/// Editors validate `cfgd.yaml` against the published schema, so the value set
+/// they offer must match what the parser accepts — `Modify` is rejected as a
+/// global default (see `validate_global_file_strategy`).
+fn global_file_strategy_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let accepted: Vec<&'static str> = FileStrategy::ALL
+        .iter()
+        .copied()
+        .filter(|s| s.valid_as_global_default())
+        .map(FileStrategy::as_str)
+        .collect();
+    schemars::json_schema!({
+        "type": "string",
+        "enum": accepted,
+        "default": FileStrategy::default().as_str(),
+    })
 }
 
 /// Update policy governing how cfgd self-update checks behave.

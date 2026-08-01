@@ -190,9 +190,15 @@
           "default": null
         },
         "fileStrategy": {
-          "$ref": "#/definitions/FileStrategy",
           "default": "Symlink",
-          "description": "Global default file deployment strategy. Per-file overrides take precedence."
+          "description": "Global default file deployment strategy. Per-file overrides take precedence. `Modify` is rejected here: it is defined by a per-file `modify:` block, which a file inheriting the global default cannot have.",
+          "enum": [
+            "Symlink",
+            "Copy",
+            "Template",
+            "Hardlink"
+          ],
+          "type": "string"
         },
         "modules": {
           "anyOf": [
@@ -340,36 +346,6 @@
         {
           "const": "Prompt",
           "description": "Future: notify with actionable prompt.",
-          "type": "string"
-        }
-      ]
-    },
-    "FileStrategy": {
-      "description": "File deployment strategy.",
-      "oneOf": [
-        {
-          "const": "Symlink",
-          "description": "Create a symbolic link from target to source (default).",
-          "type": "string"
-        },
-        {
-          "const": "Copy",
-          "description": "Copy source content to target.",
-          "type": "string"
-        },
-        {
-          "const": "Template",
-          "description": "Render a Tera template and write the output (auto-selected for .tera files).",
-          "type": "string"
-        },
-        {
-          "const": "Hardlink",
-          "description": "Create a hard link from target to source.",
-          "type": "string"
-        },
-        {
-          "const": "Modify",
-          "description": "Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `modify:` block.",
           "type": "string"
         }
       ]

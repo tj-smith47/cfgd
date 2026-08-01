@@ -479,12 +479,13 @@ Global source security overrides. Intended for development and testing environme
 Used by `spec.fileStrategy` (global default) and per-file `strategy` overrides in profile and
 module file entries.
 
-| Value | Description |
-|-------|-------------|
-| `Symlink` | Create a symbolic link from target to source file. **(default)** |
-| `Copy` | Copy the source file content to the target path. |
-| `Template` | Render the source as a Tera template and write the output. Auto-selected for `.tera` files. |
-| `Hardlink` | Create a hard link from target to source. |
+| Value | Description | Valid as `spec.fileStrategy` |
+|-------|-------------|------------------------------|
+| `Symlink` | Create a symbolic link from target to source file. **(default)** | yes |
+| `Copy` | Copy the source file content to the target path. | yes |
+| `Template` | Render the source as a Tera template and write the output. Auto-selected for `.tera` files. | yes |
+| `Hardlink` | Create a hard link from target to source. | yes |
+| `Modify` | Merge structured keys/values into the target, or pipe it through a script, leaving the rest untouched. Requires a per-file `modify:` block. | **no** — rejected at config load |
 
 ---
 

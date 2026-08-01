@@ -448,19 +448,24 @@ it to be idempotent for the same reason: cfgd runs it on every reconcile.
 #### When a `Modify` file fails
 
 A target that cannot be parsed for its declared format, and a `script` that exits
-non-zero, both abort with a typed error and write nothing — the target is left
-byte-for-byte as it was.
+non-zero, both fail with a typed error and write nothing — the target is left
+byte-for-byte as it was. The merge always runs before the existing target is
+touched, so a failure never leaves a half-written file.
 
-Where that error surfaces depends on who declares the file, because the merge is
-computed from the target's *current* bytes:
+What the failure *does* depends on what the command is for:
 
-| Declared in | Evaluated at | A failure means |
+| Command class | Commands | A failure means |
 |---|---|---|
-| A profile's `files.managed` | plan time | `cfgd plan`, `cfgd diff`, and `cfgd apply` all fail with the error — the same shape as a missing or unreadable `source` on the other strategies |
-| A module's `spec.files` | deploy time | the module's file-deployment action fails; the rest of the plan follows the usual apply semantics |
+| Builds an action list | `cfgd plan`, `cfgd apply`, `cfgd apply --dry-run` | the command aborts with the error — the same shape as a missing or unreadable `source` on the other strategies. An action list that quietly dropped a file cfgd could not evaluate would misstate what apply is about to do |
+| Reports state | `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`, `cfgd compliance` | that one file is reported as drifted — a `Warning` row in a compliance snapshot — with the error as its detail, and every other file, package and system result is still reported. One broken filter never blinds the whole report |
 
-Either way the merge runs before the existing target is touched, so a failure
-never leaves a half-written file.
+Where the evaluation happens depends on who declares the file, because the merge
+is computed from the target's *current* bytes:
+
+| Declared in | Evaluated at |
+|---|---|
+| A profile's `files.managed` | plan time — the failure is visible before any action runs |
+| A module's `spec.files` | deploy time — the module's file-deployment action fails; the rest of the plan follows the usual apply semantics |
 
 ## File locations
 

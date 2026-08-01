@@ -37,6 +37,69 @@ fn parse_config_rejects_unknown_apiversion() {
     assert!(err.to_string().contains("cfgd.io/v1alpha1")); // names the supported version
 }
 
+/// The global strategy is the fallback for files that declare none, and a
+/// `Modify` file is defined by its own `modify:` block — so a file inheriting
+/// the global could never satisfy it. Rejecting at load keeps that
+/// unrepresentable instead of failing every such file at apply.
+#[test]
+fn parse_config_rejects_modify_as_the_global_file_strategy() {
+    let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n  fileStrategy: Modify\n";
+    let err = parse_config(yaml, Path::new("cfgd.yaml")).unwrap_err();
+    assert!(
+        err.to_string().contains("fileStrategy"),
+        "names the field: {err}"
+    );
+    assert!(
+        err.to_string().contains("per-file"),
+        "points at the per-file form: {err}"
+    );
+}
+
+#[test]
+fn parse_config_rejects_modify_as_the_global_file_strategy_in_toml() {
+    let toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"m\"\n\n[spec]\nprofile = \"default\"\nfileStrategy = \"Modify\"\n";
+    let err = parse_config(toml, Path::new("cfgd.toml")).unwrap_err();
+    assert!(
+        err.to_string().contains("fileStrategy"),
+        "names the field: {err}"
+    );
+}
+
+/// Drives off `FileStrategy::ALL` so a newly added variant is exercised here
+/// automatically — the rejection must stay confined to what
+/// `valid_as_global_default` excludes.
+#[test]
+fn parse_config_accepts_exactly_the_globally_valid_file_strategies() {
+    for strategy in FileStrategy::ALL {
+        let value = strategy.as_str();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n  fileStrategy: {value}\n"
+        );
+        let parsed = parse_config(&yaml, Path::new("cfgd.yaml"));
+        assert_eq!(
+            parsed.is_ok(),
+            strategy.valid_as_global_default(),
+            "{value}: parse acceptance must match valid_as_global_default"
+        );
+    }
+}
+
+/// `ALL` is hand-maintained next to the enum; this pins it against the
+/// deserializer, which has its own token list in `case_insensitive_enum!`.
+#[test]
+fn file_strategy_all_round_trips_through_the_deserializer() {
+    for strategy in FileStrategy::ALL {
+        let parsed: FileStrategy = serde_yaml::from_str(strategy.as_str())
+            .unwrap_or_else(|e| panic!("{} must deserialize: {e}", strategy.as_str()));
+        assert_eq!(parsed, *strategy);
+        assert_eq!(
+            serde_yaml::to_string(strategy).unwrap().trim(),
+            strategy.as_str(),
+            "as_str must match the serialized form"
+        );
+    }
+}
+
 #[test]
 fn load_profile_rejects_unknown_apiversion() {
     let dir = tempfile::tempdir().unwrap();
