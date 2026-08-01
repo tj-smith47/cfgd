@@ -41,6 +41,20 @@ cfgd mcp-server
 
 The server runs until stdin is closed. Configure your AI client to launch it automatically rather than running it directly. See [ai-generate.md](ai-generate.md#mcp-server-setup) for Claude Code and Cursor setup.
 
+### `cfgd mcp`
+
+Serve cfgd's own CLI as MCP tools, so an assistant can run cfgd rather than only write config for it. Distinct from `cfgd mcp-server`, which serves the generation toolset.
+
+```sh
+cfgd mcp claude enable       # register with Claude Desktop (also: vscode, cursor, zed)
+cfgd mcp start               # stdio
+cfgd mcp stream --port 8080  # streamable HTTP
+cfgd mcp tools               # export the tool list to mcp-tools.json
+cfgd mcp tools --groups      # list the command groups
+```
+
+Serves the `core` group (nine reconcile commands) by default. `--group` / `--command` / `--tool` widen it, the matching `--hide-` flags narrow it, and `--all` serves the full 86. See [Serving the CLI itself](ai-generate.md#serving-the-cli-itself).
+
 ### `cfgd init`
 
 Initialize a new cfgd configuration repository.

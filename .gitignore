@@ -119,3 +119,6 @@ CLAUDE.local.md
 .claude/scratch/
 .claude/audits/
 .claude/worktrees/
+
+# Tool inventory `cfgd mcp tools` writes into the working directory.
+/mcp-tools.json
