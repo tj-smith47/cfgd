@@ -157,6 +157,22 @@ pub enum FileError {
     StrategyNotImplemented { path: PathBuf, strategy: String },
 }
 
+impl FileError {
+    /// Build a [`FileError::StrategyNotImplemented`] for a file strategy that
+    /// is declared but has no execution engine wired in yet (e.g. `Modify`).
+    /// Centralizes the four dispatch-site guards (`plan`, `apply`,
+    /// `file_action`, `reconciler::modules`) so they stay in sync.
+    pub fn strategy_not_implemented(
+        path: impl Into<PathBuf>,
+        strategy: crate::config::FileStrategy,
+    ) -> Self {
+        FileError::StrategyNotImplemented {
+            path: path.into(),
+            strategy: format!("{strategy:?}"),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
     #[error("package manager '{manager}' not available")]

@@ -55,6 +55,7 @@ pub(super) fn module_file_verify_results(
     let mut results = Vec::new();
     for module in modules {
         for file in &module.files {
+            file.ensure_strategy_implemented()?;
             let drift = fm.file_drift_one(&file.source, &file.target, None)?;
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
@@ -382,6 +383,29 @@ mod tests {
             "tampered module file must fail: {results:?}"
         );
         assert!(results[0].actual.contains("differs"));
+    }
+
+    #[test]
+    fn module_file_verify_results_modify_strategy_returns_strategy_not_implemented() {
+        // The `Modify` engine isn't wired in yet; `ensure_strategy_implemented()`
+        // must reject the file before `file_drift_one` reads its (possibly
+        // directory-resolving) source. Covers both `cfgd status --exit-code`
+        // and `cfgd verify`, which share this function.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("mod-src.txt");
+        std::fs::write(&source, "deployed\n").unwrap();
+        let target = dir.path().join("mod-deployed.txt");
+
+        let resolved = resolved_with_file(dir.path().join("unused.txt"));
+        let mut modules = vec![module_with_file("accmod", source, target)];
+        modules[0].files[0].strategy = Some(FileStrategy::Modify);
+
+        let err = module_file_verify_results(dir.path(), &resolved, &modules).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Modify") && msg.contains("not yet implemented"),
+            "expected a strategy-not-implemented error, got: {msg}"
+        );
     }
 
     #[test]

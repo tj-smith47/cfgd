@@ -194,10 +194,10 @@ impl<'a> super::Reconciler<'a> {
                     // isn't wired in yet, and this action's whole point is to
                     // preserve most of the target's existing content.
                     if strategy == crate::config::FileStrategy::Modify {
-                        return Err(crate::errors::FileError::StrategyNotImplemented {
-                            path: target.clone(),
-                            strategy: "Modify".to_string(),
-                        }
+                        return Err(crate::errors::FileError::strategy_not_implemented(
+                            target.clone(),
+                            strategy,
+                        )
                         .into());
                     }
 
@@ -244,10 +244,10 @@ impl<'a> super::Reconciler<'a> {
                                 crate::atomic_write(&target, &content)?;
                             }
                             crate::config::FileStrategy::Modify => {
-                                return Err(crate::errors::FileError::StrategyNotImplemented {
-                                    path: target.clone(),
-                                    strategy: "Modify".to_string(),
-                                }
+                                return Err(crate::errors::FileError::strategy_not_implemented(
+                                    target.clone(),
+                                    strategy,
+                                )
                                 .into());
                             }
                         }

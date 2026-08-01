@@ -83,6 +83,28 @@ pub struct ResolvedFile {
     pub permissions: Option<String>,
 }
 
+impl ResolvedFile {
+    /// Reject a `Modify` strategy before any content read/write is attempted.
+    /// The `Modify` engine (structured merge / script rewrite of the
+    /// target's existing content) isn't wired in yet, and a `Modify`
+    /// entry's `source` is typically empty — letting execution fall
+    /// through would resolve `source` to the containing directory and
+    /// crash trying to read it as a file. Centralizes the guard shared by
+    /// every read path over module files (`diff`, `verify`/`status
+    /// --exit-code`) so they stay in sync with the write-path guards in
+    /// `reconciler::modules` and `files::apply`.
+    pub fn ensure_strategy_implemented(&self) -> crate::errors::Result<()> {
+        if self.strategy == Some(crate::config::FileStrategy::Modify) {
+            return Err(crate::errors::FileError::strategy_not_implemented(
+                self.target.clone(),
+                crate::config::FileStrategy::Modify,
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
 /// A root of source-delivered module bodies, derived from a subscribed
 /// ConfigSource's cache. `offered` is the publisher-declared allow-list
 /// (`provides.modules` in the source manifest); only names in `offered` whose

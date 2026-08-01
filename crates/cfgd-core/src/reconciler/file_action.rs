@@ -24,11 +24,7 @@ pub(super) fn apply_file_action_direct(
             // wired in yet, and this action's whole point is to preserve
             // most of the target's existing content.
             if *strategy == crate::config::FileStrategy::Modify {
-                return Err(FileError::StrategyNotImplemented {
-                    path: target.clone(),
-                    strategy: "Modify".to_string(),
-                }
-                .into());
+                return Err(FileError::strategy_not_implemented(target.clone(), *strategy).into());
             }
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -48,11 +44,9 @@ pub(super) fn apply_file_action_direct(
                     std::fs::copy(source, target)?;
                 }
                 crate::config::FileStrategy::Modify => {
-                    return Err(FileError::StrategyNotImplemented {
-                        path: target.clone(),
-                        strategy: "Modify".to_string(),
-                    }
-                    .into());
+                    return Err(
+                        FileError::strategy_not_implemented(target.clone(), *strategy).into(),
+                    );
                 }
             }
             Ok(())

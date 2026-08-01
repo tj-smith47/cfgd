@@ -53,6 +53,7 @@ pub fn cmd_diff(
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {
             for file in &module.files {
+                file.ensure_strategy_implemented()?;
                 if fm.diff_one(&file.source, &file.target, None, printer)? {
                     drift = true;
                 }
@@ -190,6 +191,7 @@ fn cmd_diff_module(
         let fm = CfgdFileManager::new(config_dir, &empty_resolved_profile(mod_name))?;
         for module in &resolved_modules {
             for file in &module.files {
+                file.ensure_strategy_implemented()?;
                 if fm.diff_one(&file.source, &file.target, None, printer)? {
                     has_file_diff = true;
                 }

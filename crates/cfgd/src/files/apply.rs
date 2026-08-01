@@ -150,11 +150,9 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     // existing content) isn't wired in yet, and this action's
                     // whole point is to preserve most of that content.
                     if *strategy == FileStrategy::Modify {
-                        return Err(FileError::StrategyNotImplemented {
-                            path: target.clone(),
-                            strategy: "Modify".to_string(),
-                        }
-                        .into());
+                        return Err(
+                            FileError::strategy_not_implemented(target.clone(), *strategy).into(),
+                        );
                     }
 
                     // Ensure parent directory exists and is writable
@@ -184,10 +182,10 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                             })?;
                         }
                         FileStrategy::Modify => {
-                            return Err(FileError::StrategyNotImplemented {
-                                path: target.clone(),
-                                strategy: "Modify".to_string(),
-                            }
+                            return Err(FileError::strategy_not_implemented(
+                                target.clone(),
+                                *strategy,
+                            )
                             .into());
                         }
                         FileStrategy::Copy | FileStrategy::Template => {

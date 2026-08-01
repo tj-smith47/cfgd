@@ -32,8 +32,24 @@ impl super::CfgdFileManager {
         let mut actions = Vec::new();
 
         for managed in &profile.files.managed {
-            let source_path = self.resolve_source_path(&managed.source)?;
             let target_path = expand_tilde(&managed.target);
+
+            // Fail before any destructive step: the `Modify` engine (structured
+            // merge / script rewrite of the target's existing content) isn't
+            // wired in yet. Guard on the declared strategy directly, before
+            // resolving `source` at all — a `Modify` entry's `source` is
+            // typically empty and resolves to the config directory itself,
+            // which `resolve_source_path` would happily hand back as an
+            // "existing" path, letting execution fall through into the
+            // Copy/Template content-comparison branch below and crash trying
+            // to read a directory as a file.
+            if managed.strategy == Some(FileStrategy::Modify) {
+                return Err(
+                    FileError::strategy_not_implemented(target_path, FileStrategy::Modify).into(),
+                );
+            }
+
+            let source_path = self.resolve_source_path(&managed.source)?;
 
             if !source_path.exists() {
                 if managed.private {
@@ -192,6 +208,14 @@ impl super::CfgdFileManager {
         let mut has_diffs = false;
 
         for managed in &profile.files.managed {
+            if managed.strategy == Some(FileStrategy::Modify) {
+                return Err(FileError::strategy_not_implemented(
+                    expand_tilde(&managed.target),
+                    FileStrategy::Modify,
+                )
+                .into());
+            }
+
             let source_path = self.resolve_source_path(&managed.source)?;
             if self.diff_one(
                 &source_path,
@@ -275,6 +299,14 @@ impl super::CfgdFileManager {
         let mut results = Vec::new();
 
         for managed in &profile.files.managed {
+            if managed.strategy == Some(FileStrategy::Modify) {
+                return Err(FileError::strategy_not_implemented(
+                    expand_tilde(&managed.target),
+                    FileStrategy::Modify,
+                )
+                .into());
+            }
+
             results.push(self.file_drift_one(
                 &self.resolve_source_path(&managed.source)?,
                 &managed.target,
@@ -1015,6 +1047,69 @@ mod tests {
         assert!(
             output.contains("Source not found") || output.contains("nonexistent"),
             "output should mention missing source, got: {output}"
+        );
+    }
+
+    #[test]
+    fn plan_modify_strategy_returns_strategy_not_implemented() {
+        // The `Modify` engine isn't wired in yet; the guard at the top of
+        // `plan()` must reject the entry before `resolve_source_path` ever
+        // runs — an empty `source` (valid for `Modify`) resolves to the
+        // config directory itself, which would otherwise crash
+        // `fs::read_to_string` with "Is a directory".
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let target = config_dir.join("target.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec("", target, Some(FileStrategy::Modify))],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let err = fm.plan(&resolved.merged).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Modify") && msg.contains("not yet implemented"),
+            "expected a strategy-not-implemented error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn diff_modify_strategy_returns_strategy_not_implemented() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let target = config_dir.join("target.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec("", target, Some(FileStrategy::Modify))],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let printer = Printer::new(Verbosity::Quiet);
+        let err = fm.diff(&resolved.merged, &printer).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Modify") && msg.contains("not yet implemented"),
+            "expected a strategy-not-implemented error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn file_drift_results_modify_strategy_returns_strategy_not_implemented() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let target = config_dir.join("target.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec("", target, Some(FileStrategy::Modify))],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let err = fm.file_drift_results(&resolved.merged).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Modify") && msg.contains("not yet implemented"),
+            "expected a strategy-not-implemented error, got: {msg}"
         );
     }
 }

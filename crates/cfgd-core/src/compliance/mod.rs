@@ -231,8 +231,27 @@ pub fn collect_file_checks(
 
     for file in effective_files(profile, modules, config_dir) {
         let target = crate::expand_tilde(&file.target);
-        let exists = target.exists();
         let suffix = origin_suffix(&file.origin);
+
+        // The `Modify` engine isn't wired in yet. Report it as an explicit
+        // check row rather than falling into the content-drift comparison
+        // below, where an empty `source` (valid for `Modify`) resolves to an
+        // existing directory and crashes `fs::read_to_string`.
+        if file.strategy == Some(crate::config::FileStrategy::Modify) {
+            checks.push(ComplianceCheck {
+                category: "file".into(),
+                target: Some(to_posix_string(&target)),
+                status: ComplianceStatus::Warning,
+                detail: Some(format!(
+                    "strategy 'Modify' is not yet implemented{}",
+                    suffix
+                )),
+                ..Default::default()
+            });
+            continue;
+        }
+
+        let exists = target.exists();
 
         if !exists {
             checks.push(ComplianceCheck {

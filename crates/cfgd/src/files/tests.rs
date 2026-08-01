@@ -3429,6 +3429,78 @@ fn apply_create_copy_with_source_directory_returns_io_error() {
 }
 
 #[test]
+fn apply_create_modify_strategy_returns_strategy_not_implemented() {
+    // The `Modify` engine isn't wired in yet; the guard at apply.rs ~148-156
+    // must reject the action before the "remove existing target" / write
+    // step, rather than falling through and (for an empty `source`, valid
+    // for Modify) attempting to read a directory as a file.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("target.txt");
+
+    let actions = vec![FileAction::Create {
+        source: dir.path().to_path_buf(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Modify,
+        source_hash: None,
+    }];
+
+    let printer = test_printer();
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("Modify strategy must be rejected, not silently applied");
+    assert!(
+        matches!(
+            err,
+            cfgd_core::errors::CfgdError::File(FileError::StrategyNotImplemented { .. })
+        ),
+        "expected FileError::StrategyNotImplemented, got: {err:?}"
+    );
+    assert!(!target.exists(), "target must not be created for Modify");
+}
+
+#[test]
+fn apply_update_modify_strategy_returns_strategy_not_implemented() {
+    // Same guard as the Create test above, exercised via the Update arm —
+    // the guard matches both `FileAction::Create` and `FileAction::Update`.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("target.txt");
+    fs::write(&target, "existing content").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: dir.path().to_path_buf(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Modify,
+        source_hash: None,
+        diff: String::new(),
+    }];
+
+    let printer = test_printer();
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("Modify strategy must be rejected, not silently applied");
+    assert!(
+        matches!(
+            err,
+            cfgd_core::errors::CfgdError::File(FileError::StrategyNotImplemented { .. })
+        ),
+        "expected FileError::StrategyNotImplemented, got: {err:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "existing content",
+        "existing target content must be untouched for Modify"
+    );
+}
+
+#[test]
 fn apply_update_copy_with_source_directory_returns_io_error() {
     // Same as the Create variant above but via the Update arm, ensuring
     // the same error closure fires for both action kinds.

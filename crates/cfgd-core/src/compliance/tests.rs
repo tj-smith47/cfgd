@@ -1070,6 +1070,67 @@ fn collect_file_checks_includes_module_file_and_attributes_origin() {
 }
 
 #[test]
+fn collect_file_checks_modify_strategy_warns_without_reading_source() {
+    // The `Modify` engine isn't wired in yet. A profile-managed entry with an
+    // empty `source` (valid for `Modify`) would resolve to `config_dir` itself
+    // and crash `fs::read_to_string` if the guard didn't short-circuit before
+    // the content-drift comparison.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target.txt");
+
+    let profile = MergedProfile {
+        files: crate::config::FilesSpec {
+            managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
+                source: String::new(),
+                target: target.clone(),
+                strategy: Some(crate::config::FileStrategy::Modify),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+        ..Default::default()
+    };
+
+    let checks = collect_file_checks(&profile, &[], dir.path(), &ProviderRegistry::new());
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].category, "file");
+    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("strategy 'Modify' is not yet implemented")
+    );
+}
+
+#[test]
+fn collect_file_checks_module_modify_strategy_warns_and_attributes_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("mod-target.txt");
+
+    let profile = MergedProfile::default();
+    let mut m = empty_module("dev");
+    m.files = vec![ResolvedFile {
+        source: PathBuf::new(),
+        target: target.clone(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Modify),
+        encryption: None,
+        permissions: None,
+    }];
+
+    let checks = collect_file_checks(&profile, &[m], dir.path(), &ProviderRegistry::new());
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("strategy 'Modify' is not yet implemented (module: dev)")
+    );
+}
+
+#[test]
 fn collect_file_checks_content_drift_is_violation() {
     // A managed file present on disk whose bytes drifted from the source is a
     // content violation when a file manager is wired.

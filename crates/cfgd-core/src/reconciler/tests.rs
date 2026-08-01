@@ -7362,6 +7362,101 @@ fn apply_module_deploy_files_creates_target() {
 }
 
 #[test]
+fn apply_module_deploy_files_modify_strategy_returns_strategy_not_implemented() {
+    // The `Modify` engine isn't wired in yet; the guard in
+    // ModuleActionKind::DeployFiles (modules.rs ~196) must reject the file
+    // before the "remove existing target" / write step, rather than falling
+    // through and (for an empty `source`, valid for Modify) attempting to
+    // read the module directory itself as a file.
+    let dir = tempfile::tempdir().unwrap();
+    let target_file = dir.path().join("subdir/module-target.txt");
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![ResolvedFile {
+            source: dir.path().to_path_buf(),
+            target: target_file.clone(),
+            is_git_source: false,
+            strategy: Some(crate::config::FileStrategy::Modify),
+            encryption: None,
+            permissions: None,
+        }],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![ResolvedFile {
+                        source: dir.path().to_path_buf(),
+                        target: target_file.clone(),
+                        is_git_source: false,
+                        strategy: Some(crate::config::FileStrategy::Modify),
+                        encryption: None,
+                        permissions: None,
+                    }],
+                },
+                origin: None,
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    let error = result.action_results[0]
+        .error
+        .as_ref()
+        .expect("Modify strategy must surface as an action error");
+    assert!(
+        error.contains("Modify") || error.contains("not yet implemented"),
+        "expected a strategy-not-implemented error, got: {error}"
+    );
+    assert!(
+        !target_file.exists(),
+        "target must not be created for Modify"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn apply_module_deploy_files_symlink_strategy() {
     let dir = tempfile::tempdir().unwrap();
@@ -10465,6 +10560,36 @@ fn apply_file_action_direct_creates_file_with_copy() {
     let profile = make_empty_resolved();
     super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello");
+}
+
+#[test]
+fn apply_file_action_direct_modify_strategy_returns_strategy_not_implemented() {
+    // The `Modify` engine isn't wired in yet; the guard at file_action.rs ~26
+    // must reject the action before any filesystem mutation, rather than
+    // falling through to `std::fs::copy` on a possibly-nonexistent source.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.txt");
+    std::fs::write(&src, "hello").unwrap();
+    let dst = dir.path().join("target.txt");
+
+    let action = FileAction::Create {
+        source: src,
+        target: dst.clone(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Modify,
+        source_hash: None,
+    };
+    let profile = make_empty_resolved();
+    let err = super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged)
+        .expect_err("Modify strategy must be rejected, not silently applied");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::File(crate::errors::FileError::StrategyNotImplemented { .. })
+        ),
+        "expected FileError::StrategyNotImplemented, got: {err:?}"
+    );
+    assert!(!dst.exists(), "target must not be created for Modify");
 }
 
 #[test]
