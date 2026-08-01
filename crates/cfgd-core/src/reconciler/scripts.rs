@@ -579,6 +579,144 @@ pub(crate) fn execute_script(
     }
 }
 
+/// Result of running a script as a content filter (see [`run_filter_script`]).
+pub(crate) struct FilterScriptOutcome {
+    /// Everything the script wrote to stdout — the new file content.
+    pub stdout: String,
+    /// Everything the script wrote to stderr, trimmed; carried into the error
+    /// message on failure so the operator sees why the filter refused.
+    pub stderr: String,
+    /// Process exit code; `None` when the process was killed by a signal.
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub timed_out: bool,
+}
+
+/// Run a script as a *content filter*: `stdin_content` goes in on stdin, the
+/// script's stdout comes back out as the new content.
+///
+/// Distinct from [`execute_script`] on three axes, which is why it is a separate
+/// entry point rather than a flag on that function: stdin carries data instead
+/// of being `/dev/null`, stdout is captured as a value instead of being merged
+/// with stderr for display, and there is no spinner (the caller is computing a
+/// value, not narrating a phase). It shares this module's interpreter
+/// resolution, environment injection, and process-group kill semantics so
+/// filters cannot become a second, divergent execution path.
+///
+/// A non-zero exit is reported through the returned outcome, not an error — the
+/// caller owns the typed error because it knows which target file is involved.
+pub(crate) fn run_filter_script(
+    run_str: &str,
+    script_dir: &std::path::Path,
+    working_dir: &std::path::Path,
+    env_vars: &[(String, String)],
+    stdin_content: &str,
+    timeout: std::time::Duration,
+) -> Result<FilterScriptOutcome> {
+    // Same `environ` race as `execute_script`: hold the read lock across
+    // interpreter resolution and spawn. Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::script_spawn_path_guard();
+
+    let resolved = if std::path::Path::new(run_str).is_relative() {
+        script_dir.join(run_str)
+    } else {
+        std::path::PathBuf::from(run_str)
+    };
+
+    let mut cmd = if resolved.exists() {
+        let meta = std::fs::metadata(&resolved)?;
+        if !crate::is_executable(&resolved, &meta) {
+            #[cfg(unix)]
+            let hint = "chmod +x";
+            #[cfg(windows)]
+            let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
+            return Err(CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "modify script '{}' exists but is not executable ({})",
+                    resolved.posix(),
+                    hint,
+                ),
+            }));
+        }
+        let mut c = std::process::Command::new(&resolved);
+        c.current_dir(working_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            c.process_group(0);
+        }
+        c
+    } else {
+        build_inline_command(ScriptShell::Auto, run_str, working_dir, None)
+    };
+
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+
+    // Feed stdin from its own thread while stdout/stderr drain on theirs: a
+    // filter whose output exceeds the pipe buffer would deadlock against a
+    // synchronous `write_all` here.
+    let input = stdin_content.to_string();
+    let mut stdin_pipe = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(pipe) = stdin_pipe.as_mut() {
+            use std::io::Write;
+            let _ = pipe.write_all(input.as_bytes());
+            let _ = pipe.flush();
+        }
+        drop(stdin_pipe);
+    });
+    let stdout_handle = spawn_capture_reader(child.stdout.take());
+    let stderr_handle = spawn_capture_reader(child.stderr.take());
+
+    let start = std::time::Instant::now();
+    let (status, timed_out) = loop {
+        match child.try_wait()? {
+            Some(status) => break (Some(status), false),
+            None => {
+                if start.elapsed() > timeout {
+                    kill_script_child(&mut child, true);
+                    break (None, true);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    };
+
+    let _ = writer.join();
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+
+    Ok(FilterScriptOutcome {
+        stdout,
+        stderr: stderr.trim().to_string(),
+        exit_code: status.and_then(|s| s.code()),
+        success: !timed_out && status.is_some_and(|s| s.success()),
+        timed_out,
+    })
+}
+
+/// Drain a child pipe to a `String` on a dedicated thread (lossy UTF-8).
+fn spawn_capture_reader<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let Some(mut pipe) = pipe else {
+            return String::new();
+        };
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    })
+}
+
 /// Build the `Command` for an inline script based on the chosen shell interpreter.
 ///
 /// When `cfgd_env_path` is `Some`, bash and zsh commands are prepended with a

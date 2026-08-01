@@ -8,6 +8,7 @@ mod env_files;
 mod file_action;
 mod files;
 mod format;
+mod modify;
 mod modules;
 mod packages;
 mod plan;
@@ -26,6 +27,7 @@ mod tests;
 pub use apply::action_matches_phase_filter;
 pub use env_engine::launchd_env_plist;
 pub use format::{format_action_description, format_plan_items};
+pub use modify::{ModifyContext, compute_modified, infer_format, resolve_format};
 pub use packages::stale_tracked_packages;
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use types::{

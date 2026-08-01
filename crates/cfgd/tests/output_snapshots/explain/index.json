@@ -86,7 +86,7 @@
                 "type": "object"
               },
               {
-                "description": "Path to a script that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+                "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
                 "name": "script",
                 "required": false,
                 "type": "string"
@@ -351,7 +351,7 @@
                     "type": "object"
                   },
                   {
-                    "description": "Path to a script that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+                    "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
                     "name": "script",
                     "required": false,
                     "type": "string"
@@ -926,7 +926,7 @@
                         "type": "object"
                       },
                       {
-                        "description": "Path to a script that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+                        "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
                         "name": "script",
                         "required": false,
                         "type": "string"
@@ -1376,7 +1376,7 @@
                         "type": "object"
                       },
                       {
-                        "description": "Path to a script that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+                        "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
                         "name": "script",
                         "required": false,
                         "type": "string"
@@ -1826,7 +1826,7 @@
                         "type": "object"
                       },
                       {
-                        "description": "Path to a script that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+                        "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
                         "name": "script",
                         "required": false,
                         "type": "string"
@@ -2276,7 +2276,7 @@
                         "type": "object"
                       },
                       {
-                        "description": "Path to a script that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+                        "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
                         "name": "script",
                         "required": false,
                         "type": "string"

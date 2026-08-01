@@ -290,6 +290,119 @@ files:
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
+### Partial-file edits (`strategy: Modify`)
+
+`Modify` is the strategy for files cfgd must *share* rather than own — a
+distro-shipped config, a file another tool also writes, a target that already has
+hand-written content worth keeping. cfgd owns only the keys the spec names;
+everything else in the target survives byte-for-byte where the format allows it.
+
+A missing target is treated as empty content: `ensure` writes a minimal document,
+`script` receives empty stdin.
+
+#### `ensure` — structured merge
+
+`ensure` is deep-merged into the target. Nested mappings merge recursively; a
+scalar, list, or type change replaces the value at that key. Values are literal —
+`Modify` never renders Tera templates, so `{{ … }}` lands in the file verbatim.
+Re-applying the same `ensure` is a no-op.
+
+```yaml
+files:
+  managed:
+    - target: ~/.config/app/settings.json
+      strategy: Modify
+      modify:
+        ensure:
+          editor:
+            tabSize: 4        # other editor.* keys are left alone
+          telemetry: false
+```
+
+The format decides how much of the target's original text survives:
+
+| Format | Engine | Comments & layout | Notes |
+|---|---|---|---|
+| `Ini` | line-preserving editor | preserved | Two levels: section → key → value |
+| `Toml` | `toml_edit` | preserved | Nested tables, arrays, inline tables |
+| `Json` | `serde_json` | n/a (JSON has no comments) | Rewritten as 2-space pretty JSON |
+| `Yaml` | `serde_yaml` | **not preserved** | The document is reflowed |
+
+> **YAML comment caveat.** The YAML engine parses the target and re-serializes
+> it, so comments, blank lines, anchors, and key order are lost — only the data
+> survives. When a YAML target's comments matter, use `script` mode and edit the
+> text with a comment-preserving tool (`yq`, `sed`, a Python script) instead.
+
+`format` is inferred from the target's extension when omitted:
+
+| Extension | Format |
+|---|---|
+| `.ini` | `Ini` |
+| `.json` | `Json` |
+| `.yaml`, `.yml` | `Yaml` |
+| `.toml` | `Toml` |
+
+Any other extension (including no extension at all, such as `/etc/hosts` or
+`~/.gitconfig`) requires an explicit `format`, or cfgd fails with a typed error
+rather than guessing:
+
+```yaml
+    - target: ~/.gitconfig
+      strategy: Modify
+      modify:
+        format: Ini             # required: `.gitconfig` has no format-bearing extension
+        ensure:
+          user:
+            email: ada@example.com
+```
+
+INI specifics, which follow from editing lines rather than reparsing the file:
+
+- A mapping under `ensure` is a `[section]`; a scalar is a key in the file's
+  global area, above the first section header.
+- Values must be scalars — INI has no list or nested-mapping syntax, and cfgd
+  errors rather than inventing one.
+- An updated key keeps its original spacing around `=`; a new key adopts the
+  neighbouring keys' style (`key = value` vs `key=value`). CRLF files stay CRLF.
+- Anything after `=` is replaced, including a trailing `; comment` — INI dialects
+  disagree on whether that starts a comment, so cfgd never keeps part of a value.
+- A duplicated key is rewritten at every occurrence, so the ensured value wins
+  regardless of which duplicate the consuming parser honours.
+
+#### `script` — pipe the file through a command
+
+The target's current content goes in on stdin; whatever the script writes to
+stdout becomes the new content. A non-zero exit aborts with the script's stderr
+attached — nothing is written. This is the escape hatch for formats cfgd has no
+engine for, and for edits that must preserve YAML comments.
+
+```yaml
+    - target: /etc/hosts
+      strategy: Modify
+      modify:
+        script: scripts/ensure-hosts-entry.sh
+```
+
+```sh
+#!/bin/sh
+# scripts/ensure-hosts-entry.sh — idempotent: reads the file, writes it back
+cat
+grep -q '10.0.0.5 build.internal' || echo '10.0.0.5 build.internal'
+```
+
+Like a lifecycle `run:`, `script:` is a path relative to the module (or config)
+directory when one resolves, and an inline command otherwise — so a one-liner
+works without a script file:
+
+```yaml
+      modify:
+        script: "yq -y '.server.port = 9090'"
+```
+
+Scripts run with the same `CFGD_*` environment lifecycle hooks receive, in the
+user's home directory, under the standard script timeout. Write the script to be
+idempotent: cfgd runs it on every reconcile.
+
 ## File locations
 
 cfgd stores four kinds of data, each resolved independently. Every root can be

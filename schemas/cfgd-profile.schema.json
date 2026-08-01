@@ -363,7 +363,7 @@
           "description": "File format to parse the target as. Inferred from the target's\nextension when omitted."
         },
         "script": {
-          "description": "Path to a script that receives the target's current content on stdin\nand writes the new content to stdout. Mutually exclusive with `ensure`.",
+          "description": "A script path (relative to the module directory) or an inline command\nthat receives the target's current content on stdin and writes the new\ncontent to stdout. Mutually exclusive with `ensure`.",
           "type": [
             "string",
             "null"

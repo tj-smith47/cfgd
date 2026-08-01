@@ -652,8 +652,9 @@ pub struct ModifySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<serde_json::Value>")]
     pub ensure: Option<serde_yaml::Value>,
-    /// Path to a script that receives the target's current content on stdin
-    /// and writes the new content to stdout. Mutually exclusive with `ensure`.
+    /// A script path (relative to the module directory) or an inline command
+    /// that receives the target's current content on stdin and writes the new
+    /// content to stdout. Mutually exclusive with `ensure`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 }

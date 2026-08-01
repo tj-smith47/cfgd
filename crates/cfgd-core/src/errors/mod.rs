@@ -155,6 +155,42 @@ pub enum FileError {
 
     #[error("strategy '{strategy}' is not yet implemented for {path}")]
     StrategyNotImplemented { path: PathBuf, strategy: String },
+
+    #[error(
+        "cannot infer a modify format from the extension of {path} — set 'modify.format' explicitly (ini, json, yaml, toml)"
+    )]
+    ModifyFormatUnknown { path: PathBuf },
+
+    #[error("modify target {path} is not valid {format}: {message}")]
+    ModifyParse {
+        path: PathBuf,
+        format: String,
+        message: String,
+    },
+
+    #[error("failed to serialize the modified {format} content for {path}: {message}")]
+    ModifySerialize {
+        path: PathBuf,
+        format: String,
+        message: String,
+    },
+
+    #[error("modify 'ensure' for {path} ({format}) is invalid: {message}")]
+    ModifyEnsureShape {
+        path: PathBuf,
+        format: String,
+        message: String,
+    },
+
+    #[error("modify script '{script}' failed for {path}: {message}")]
+    ModifyScriptFailed {
+        path: PathBuf,
+        script: String,
+        message: String,
+    },
+
+    #[error("modify block for {path} must set exactly one of 'ensure' or 'script'")]
+    ModifySpecInvalid { path: PathBuf },
 }
 
 impl FileError {
