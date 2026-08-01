@@ -639,7 +639,7 @@ case_insensitive_enum!(ModifyFormat {
 /// Configuration for the `Modify` file strategy: a structured merge (`ensure`)
 /// or a content-rewriting script, applied on top of the target's current
 /// content.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModifySpec {
     /// File format to parse the target as. Inferred from the target's
@@ -764,18 +764,29 @@ pub(crate) fn profile_spec_from_value(
     serde_yaml::from_value::<ProfileSpec>(value)
 }
 
-/// Validate the `source` / `strategy` / `modify` shape shared by
+/// Validate the `source` / `strategy` / `modify` / `encryption` shape shared by
 /// `ManagedFileSpec` and `ModuleFileEntry`: `source` is required unless
 /// `strategy` is `Modify`; a `modify` block is required when `strategy` is
 /// `Modify` and rejected otherwise; within a `modify` block exactly one of
-/// `ensure`/`script` must be set.
+/// `ensure`/`script` must be set; `encryption` is rejected on a `Modify` entry.
 pub(crate) fn validate_file_modify_shape(
     subject: &str,
     source_is_empty: bool,
     strategy: Option<FileStrategy>,
     modify: Option<&ModifySpec>,
+    encryption_declared: bool,
 ) -> Result<()> {
     let is_modify = matches!(strategy, Some(FileStrategy::Modify));
+    // Every `encryption` mode constrains the SOURCE file a strategy deploys
+    // ("must be encrypted in the repo"). `Modify` has no source — it rewrites
+    // the target's own plaintext structure — so the constraint could only be
+    // silently ignored. Reject it instead of pretending it was honoured.
+    if is_modify && encryption_declared {
+        return Err(ConfigError::Invalid {
+            message: format!("{subject}: 'encryption' is not supported with strategy 'modify'"),
+        }
+        .into());
+    }
     match (is_modify, modify) {
         (true, None) => Err(ConfigError::Invalid {
             message: format!("{subject}: strategy 'modify' requires a 'modify' block"),
@@ -822,6 +833,7 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
             spec.source.is_empty(),
             spec.strategy,
             spec.modify.as_ref(),
+            spec.encryption.is_some(),
         )?;
     }
     Ok(())

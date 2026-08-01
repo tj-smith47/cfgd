@@ -1254,7 +1254,7 @@ mod kubectl_shim {
     /// PATH mutation is process-global.
     struct KubectlPathShim {
         _tmp: tempfile::TempDir,
-        _path_guard: cfgd_core::test_helpers::EnvVarGuard,
+        _path_guard: cfgd_core::test_helpers::PathShimGuard,
     }
 
     impl KubectlPathShim {

@@ -202,6 +202,8 @@ pub enum ScriptPhase {
     PostReconcile,
     OnDrift,
     OnChange,
+    /// A `modify.script` filter rewriting a managed file's content.
+    Modify,
 }
 
 impl ScriptPhase {
@@ -213,6 +215,7 @@ impl ScriptPhase {
             ScriptPhase::PostReconcile => "postReconcile",
             ScriptPhase::OnDrift => "onDrift",
             ScriptPhase::OnChange => "onChange",
+            ScriptPhase::Modify => "modify",
         }
     }
 }

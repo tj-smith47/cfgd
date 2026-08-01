@@ -11,7 +11,7 @@ use cfgd_core::modules::ResolvedModule;
 use cfgd_core::providers::{PackageAction, ProviderRegistry};
 use cfgd_core::reconciler::VerifyResult;
 
-use crate::files::CfgdFileManager;
+use crate::files::{CfgdFileManager, module_modify_binding};
 use crate::packages;
 
 /// Content-aware verify results for every managed file in the profile.
@@ -55,8 +55,21 @@ pub(super) fn module_file_verify_results(
     let mut results = Vec::new();
     for module in modules {
         for file in &module.files {
-            file.ensure_strategy_implemented()?;
-            let drift = fm.file_drift_one(&file.source, &file.target, None)?;
+            let drift = match &file.modify {
+                // A `Modify` file has no source to compare against: it has
+                // converged when re-running its merge over the target's current
+                // content would change nothing.
+                Some(spec) => {
+                    let binding = module_modify_binding(config_dir, resolved, module);
+                    let outcome = cfgd_core::reconciler::evaluate_modify(
+                        spec,
+                        &file.target,
+                        &binding.context(),
+                    )?;
+                    crate::files::modify_drift_result(&file.target, &outcome)
+                }
+                None => fm.file_drift_one(&file.source, &file.target, None)?,
+            };
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
                 resource_id: format!("{}/{}", module.name, drift.target),
@@ -329,6 +342,7 @@ mod tests {
                 strategy: None,
                 encryption: None,
                 permissions: None,
+                modify: None,
             }],
             env: Vec::new(),
             aliases: Vec::new(),
@@ -386,26 +400,46 @@ mod tests {
     }
 
     #[test]
-    fn module_file_verify_results_modify_strategy_returns_strategy_not_implemented() {
-        // The `Modify` engine isn't wired in yet; `ensure_strategy_implemented()`
-        // must reject the file before `file_drift_one` reads its (possibly
-        // directory-resolving) source. Covers both `cfgd status --exit-code`
-        // and `cfgd verify`, which share this function.
+    fn module_file_verify_results_modify_reports_drift_and_convergence() {
+        // A `Modify` module file has no source to compare against, so its
+        // verify result comes from re-evaluating the merge over the target.
+        // Covers both `cfgd status --exit-code` and `cfgd verify`, which share
+        // this function.
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("mod-src.txt");
-        std::fs::write(&source, "deployed\n").unwrap();
-        let target = dir.path().join("mod-deployed.txt");
+        let drifted = dir.path().join("drifted.json");
+        std::fs::write(&drifted, "{\n  \"keep\": 1\n}\n").unwrap();
+        let converged = dir.path().join("converged.json");
+        std::fs::write(&converged, "{\n  \"telemetry\": false\n}\n").unwrap();
 
         let resolved = resolved_with_file(dir.path().join("unused.txt"));
-        let mut modules = vec![module_with_file("accmod", source, target)];
+        let mut modules = vec![module_with_file(
+            "accmod",
+            std::path::PathBuf::new(),
+            drifted,
+        )];
+        let spec = cfgd_core::config::ModifySpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+        };
         modules[0].files[0].strategy = Some(FileStrategy::Modify);
+        modules[0].files[0].modify = Some(spec.clone());
+        modules[0].files.push(cfgd_core::modules::ResolvedFile {
+            source: std::path::PathBuf::new(),
+            target: converged,
+            is_git_source: false,
+            strategy: Some(FileStrategy::Modify),
+            encryption: None,
+            permissions: None,
+            modify: Some(spec),
+        });
 
-        let err = module_file_verify_results(dir.path(), &resolved, &modules).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("Modify") && msg.contains("not yet implemented"),
-            "expected a strategy-not-implemented error, got: {msg}"
-        );
+        let results = module_file_verify_results(dir.path(), &resolved, &modules).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(!results[0].matches, "drifted Modify target must fail");
+        assert_eq!(results[0].resource_type, "module");
+        assert!(results[0].resource_id.starts_with("accmod/"));
+        assert!(results[1].matches, "converged Modify target must pass");
     }
 
     #[test]

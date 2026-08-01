@@ -126,12 +126,14 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     source,
                     target,
                     strategy,
+                    modify,
                     ..
                 }
                 | FileAction::Update {
                     source,
                     target,
                     strategy,
+                    modify,
                     ..
                 } => {
                     let file_origin = match action {
@@ -145,15 +147,29 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                         _ => None,
                     };
 
-                    // Fail before any destructive step: the `Modify` engine
-                    // (structured merge / script rewrite of the target's
-                    // existing content) isn't wired in yet, and this action's
-                    // whole point is to preserve most of that content.
-                    if *strategy == FileStrategy::Modify {
-                        return Err(
-                            FileError::strategy_not_implemented(target.clone(), *strategy).into(),
-                        );
-                    }
+                    // `Modify` rewrites the target's own content, so the merge
+                    // runs against the live file here — before the removal
+                    // below deletes the bytes it reads, and against whatever
+                    // the target holds now rather than what planning saw.
+                    let modified = match strategy {
+                        FileStrategy::Modify => {
+                            let spec =
+                                modify
+                                    .as_ref()
+                                    .ok_or_else(|| FileError::ModifyBlockMissing {
+                                        path: target.clone(),
+                                    })?;
+                            Some(
+                                self.evaluate_spec(
+                                    spec,
+                                    target,
+                                    cfgd_core::reconciler::ReconcileContext::Apply,
+                                )?
+                                .modified,
+                            )
+                        }
+                        _ => None,
+                    };
 
                     // Ensure parent directory exists and is writable
                     ensure_target_writable(target)?;
@@ -182,11 +198,14 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                             })?;
                         }
                         FileStrategy::Modify => {
-                            return Err(FileError::strategy_not_implemented(
-                                target.clone(),
-                                *strategy,
+                            cfgd_core::atomic_write_str(
+                                target,
+                                modified.as_deref().unwrap_or_default(),
                             )
-                            .into());
+                            .map_err(|e| FileError::Io {
+                                path: target.clone(),
+                                source: e,
+                            })?;
                         }
                         FileStrategy::Copy | FileStrategy::Template => {
                             let mut content = if is_tera_template(source) {

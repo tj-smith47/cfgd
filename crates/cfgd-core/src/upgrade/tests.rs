@@ -4422,19 +4422,9 @@ fn strip_tag_prefix_with_whitespace_around_v_is_not_stripped() {
 #[serial_test::serial]
 fn download_to_file_falls_back_to_cwd_when_dest_has_no_parent() {
     // A dest like "outfile" has no parent → fall back to "." for the
-    // tempfile. Exercise via mockito + a relative dest. We restore CWD on
-    // drop so subsequent tests aren't affected.
+    // tempfile. Exercise via mockito + a relative dest.
     let work = tempfile::tempdir().unwrap();
-    let prior = std::env::current_dir().unwrap();
-    std::env::set_current_dir(work.path()).unwrap();
-
-    struct CwdGuard(std::path::PathBuf);
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.0);
-        }
-    }
-    let _g = CwdGuard(prior);
+    let _cwd = crate::test_helpers::CwdGuard::set(work.path()).unwrap();
 
     let mut server = mockito::Server::new();
     let body = b"contents";

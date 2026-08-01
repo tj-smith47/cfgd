@@ -3089,6 +3089,7 @@ fn apply_create_with_stale_source_hash_returns_source_changed() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         // Hash of completely different content — TOCTOU check must fail
         source_hash: Some(cfgd_core::sha256_hex(b"different content from plan time")),
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3120,6 +3121,7 @@ fn apply_create_with_matching_source_hash_writes_target() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3224,6 +3226,7 @@ fn apply_create_with_symlink_strategy_creates_symbolic_link() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Symlink,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3256,6 +3259,7 @@ fn apply_create_with_hardlink_strategy_creates_hard_link() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Hardlink,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3297,6 +3301,7 @@ fn apply_create_with_symlink_strategy_replaces_existing_file() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Symlink,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3353,6 +3358,7 @@ fn apply_create_non_local_origin_writes_file() {
         origin: "remote-source".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3384,6 +3390,7 @@ fn apply_update_non_local_origin_writes_file() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
         diff: String::new(),
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3415,6 +3422,7 @@ fn apply_create_copy_with_source_directory_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3429,43 +3437,71 @@ fn apply_create_copy_with_source_directory_returns_io_error() {
 }
 
 #[test]
-fn apply_create_modify_strategy_returns_strategy_not_implemented() {
-    // The `Modify` engine isn't wired in yet; the guard at apply.rs ~148-156
-    // must reject the action before the "remove existing target" / write
-    // step, rather than falling through and (for an empty `source`, valid
-    // for Modify) attempting to read a directory as a file.
+fn apply_create_modify_writes_a_new_target_from_the_ensure_block() {
     let dir = tempfile::tempdir().unwrap();
     let resolved = make_resolved_profile(vec![], FilesSpec::default());
     let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
 
-    let target = dir.path().join("target.txt");
+    let target = dir.path().join("settings.json");
 
     let actions = vec![FileAction::Create {
-        source: dir.path().to_path_buf(),
+        source: std::path::PathBuf::new(),
         target: target.clone(),
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Modify,
         source_hash: None,
+        modify: Some(cfgd_core::config::ModifySpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+        }),
     }];
 
     let printer = test_printer();
-    let err =
-        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
-            .expect_err("Modify strategy must be rejected, not silently applied");
-    assert!(
-        matches!(
-            err,
-            cfgd_core::errors::CfgdError::File(FileError::StrategyNotImplemented { .. })
-        ),
-        "expected FileError::StrategyNotImplemented, got: {err:?}"
-    );
-    assert!(!target.exists(), "target must not be created for Modify");
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(written["telemetry"], false);
 }
 
 #[test]
-fn apply_update_modify_strategy_returns_strategy_not_implemented() {
-    // Same guard as the Create test above, exercised via the Update arm —
-    // the guard matches both `FileAction::Create` and `FileAction::Update`.
+fn apply_update_modify_preserves_unmentioned_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("settings.json");
+    fs::write(&target, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Modify,
+        source_hash: None,
+        diff: String::new(),
+        modify: Some(cfgd_core::config::ModifySpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
+            script: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(
+        written["runtimeToken"], "keep-me",
+        "a key the spec never mentions must survive the merge"
+    );
+    assert_eq!(written["tabSize"], 4);
+}
+
+#[test]
+fn apply_modify_without_a_modify_block_leaves_the_target_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let resolved = make_resolved_profile(vec![], FilesSpec::default());
     let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
@@ -3474,29 +3510,30 @@ fn apply_update_modify_strategy_returns_strategy_not_implemented() {
     fs::write(&target, "existing content").unwrap();
 
     let actions = vec![FileAction::Update {
-        source: dir.path().to_path_buf(),
+        source: std::path::PathBuf::new(),
         target: target.clone(),
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Modify,
         source_hash: None,
         diff: String::new(),
+        modify: None,
     }];
 
     let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
-            .expect_err("Modify strategy must be rejected, not silently applied");
+            .expect_err("a Modify action without a modify block must not be applied");
     assert!(
         matches!(
             err,
-            cfgd_core::errors::CfgdError::File(FileError::StrategyNotImplemented { .. })
+            cfgd_core::errors::CfgdError::File(FileError::ModifyBlockMissing { .. })
         ),
-        "expected FileError::StrategyNotImplemented, got: {err:?}"
+        "expected FileError::ModifyBlockMissing, got: {err:?}"
     );
     assert_eq!(
         fs::read_to_string(&target).unwrap(),
         "existing content",
-        "existing target content must be untouched for Modify"
+        "existing target content must be untouched"
     );
 }
 
@@ -3520,6 +3557,7 @@ fn apply_update_copy_with_source_directory_returns_io_error() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
         diff: String::new(),
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3577,6 +3615,7 @@ fn apply_create_with_secret_ref_resolved_by_provider() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3633,6 +3672,7 @@ fn apply_create_with_update_action_source_hash_present() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
         diff: String::new(),
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3667,6 +3707,7 @@ fn apply_update_with_stale_source_hash_returns_source_changed() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: Some(cfgd_core::sha256_hex(b"stale content from plan time")),
         diff: String::new(),
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3809,6 +3850,7 @@ fn apply_create_when_target_is_directory_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3872,6 +3914,7 @@ fn apply_create_symlink_with_too_long_filename_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Symlink,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3907,6 +3950,7 @@ fn apply_create_hardlink_with_too_long_filename_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Hardlink,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();
@@ -3944,6 +3988,7 @@ fn apply_create_copy_with_too_long_target_filename_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let printer = test_printer();

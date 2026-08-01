@@ -822,6 +822,7 @@ fn action_resource_info_file_create() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
+        modify: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -839,6 +840,7 @@ fn action_resource_info_file_update() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
+        modify: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -5910,6 +5912,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
                 origin: "local".into(),
                 strategy: crate::config::FileStrategy::default(),
                 source_hash: None,
+                modify: None,
             }])
         }
         fn plan_packages(
@@ -6011,6 +6014,7 @@ impl DaemonHooks for DriftingFileHooks {
             origin: "local".into(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         }])
     }
     fn plan_packages(

@@ -1435,6 +1435,18 @@ pub fn git_clone_with_fallback(
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
+    // When the libgit2 retry also fails it reports its own, usually less
+    // specific, error (a local path reads as "shallow fetch is not supported by
+    // the local transport" whatever went wrong with the CLI). Carry the CLI's
+    // reason into the final message so the actual cause is not lost.
+    let cli_failure = match &cli_result {
+        Ok(output) => format!(
+            "git CLI exited {}: {}",
+            output.status.code().unwrap_or(-1),
+            output.stderr.trim()
+        ),
+        Err(e) => format!("git CLI unavailable: {e}"),
+    };
 
     // Clean up partial clone before libgit2 retry
     let _ = std::fs::remove_dir_all(target);
@@ -1456,7 +1468,7 @@ pub fn git_clone_with_fallback(
     let result = builder
         .clone(url, target)
         .map(|_| ())
-        .map_err(|e| format!("Failed to clone {}: {}", url, e));
+        .map_err(|e| format!("Failed to clone {}: {} [{}]", url, e, cli_failure));
 
     match &result {
         Ok(_) => {

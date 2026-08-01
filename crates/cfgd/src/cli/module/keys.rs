@@ -611,24 +611,13 @@ mod tests {
     fn list_with_local_cwd_keys_picks_up_local_pair() {
         // Drive the "./cosign.pub" branch in cmd_module_keys_list. To avoid
         // touching the real cwd, change dir into a tempdir and write
-        // cosign.{key,pub} there. The std::env::set_current_dir mutation is
-        // process-global so this test is #[serial].
+        // cosign.{key,pub} there. `CwdGuard` holds the exclusive
+        // spawn-environment guard for the whole window.
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("cosign.pub"), "fake-pub").expect("write pub");
         std::fs::write(tmp.path().join("cosign.key"), "fake-priv").expect("write priv");
 
-        // Use a guard to restore cwd on drop so a panic doesn't poison the suite.
-        struct CwdGuard {
-            prev: std::path::PathBuf,
-        }
-        impl Drop for CwdGuard {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.prev);
-            }
-        }
-        let prev = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(tmp.path()).expect("chdir");
-        let _g = CwdGuard { prev };
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
 
         let (printer, cap) = Printer::for_test_doc();
         cmd_module_keys_list(&printer).expect("list should not error");
@@ -720,24 +709,13 @@ mod tests {
     #[serial]
     fn list_local_dir_without_priv_uses_no_sentinel() {
         // Drives the "./cosign.pub" branch where priv_path.exists()=false,
-        // producing "private key: no" instead of "yes". `#[serial]` is
-        // required because we chdir into a tempdir, which is process-global
-        // mutable state.
+        // producing "private key: no" instead of "yes". `CwdGuard` holds the
+        // exclusive spawn-environment guard while the process is chdir'd.
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("cosign.pub"), "fake-pub").expect("write pub");
         // No cosign.key — exercises the priv_path.exists()==false arm.
 
-        struct CwdGuard {
-            prev: std::path::PathBuf,
-        }
-        impl Drop for CwdGuard {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.prev);
-            }
-        }
-        let prev = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(tmp.path()).expect("chdir");
-        let _g = CwdGuard { prev };
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
         // Redirect HOME so we don't accidentally pick up a real ~/.cfgd/cosign.pub.
         let _home = with_test_home_guard(tmp.path());
 

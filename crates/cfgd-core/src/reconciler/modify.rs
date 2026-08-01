@@ -17,9 +17,14 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{ModifyFormat, ModifySpec};
+use crate::effective::Origin;
 use crate::errors::{FileError, Result};
+use crate::modules::ResolvedModule;
 
-use super::scripts::{MODULE_SCRIPT_TIMEOUT, run_filter_script, script_default_workdir};
+use super::scripts::{
+    MODULE_SCRIPT_TIMEOUT, build_module_script_env, run_filter_script, script_default_workdir,
+};
+use super::types::{ReconcileContext, ScriptPhase};
 
 /// Execution context for `modify.script`, ignored by `modify.ensure`.
 ///
@@ -69,6 +74,137 @@ impl<'a> ModifyContext<'a> {
         self.timeout = timeout;
         self
     }
+}
+
+/// Owner of the values a [`ModifyContext`] borrows, so every dispatch site
+/// builds the same context from the same two inputs instead of re-deriving a
+/// script directory and environment by hand.
+///
+/// Getting the script directory wrong is silent: a relative `script:` path that
+/// does not resolve under it falls back to inline-command execution, so the
+/// operator sees "command not found" instead of their script running. The two
+/// constructors encode the only two correct answers — a module-deployed file
+/// resolves against the module's directory, a profile-declared file against the
+/// config directory.
+pub struct ModifyBinding {
+    script_dir: PathBuf,
+    env: Vec<(String, String)>,
+}
+
+impl ModifyBinding {
+    /// Binding for a file declared by the profile (`spec.files.managed`):
+    /// scripts resolve against the config directory and see the standard
+    /// `CFGD_*` metadata with no module attribution.
+    pub fn profile(config_dir: &Path, profile_name: &str, context: ReconcileContext) -> Self {
+        Self {
+            script_dir: config_dir.to_path_buf(),
+            env: build_module_script_env(
+                config_dir,
+                profile_name,
+                context,
+                &ScriptPhase::Modify,
+                None,
+                None,
+                &[],
+            ),
+        }
+    }
+
+    /// Binding for a file deployed by a module (`spec.files` in `module.yaml`):
+    /// scripts resolve against the module's directory and additionally see
+    /// `CFGD_MODULE_NAME`, `CFGD_MODULE_DIR`, and the module's declared `env`.
+    pub fn module(
+        config_dir: &Path,
+        profile_name: &str,
+        context: ReconcileContext,
+        module: &ResolvedModule,
+    ) -> Self {
+        Self {
+            script_dir: module.dir.clone(),
+            env: build_module_script_env(
+                config_dir,
+                profile_name,
+                context,
+                &ScriptPhase::Modify,
+                Some(&module.name),
+                Some(&module.dir),
+                &module.env,
+            ),
+        }
+    }
+
+    /// Binding for a file whose owner is known only as an [`Origin`] — the
+    /// effective-state view, where profile files and module files arrive in one
+    /// list. An origin naming a module that is not in `modules` falls back to
+    /// the profile binding rather than failing: the file is still evaluable,
+    /// only its script anchoring is less specific.
+    pub fn for_origin(
+        config_dir: &Path,
+        profile_name: &str,
+        context: ReconcileContext,
+        modules: &[ResolvedModule],
+        origin: &Origin,
+    ) -> Self {
+        let module = match origin {
+            Origin::Module(name) => modules.iter().find(|m| &m.name == name),
+            Origin::Profile => None,
+        };
+        match module {
+            Some(m) => Self::module(config_dir, profile_name, context, m),
+            None => Self::profile(config_dir, profile_name, context),
+        }
+    }
+
+    /// Borrow the binding as an execution context for [`compute_modified`] /
+    /// [`evaluate_modify`].
+    pub fn context(&self) -> ModifyContext<'_> {
+        ModifyContext::new(&self.script_dir).with_env(&self.env)
+    }
+}
+
+/// A `Modify` target's content before and after the spec is folded in.
+#[derive(Debug)]
+pub struct ModifyOutcome {
+    /// The target's content on disk; empty when the target does not exist.
+    pub current: String,
+    /// The content the spec produces from `current`.
+    pub modified: String,
+}
+
+impl ModifyOutcome {
+    /// Whether applying the spec would change the target — the single
+    /// up-to-date predicate shared by plan, diff, drift, and compliance so they
+    /// can never disagree about whether a `Modify` file has converged.
+    pub fn is_up_to_date(&self) -> bool {
+        self.current == self.modified
+    }
+}
+
+/// Read `target` and compute what `spec` would make of it.
+///
+/// A missing target reads as empty content (`ensure` then creates a minimal
+/// document, `script` receives empty stdin), matching [`compute_modified`]'s
+/// contract. Any other read failure — a directory, a permission error, non-UTF-8
+/// bytes — is surfaced rather than silently treated as empty, because writing
+/// the merge result would then destroy content cfgd could not read.
+pub fn evaluate_modify(
+    spec: &ModifySpec,
+    target: &Path,
+    ctx: &ModifyContext<'_>,
+) -> Result<ModifyOutcome> {
+    let current = match std::fs::read_to_string(target) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(FileError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            }
+            .into());
+        }
+    };
+    let modified = compute_modified(&current, spec, target, ctx)?;
+    Ok(ModifyOutcome { current, modified })
 }
 
 /// Compute the new content of `target` by applying `spec` to `current`.

@@ -109,7 +109,13 @@ pub fn collect_snapshot(
     let mut checks = Vec::new();
 
     if scope.files {
-        checks.extend(collect_file_checks(profile, modules, config_dir, registry));
+        checks.extend(collect_file_checks(
+            profile_name,
+            profile,
+            modules,
+            config_dir,
+            registry,
+        ));
     }
     if scope.packages {
         checks.extend(collect_package_checks(profile, modules, registry)?);
@@ -219,9 +225,12 @@ fn origin_suffix(origin: &Origin) -> String {
 /// compared to its rendered source via `FileManager::content_drift` — a file that
 /// exists but drifted is a violation, matching the live drift paths. Without a
 /// file manager, content checking is skipped and only existence + permissions are
-/// reported (honest degradation). Module-contributed files are attributed in each
-/// check's detail so a reader can tell their origin.
+/// reported (honest degradation). A `strategy: Modify` file is content-checked by
+/// re-evaluating its merge against the target instead, which needs no file
+/// manager. Module-contributed files are attributed in each check's detail so a
+/// reader can tell their origin.
 pub fn collect_file_checks(
+    profile_name: &str,
     profile: &MergedProfile,
     modules: &[ResolvedModule],
     config_dir: &Path,
@@ -232,24 +241,6 @@ pub fn collect_file_checks(
     for file in effective_files(profile, modules, config_dir) {
         let target = crate::expand_tilde(&file.target);
         let suffix = origin_suffix(&file.origin);
-
-        // The `Modify` engine isn't wired in yet. Report it as an explicit
-        // check row rather than falling into the content-drift comparison
-        // below, where an empty `source` (valid for `Modify`) resolves to an
-        // existing directory and crashes `fs::read_to_string`.
-        if file.strategy == Some(crate::config::FileStrategy::Modify) {
-            checks.push(ComplianceCheck {
-                category: "file".into(),
-                target: Some(to_posix_string(&target)),
-                status: ComplianceStatus::Warning,
-                detail: Some(format!(
-                    "strategy 'Modify' is not yet implemented{}",
-                    suffix
-                )),
-                ..Default::default()
-            });
-            continue;
-        }
 
         let exists = target.exists();
 
@@ -270,7 +261,43 @@ pub fn collect_file_checks(
         // suppressed below to avoid two Compliant rows for the same signal.
         // Without a file manager, content checking is skipped and the "present"
         // check stands in as the existence signal.
-        let content_checked = if let Some(ref fm) = registry.file_manager {
+        let content_checked = if let Some(ref spec) = file.modify {
+            // A `Modify` file has no source to compare against: it has
+            // converged when re-running its merge over the target's current
+            // content would change nothing.
+            // A snapshot never writes, so the scripts see `CFGD_CONTEXT=reconcile`.
+            let binding = crate::reconciler::ModifyBinding::for_origin(
+                config_dir,
+                profile_name,
+                crate::reconciler::ReconcileContext::Reconcile,
+                modules,
+                &file.origin,
+            );
+            match crate::reconciler::evaluate_modify(spec, &target, &binding.context()) {
+                Ok(outcome) if outcome.is_up_to_date() => checks.push(ComplianceCheck {
+                    category: "file-content".into(),
+                    target: Some(to_posix_string(&target)),
+                    status: ComplianceStatus::Compliant,
+                    detail: Some(format!("content satisfies modify spec{}", suffix)),
+                    ..Default::default()
+                }),
+                Ok(_) => checks.push(ComplianceCheck {
+                    category: "file-content".into(),
+                    target: Some(to_posix_string(&target)),
+                    status: ComplianceStatus::Violation,
+                    detail: Some(format!("content differs from modify spec{}", suffix)),
+                    ..Default::default()
+                }),
+                Err(e) => checks.push(ComplianceCheck {
+                    category: "file-content".into(),
+                    target: Some(to_posix_string(&target)),
+                    status: ComplianceStatus::Warning,
+                    detail: Some(format!("cannot evaluate modify spec: {}{}", e, suffix)),
+                    ..Default::default()
+                }),
+            }
+            true
+        } else if let Some(ref fm) = registry.file_manager {
             match fm.content_drift(
                 Path::new(&file.source),
                 &file.target,

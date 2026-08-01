@@ -117,6 +117,7 @@ fn collect_file_checks_existing_file() {
     };
 
     let checks = collect_file_checks(
+        "test",
         &profile,
         &[],
         std::path::Path::new("."),
@@ -147,6 +148,7 @@ fn collect_file_checks_missing_file() {
     };
 
     let checks = collect_file_checks(
+        "test",
         &profile,
         &[],
         std::path::Path::new("."),
@@ -183,6 +185,7 @@ fn collect_file_checks_permissions_match() {
     };
 
     let checks = collect_file_checks(
+        "test",
         &profile,
         &[],
         std::path::Path::new("."),
@@ -219,6 +222,7 @@ fn collect_file_checks_permissions_mismatch() {
     };
 
     let checks = collect_file_checks(
+        "test",
         &profile,
         &[],
         std::path::Path::new("."),
@@ -904,6 +908,7 @@ fn collect_file_checks_invalid_permission_string_warns() {
     };
 
     let checks = collect_file_checks(
+        "test",
         &profile,
         &[],
         std::path::Path::new("."),
@@ -949,6 +954,7 @@ fn collect_file_checks_with_encryption_declared_adds_file_encryption_check() {
     };
 
     let checks = collect_file_checks(
+        "test",
         &profile,
         &[],
         std::path::Path::new("."),
@@ -1054,11 +1060,12 @@ fn collect_file_checks_includes_module_file_and_attributes_origin() {
         strategy: None,
         encryption: None,
         permissions: None,
+        modify: None,
     }];
 
     // No file_manager + no declared perms → exactly ONE check: the "present"
     // existence signal, attributed to its module.
-    let checks = collect_file_checks(&profile, &[m], dir.path(), &ProviderRegistry::new());
+    let checks = collect_file_checks("test", &profile, &[m], dir.path(), &ProviderRegistry::new());
     assert_eq!(
         checks.len(),
         1,
@@ -1070,20 +1077,76 @@ fn collect_file_checks_includes_module_file_and_attributes_origin() {
 }
 
 #[test]
-fn collect_file_checks_modify_strategy_warns_without_reading_source() {
-    // The `Modify` engine isn't wired in yet. A profile-managed entry with an
-    // empty `source` (valid for `Modify`) would resolve to `config_dir` itself
-    // and crash `fs::read_to_string` if the guard didn't short-circuit before
-    // the content-drift comparison.
+fn collect_file_checks_modify_reports_content_convergence() {
+    // A `Modify` entry has no source to compare against — its content check
+    // comes from re-evaluating the merge over the target, with no file manager
+    // wired.
     let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("target.txt");
+    let target = dir.path().join("settings.json");
+    std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
 
-    let profile = MergedProfile {
+    let profile = modify_profile(&target, "telemetry: false");
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].category, "file-content");
+    assert_eq!(checks[0].status, ComplianceStatus::Compliant);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("content satisfies modify spec")
+    );
+}
+
+#[test]
+fn collect_file_checks_modify_drift_is_violation() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("settings.json");
+    std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").unwrap();
+
+    let profile = modify_profile(&target, "telemetry: false");
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].status, ComplianceStatus::Violation);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("content differs from modify spec")
+    );
+}
+
+#[test]
+fn collect_file_checks_modify_unparseable_target_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("settings.json");
+    std::fs::write(&target, "not json at all").unwrap();
+
+    let profile = modify_profile(&target, "telemetry: false");
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    assert!(
+        checks[0]
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.starts_with("cannot evaluate modify spec:")),
+        "expected an evaluation warning, got: {:?}",
+        checks[0].detail
+    );
+}
+
+/// Profile with a single `Modify` managed file over `target`.
+fn modify_profile(target: &std::path::Path, ensure: &str) -> MergedProfile {
+    MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
-                modify: None,
+                modify: Some(crate::config::ModifySpec {
+                    format: None,
+                    ensure: Some(serde_yaml::from_str(ensure).unwrap()),
+                    script: None,
+                }),
                 source: String::new(),
-                target: target.clone(),
+                target: target.to_path_buf(),
                 strategy: Some(crate::config::FileStrategy::Modify),
                 private: false,
                 origin: None,
@@ -1093,22 +1156,14 @@ fn collect_file_checks_modify_strategy_warns_without_reading_source() {
             permissions: HashMap::new(),
         },
         ..Default::default()
-    };
-
-    let checks = collect_file_checks(&profile, &[], dir.path(), &ProviderRegistry::new());
-    assert_eq!(checks.len(), 1);
-    assert_eq!(checks[0].category, "file");
-    assert_eq!(checks[0].status, ComplianceStatus::Warning);
-    assert_eq!(
-        checks[0].detail.as_deref(),
-        Some("strategy 'Modify' is not yet implemented")
-    );
+    }
 }
 
 #[test]
-fn collect_file_checks_module_modify_strategy_warns_and_attributes_origin() {
+fn collect_file_checks_module_modify_attributes_origin() {
     let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("mod-target.txt");
+    let target = dir.path().join("settings.json");
+    std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").unwrap();
 
     let profile = MergedProfile::default();
     let mut m = empty_module("dev");
@@ -1119,14 +1174,19 @@ fn collect_file_checks_module_modify_strategy_warns_and_attributes_origin() {
         strategy: Some(crate::config::FileStrategy::Modify),
         encryption: None,
         permissions: None,
+        modify: Some(crate::config::ModifySpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+        }),
     }];
 
-    let checks = collect_file_checks(&profile, &[m], dir.path(), &ProviderRegistry::new());
+    let checks = collect_file_checks("test", &profile, &[m], dir.path(), &ProviderRegistry::new());
     assert_eq!(checks.len(), 1);
-    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    assert_eq!(checks[0].status, ComplianceStatus::Violation);
     assert_eq!(
         checks[0].detail.as_deref(),
-        Some("strategy 'Modify' is not yet implemented (module: dev)")
+        Some("content differs from modify spec (module: dev)")
     );
 }
 
@@ -1159,7 +1219,7 @@ fn collect_file_checks_content_drift_is_violation() {
 
     // file_manager wired + no declared perms → exactly ONE check (file-content);
     // the legacy "present" check is suppressed so existence isn't double-counted.
-    let checks = collect_file_checks(&profile, &[], dir.path(), &registry);
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry);
     assert_eq!(
         checks.len(),
         1,
@@ -1201,7 +1261,7 @@ fn collect_file_checks_content_match_is_compliant() {
 
     // file_manager wired + no declared perms → exactly ONE Compliant file-content
     // check; no duplicate "present" row.
-    let checks = collect_file_checks(&profile, &[], dir.path(), &registry);
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry);
     assert_eq!(
         checks.len(),
         1,
@@ -1241,7 +1301,7 @@ fn collect_file_checks_content_plus_perms_is_two_checks() {
     let mut registry = ProviderRegistry::new();
     registry.file_manager = Some(Box::new(MockFileManager::new()));
 
-    let checks = collect_file_checks(&profile, &[], dir.path(), &registry);
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry);
     assert_eq!(
         checks.len(),
         2,
@@ -1375,6 +1435,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         strategy: None,
         encryption: None,
         permissions: None,
+        modify: None,
     }];
     m.packages = vec![ResolvedPackage {
         canonical_name: "ripgrep".into(),

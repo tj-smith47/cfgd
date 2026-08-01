@@ -9123,6 +9123,7 @@ fn action_type_str_file_variants() {
             origin: "local".into(),
             strategy: cfgd_core::config::FileStrategy::default(),
             source_hash: None,
+            modify: None,
         })),
         "create"
     );
@@ -9135,6 +9136,7 @@ fn action_type_str_file_variants() {
             origin: "local".into(),
             strategy: cfgd_core::config::FileStrategy::default(),
             source_hash: None,
+            modify: None,
         })),
         "update"
     );
@@ -9412,6 +9414,7 @@ fn build_plan_output_with_phase_filter() {
                     origin: "local".into(),
                     strategy: cfgd_core::config::FileStrategy::default(),
                     source_hash: None,
+                    modify: None,
                 })],
             },
         ],
@@ -9520,6 +9523,7 @@ fn filter_plan_skip_file_by_target() {
                     origin: "local".into(),
                     strategy: cfgd_core::config::FileStrategy::default(),
                     source_hash: None,
+                    modify: None,
                 }),
                 Action::File(FileAction::Create {
                     source: "/tmp/b".into(),
@@ -9527,6 +9531,7 @@ fn filter_plan_skip_file_by_target() {
                     origin: "local".into(),
                     strategy: cfgd_core::config::FileStrategy::default(),
                     source_hash: None,
+                    modify: None,
                 }),
             ],
         }],
@@ -11634,50 +11639,45 @@ fn cmd_diff_with_module() {
 }
 
 #[test]
-fn cmd_diff_module_modify_strategy_returns_strategy_not_implemented() {
-    // Drives `cmd_diff_module`'s `ensure_strategy_implemented()?` call site
-    // (reached via `cmd_diff`'s module-filter delegation) — a `Modify`-strategy
-    // module file must surface the typed StrategyNotImplemented error rather
-    // than falling through to `diff_one`, which would try to read the module
-    // directory itself as a file (source resolves to the module dir when
-    // `source` is empty, as it is for Modify).
+fn cmd_diff_module_modify_shows_the_merge_the_target_is_missing() {
+    // Drives `cmd_diff_module`'s module-file loop (reached via `cmd_diff`'s
+    // module-filter delegation): a `Modify` file has no source to render, so
+    // its diff must come from evaluating the merge against the target.
     let target_dir = tempfile::tempdir().unwrap();
-    let target = target_dir.path().join("cfgd-diff-modify-target");
+    let target = target_dir.path().join("settings.json");
     let module_yaml = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          key: value\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          telemetry: false\n",
         cfgd_core::to_posix_string(&target)
     );
     let h = CliTestHarness::builder()
         .module("diff-modify-mod", &module_yaml)
         .build();
 
-    let err =
-        super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-modify-mod"), false).unwrap_err();
+    super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-modify-mod"), false).unwrap();
+    let output = h.output();
     assert!(
-        matches!(
-            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
-            Some(cfgd_core::errors::CfgdError::File(
-                cfgd_core::errors::FileError::StrategyNotImplemented { .. }
-            ))
-        ),
-        "expected typed FileError::StrategyNotImplemented, got: {err}"
+        output.contains("telemetry"),
+        "diff must preview the merged content, got: {output}"
     );
-    let msg = err.to_string();
     assert!(
-        msg.contains("Modify") && msg.contains("not yet implemented"),
-        "expected a strategy-not-implemented message, got: {msg}"
+        output.contains("File drift detected"),
+        "a missing Modify target is drift, got: {output}"
+    );
+    assert!(
+        !target.exists(),
+        "diff must never write the target it previews"
     );
 }
 
 #[test]
-fn cmd_diff_full_profile_modify_strategy_returns_strategy_not_implemented() {
-    // Drives `cmd_diff`'s own `ensure_strategy_implemented()?` call site (the
-    // no-module-filter, full-profile path) via a profile that pulls in a
-    // module with a `Modify`-strategy file.
+fn cmd_diff_full_profile_modify_reports_no_drift_when_converged() {
+    // Drives `cmd_diff`'s own module-file loop (the no-module-filter,
+    // full-profile path) with a target that already satisfies the merge.
     let target_dir = tempfile::tempdir().unwrap();
-    let target = target_dir.path().join("cfgd-diff-modify-target");
+    let target = target_dir.path().join("settings.json");
+    std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
     let module_yaml = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          key: value\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          telemetry: false\n",
         cfgd_core::to_posix_string(&target)
     );
     let profile_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - diff-modify-mod\n";
@@ -11686,20 +11686,11 @@ fn cmd_diff_full_profile_modify_strategy_returns_strategy_not_implemented() {
         .module("diff-modify-mod", &module_yaml)
         .build();
 
-    let err = super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap_err();
+    super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
+    let output = h.output();
     assert!(
-        matches!(
-            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
-            Some(cfgd_core::errors::CfgdError::File(
-                cfgd_core::errors::FileError::StrategyNotImplemented { .. }
-            ))
-        ),
-        "expected typed FileError::StrategyNotImplemented, got: {err}"
-    );
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Modify") && msg.contains("not yet implemented"),
-        "expected a strategy-not-implemented message, got: {msg}"
+        output.contains("No file drift"),
+        "a converged Modify target must not report drift, got: {output}"
     );
 }
 
@@ -14392,6 +14383,7 @@ fn filter_plan_only_keeps_matching_phase() {
                     origin: "profile".into(),
                     strategy: config::FileStrategy::Copy,
                     source_hash: None,
+                    modify: None,
                 })],
             },
         ],
@@ -14532,6 +14524,7 @@ fn action_path_file_create() {
         origin: "profile".into(),
         strategy: config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     });
     let path = super::action_path(&PhaseName::Files, &action);
     assert_eq!(path, "files:/home/user/.bashrc");
@@ -15185,6 +15178,7 @@ fn action_path_file_update() {
         origin: "profile".into(),
         strategy: config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     });
     let path = super::action_path(&PhaseName::Files, &action);
     assert_eq!(path, "files:/home/user/.bashrc");

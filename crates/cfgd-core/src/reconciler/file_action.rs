@@ -1,31 +1,49 @@
-use crate::config::MergedProfile;
+use crate::config::FileStrategy;
 use crate::errors::{FileError, Result};
 use crate::providers::FileAction;
 
+use super::modify::{ModifyBinding, evaluate_modify};
+use super::types::ReconcileContext;
+
 pub(super) fn apply_file_action_direct(
     action: &FileAction,
-    _config_dir: &std::path::Path,
-    _profile: &MergedProfile,
+    config_dir: &std::path::Path,
+    profile_name: &str,
 ) -> Result<()> {
     match action {
         FileAction::Create {
             source,
             target,
             strategy,
+            modify,
             ..
         }
         | FileAction::Update {
             source,
             target,
             strategy,
+            modify,
             ..
         } => {
-            // Fail before any destructive step: the `Modify` engine isn't
-            // wired in yet, and this action's whole point is to preserve
-            // most of the target's existing content.
-            if *strategy == crate::config::FileStrategy::Modify {
-                return Err(FileError::strategy_not_implemented(target.clone(), *strategy).into());
-            }
+            // `Modify` rewrites the target's own content, so it is computed
+            // before the remove-then-deploy sequence below deletes the very
+            // bytes it reads.
+            let modified = match strategy {
+                FileStrategy::Modify => {
+                    let spec = modify
+                        .as_ref()
+                        .ok_or_else(|| FileError::ModifyBlockMissing {
+                            path: target.clone(),
+                        })?;
+                    let binding = ModifyBinding::profile(
+                        config_dir,
+                        profile_name,
+                        ReconcileContext::Reconcile,
+                    );
+                    Some(evaluate_modify(spec, target, &binding.context())?.modified)
+                }
+                _ => None,
+            };
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -34,19 +52,17 @@ pub(super) fn apply_file_action_direct(
                 std::fs::remove_file(target)?;
             }
             match strategy {
-                crate::config::FileStrategy::Symlink => {
+                FileStrategy::Symlink => {
                     crate::create_symlink(source, target)?;
                 }
-                crate::config::FileStrategy::Hardlink => {
+                FileStrategy::Hardlink => {
                     std::fs::hard_link(source, target)?;
                 }
-                crate::config::FileStrategy::Copy | crate::config::FileStrategy::Template => {
+                FileStrategy::Copy | FileStrategy::Template => {
                     std::fs::copy(source, target)?;
                 }
-                crate::config::FileStrategy::Modify => {
-                    return Err(
-                        FileError::strategy_not_implemented(target.clone(), *strategy).into(),
-                    );
+                FileStrategy::Modify => {
+                    crate::atomic_write_str(target, modified.as_deref().unwrap_or_default())?;
                 }
             }
             Ok(())
@@ -75,12 +91,14 @@ impl FileAction {
                 origin,
                 strategy,
                 source_hash,
+                modify,
             } => FileAction::Create {
                 source: source.clone(),
                 target: target.clone(),
                 origin: origin.clone(),
                 strategy: *strategy,
                 source_hash: source_hash.clone(),
+                modify: modify.clone(),
             },
             FileAction::Update {
                 source,
@@ -89,6 +107,7 @@ impl FileAction {
                 origin,
                 strategy,
                 source_hash,
+                modify,
             } => FileAction::Update {
                 source: source.clone(),
                 target: target.clone(),
@@ -96,6 +115,7 @@ impl FileAction {
                 origin: origin.clone(),
                 strategy: *strategy,
                 source_hash: source_hash.clone(),
+                modify: modify.clone(),
             },
             FileAction::Delete { target, origin } => FileAction::Delete {
                 target: target.clone(),

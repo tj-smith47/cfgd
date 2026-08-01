@@ -1138,6 +1138,11 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         }
     }
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let prev_path = std::env::var_os("PATH");
     // SAFETY: serial; PATH restored below.
     unsafe {
@@ -1193,6 +1198,11 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let prev_path = std::env::var_os("PATH");
     // SAFETY: serial; PATH restored below.
     // CFGD_BREW_BIN is already set by ToolShim — brew_available() finds the shim
@@ -1246,6 +1256,11 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&shim, perms).unwrap();
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let prev_path = std::env::var_os("PATH");
     // SAFETY: serial; PATH restored below.
     unsafe {
@@ -1285,6 +1300,11 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let prev_path = std::env::var_os("PATH");
     let prev_brew = std::env::var_os("CFGD_BREW_BIN");
     let prev_apt = std::env::var_os("CFGD_APT_GET_BIN");

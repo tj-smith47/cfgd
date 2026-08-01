@@ -74,6 +74,7 @@ fn plan_includes_file_actions() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
+        modify: None,
     }];
 
     let plan = reconciler
@@ -187,6 +188,7 @@ fn two_file_create_plan(
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         },
         FileAction::Create {
             source: src_b,
@@ -194,6 +196,7 @@ fn two_file_create_plan(
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         },
     ];
 
@@ -332,6 +335,7 @@ fn aborted_planned_total_counts_only_filtered_actions() {
                         origin: "local".to_string(),
                         strategy: crate::config::FileStrategy::Copy,
                         source_hash: None,
+                        modify: None,
                     }),
                     Action::File(FileAction::Create {
                         source: src_b,
@@ -339,6 +343,7 @@ fn aborted_planned_total_counts_only_filtered_actions() {
                         origin: "local".to_string(),
                         strategy: crate::config::FileStrategy::Copy,
                         source_hash: None,
+                        modify: None,
                     }),
                 ],
             },
@@ -568,6 +573,7 @@ fn plan_module_with_files() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -821,6 +827,7 @@ fn format_module_plan_items_files() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 }],
             },
             origin: None,
@@ -1515,6 +1522,7 @@ fn conflict_detection_different_content() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let modules = vec![ResolvedModule {
@@ -1527,6 +1535,7 @@ fn conflict_detection_different_content() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1567,6 +1576,7 @@ fn conflict_detection_two_profile_actions_same_target_different_content_errs() {
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         },
         FileAction::Update {
             source: file_b,
@@ -1575,6 +1585,7 @@ fn conflict_detection_two_profile_actions_same_target_different_content_errs() {
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         },
     ];
 
@@ -1600,6 +1611,7 @@ fn conflict_detection_two_profile_actions_same_target_identical_content_ok() {
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         },
         FileAction::Update {
             source: file_b,
@@ -1608,6 +1620,7 @@ fn conflict_detection_two_profile_actions_same_target_identical_content_ok() {
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            modify: None,
         },
     ];
 
@@ -1630,6 +1643,7 @@ fn conflict_detection_identical_content_ok() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let modules = vec![ResolvedModule {
@@ -1642,6 +1656,7 @@ fn conflict_detection_identical_content_ok() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1677,6 +1692,7 @@ fn conflict_detection_identical_content_ok() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1714,6 +1730,7 @@ fn conflict_detection_no_overlap_ok() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let modules = vec![ResolvedModule {
@@ -1726,6 +1743,7 @@ fn conflict_detection_no_overlap_ok() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1759,6 +1777,7 @@ fn conflict_detection_no_overlap_ok() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -3401,6 +3420,7 @@ fn apply_file_create_action_writes_file() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let plan = reconciler
@@ -4623,6 +4643,7 @@ fn apply_on_change_script_runs_when_changes_occur() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let plan = reconciler
@@ -5113,6 +5134,7 @@ fn action_target_path_file_create() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     });
     assert_eq!(super::action_target_path(&action), Some(target));
 }
@@ -5127,6 +5149,7 @@ fn action_target_path_file_update() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     });
     assert_eq!(super::action_target_path(&action), Some(target));
 }
@@ -5290,6 +5313,7 @@ fn format_action_description_module_deploy_files() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 },
                 crate::modules::ResolvedFile {
                     source: PathBuf::from("/src/b"),
@@ -5298,6 +5322,7 @@ fn format_action_description_module_deploy_files() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 },
             ],
         },
@@ -5361,6 +5386,7 @@ fn plan_to_hash_string_multiple_phases() {
                     origin: "local".into(),
                     strategy: crate::config::FileStrategy::Copy,
                     source_hash: None,
+                    modify: None,
                 })],
             },
         ],
@@ -5750,6 +5776,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         })
         .collect();
     let action = ModuleAction {
@@ -5796,6 +5823,7 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -5826,6 +5854,7 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
     assert!(
         Reconciler::detect_file_conflicts(&create_actions, &modules).is_err(),
@@ -5955,6 +5984,7 @@ fn apply_on_change_skipped_when_skip_scripts_true() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let plan = reconciler
@@ -6774,6 +6804,7 @@ fn apply_file_update_action_overwrites_target() {
                 origin: "local".to_string(),
                 strategy: crate::config::FileStrategy::Copy,
                 source_hash: None,
+                modify: None,
             })],
         }],
         warnings: vec![],
@@ -7299,6 +7330,7 @@ fn apply_module_deploy_files_creates_target() {
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7328,6 +7360,7 @@ fn apply_module_deploy_files_creates_target() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -7362,14 +7395,13 @@ fn apply_module_deploy_files_creates_target() {
 }
 
 #[test]
-fn apply_module_deploy_files_modify_strategy_returns_strategy_not_implemented() {
-    // The `Modify` engine isn't wired in yet; the guard in
-    // ModuleActionKind::DeployFiles (modules.rs ~196) must reject the file
-    // before the "remove existing target" / write step, rather than falling
-    // through and (for an empty `source`, valid for Modify) attempting to
-    // read the module directory itself as a file.
+fn apply_module_deploy_files_modify_merges_into_the_target() {
+    // A `Modify` module file has no source; the merge must run against the
+    // target's own content and leave everything the spec does not name alone.
     let dir = tempfile::tempdir().unwrap();
-    let target_file = dir.path().join("subdir/module-target.txt");
+    let target_file = dir.path().join("subdir/settings.json");
+    std::fs::create_dir_all(target_file.parent().unwrap()).unwrap();
+    std::fs::write(&target_file, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
 
     let state = test_state();
     let mut registry = ProviderRegistry::new();
@@ -7378,17 +7410,25 @@ fn apply_module_deploy_files_modify_strategy_returns_strategy_not_implemented() 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
 
+    let modify = crate::config::ModifySpec {
+        format: None,
+        ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+        script: None,
+    };
+    let file = ResolvedFile {
+        source: PathBuf::new(),
+        target: target_file.clone(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Modify),
+        encryption: None,
+        permissions: None,
+        modify: Some(modify),
+    };
+
     let modules = vec![ResolvedModule {
         name: "mymod".to_string(),
         packages: vec![],
-        files: vec![ResolvedFile {
-            source: dir.path().to_path_buf(),
-            target: target_file.clone(),
-            is_git_source: false,
-            strategy: Some(crate::config::FileStrategy::Modify),
-            encryption: None,
-            permissions: None,
-        }],
+        files: vec![file.clone()],
         env: vec![],
         aliases: vec![],
         post_apply_scripts: vec![],
@@ -7409,16 +7449,7 @@ fn apply_module_deploy_files_modify_strategy_returns_strategy_not_implemented() 
             name: PhaseName::Modules,
             actions: vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
-                        source: dir.path().to_path_buf(),
-                        target: target_file.clone(),
-                        is_git_source: false,
-                        strategy: Some(crate::config::FileStrategy::Modify),
-                        encryption: None,
-                        permissions: None,
-                    }],
-                },
+                kind: ModuleActionKind::DeployFiles { files: vec![file] },
                 origin: None,
             })],
         }],
@@ -7441,19 +7472,14 @@ fn apply_module_deploy_files_modify_strategy_returns_strategy_not_implemented() 
         )
         .unwrap();
 
-    assert_eq!(result.status, ApplyStatus::Failed);
-    let error = result.action_results[0]
-        .error
-        .as_ref()
-        .expect("Modify strategy must surface as an action error");
-    assert!(
-        error.contains("Modify") && error.contains("not yet implemented"),
-        "expected a strategy-not-implemented error, got: {error}"
+    assert_eq!(result.status, ApplyStatus::Success);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&target_file).unwrap()).unwrap();
+    assert_eq!(
+        written["runtimeToken"], "keep-me",
+        "a key the spec never mentions must survive the merge"
     );
-    assert!(
-        !target_file.exists(),
-        "target must not be created for Modify"
-    );
+    assert_eq!(written["telemetry"], false);
 }
 
 #[test]
@@ -7481,6 +7507,7 @@ fn apply_module_deploy_files_symlink_strategy() {
             strategy: None, // uses default = Symlink
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7510,6 +7537,7 @@ fn apply_module_deploy_files_symlink_strategy() {
                         strategy: None,
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -7766,6 +7794,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
                 mode: crate::config::EncryptionMode::Always,
             }),
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7880,6 +7909,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
                 mode: crate::config::EncryptionMode::Always,
             }),
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7937,6 +7967,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
                 mode: crate::config::EncryptionMode::Always,
             }),
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7995,6 +8026,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
                     mode: crate::config::EncryptionMode::Always,
                 }),
                 permissions: None,
+                modify: None,
             },
             ResolvedFile {
                 source: b.clone(),
@@ -8003,6 +8035,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
                 strategy: Some(crate::config::FileStrategy::Copy),
                 encryption: None,
                 permissions: None,
+                modify: None,
             },
         ],
         env: vec![],
@@ -8069,6 +8102,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
                 mode: crate::config::EncryptionMode::Always,
             }),
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -8500,6 +8534,7 @@ fn verify_module_files_produce_no_reconciler_rows() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -8671,6 +8706,7 @@ fn format_action_description_module_deploy_two_files() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 },
                 ResolvedFile {
                     source: PathBuf::from("/src/plugins.lua"),
@@ -8679,6 +8715,7 @@ fn format_action_description_module_deploy_two_files() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 },
             ],
         },
@@ -8967,6 +9004,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
                         strategy: Some(crate::config::FileStrategy::Hardlink),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -8985,6 +9023,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
             strategy: Some(crate::config::FileStrategy::Hardlink),
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -9065,6 +9104,7 @@ fn apply_module_deploy_files_copy_strategy() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -9083,6 +9123,7 @@ fn apply_module_deploy_files_copy_strategy() {
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -9157,6 +9198,7 @@ fn apply_module_deploy_files_applies_permissions() {
         strategy: Some(crate::config::FileStrategy::Copy),
         encryption: None,
         permissions: Some("750".to_string()),
+        modify: None,
     };
 
     let plan = Plan {
@@ -9249,6 +9291,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -9267,6 +9310,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -9342,6 +9386,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -9424,6 +9469,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -10319,6 +10365,7 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 }],
             },
             Some("acme".to_string()),
@@ -10346,6 +10393,7 @@ fn format_module_action_item_local_has_no_origin_suffix() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 }],
             },
         ))],
@@ -10365,6 +10413,7 @@ fn format_module_action_item_deploy_many_files_truncates() {
             strategy: None,
             encryption: None,
             permissions: None,
+            modify: None,
         })
         .collect();
     let phase = Phase {
@@ -10428,6 +10477,11 @@ fn clone_action_create_preserves_all_fields() {
         origin: "remote".into(),
         strategy: crate::config::FileStrategy::Symlink,
         source_hash: Some("abc123".into()),
+        modify: Some(crate::config::ModifySpec {
+            format: Some(crate::config::ModifyFormat::Ini),
+            ensure: None,
+            script: Some("rewrite.sh".into()),
+        }),
     };
     let cloned = action.clone_action();
     match cloned {
@@ -10437,12 +10491,16 @@ fn clone_action_create_preserves_all_fields() {
             origin,
             strategy,
             source_hash,
+            modify,
         } => {
             assert_eq!(source, PathBuf::from("/src/file"));
             assert_eq!(target, PathBuf::from("/dst/file"));
             assert_eq!(origin, "remote");
             assert_eq!(strategy, crate::config::FileStrategy::Symlink);
             assert_eq!(source_hash.as_deref(), Some("abc123"));
+            let modify = modify.expect("modify block must survive the clone");
+            assert_eq!(modify.format, Some(crate::config::ModifyFormat::Ini));
+            assert_eq!(modify.script.as_deref(), Some("rewrite.sh"));
         }
         other => panic!("expected Create, got: {other:?}"),
     }
@@ -10457,6 +10515,7 @@ fn clone_action_update_preserves_all_fields() {
         origin: "corp".into(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     };
     let cloned = action.clone_action();
     match cloned {
@@ -10467,7 +10526,9 @@ fn clone_action_update_preserves_all_fields() {
             origin,
             strategy,
             source_hash,
+            modify,
         } => {
+            assert_eq!(modify, None);
             assert_eq!(source, PathBuf::from("/src/updated"));
             assert_eq!(target, PathBuf::from("/dst/updated"));
             assert_eq!(diff, "- old\n+ new");
@@ -10556,40 +10617,62 @@ fn apply_file_action_direct_creates_file_with_copy() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello");
 }
 
 #[test]
-fn apply_file_action_direct_modify_strategy_returns_strategy_not_implemented() {
-    // The `Modify` engine isn't wired in yet; the guard at file_action.rs ~26
-    // must reject the action before any filesystem mutation, rather than
-    // falling through to `std::fs::copy` on a possibly-nonexistent source.
+fn apply_file_action_direct_modify_merges_into_existing_target() {
     let dir = tempfile::tempdir().unwrap();
-    let src = dir.path().join("source.txt");
-    std::fs::write(&src, "hello").unwrap();
-    let dst = dir.path().join("target.txt");
+    let dst = dir.path().join("settings.json");
+    std::fs::write(&dst, "{\n  \"keep\": 1\n}\n").unwrap();
+
+    let action = FileAction::Update {
+        source: PathBuf::new(),
+        target: dst.clone(),
+        diff: String::new(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Modify,
+        source_hash: None,
+        modify: Some(crate::config::ModifySpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("added: true").unwrap()),
+            script: None,
+        }),
+    };
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dst).unwrap()).unwrap();
+    assert_eq!(written["keep"], 1, "unmentioned keys must survive");
+    assert_eq!(written["added"], true);
+}
+
+#[test]
+fn apply_file_action_direct_modify_without_block_errors_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let dst = dir.path().join("target.json");
 
     let action = FileAction::Create {
-        source: src,
+        source: PathBuf::new(),
         target: dst.clone(),
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Modify,
         source_hash: None,
+        modify: None,
     };
-    let profile = make_empty_resolved();
-    let err = super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged)
-        .expect_err("Modify strategy must be rejected, not silently applied");
+    let err = super::file_action::apply_file_action_direct(&action, dir.path(), "test")
+        .expect_err("a Modify action without a modify block must not be applied");
     assert!(
         matches!(
             err,
-            crate::errors::CfgdError::File(crate::errors::FileError::StrategyNotImplemented { .. })
+            crate::errors::CfgdError::File(crate::errors::FileError::ModifyBlockMissing { .. })
         ),
-        "expected FileError::StrategyNotImplemented, got: {err:?}"
+        "expected FileError::ModifyBlockMissing, got: {err:?}"
     );
-    assert!(!dst.exists(), "target must not be created for Modify");
+    assert!(!dst.exists(), "target must not be created");
 }
 
 #[test]
@@ -10605,9 +10688,9 @@ fn apply_file_action_direct_creates_symlink() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Symlink,
         source_hash: None,
+        modify: None,
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
     assert!(dst.is_symlink());
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "link-target");
 }
@@ -10625,9 +10708,9 @@ fn apply_file_action_direct_creates_hardlink() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Hardlink,
         source_hash: None,
+        modify: None,
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hard-data");
 }
 
@@ -10642,8 +10725,7 @@ fn apply_file_action_direct_deletes_existing_file() {
         target: target.clone(),
         origin: "local".into(),
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
     assert!(!target.exists());
 }
 
@@ -10656,8 +10738,7 @@ fn apply_file_action_direct_delete_nonexistent_is_ok() {
         target,
         origin: "local".into(),
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
 }
 
 #[test]
@@ -10668,8 +10749,7 @@ fn apply_file_action_direct_skip_is_noop() {
         reason: "unchanged".into(),
         origin: "local".into(),
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
 }
 
 #[test]
@@ -10687,9 +10767,9 @@ fn apply_file_action_direct_update_replaces_existing() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     };
-    let profile = make_empty_resolved();
-    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v2");
 }
 
@@ -11452,6 +11532,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -11588,6 +11669,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -11829,6 +11911,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
             permissions: None,
+            modify: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -11858,6 +11941,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -11948,6 +12032,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -12037,6 +12122,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
                         permissions: None,
+                        modify: None,
                     }],
                 },
                 origin: None,
@@ -12089,6 +12175,7 @@ fn apply_profile_on_change_failure_continues_with_default_continue_on_error() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let plan = reconciler
@@ -12157,6 +12244,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
         origin: "local".to_string(),
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     }];
 
     let plan = reconciler

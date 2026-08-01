@@ -3,6 +3,36 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
+/// Render one module-deployed file's inline diff and report whether it drifts.
+///
+/// A `Modify` file has no source to compare against — its diff is the target's
+/// current content against what re-running the merge would produce — so it
+/// routes through the modify renderer while every other strategy keeps the
+/// shared source→target renderer.
+fn diff_module_file(
+    fm: &CfgdFileManager,
+    resolved: &cfgd_core::config::ResolvedProfile,
+    module: &cfgd_core::modules::ResolvedModule,
+    file: &cfgd_core::modules::ResolvedFile,
+    config_dir: &std::path::Path,
+    printer: &Printer,
+) -> anyhow::Result<bool> {
+    match &file.modify {
+        Some(spec) => {
+            let binding = crate::files::module_modify_binding(config_dir, resolved, module);
+            let outcome =
+                cfgd_core::reconciler::evaluate_modify(spec, &file.target, &binding.context())?;
+            Ok(crate::files::render_modify_diff(
+                &file.target,
+                &outcome,
+                printer,
+            ))
+        }
+        // Module sources carry no tera origin, so pass None.
+        None => Ok(fm.diff_one(&file.source, &file.target, None, printer)?),
+    }
+}
+
 pub fn cmd_diff(
     cli: &Cli,
     printer: &Printer,
@@ -53,8 +83,7 @@ pub fn cmd_diff(
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {
             for file in &module.files {
-                file.ensure_strategy_implemented()?;
-                if fm.diff_one(&file.source, &file.target, None, printer)? {
+                if diff_module_file(&fm, &resolved, module, file, &config_dir, printer)? {
                     drift = true;
                 }
             }
@@ -188,11 +217,11 @@ fn cmd_diff_module(
         // carry no tera origin (None). `diff_one` emits at top level, so no
         // section is opened here (matches the full path's structure).
         printer.status_simple(Role::Info, "Files");
-        let fm = CfgdFileManager::new(config_dir, &empty_resolved_profile(mod_name))?;
+        let resolved = empty_resolved_profile(mod_name);
+        let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
             for file in &module.files {
-                file.ensure_strategy_implemented()?;
-                if fm.diff_one(&file.source, &file.target, None, printer)? {
+                if diff_module_file(&fm, &resolved, module, file, config_dir, printer)? {
                     has_file_diff = true;
                 }
             }

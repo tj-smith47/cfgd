@@ -1287,9 +1287,11 @@ impl ToolShim {
     /// emitting `stdout` to stdout and `stderr` to stderr. The shim is pointed
     /// at by the `env_var` env-var (the same var read by `tool_cmd`).
     ///
-    /// Implementation detail: `CFGD_TOOL_SHIM_LOG` is read by the shim script
-    /// itself (per-test path, no cross-test collision) and `argv` is appended
-    /// one line per invocation so multi-call tests can assert ordering.
+    /// Implementation detail: the log path is baked into the shim script, so
+    /// only this shim's own invocations can land in it — routing it through an
+    /// env var let any concurrently-invoked shim append to whichever log was
+    /// installed last. `argv` is appended one line per invocation so
+    /// multi-call tests can assert ordering.
     pub fn install(env_var: &str, exit_code: i32, stdout: &str, stderr: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -1300,9 +1302,10 @@ impl ToolShim {
         let stdout_lit = stdout.replace('\'', "'\\''");
         let stderr_lit = stderr.replace('\'', "'\\''");
 
+        let log_lit = log_path.display().to_string().replace('\'', "'\\''");
         let script = format!(
             "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> \"$CFGD_TOOL_SHIM_LOG\"\n\
+             printf '%s\\n' \"$*\" >> '{log_lit}'\n\
              printf '%s' '{stdout_lit}'\n\
              printf '%s' '{stderr_lit}' 1>&2\n\
              exit {exit_code}\n",
@@ -1316,7 +1319,6 @@ impl ToolShim {
         // reader observes a mid-update env state.
         unsafe {
             std::env::set_var(env_var, &bin_path);
-            std::env::set_var("CFGD_TOOL_SHIM_LOG", &log_path);
         }
 
         Self {
@@ -1339,9 +1341,10 @@ impl ToolShim {
         let stderr_lit = stderr.replace('\'', "'\\''");
         let substr_lit = fail_substr.replace('\'', "'\\''");
 
+        let log_lit = log_path.display().to_string().replace('\'', "'\\''");
         let script = format!(
             "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> \"$CFGD_TOOL_SHIM_LOG\"\n\
+             printf '%s\\n' \"$*\" >> '{log_lit}'\n\
              case \"$*\" in\n\
              *'{substr_lit}'*) printf '%s' '{stderr_lit}' 1>&2; exit 1 ;;\n\
              esac\n\
@@ -1356,7 +1359,6 @@ impl ToolShim {
         // reader observes a mid-update env state.
         unsafe {
             std::env::set_var(env_var, &bin_path);
-            std::env::set_var("CFGD_TOOL_SHIM_LOG", &log_path);
         }
 
         Self {
@@ -1384,7 +1386,31 @@ impl Drop for ToolShim {
         // SAFETY: see `install`.
         unsafe {
             std::env::remove_var(&self.env_var);
-            std::env::remove_var("CFGD_TOOL_SHIM_LOG");
+        }
+    }
+}
+
+/// Holds the exclusive spawn-environment guard while a shim directory sits at
+/// the front of `PATH`, and restores the prior `PATH` on drop. Prepending a
+/// directory containing a fake `bash` / `curl` / `sudo` is a process-global
+/// mutation: a parallel test resolving the same name would silently get the
+/// shim, so the window must exclude concurrent spawns exactly like an
+/// empty-`PATH` window does.
+#[cfg(unix)]
+pub struct PathShimGuard {
+    _path: EnvVarGuard,
+    _spawn_excl: ExclusiveEnvGuard,
+}
+
+#[cfg(unix)]
+impl PathShimGuard {
+    fn prepend(dir: &Path) -> Self {
+        let spawn_excl = path_env_mutation_guard();
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", dir.display(), old_path);
+        Self {
+            _path: EnvVarGuard::set("PATH", &new_path),
+            _spawn_excl: spawn_excl,
         }
     }
 }
@@ -1392,8 +1418,9 @@ impl Drop for ToolShim {
 /// Install a tempdir-scoped shim script named `binary` (`bash`, `curl`,
 /// `powershell`, etc.) at the FRONT of `PATH`. Returns a tuple whose first
 /// element pins the tempdir alive for the test's lifetime and whose second
-/// restores the prior PATH on drop. Use for production code that invokes a
-/// bare-name binary via `Command::new("<binary>")` (no env-var seam).
+/// restores the prior PATH on drop (see [`PathShimGuard`]). Use for production
+/// code that invokes a bare-name binary via `Command::new("<binary>")` (no
+/// env-var seam).
 ///
 /// `exit_code` is the shim's exit; `stdout`/`stderr` are written verbatim
 /// (with embedded `"` shell-escaped). Caller is responsible for the
@@ -1404,7 +1431,7 @@ pub fn install_named_path_shim(
     exit_code: u8,
     stdout: &str,
     stderr: &str,
-) -> (tempfile::TempDir, EnvVarGuard) {
+) -> (tempfile::TempDir, PathShimGuard) {
     use std::os::unix::fs::PermissionsExt;
     let bin_dir = tempfile::tempdir().expect("tempdir");
     let script = format!(
@@ -1416,21 +1443,19 @@ pub fn install_named_path_shim(
     let path = bin_dir.path().join(binary);
     std::fs::write(&path, script).expect("write shim");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-    let path_guard = EnvVarGuard::set("PATH", &new_path);
-    (bin_dir, path_guard)
+    let guard = PathShimGuard::prepend(bin_dir.path());
+    (bin_dir, guard)
 }
 
 /// Install several `#!/bin/sh` shims into a single tempdir prepended to PATH.
 /// Each `(name, exit_code)` becomes a 0o755 script that exits with the given
-/// code (no stdout/stderr). Returns `(TempDir, EnvVarGuard)` whose drops
+/// code (no stdout/stderr). Returns `(TempDir, PathShimGuard)` whose drops
 /// release the temp directory and restore the prior PATH. Use for tests whose
 /// production code-path invokes multiple bare-name binaries (`useradd`, `sudo`,
 /// `bash` etc.) where a single-binary shim is insufficient. Caller is
 /// responsible for the `#[serial]` gate — PATH mutation is process-global.
 #[cfg(unix)]
-pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, EnvVarGuard) {
+pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, PathShimGuard) {
     use std::os::unix::fs::PermissionsExt;
     let bin_dir = tempfile::tempdir().expect("tempdir");
     for (name, exit_code) in shims {
@@ -1438,50 +1463,101 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, En
         std::fs::write(&path, format!("#!/bin/sh\nexit {exit_code}\n")).expect("write shim");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-    let path_guard = EnvVarGuard::set("PATH", &new_path);
-    (bin_dir, path_guard)
+    let guard = PathShimGuard::prepend(bin_dir.path());
+    (bin_dir, guard)
 }
 
 // ---------------------------------------------------------------------------
 // PATH-mutation / interpreter-spawn coordination
 // ---------------------------------------------------------------------------
 
-/// Serializes the process-global `PATH` *emptying* done by command-not-found
-/// tests against the interpreter *spawns* done by script-execution tests.
+/// Serializes the process-global *spawn environment* — `PATH` and the working
+/// directory — against every process spawn in the test binary.
 ///
 /// `std::env::set_var`/`remove_var` is `unsafe` precisely because a concurrent
-/// reader is a data race on the C `environ`. A script spawn resolves its
-/// interpreter (`sh`/`bash`) through `PATH` inside `Command::spawn`, so a test
-/// that empties `PATH` to drive a "command not found" branch races — and
-/// corrupts — any concurrently-spawning script test, surfacing as a spurious
-/// `could not spawn the script interpreter (os error 2)`.
+/// reader is a data race on the C `environ`, and `set_current_dir` is the same
+/// hazard for a resource every child inherits. A spawn resolves its program
+/// through `PATH` and inherits the working directory inside `Command::spawn`,
+/// so a test that empties `PATH` (to drive a command-not-found branch) or
+/// chdirs into a temp directory (to drive a CWD-relative branch) corrupts any
+/// concurrently-spawning test. The symptoms are far from the cause: a spurious
+/// `could not spawn the script interpreter (os error 2)`, a `git` that reports
+/// `getcwd() failed` and demotes a CLI-first clone to the libgit2 fallback, or
+/// a shell substitution that silently yields an empty string because `tr` was
+/// unresolvable for one instant.
 ///
 /// `#[serial]` cannot close this: it only excludes other `#[serial]` tests,
 /// never the non-serial spawner majority. This lock guards the real resource
-/// boundary instead — spawns take the shared read guard ([`script_spawn_path_guard`]),
-/// PATH emptying takes the exclusive write guard ([`path_env_mutation_guard`]) —
-/// so the two can never overlap and every spawner is covered with no per-test
-/// attribute. Spawns run fully parallel with each other; only an active
-/// PATH-emptying window blocks them.
+/// boundary instead — spawns take the shared guard ([`script_spawn_path_guard`]),
+/// mutators take the exclusive guard ([`path_env_mutation_guard`], also taken by
+/// [`CwdGuard`]) — so the two can never overlap and every spawner is covered
+/// with no per-test attribute. Spawns run fully parallel with each other; only
+/// an active mutation window blocks them.
 static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
 
-/// Shared read guard held across an interpreter spawn. Acquired at the top of
-/// `reconciler::scripts::execute_script`, so every script-spawning test is
-/// covered automatically. See [`PATH_ENV_LOCK`].
-pub fn script_spawn_path_guard() -> RwLockReadGuard<'static, ()> {
-    PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
+thread_local! {
+    /// Depth of nested [`script_spawn_path_guard`] acquisitions on this thread.
+    static SPAWN_GUARD_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether this thread holds the exclusive guard.
+    static SPAWN_GUARD_EXCLUSIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Exclusive write guard for a test that empties the process-global `PATH` to
-/// exercise a command-not-found branch. Declare it *before* the `EnvVarGuard`
-/// that mutates `PATH` so it drops last, bracketing the entire empty-`PATH`
-/// window. Never spawn a script while holding it — that both contradicts the
-/// test (no `sh` on an empty `PATH`) and risks a same-thread read-after-write
-/// deadlock. See [`PATH_ENV_LOCK`].
-pub fn path_env_mutation_guard() -> RwLockWriteGuard<'static, ()> {
-    PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner())
+/// Shared guard held across a process spawn. Acquired inside the two command
+/// layers every spawn funnels through (`Printer::run` and
+/// `command_output_with_timeout`) plus the script executor, so every spawning
+/// test is covered automatically. See [`PATH_ENV_LOCK`].
+///
+/// Re-entrant by design: nesting is normal (the script executor holds one
+/// across interpreter resolution, then the command layer takes another around
+/// the spawn itself), and `RwLock` is write-preferring, so a second *real* read
+/// acquisition on a thread would deadlock behind a waiting writer. A nested
+/// acquisition, and any acquisition on a thread already holding the exclusive
+/// guard, is therefore a no-op.
+pub fn script_spawn_path_guard() -> SpawnEnvGuard {
+    if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
+        || SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) > 0
+    {
+        return SpawnEnvGuard(None);
+    }
+    let guard = PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner());
+    SPAWN_GUARD_DEPTH.with(|d| d.set(1));
+    SpawnEnvGuard(Some(guard))
+}
+
+/// Shared spawn-environment guard. See [`script_spawn_path_guard`].
+pub struct SpawnEnvGuard(Option<RwLockReadGuard<'static, ()>>);
+
+impl Drop for SpawnEnvGuard {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            SPAWN_GUARD_DEPTH.with(|d| d.set(0));
+        }
+    }
+}
+
+/// Exclusive guard for a test that mutates the process-global spawn
+/// environment: emptying/replacing `PATH`, or changing the working directory
+/// (which [`CwdGuard`] does for you). Declare it *before* the `EnvVarGuard`
+/// that mutates `PATH` so it drops last, bracketing the entire window.
+///
+/// Spawning while holding it is safe — the shared guard degrades to a no-op on
+/// a thread that already holds this one — though an empty-`PATH` test spawning
+/// a shell contradicts its own premise. See [`PATH_ENV_LOCK`].
+pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
+    let guard = PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner());
+    SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(true));
+    ExclusiveEnvGuard { _guard: guard }
+}
+
+/// Exclusive spawn-environment guard. See [`path_env_mutation_guard`].
+pub struct ExclusiveEnvGuard {
+    _guard: RwLockWriteGuard<'static, ()>,
+}
+
+impl Drop for ExclusiveEnvGuard {
+    fn drop(&mut self) {
+        SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,25 +1644,37 @@ impl Drop for EditorGuard {
 
 /// RAII guard that saves the current working directory on construction,
 /// changes to a new directory, and restores the prior directory on drop —
-/// even if a test panics between construction and drop. Pair with
-/// `serial_test::serial` because `set_current_dir` is process-global.
+/// even if a test panics between construction and drop.
+///
+/// Holds the exclusive spawn-environment guard for its whole lifetime (see
+/// [`path_env_mutation_guard`]): the working directory is inherited by every
+/// child process and read by every relative-path helper, so a parallel test
+/// must not spawn — or resolve `.git` from `.` — inside the window. That makes
+/// the guard, not `#[serial]`, the thing that actually excludes the racing
+/// majority.
 ///
 /// Use this instead of paired `std::env::set_current_dir(&orig)` calls in
 /// tests that need to drive CWD-sensitive helpers (e.g. git rev-parse,
 /// path resolution from "."). The paired form leaks a dangling CWD when
-/// an assertion between the two calls panics, causing the next serial
-/// test to inherit a deleted tempdir.
+/// an assertion between the two calls panics, and can capture *another*
+/// test's temp directory as its "original", restoring the process to a
+/// directory that no longer exists.
 pub struct CwdGuard {
     orig: PathBuf,
+    _spawn_excl: ExclusiveEnvGuard,
 }
 
 impl CwdGuard {
     /// Capture the current working directory, then change to `new`.
     /// Returns an error if either step fails.
     pub fn set(new: impl AsRef<Path>) -> std::io::Result<Self> {
+        let spawn_excl = path_env_mutation_guard();
         let orig = std::env::current_dir()?;
         std::env::set_current_dir(new)?;
-        Ok(Self { orig })
+        Ok(Self {
+            orig,
+            _spawn_excl: spawn_excl,
+        })
     }
 }
 

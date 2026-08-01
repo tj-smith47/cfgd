@@ -153,8 +153,8 @@ pub enum FileError {
     )]
     EncryptionStrategyIncompatible { path: PathBuf, strategy: String },
 
-    #[error("strategy '{strategy}' is not yet implemented for {path}")]
-    StrategyNotImplemented { path: PathBuf, strategy: String },
+    #[error("strategy 'Modify' for {path} requires a 'modify' block")]
+    ModifyBlockMissing { path: PathBuf },
 
     #[error(
         "cannot infer a modify format from the extension of {path} — set 'modify.format' explicitly (ini, json, yaml, toml)"
@@ -191,22 +191,6 @@ pub enum FileError {
 
     #[error("modify block for {path} must set exactly one of 'ensure' or 'script'")]
     ModifySpecInvalid { path: PathBuf },
-}
-
-impl FileError {
-    /// Build a [`FileError::StrategyNotImplemented`] for a file strategy that
-    /// is declared but has no execution engine wired in yet (e.g. `Modify`).
-    /// Centralizes the four dispatch-site guards (`plan`, `apply`,
-    /// `file_action`, `reconciler::modules`) so they stay in sync.
-    pub fn strategy_not_implemented(
-        path: impl Into<PathBuf>,
-        strategy: crate::config::FileStrategy,
-    ) -> Self {
-        FileError::StrategyNotImplemented {
-            path: path.into(),
-            strategy: format!("{strategy:?}"),
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]

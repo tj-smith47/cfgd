@@ -420,10 +420,30 @@ pub(in crate::cli) fn display_plan_preview(
                 continue;
             }
             for action in &phase_item.actions {
-                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
+                if let reconciler::Action::File(FileAction::Update {
+                    source,
+                    target,
+                    modify,
+                    ..
+                }) = action
                     && let Ok(target_content) = std::fs::read_to_string(target)
                 {
-                    let source_content = if crate::files::is_tera_template(source) {
+                    // A `Modify` action has no source file: its preview is the
+                    // target against what re-running the merge would produce.
+                    let source_content = if let Some(spec) = modify {
+                        match fm.evaluate_spec(spec, target, reconciler::ReconcileContext::Apply) {
+                            Ok(outcome) => outcome.modified,
+                            Err(e) => {
+                                printer
+                                    .status(
+                                        Role::Warn,
+                                        format!("cannot preview {}", target.posix()),
+                                    )
+                                    .detail(cfgd_core::output::collapse_to_subject_line(e));
+                                continue;
+                            }
+                        }
+                    } else if crate::files::is_tera_template(source) {
                         fm.render_template_for_display(source).unwrap_or_default()
                     } else {
                         std::fs::read_to_string(source).unwrap_or_default()

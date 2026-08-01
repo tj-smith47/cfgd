@@ -42,6 +42,21 @@ pub fn command_output_with_timeout_outcome(
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
+    // Held for the whole run, not just the spawn: the child resolves its
+    // program through `PATH` and reads its inherited working directory after
+    // exec, so both must stay stable until it exits. Compiled out of release
+    // builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _spawn_guard = crate::test_helpers::script_spawn_path_guard();
+
+    // `wait_with_output` can only read pipes it owns: an un-piped child
+    // inherits the terminal, so its output lands on cfgd's own stdout (a
+    // Printer bypass) while `Output::stdout` comes back empty and every
+    // caller parsing that value silently reads nothing. Set the pipes here
+    // rather than trusting ~20 call sites to remember.
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
     let child = cmd.spawn()?;
     let id = child.id();
     let (tx, rx) = mpsc::channel();

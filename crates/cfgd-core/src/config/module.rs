@@ -147,6 +147,7 @@ pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
             entry.source.is_empty(),
             entry.strategy,
             entry.modify.as_ref(),
+            entry.encryption.is_some(),
         )?;
     }
     Ok(())

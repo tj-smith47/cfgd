@@ -168,6 +168,11 @@ pub enum FileAction {
         strategy: crate::config::FileStrategy,
         /// SHA256 of source content at plan time (for TOCTOU verification).
         source_hash: Option<String>,
+        /// Merge spec carried from the profile entry, set exactly when
+        /// `strategy` is `Modify`. Apply re-runs it against the target's live
+        /// content, so `source` is empty and `source_hash` is `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        modify: Option<crate::config::ModifySpec>,
     },
     Update {
         source: PathBuf,
@@ -177,6 +182,9 @@ pub enum FileAction {
         strategy: crate::config::FileStrategy,
         /// SHA256 of source content at plan time (for TOCTOU verification).
         source_hash: Option<String>,
+        /// See [`FileAction::Create::modify`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        modify: Option<crate::config::ModifySpec>,
     },
     Delete {
         target: PathBuf,

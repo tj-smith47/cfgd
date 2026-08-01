@@ -909,7 +909,9 @@ pub(super) fn kill_script_child(child: &mut std::process::Child, graceful: bool)
 /// Pre-hooks abort on failure; post-hooks, onChange, onDrift continue.
 pub(super) fn default_continue_on_error(phase: &ScriptPhase) -> bool {
     match phase {
-        ScriptPhase::PreApply | ScriptPhase::PreReconcile => false,
+        // A failed `modify` filter leaves the target unwritten; continuing past
+        // it would apply a half-configured machine.
+        ScriptPhase::PreApply | ScriptPhase::PreReconcile | ScriptPhase::Modify => false,
         ScriptPhase::PostApply
         | ScriptPhase::PostReconcile
         | ScriptPhase::OnChange

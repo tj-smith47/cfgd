@@ -1,7 +1,7 @@
 //! Package and file resolution — turn LoadedModules into ResolvedModules.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::collections::HashSet;
 
@@ -200,6 +200,21 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
+                modify: entry.modify.clone(),
+            });
+        } else if entry.source.is_empty() {
+            // A `strategy: Modify` entry needs no source. Joining an empty
+            // relative path onto the module directory would yield the module
+            // directory itself, which every downstream `source.is_dir()` /
+            // `source.exists()` branch would read as a deployable payload.
+            resolved.push(ResolvedFile {
+                source: PathBuf::new(),
+                target: crate::expand_tilde(Path::new(&entry.target)),
+                is_git_source: false,
+                strategy: entry.strategy,
+                encryption: entry.encryption.clone(),
+                permissions: entry.permissions.clone(),
+                modify: entry.modify.clone(),
             });
         } else {
             // Local path — relative to module directory
@@ -232,6 +247,7 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
+                modify: entry.modify.clone(),
             });
         }
     }

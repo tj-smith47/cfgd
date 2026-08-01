@@ -37,6 +37,19 @@ pub struct ResolvedProfile {
     pub merged: MergedProfile,
 }
 
+impl ResolvedProfile {
+    /// Name of the profile this resolution is *for*: the last layer in the
+    /// chain (bases are resolved first, the requested profile last). Falls back
+    /// to `"unknown"` for a synthesized layer-free profile so callers that stamp
+    /// the name into script metadata always have a value.
+    pub fn profile_name(&self) -> &str {
+        self.layers
+            .last()
+            .map(|l| l.profile_name.as_str())
+            .unwrap_or("unknown")
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MergedProfile {
     pub modules: Vec<String>,

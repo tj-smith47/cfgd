@@ -190,16 +190,36 @@ impl<'a> super::Reconciler<'a> {
                         None => None,
                     };
 
-                    // Fail before any destructive step: the `Modify` engine
-                    // isn't wired in yet, and this action's whole point is to
-                    // preserve most of the target's existing content.
-                    if strategy == crate::config::FileStrategy::Modify {
-                        return Err(crate::errors::FileError::strategy_not_implemented(
-                            target.clone(),
-                            strategy,
+                    // `Modify` rewrites the target's own content, so it is
+                    // computed here — before the backup/remove sequence below
+                    // deletes the very bytes it reads. A failure aborts with
+                    // the target still intact.
+                    let modified = if strategy == crate::config::FileStrategy::Modify {
+                        let spec = file.modify.as_ref().ok_or_else(|| {
+                            crate::errors::FileError::ModifyBlockMissing {
+                                path: target.clone(),
+                            }
+                        })?;
+                        let binding = match resolved_mod {
+                            Some(m) => super::modify::ModifyBinding::module(
+                                config_dir,
+                                resolved.profile_name(),
+                                context,
+                                m,
+                            ),
+                            None => super::modify::ModifyBinding::profile(
+                                config_dir,
+                                resolved.profile_name(),
+                                context,
+                            ),
+                        };
+                        Some(
+                            super::modify::evaluate_modify(spec, &target, &binding.context())?
+                                .modified,
                         )
-                        .into());
-                    }
+                    } else {
+                        None
+                    };
 
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
@@ -221,7 +241,9 @@ impl<'a> super::Reconciler<'a> {
                         }
                     }
 
-                    if file.source.is_dir() {
+                    if let Some(content) = modified {
+                        crate::atomic_write_str(&target, &content)?;
+                    } else if file.source.is_dir() {
                         match strategy {
                             crate::config::FileStrategy::Symlink => {
                                 crate::create_symlink(&file.source, &target)?;
@@ -239,16 +261,11 @@ impl<'a> super::Reconciler<'a> {
                                 std::fs::hard_link(&file.source, &target)?;
                             }
                             crate::config::FileStrategy::Copy
-                            | crate::config::FileStrategy::Template => {
+                            | crate::config::FileStrategy::Template
+                            // Unreachable: a `Modify` file took the branch above.
+                            | crate::config::FileStrategy::Modify => {
                                 let content = std::fs::read(&file.source)?;
                                 crate::atomic_write(&target, &content)?;
-                            }
-                            crate::config::FileStrategy::Modify => {
-                                return Err(crate::errors::FileError::strategy_not_implemented(
-                                    target.clone(),
-                                    strategy,
-                                )
-                                .into());
                             }
                         }
                     }

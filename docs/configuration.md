@@ -428,9 +428,28 @@ works without a script file:
         script: "yq -y '.server.port = 9090'"
 ```
 
-Scripts run with the same `CFGD_*` environment lifecycle hooks receive, in the
-user's home directory, under the standard script timeout. Write the script to be
-idempotent: cfgd runs it on every reconcile.
+Scripts run with the same `CFGD_*` environment lifecycle hooks receive
+(`CFGD_PHASE=modify`, plus `CFGD_MODULE_NAME` / `CFGD_MODULE_DIR` and the
+module's `env` for a module-owned file), in the user's home directory, under the
+standard script timeout. Write the script to be idempotent: cfgd runs it on every
+reconcile.
+
+#### When a `Modify` file fails
+
+A target that cannot be parsed for its declared format, and a `script` that exits
+non-zero, both abort with a typed error and write nothing — the target is left
+byte-for-byte as it was.
+
+Where that error surfaces depends on who declares the file, because the merge is
+computed from the target's *current* bytes:
+
+| Declared in | Evaluated at | A failure means |
+|---|---|---|
+| A profile's `files.managed` | plan time | `cfgd plan`, `cfgd diff`, and `cfgd apply` all fail with the error — the same shape as a missing or unreadable `source` on the other strategies |
+| A module's `spec.files` | deploy time | the module's file-deployment action fails; the rest of the plan follows the usual apply semantics |
+
+Either way the merge runs before the existing target is touched, so a failure
+never leaves a half-written file.
 
 ## File locations
 

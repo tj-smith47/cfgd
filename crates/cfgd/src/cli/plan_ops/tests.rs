@@ -20,6 +20,7 @@ fn file_create(target: &str) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Symlink,
         source_hash: None,
+        modify: None,
     })
 }
 
@@ -31,6 +32,7 @@ fn file_update(target: &str) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Copy,
         source_hash: None,
+        modify: None,
     })
 }
 
@@ -311,6 +313,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 },
                 cfgd_core::modules::ResolvedFile {
                     source: PathBuf::from("/m/.vimrc"),
@@ -319,6 +322,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    modify: None,
                 },
             ],
         },
