@@ -964,6 +964,7 @@ pub struct BackupSpec {
     /// misconfiguration rather than a supported "unlimited" mode — enforced
     /// by [`validate_backup_specs`]). Defaults to 10.
     #[serde(default = "default_backup_retention")]
+    #[schemars(range(min = 1))]
     pub retention: u32,
     /// Scripts run before the snapshot is taken (e.g. stop a service that
     /// holds `source` open so the snapshot is consistent).
@@ -1457,6 +1458,23 @@ postBackup:
         }];
         validate_backup_specs(&specs)
             .expect("a name with internal dashes and dots should validate");
+    }
+
+    #[test]
+    fn validate_backup_specs_accepts_dotdot_as_substring_in_name() {
+        let specs = vec![BackupSpec {
+            name: "a..b".into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }];
+        validate_backup_specs(&specs).expect(
+            "a name containing '..' as a substring (not the exact traversal segment) should validate",
+        );
     }
 
     #[test]

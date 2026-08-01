@@ -63,7 +63,7 @@
           "default": 10,
           "description": "Number of newest snapshots to keep for this backup; older snapshots\nare pruned. Must be at least 1 (`0` would keep no backups, which is a\nmisconfiguration rather than a supported \"unlimited\" mode — enforced\nby [`validate_backup_specs`]). Defaults to 10.",
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 1,
           "type": "integer"
         },
         "schedule": {
