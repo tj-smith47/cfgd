@@ -367,6 +367,11 @@
           "const": "Hardlink",
           "description": "Create a hard link from target to source.",
           "type": "string"
+        },
+        {
+          "const": "Modify",
+          "description": "Merge structured keys/values into the target, or pipe it through a\nscript, leaving everything else untouched. Requires a `modify:` block.",
+          "type": "string"
         }
       ]
     },

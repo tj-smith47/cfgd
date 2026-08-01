@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::module::ScriptEntry;
 use super::source::{EnvVar, ShellAlias};
+use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
 
 /// A package-manager spec struct that can be built from a bare list of package
@@ -602,6 +603,9 @@ pub enum FileStrategy {
     Template,
     /// Create a hard link from target to source.
     Hardlink,
+    /// Merge structured keys/values into the target, or pipe it through a
+    /// script, leaving everything else untouched. Requires a `modify:` block.
+    Modify,
 }
 
 case_insensitive_enum!(FileStrategy {
@@ -609,7 +613,50 @@ case_insensitive_enum!(FileStrategy {
     "Copy" => FileStrategy::Copy,
     "Template" => FileStrategy::Template,
     "Hardlink" => FileStrategy::Hardlink,
+    "Modify" => FileStrategy::Modify,
 });
+
+/// File format used to interpret and re-serialize a `Modify`-strategy target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub enum ModifyFormat {
+    /// INI sections/keys, edited line-by-line to preserve comments and layout.
+    Ini,
+    /// JSON, re-serialized on write (no comments to preserve).
+    Json,
+    /// YAML; comments are NOT preserved across a merge (see docs for the caveat).
+    Yaml,
+    /// TOML, edited via `toml_edit` to preserve comments and layout.
+    Toml,
+}
+
+case_insensitive_enum!(ModifyFormat {
+    "Ini" => ModifyFormat::Ini,
+    "Json" => ModifyFormat::Json,
+    "Yaml" => ModifyFormat::Yaml,
+    "Toml" => ModifyFormat::Toml,
+});
+
+/// Configuration for the `Modify` file strategy: a structured merge (`ensure`)
+/// or a content-rewriting script, applied on top of the target's current
+/// content.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModifySpec {
+    /// File format to parse the target as. Inferred from the target's
+    /// extension when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ModifyFormat>,
+    /// Keys/values to deep-merge into the target, leaving unmentioned keys
+    /// untouched. Values are literal (no template rendering). Mutually
+    /// exclusive with `script`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Value>")]
+    pub ensure: Option<serde_yaml::Value>,
+    /// Path to a script that receives the target's current content on stdin
+    /// and writes the new content to stdout. Mutually exclusive with `ensure`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+}
 
 /// Controls when encryption is required for a managed file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
@@ -655,6 +702,9 @@ pub struct EncryptionConstraint {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedFileSpec {
+    /// Not required when `strategy` is `Modify`; required otherwise
+    /// (enforced by `validate_managed_file_specs`, not the JSON schema).
+    #[serde(default)]
     pub source: String,
     pub target: PathBuf,
     /// Per-file deployment strategy override. If None, uses the global default.
@@ -674,6 +724,11 @@ pub struct ManagedFileSpec {
     /// Unix permission bits (e.g. "600", "644") to apply after deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
+    /// Structured merge or script configuration for `strategy: Modify`.
+    /// Required when `strategy` is `Modify`, rejected otherwise (enforced by
+    /// `validate_managed_file_specs`, not the JSON schema).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modify: Option<ModifySpec>,
 }
 
 // `target` XOR `envs` (at least one required) is enforced at runtime by
@@ -706,6 +761,69 @@ pub(crate) fn profile_spec_from_value(
     value: serde_yaml::Value,
 ) -> std::result::Result<ProfileSpec, serde_yaml::Error> {
     serde_yaml::from_value::<ProfileSpec>(value)
+}
+
+/// Validate the `source` / `strategy` / `modify` shape shared by
+/// `ManagedFileSpec` and `ModuleFileEntry`: `source` is required unless
+/// `strategy` is `Modify`; a `modify` block is required when `strategy` is
+/// `Modify` and rejected otherwise; within a `modify` block exactly one of
+/// `ensure`/`script` must be set.
+pub(crate) fn validate_file_modify_shape(
+    subject: &str,
+    source_is_empty: bool,
+    strategy: Option<FileStrategy>,
+    modify: Option<&ModifySpec>,
+) -> Result<()> {
+    let is_modify = matches!(strategy, Some(FileStrategy::Modify));
+    match (is_modify, modify) {
+        (true, None) => Err(ConfigError::Invalid {
+            message: format!("{subject}: strategy 'modify' requires a 'modify' block"),
+        }
+        .into()),
+        (false, Some(_)) => Err(ConfigError::Invalid {
+            message: format!("{subject}: 'modify' is only valid when strategy is 'modify'"),
+        }
+        .into()),
+        (true, Some(m)) => match (m.ensure.is_some(), m.script.is_some()) {
+            (true, true) => Err(ConfigError::Invalid {
+                message: format!(
+                    "{subject}: 'modify' must set exactly one of 'ensure' or 'script', not both"
+                ),
+            }
+            .into()),
+            (false, false) => Err(ConfigError::Invalid {
+                message: format!(
+                    "{subject}: 'modify' must set exactly one of 'ensure' or 'script'"
+                ),
+            }
+            .into()),
+            _ => Ok(()),
+        },
+        (false, None) => {
+            if source_is_empty {
+                Err(ConfigError::Invalid {
+                    message: format!("{subject}: 'source' is required unless strategy is 'modify'"),
+                }
+                .into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Validate the `modify` strategy shape of every managed file
+/// (`spec.files.managed`). See [`validate_file_modify_shape`].
+pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
+    for spec in specs {
+        validate_file_modify_shape(
+            &format!("managed file '{}'", spec.target.posix()),
+            spec.source.is_empty(),
+            spec.strategy,
+            spec.modify.as_ref(),
+        )?;
+    }
+    Ok(())
 }
 
 /// Validate that each secret has at least one delivery target (`target` or `envs`).
@@ -828,6 +946,9 @@ mod tests {
             ("template", FileStrategy::Template),
             ("hardlink", FileStrategy::Hardlink),
             ("HardLink", FileStrategy::Hardlink),
+            ("modify", FileStrategy::Modify),
+            ("Modify", FileStrategy::Modify),
+            ("MODIFY", FileStrategy::Modify),
         ] {
             let parsed: FileStrategy = serde_yaml::from_str(token)
                 .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
@@ -844,6 +965,39 @@ mod tests {
     fn file_strategy_serializes_canonical_pascalcase() {
         let s = serde_yaml::to_string(&FileStrategy::Symlink).expect("serialize");
         assert_eq!(s.trim(), "Symlink");
+        let s = serde_yaml::to_string(&FileStrategy::Modify).expect("serialize");
+        assert_eq!(s.trim(), "Modify");
+    }
+
+    #[test]
+    fn modify_format_parses_case_insensitively() {
+        for (token, expected) in [
+            ("ini", ModifyFormat::Ini),
+            ("INI", ModifyFormat::Ini),
+            ("json", ModifyFormat::Json),
+            ("Json", ModifyFormat::Json),
+            ("yaml", ModifyFormat::Yaml),
+            ("YAML", ModifyFormat::Yaml),
+            ("toml", ModifyFormat::Toml),
+            ("Toml", ModifyFormat::Toml),
+        ] {
+            let parsed: ModifyFormat = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn modify_format_rejects_garbage() {
+        serde_yaml::from_str::<ModifyFormat>("xml").expect_err("unknown ModifyFormat must error");
+    }
+
+    #[test]
+    fn modify_spec_rejects_unknown_field() {
+        let yaml = "ensure:\n  a: b\nbogus: 1\n";
+        let err = serde_yaml::from_str::<ModifySpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogus");
+        assert!(format!("{}", err).contains("unknown field"));
     }
 
     #[test]

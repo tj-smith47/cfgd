@@ -145,6 +145,18 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                         _ => None,
                     };
 
+                    // Fail before any destructive step: the `Modify` engine
+                    // (structured merge / script rewrite of the target's
+                    // existing content) isn't wired in yet, and this action's
+                    // whole point is to preserve most of that content.
+                    if *strategy == FileStrategy::Modify {
+                        return Err(FileError::StrategyNotImplemented {
+                            path: target.clone(),
+                            strategy: "Modify".to_string(),
+                        }
+                        .into());
+                    }
+
                     // Ensure parent directory exists and is writable
                     ensure_target_writable(target)?;
 
@@ -170,6 +182,13 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                                 path: target.clone(),
                                 source: e,
                             })?;
+                        }
+                        FileStrategy::Modify => {
+                            return Err(FileError::StrategyNotImplemented {
+                                path: target.clone(),
+                                strategy: "Modify".to_string(),
+                            }
+                            .into());
                         }
                         FileStrategy::Copy | FileStrategy::Template => {
                             let mut content = if is_tera_template(source) {

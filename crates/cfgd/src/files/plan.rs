@@ -493,6 +493,7 @@ mod tests {
         strategy: Option<FileStrategy>,
     ) -> ManagedFileSpec {
         ManagedFileSpec {
+            modify: None,
             source: source.to_string(),
             target,
             strategy,
@@ -640,6 +641,7 @@ mod tests {
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "nonexistent.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -846,6 +848,7 @@ mod tests {
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/enc.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -880,6 +883,7 @@ mod tests {
 
         // Per-file permission on managed spec (not in profile.permissions map)
         let managed = ManagedFileSpec {
+            modify: None,
             source: "file.txt".to_string(),
             target: target.clone(),
             strategy: Some(FileStrategy::Copy),
@@ -920,6 +924,7 @@ mod tests {
         permissions.insert(target.display().to_string(), "600".to_string());
 
         let managed = ManagedFileSpec {
+            modify: None,
             source: "newfile.txt".to_string(),
             target: target.clone(),
             strategy: Some(FileStrategy::Copy),
@@ -957,6 +962,7 @@ mod tests {
         fs::write(&target, "data").unwrap();
 
         let managed = ManagedFileSpec {
+            modify: None,
             source: "file.txt".to_string(),
             target: target.clone(),
             strategy: Some(FileStrategy::Copy),

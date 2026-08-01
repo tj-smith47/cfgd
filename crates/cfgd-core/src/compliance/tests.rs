@@ -102,6 +102,7 @@ fn collect_file_checks_existing_file() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
                 source: "test.conf".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -131,6 +132,7 @@ fn collect_file_checks_missing_file() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
                 source: "test.conf".into(),
                 target: "/tmp/cfgd-nonexistent-file-12345".into(),
                 strategy: None,
@@ -166,6 +168,7 @@ fn collect_file_checks_permissions_match() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
                 source: "secret.key".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -201,6 +204,7 @@ fn collect_file_checks_permissions_mismatch() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
                 source: "secret.key".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -885,6 +889,7 @@ fn collect_file_checks_invalid_permission_string_warns() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
                 source: "malformed.conf".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -926,6 +931,7 @@ fn collect_file_checks_with_encryption_declared_adds_file_encryption_check() {
     let profile = MergedProfile {
         files: crate::config::FilesSpec {
             managed: vec![crate::config::ManagedFileSpec {
+                modify: None,
                 source: "secret.enc.yaml".into(),
                 target: file_path.clone(),
                 strategy: None,
@@ -1077,6 +1083,7 @@ fn collect_file_checks_content_drift_is_violation() {
 
     let mut profile = MergedProfile::default();
     profile.files.managed = vec![crate::config::ManagedFileSpec {
+        modify: None,
         source: source.to_string_lossy().into_owned(),
         target: target.clone(),
         strategy: None,
@@ -1118,6 +1125,7 @@ fn collect_file_checks_content_match_is_compliant() {
 
     let mut profile = MergedProfile::default();
     profile.files.managed = vec![crate::config::ManagedFileSpec {
+        modify: None,
         source: source.to_string_lossy().into_owned(),
         target: target.clone(),
         strategy: None,
@@ -1159,6 +1167,7 @@ fn collect_file_checks_content_plus_perms_is_two_checks() {
 
     let mut profile = MergedProfile::default();
     profile.files.managed = vec![crate::config::ManagedFileSpec {
+        modify: None,
         source: source.to_string_lossy().into_owned(),
         target: target.clone(),
         strategy: None,

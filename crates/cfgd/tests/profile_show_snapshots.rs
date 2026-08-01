@@ -83,6 +83,7 @@ fn happy_resolved() -> ResolvedProfile {
             files: FilesSpec {
                 managed: vec![
                     ManagedFileSpec {
+                        modify: None,
                         source: "bashrc".into(),
                         target: PathBuf::from("/home/user/.bashrc"),
                         strategy: None,
@@ -92,6 +93,7 @@ fn happy_resolved() -> ResolvedProfile {
                         permissions: None,
                     },
                     ManagedFileSpec {
+                        modify: None,
                         source: "gitconfig".into(),
                         target: PathBuf::from("/home/user/.gitconfig"),
                         strategy: None,

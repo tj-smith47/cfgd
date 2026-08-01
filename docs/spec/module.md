@@ -37,12 +37,16 @@ spec:
   files:
     - source: string
       target: string
-      strategy: Symlink | Copy | Template | Hardlink
+      strategy: Symlink | Copy | Template | Hardlink | Modify
       private: bool
       encryption:
         backend: string
         mode: InRepo | Always
       permissions: string
+      modify:
+        format: Ini | Json | Yaml | Toml
+        ensure: {}
+        script: string
 
   env:
     - name: string
@@ -233,12 +237,13 @@ same deployment strategies as profile files. Paths are resolved relative to the 
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Yes | | Path to the source file or directory, relative to the module directory. Also accepts a git URL with `@ref` suffix (e.g. `https://github.com/user/nvim-config.git@v2.1.0`) to clone a remote source. |
+| `source` | string | Only when `strategy` is not `Modify` | | Path to the source file or directory, relative to the module directory. Also accepts a git URL with `@ref` suffix (e.g. `https://github.com/user/nvim-config.git@v2.1.0`) to clone a remote source. Not required when `strategy: Modify`. |
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default from `cfgd.yaml`. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
 | `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`, default `InRepo`). Same semantics as profile managed-file encryption — see the encryption fields in `docs/spec/profile.md`. |
 | `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"755"`). Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
+| `modify` | object | Only when `strategy: Modify` | | Structured merge or script configuration, used only when `strategy: Modify`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
 **Example:**
 ```yaml
@@ -258,6 +263,11 @@ files:
     target: ~/.local/bin/git-helper
     strategy: Copy
     permissions: "755"
+
+  - target: /etc/hosts
+    strategy: Modify
+    modify:
+      script: scripts/ensure-hosts-entry.sh
 ```
 
 #### FileStrategy values
@@ -268,6 +278,7 @@ files:
 | `Copy` | Copy source content to `target`. The target is independent; changes to source are not reflected until the next reconcile. |
 | `Template` | Render the source as a Tera template and write the output to `target`. Automatically selected for `.tera` source files. |
 | `Hardlink` | Create a hard link from `target` to source. Changes to either file are immediately visible in both. |
+| `Modify` | Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `modify` block; `source` is not required. |
 
 ---
 

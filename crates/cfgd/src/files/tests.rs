@@ -88,6 +88,7 @@ fn plan_creates_file_when_target_missing() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -127,6 +128,7 @@ fn plan_skips_when_content_matches() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -165,6 +167,7 @@ fn plan_detects_update_when_content_differs() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -218,6 +221,7 @@ fn template_rendering_with_env() {
         env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/config.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -263,6 +267,7 @@ fn apply_creates_files() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -301,6 +306,7 @@ fn apply_is_idempotent() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -346,6 +352,7 @@ fn template_custom_functions() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/sys.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -384,6 +391,7 @@ fn template_system_fact_distro() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/distro.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -440,6 +448,7 @@ fn permissions_set_correctly() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -473,6 +482,7 @@ fn source_not_found_error() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "nonexistent/file.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -507,6 +517,7 @@ fn template_error_includes_path() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/bad.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -574,6 +585,7 @@ fn source_template_cannot_access_local_env() {
         local_env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/team.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -641,6 +653,7 @@ fn source_template_sandbox_violation_pins_variant() {
         local_env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/team.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -691,6 +704,7 @@ fn source_template_can_access_own_env() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/team.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -751,6 +765,7 @@ fn source_template_can_access_system_facts() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/info.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -800,6 +815,7 @@ fn symlink_strategy_creates_symlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Symlink),
@@ -847,6 +863,7 @@ fn symlink_strategy_is_idempotent() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Symlink),
@@ -892,6 +909,7 @@ fn hardlink_strategy_creates_hardlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Hardlink),
@@ -939,6 +957,7 @@ fn template_auto_upgrades_to_copy() {
         env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/config.txt.tera".to_string(),
                 target: target.clone(),
                 // Explicitly set Symlink — but template should force Copy
@@ -987,6 +1006,7 @@ fn global_strategy_applies_when_no_per_file_override() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: None, // No per-file override
@@ -1024,6 +1044,7 @@ fn private_file_skipped_when_source_missing() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/nonexistent.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1056,6 +1077,7 @@ fn non_private_file_errors_when_source_missing() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/nonexistent.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1115,6 +1137,7 @@ fn diff_no_changes_prints_success() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1152,6 +1175,7 @@ fn diff_detects_content_difference() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1194,6 +1218,7 @@ fn diff_new_file_shown() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/new.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1266,6 +1291,7 @@ fn check_permissions_drift_detected() {
     permissions.insert(target.display().to_string(), "600".to_string());
 
     let managed = ManagedFileSpec {
+        modify: None,
         source: "files/secret.txt".to_string(),
         target: target.clone(),
         strategy: Some(FileStrategy::Copy),
@@ -1308,6 +1334,7 @@ fn check_permissions_no_drift() {
     permissions.insert(target.display().to_string(), "600".to_string());
 
     let managed = ManagedFileSpec {
+        modify: None,
         source: "files/secret.txt".to_string(),
         target: target.clone(),
         strategy: Some(FileStrategy::Copy),
@@ -1406,6 +1433,7 @@ fn plan_multiple_files() {
         FilesSpec {
             managed: vec![
                 ManagedFileSpec {
+                    modify: None,
                     source: "files/a.txt".to_string(),
                     target: target_a,
                     strategy: Some(FileStrategy::Copy),
@@ -1415,6 +1443,7 @@ fn plan_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
+                    modify: None,
                     source: "files/b.txt".to_string(),
                     target: target_b,
                     strategy: Some(FileStrategy::Copy),
@@ -1453,6 +1482,7 @@ fn apply_update_overwrites_target() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1563,6 +1593,7 @@ fn plan_rejects_unencrypted_sops_file() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1608,6 +1639,7 @@ fn plan_accepts_sops_encrypted_file() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1667,6 +1699,7 @@ fn plan_rejects_always_mode_with_symlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -1716,6 +1749,7 @@ fn plan_rejects_always_mode_with_hardlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Hardlink),
@@ -1765,6 +1799,7 @@ fn plan_accepts_always_mode_with_copy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -2066,6 +2101,7 @@ fn source_template_env_function_blocked() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/exfil.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -2118,6 +2154,7 @@ fn plan_allows_inrepo_mode_with_symlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target: target.clone(),
                 // InRepo + Symlink should be allowed (only Always blocks symlinks)
@@ -2185,6 +2222,7 @@ fn global_symlink_strategy_overridden_for_template() {
         env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/app.conf.tera".to_string(),
                 target: target.clone(),
                 strategy: None, // No per-file override
@@ -2238,6 +2276,7 @@ fn plan_rejects_encryption_always_with_symlink_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -2282,6 +2321,7 @@ fn plan_rejects_encryption_always_with_hardlink_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Hardlink),
@@ -2327,6 +2367,7 @@ fn plan_allows_encryption_always_with_copy_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -2386,6 +2427,7 @@ fn plan_allows_encryption_inrepo_with_symlink_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -2440,6 +2482,7 @@ fn plan_rejects_unencrypted_file_when_encryption_required() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "files/plain.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),

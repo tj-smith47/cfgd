@@ -6,7 +6,7 @@ use serde::Serialize;
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
     EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec, SecretSpec,
-    validate_secret_specs,
+    validate_managed_file_specs, validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -70,6 +70,7 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
     let merged = merge_layers(&layers);
 
     validate_secret_specs(&merged.secrets)?;
+    validate_managed_file_specs(&merged.files.managed)?;
 
     Ok(ResolvedProfile { layers, merged })
 }

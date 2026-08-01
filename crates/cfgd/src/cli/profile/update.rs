@@ -231,6 +231,7 @@ pub fn cmd_profile_update(
                     add_to_gitignore(&config_dir, &source)?;
                 }
                 files.managed.push(config::ManagedFileSpec {
+                    modify: None,
                     source,
                     target: deploy_target,
                     strategy: None,

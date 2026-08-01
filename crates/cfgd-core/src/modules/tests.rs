@@ -566,6 +566,7 @@ fn resolve_local_files() {
         name: "nvim".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                modify: None,
                 source: "config/".into(),
                 target: "/home/user/.config/nvim/".into(),
                 strategy: None,
@@ -1530,6 +1531,7 @@ fn diff_module_specs_detects_changes() {
                 },
             ],
             files: vec![ModuleFileEntry {
+                modify: None,
                 source: "config/".into(),
                 target: "~/.config/test/".into(),
                 strategy: None,
@@ -1574,6 +1576,7 @@ fn diff_module_specs_detects_changes() {
                 },
             ],
             files: vec![ModuleFileEntry {
+                modify: None,
                 source: "config/".into(),
                 target: "~/.config/new/".into(),
                 strategy: None,
@@ -2168,6 +2171,7 @@ fn diff_module_specs_added_file() {
     let old = make_loaded_module("test", crate::config::ModuleSpec::default());
     let new_spec = crate::config::ModuleSpec {
         files: vec![crate::config::ModuleFileEntry {
+            modify: None,
             source: "zshrc".to_string(),
             target: "~/.zshrc".to_string(),
             strategy: None,
@@ -2610,6 +2614,7 @@ fn resolve_module_files_local_relative() {
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                modify: None,
                 source: "vimrc".into(),
                 target: "/tmp/test-target/.vimrc".into(),
                 strategy: None,
@@ -2645,6 +2650,7 @@ fn resolve_module_files_path_traversal_rejected() {
         name: "evil".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                modify: None,
                 source: "../../../etc/passwd".into(),
                 target: "/tmp/stolen".into(),
                 strategy: None,
@@ -2683,6 +2689,7 @@ fn resolve_module_files_multiple_files() {
         spec: ModuleSpec {
             files: vec![
                 ModuleFileEntry {
+                    modify: None,
                     source: "bashrc".into(),
                     target: "/tmp/test-resolve/.bashrc".into(),
                     strategy: Some(crate::config::FileStrategy::Copy),
@@ -2691,6 +2698,7 @@ fn resolve_module_files_multiple_files() {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    modify: None,
                     source: "zshrc".into(),
                     target: "/tmp/test-resolve/.zshrc".into(),
                     strategy: Some(crate::config::FileStrategy::Symlink),
@@ -2762,6 +2770,7 @@ fn resolve_module_files_symlink_escape_rejected() {
         name: "tricky".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                modify: None,
                 source: "escape.txt".into(),
                 target: "/tmp/test-tricky/out".into(),
                 strategy: None,
@@ -3682,6 +3691,7 @@ fn diff_module_specs_file_changes() {
         spec: ModuleSpec {
             files: vec![
                 ModuleFileEntry {
+                    modify: None,
                     source: "old.conf".into(),
                     target: "~/.config/app/old.conf".into(),
                     strategy: None,
@@ -3690,6 +3700,7 @@ fn diff_module_specs_file_changes() {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    modify: None,
                     source: "shared.conf".into(),
                     target: "~/.config/app/shared.conf".into(),
                     strategy: None,
@@ -3708,6 +3719,7 @@ fn diff_module_specs_file_changes() {
         spec: ModuleSpec {
             files: vec![
                 ModuleFileEntry {
+                    modify: None,
                     source: "new.conf".into(),
                     target: "~/.config/app/new.conf".into(),
                     strategy: None,
@@ -3716,6 +3728,7 @@ fn diff_module_specs_file_changes() {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    modify: None,
                     source: "shared.conf".into(),
                     target: "~/.config/app/shared.conf".into(),
                     strategy: None,

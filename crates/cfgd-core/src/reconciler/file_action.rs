@@ -1,5 +1,5 @@
 use crate::config::MergedProfile;
-use crate::errors::Result;
+use crate::errors::{FileError, Result};
 use crate::providers::FileAction;
 
 pub(super) fn apply_file_action_direct(
@@ -20,6 +20,16 @@ pub(super) fn apply_file_action_direct(
             strategy,
             ..
         } => {
+            // Fail before any destructive step: the `Modify` engine isn't
+            // wired in yet, and this action's whole point is to preserve
+            // most of the target's existing content.
+            if *strategy == crate::config::FileStrategy::Modify {
+                return Err(FileError::StrategyNotImplemented {
+                    path: target.clone(),
+                    strategy: "Modify".to_string(),
+                }
+                .into());
+            }
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -36,6 +46,13 @@ pub(super) fn apply_file_action_direct(
                 }
                 crate::config::FileStrategy::Copy | crate::config::FileStrategy::Template => {
                     std::fs::copy(source, target)?;
+                }
+                crate::config::FileStrategy::Modify => {
+                    return Err(FileError::StrategyNotImplemented {
+                        path: target.clone(),
+                        strategy: "Modify".to_string(),
+                    }
+                    .into());
                 }
             }
             Ok(())

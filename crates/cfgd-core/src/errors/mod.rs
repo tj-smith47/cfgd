@@ -152,6 +152,9 @@ pub enum FileError {
         "encryption mode 'Always' is incompatible with strategy '{strategy}' for '{path}' — use Copy or Template instead"
     )]
     EncryptionStrategyIncompatible { path: PathBuf, strategy: String },
+
+    #[error("strategy '{strategy}' is not yet implemented for {path}")]
+    StrategyNotImplemented { path: PathBuf, strategy: String },
 }
 
 #[derive(Debug, thiserror::Error)]

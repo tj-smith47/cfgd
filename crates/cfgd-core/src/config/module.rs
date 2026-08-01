@@ -4,7 +4,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::parse::check_yaml_anchor_limit;
-use super::profile_spec::{EncryptionSpec, FileStrategy, ScriptSpec};
+use super::profile_spec::{
+    EncryptionSpec, FileStrategy, ModifySpec, ScriptSpec, validate_file_modify_shape,
+};
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
 
@@ -111,6 +113,9 @@ pub struct ModulePackageEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleFileEntry {
+    /// Not required when `strategy` is `Modify`; required otherwise
+    /// (enforced by `validate_module_file_entries`, not the JSON schema).
+    #[serde(default)]
     pub source: String,
     pub target: String,
     /// Per-file deployment strategy override. If None, uses the global default.
@@ -126,6 +131,25 @@ pub struct ModuleFileEntry {
     /// Unix permission bits (e.g. "600", "644") to apply after deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
+    /// Structured merge or script configuration for `strategy: Modify`.
+    /// Required when `strategy` is `Modify`, rejected otherwise (enforced by
+    /// `validate_module_file_entries`, not the JSON schema).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modify: Option<ModifySpec>,
+}
+
+/// Validate the `modify` strategy shape of every module file entry
+/// (`spec.files`). See [`validate_file_modify_shape`].
+pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
+    for entry in entries {
+        validate_file_modify_shape(
+            &format!("module file '{}'", entry.target),
+            entry.source.is_empty(),
+            entry.strategy,
+            entry.modify.as_ref(),
+        )?;
+    }
+    Ok(())
 }
 
 /// Interpreter for inline lifecycle scripts.
@@ -286,6 +310,7 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
         .into());
     }
     super::parse::validate_api_version(&doc.api_version)?;
+    validate_module_file_entries(&doc.spec.files)?;
 
     Ok(doc)
 }
@@ -318,6 +343,131 @@ spec: {}
             msg.contains("unknown field") && msg.contains("bogusField"),
             "expected unknown-field error mentioning bogusField, got: {msg}"
         );
+    }
+
+    #[test]
+    fn module_file_entry_modify_ensure_parses_for_each_format() {
+        for fmt in ["ini", "json", "yaml", "toml"] {
+            let yaml = format!(
+                "target: /tmp/settings.{fmt}\nstrategy: modify\nmodify:\n  format: {fmt}\n  ensure:\n    General:\n      theme: dark\n"
+            );
+            let entry: ModuleFileEntry = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("format {fmt} should parse: {e}"));
+            assert_eq!(entry.strategy, Some(FileStrategy::Modify));
+            let modify = entry
+                .modify
+                .as_ref()
+                .expect("modify block should be present");
+            assert!(modify.ensure.is_some());
+            assert!(modify.script.is_none());
+            validate_module_file_entries(std::slice::from_ref(&entry))
+                .unwrap_or_else(|e| panic!("format {fmt} should validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn module_file_entry_modify_script_parses() {
+        let yaml =
+            "target: ~/.zshrc\nstrategy: modify\nmodify:\n  script: scripts/patch-zshrc.sh\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.strategy, Some(FileStrategy::Modify));
+        let modify = entry
+            .modify
+            .as_ref()
+            .expect("modify block should be present");
+        assert!(modify.script.is_some());
+        assert!(modify.ensure.is_none());
+        assert_eq!(entry.source, "");
+        validate_module_file_entries(&[entry]).expect("script-mode modify should validate");
+    }
+
+    #[test]
+    fn module_file_entry_modify_rejects_ensure_and_script_together() {
+        let yaml =
+            "target: /tmp/a.ini\nstrategy: modify\nmodify:\n  ensure:\n    a: b\n  script: x.sh\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exactly one of 'ensure' or 'script'")
+        );
+    }
+
+    #[test]
+    fn module_file_entry_modify_rejects_neither_ensure_nor_script() {
+        let yaml = "target: /tmp/a.ini\nstrategy: modify\nmodify: {}\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exactly one of 'ensure' or 'script'")
+        );
+    }
+
+    #[test]
+    fn module_file_entry_modify_block_without_modify_strategy_rejected() {
+        let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\nmodify:\n  ensure:\n    a: b\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only valid when strategy is 'modify'")
+        );
+    }
+
+    #[test]
+    fn module_file_entry_modify_strategy_without_modify_block_rejected() {
+        let yaml = "target: /tmp/a.ini\nstrategy: modify\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(err.to_string().contains("requires a 'modify' block"));
+    }
+
+    #[test]
+    fn module_file_entry_non_modify_strategy_requires_nonempty_source() {
+        let yaml = "target: /tmp/a.ini\nstrategy: copy\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.source, "");
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'source' is required unless strategy is 'modify'")
+        );
+    }
+
+    #[test]
+    fn module_document_with_invalid_modify_file_entry_rejected_by_parse_module() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: m
+spec:
+  files:
+    - target: /tmp/a.ini
+      strategy: modify
+"#;
+        let err = parse_module(yaml).unwrap_err();
+        assert!(err.to_string().contains("requires a 'modify' block"));
+    }
+
+    #[test]
+    fn module_document_with_valid_modify_file_entry_parses() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: m
+spec:
+  files:
+    - target: /tmp/a.ini
+      strategy: modify
+      modify:
+        format: ini
+        ensure:
+          General:
+            theme: dark
+"#;
+        let doc = parse_module(yaml).expect("valid modify file entry should parse");
+        assert_eq!(doc.spec.files.len(), 1);
     }
 
     #[test]

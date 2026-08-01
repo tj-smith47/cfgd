@@ -17819,6 +17819,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
     let items = cfgd_core::config::PolicyItems {
         files: vec![
             ManagedFileSpec {
+                modify: None,
                 source: "src/foo".to_string(),
                 target: std::path::PathBuf::from("/etc/foo"),
                 strategy: None,
@@ -17828,6 +17829,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
                 permissions: None,
             },
             ManagedFileSpec {
+                modify: None,
                 source: "src/bar".to_string(),
                 target: std::path::PathBuf::from("/etc/bar"),
                 strategy: None,
@@ -17867,6 +17869,7 @@ fn count_policy_items_sums_packages_files_env_and_system() {
             ..Default::default()
         }),
         files: vec![cfgd_core::config::ManagedFileSpec {
+            modify: None,
             source: "src/foo".to_string(),
             target: std::path::PathBuf::from("/etc/foo"),
             strategy: None,

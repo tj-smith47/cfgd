@@ -369,6 +369,7 @@ fn extract_source_resources_from_merged_profile() {
         },
         files: FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "dotfiles/.zshrc".into(),
                 target: PathBuf::from("/home/user/.zshrc"),
                 strategy: None,
@@ -2018,6 +2019,7 @@ fn extract_source_resources_full_profile() {
         },
         files: FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "dotfiles/.zshrc".into(),
                 target: PathBuf::from("/home/user/.zshrc"),
                 strategy: None,
@@ -2407,6 +2409,7 @@ fn extract_source_resources_multiple_files() {
         files: FilesSpec {
             managed: vec![
                 ManagedFileSpec {
+                    modify: None,
                     source: "dotfiles/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -2416,6 +2419,7 @@ fn extract_source_resources_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
+                    modify: None,
                     source: "dotfiles/.vimrc".into(),
                     target: PathBuf::from("/home/user/.vimrc"),
                     strategy: None,
@@ -2425,6 +2429,7 @@ fn extract_source_resources_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
+                    modify: None,
                     source: "dotfiles/.gitconfig".into(),
                     target: PathBuf::from("/home/user/.gitconfig"),
                     strategy: None,

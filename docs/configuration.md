@@ -256,12 +256,13 @@ untouched. Run `cfgd profile migrate <name>` (or `--all`) to move a flat profile
 into the canonical bundle form. Having both `profiles/work/profile.yaml` and
 `profiles/work.yaml` on disk is a hard error (ambiguous); migrate or delete one.
 
-Profile files support four deployment strategies:
+Profile files support five deployment strategies:
 
 - **Symlink** (default) — creates a symbolic link from target to source. Changes to the source are immediately reflected.
 - **Copy** — copies the source file to the target path. The target is independent of the source after apply.
 - **Template** — renders the file through [Tera](templates.md) before copying. Auto-detected for `.tera` extension.
 - **Hardlink** — creates a hard link. Both paths share the same inode.
+- **Modify** — merges structured keys/values into an existing target, or pipes it through a script, leaving everything else untouched. Requires a `modify:` block; `source` is not required.
 
 ```yaml
 files:
@@ -274,6 +275,17 @@ files:
       strategy: Copy
     - source: shell/.zshrc.tera   # .tera triggers template rendering
       target: ~/.zshrc
+    - target: ~/.gitconfig
+      strategy: Modify
+      modify:
+        format: Ini             # Ini | Json | Yaml | Toml; inferred from the target's extension when omitted
+        ensure:                 # deep-merged into the target; mutually exclusive with `script`
+          user:
+            name: "Example User"
+    - target: /etc/hosts
+      strategy: Modify
+      modify:
+        script: scripts/ensure-hosts-entry.sh   # receives current content on stdin, writes new content to stdout
 ```
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).

@@ -206,6 +206,7 @@ fn merge_files_overlay() {
         spec: ProfileSpec {
             files: Some(FilesSpec {
                 managed: vec![ManagedFileSpec {
+                    modify: None,
                     source: "base/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -227,6 +228,7 @@ fn merge_files_overlay() {
         spec: ProfileSpec {
             files: Some(FilesSpec {
                 managed: vec![ManagedFileSpec {
+                    modify: None,
                     source: "work/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -1515,6 +1517,115 @@ fn secret_spec_validation_passes_with_envs() {
     let envs = specs[0].envs.as_ref().expect("envs should be Some");
     assert_eq!(envs.len(), 1);
     assert_eq!(envs[0], "SECRET_KEY");
+}
+
+#[test]
+fn managed_file_spec_modify_ensure_parses_for_each_format() {
+    for fmt in ["ini", "json", "yaml", "toml"] {
+        let yaml = format!(
+            "target: /tmp/settings.{fmt}\nstrategy: modify\nmodify:\n  format: {fmt}\n  ensure:\n    General:\n      theme: dark\n"
+        );
+        let spec: ManagedFileSpec = serde_yaml::from_str(&yaml)
+            .unwrap_or_else(|e| panic!("format {fmt} should parse: {e}"));
+        assert_eq!(spec.strategy, Some(FileStrategy::Modify));
+        let modify = spec
+            .modify
+            .as_ref()
+            .expect("modify block should be present");
+        assert!(modify.ensure.is_some());
+        assert!(modify.script.is_none());
+        validate_managed_file_specs(std::slice::from_ref(&spec))
+            .unwrap_or_else(|e| panic!("format {fmt} should validate: {e}"));
+    }
+}
+
+#[test]
+fn managed_file_spec_modify_script_parses() {
+    let yaml = "target: ~/.zshrc\nstrategy: modify\nmodify:\n  script: scripts/patch-zshrc.sh\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(spec.strategy, Some(FileStrategy::Modify));
+    let modify = spec
+        .modify
+        .as_ref()
+        .expect("modify block should be present");
+    assert!(modify.script.is_some());
+    assert!(modify.ensure.is_none());
+    assert_eq!(spec.source, "");
+    validate_managed_file_specs(&[spec]).expect("script-mode modify should validate");
+}
+
+#[test]
+fn managed_file_spec_modify_rejects_ensure_and_script_together() {
+    let yaml =
+        "target: /tmp/a.ini\nstrategy: modify\nmodify:\n  ensure:\n    a: b\n  script: x.sh\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("exactly one of 'ensure' or 'script'")
+    );
+}
+
+#[test]
+fn managed_file_spec_modify_rejects_neither_ensure_nor_script() {
+    let yaml = "target: /tmp/a.ini\nstrategy: modify\nmodify: {}\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("exactly one of 'ensure' or 'script'")
+    );
+}
+
+#[test]
+fn managed_file_spec_modify_block_without_modify_strategy_rejected() {
+    let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\nmodify:\n  ensure:\n    a: b\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("only valid when strategy is 'modify'")
+    );
+}
+
+#[test]
+fn managed_file_spec_modify_strategy_without_modify_block_rejected() {
+    let yaml = "target: /tmp/a.ini\nstrategy: modify\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(err.to_string().contains("requires a 'modify' block"));
+}
+
+#[test]
+fn managed_file_spec_non_modify_strategy_requires_nonempty_source() {
+    let yaml = "target: /tmp/a.ini\nstrategy: copy\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(spec.source, "");
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'source' is required unless strategy is 'modify'")
+    );
+}
+
+#[test]
+fn managed_file_spec_default_strategy_also_requires_source() {
+    // strategy omitted entirely (defaults to Symlink at plan time) still needs a source.
+    let yaml = "target: /tmp/a.ini\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert!(spec.strategy.is_none());
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'source' is required unless strategy is 'modify'")
+    );
+}
+
+#[test]
+fn managed_file_spec_ordinary_copy_with_source_validates() {
+    let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    validate_managed_file_specs(&[spec]).expect("ordinary copy spec with a source should validate");
 }
 
 #[test]

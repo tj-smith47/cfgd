@@ -434,6 +434,7 @@ mod tests {
 
     fn managed(source: &str, target: &str) -> ManagedFileSpec {
         ManagedFileSpec {
+            modify: None,
             source: source.to_string(),
             target: PathBuf::from(target),
             strategy: Some(FileStrategy::Copy),

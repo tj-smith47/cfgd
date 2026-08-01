@@ -190,6 +190,7 @@ mod tests {
     fn resolved_with_file(target: std::path::PathBuf) -> ResolvedProfile {
         let files = FilesSpec {
             managed: vec![ManagedFileSpec {
+                modify: None,
                 source: "managed.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),

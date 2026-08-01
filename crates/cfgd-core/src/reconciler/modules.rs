@@ -190,6 +190,17 @@ impl<'a> super::Reconciler<'a> {
                         None => None,
                     };
 
+                    // Fail before any destructive step: the `Modify` engine
+                    // isn't wired in yet, and this action's whole point is to
+                    // preserve most of the target's existing content.
+                    if strategy == crate::config::FileStrategy::Modify {
+                        return Err(crate::errors::FileError::StrategyNotImplemented {
+                            path: target.clone(),
+                            strategy: "Modify".to_string(),
+                        }
+                        .into());
+                    }
+
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
                         && let Err(e) = self.state.store_file_backup(
@@ -231,6 +242,13 @@ impl<'a> super::Reconciler<'a> {
                             | crate::config::FileStrategy::Template => {
                                 let content = std::fs::read(&file.source)?;
                                 crate::atomic_write(&target, &content)?;
+                            }
+                            crate::config::FileStrategy::Modify => {
+                                return Err(crate::errors::FileError::StrategyNotImplemented {
+                                    path: target.clone(),
+                                    strategy: "Modify".to_string(),
+                                }
+                                .into());
                             }
                         }
                     }
