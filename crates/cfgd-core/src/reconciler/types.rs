@@ -204,6 +204,10 @@ pub enum ScriptPhase {
     OnChange,
     /// A `modify.script` filter rewriting a managed file's content.
     Modify,
+    /// A `spec.backups[].preBackup` hook, run before the snapshot is taken.
+    PreBackup,
+    /// A `spec.backups[].postBackup` hook, run after the copy step.
+    PostBackup,
 }
 
 impl ScriptPhase {
@@ -216,6 +220,8 @@ impl ScriptPhase {
             ScriptPhase::OnDrift => "onDrift",
             ScriptPhase::OnChange => "onChange",
             ScriptPhase::Modify => "modify",
+            ScriptPhase::PreBackup => "preBackup",
+            ScriptPhase::PostBackup => "postBackup",
         }
     }
 }

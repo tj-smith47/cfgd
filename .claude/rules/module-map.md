@@ -6,6 +6,7 @@ paths: ["**/*.rs"]
 ```
 crates/
 ├── cfgd-core/src/          # Core library crate
+│   ├── backup/             # Declarative backup engine (spec.backups[]): hooks, atomic copy, retention
 │   ├── config/             # YAML config loading, profile resolution, layer merging
 │   ├── output/             # CENTRALIZED theming, styled output, progress, syntax highlighting
 │   ├── errors/             # Error types (thiserror), result aliases

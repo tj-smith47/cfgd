@@ -924,9 +924,9 @@ pub struct ScriptSpec {
 /// A declarative backup: snapshot `source` (a file or directory) into
 /// `destination`, retaining the newest `retention` snapshots.
 ///
-/// The shape is validated at parse time; the backup engine, CLI surface
-/// (`cfgd backup ...`), and daemon scheduling that actually take snapshots
-/// are not yet implemented.
+/// The shape is validated at parse time and executed by
+/// [`crate::backup::run_backup`]; the CLI surface (`cfgd backup ...`) and the
+/// daemon scheduling that drive that engine are not yet implemented.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackupSpec {

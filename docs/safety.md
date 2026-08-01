@@ -24,6 +24,11 @@ Before overwriting any file during `cfgd apply`, the original content is capture
 
 Backups are retained for the last 10 applies and automatically pruned after each successful apply.
 
+These backups are automatic, cover only files cfgd itself is about to write, and exist to power
+`cfgd rollback`. To snapshot arbitrary files or directories on a schedule — an application
+database, a photo library — declare them in `spec.backups[]`; see
+[Declarative Backups](backups.md).
+
 ## Transaction Journal
 
 Each `cfgd apply` creates a transaction journal (`apply_journal` table) that records:

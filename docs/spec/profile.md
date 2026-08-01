@@ -743,20 +743,20 @@ Paths are relative to the config root directory. If the path resolves to an exis
 
 ### spec.backups[]
 
-Declarative snapshot backups of a file or directory. The shape is validated at parse time; the
-backup engine, CLI surface (`cfgd backup ...`), and daemon scheduling that actually take snapshots
-are not yet implemented.
+Declarative snapshot backups of a file or directory. See [Declarative Backups](../backups.md) for
+run semantics (hook ordering, atomicity, retention counting) and restore guidance. The CLI surface
+(`cfgd backup ...`) and daemon scheduling that drive the engine are not yet implemented.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. Must be unique across the list, non-empty/non-blank, and free of path separators (`/`, `\`) or traversal segments (`.`, `..`) — it becomes the directory component `<state_dir>/backups/<name>/`. Validated at parse time. |
 | `source` | string (path) | Yes | | File or directory to snapshot. |
-| `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written. The default is resolved by the backup engine at run time, not at parse time. |
+| `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. |
 | `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`). Omitted means "run on every apply". |
-| `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
-| `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. |
-| `postBackup` | list | No | `[]` | Scripts run after the snapshot completes. Same shape as [spec.scripts](#specscripts) entries. |
+| `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
+| `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure aborts the backup — no copy, no `postBackup`. |
+| `postBackup` | list | No | `[]` | Scripts run after the copy step, whether or not it succeeded. Same shape as [spec.scripts](#specscripts) entries. |
 
 **Example:**
 ```yaml
@@ -775,6 +775,10 @@ backups:
 
 CRD parity for `spec.backups[]` is not yet implemented — this field is available in the YAML/TOML
 profile config path only.
+
+Every run is recorded in the state database's `backup_runs` table (source, destination, size,
+status, error, start/finish timestamps), and retention pruning walks those records rather than
+globbing the destination.
 
 ---
 

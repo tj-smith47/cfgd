@@ -24,7 +24,7 @@
     },
     "BackupSpec": {
       "additionalProperties": false,
-      "description": "A declarative backup: snapshot `source` (a file or directory) into `destination`, retaining the newest `retention` snapshots. The shape is validated at parse time; the backup engine, CLI surface (`cfgd backup ...`), and daemon scheduling that actually take snapshots are not yet implemented.",
+      "description": "A declarative backup: snapshot `source` (a file or directory) into `destination`, retaining the newest `retention` snapshots. The shape is validated at parse time and executed by [`crate::backup::run_backup`]; the CLI surface (`cfgd backup ...`) and the daemon scheduling that drive that engine are not yet implemented.",
       "properties": {
         "destination": {
           "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.",

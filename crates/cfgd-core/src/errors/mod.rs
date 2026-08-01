@@ -63,6 +63,9 @@ pub enum CfgdError {
     #[error("skill error: {0}")]
     Skill(#[from] SkillError),
 
+    #[error("backup error: {0}")]
+    Backup(#[from] BackupError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -239,6 +242,50 @@ pub enum SecretError {
 
     #[error("age key not found at {path}")]
     AgeKeyNotFound { path: PathBuf },
+}
+
+/// Failures of a declarative backup (`spec.backups[]`).
+///
+/// Most of these are recorded as the `error` of a failed run rather than
+/// returned to the caller — see [`crate::backup::run_backup`]. They are typed
+/// anyway so every surface (recorded row, terminal line, future `-o json`)
+/// renders the same wording for the same failure.
+#[derive(Debug, thiserror::Error)]
+pub enum BackupError {
+    #[error("backup '{name}': source does not exist: {}", .path.posix())]
+    SourceMissing { name: String, path: PathBuf },
+
+    #[error("backup '{name}': cannot read source {}: {source}", .path.posix())]
+    SourceUnreadable {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("backup '{name}': cannot write snapshot to {}: {source}", .path.posix())]
+    CopyFailed {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "backup '{name}': namePattern rendered the unusable snapshot name '{rendered}' ({message})"
+    )]
+    InvalidSnapshotName {
+        name: String,
+        rendered: String,
+        message: String,
+    },
+
+    #[error("backup '{name}': {phase} hook failed: {message}")]
+    HookFailed {
+        name: String,
+        phase: &'static str,
+        message: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

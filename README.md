@@ -209,6 +209,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [Operator](docs/operator.md) | CRD-based machine management, device gateway, DaemonSet node agent |
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
+| [Declarative Backups](docs/backups.md) | `spec.backups[]` snapshots, hook ordering, retention, restoring |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
 | [Installation](docs/installation.md) | All install channels (Homebrew, install script, winget, scoop, chocolatey, cargo, direct download) |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |

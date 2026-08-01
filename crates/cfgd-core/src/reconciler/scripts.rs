@@ -911,16 +911,23 @@ pub(super) fn default_continue_on_error(phase: &ScriptPhase) -> bool {
     match phase {
         // A failed `modify` filter leaves the target unwritten; continuing past
         // it would apply a half-configured machine.
-        ScriptPhase::PreApply | ScriptPhase::PreReconcile | ScriptPhase::Modify => false,
+        // A failed `preBackup` leaves the source in whatever state the hook was
+        // meant to prepare (typically a still-running service), so the snapshot
+        // would be inconsistent — the backup unit aborts instead.
+        ScriptPhase::PreApply
+        | ScriptPhase::PreReconcile
+        | ScriptPhase::Modify
+        | ScriptPhase::PreBackup => false,
         ScriptPhase::PostApply
         | ScriptPhase::PostReconcile
         | ScriptPhase::OnChange
-        | ScriptPhase::OnDrift => true,
+        | ScriptPhase::OnDrift
+        | ScriptPhase::PostBackup => true,
     }
 }
 
 /// Resolve the effective `continue_on_error` for a script entry in a given phase.
-pub(super) fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
+pub(crate) fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
     match entry {
         ScriptEntry::Full {
             continue_on_error: Some(v),

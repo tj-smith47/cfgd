@@ -6,6 +6,7 @@ use crate::Scope;
 use crate::errors::{Result, StateError};
 
 mod applies;
+mod backup_runs;
 mod backups;
 mod compliance;
 mod decisions;
@@ -22,9 +23,10 @@ pub use pending_config::{
     save_pending_server_config,
 };
 pub use types::{
-    ApplyRecord, ApplyStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent,
-    FileBackupRecord, JournalEntry, ManagedResource, ModuleFileRecord, ModuleStateRecord,
-    PendingDecision, SourceConfigHash, SourceConflictRecord,
+    ApplyRecord, ApplyStatus, BackupRunDraft, BackupRunRecord, BackupRunStatus,
+    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, FileBackupRecord, JournalEntry,
+    ManagedResource, ModuleFileRecord, ModuleStateRecord, PendingDecision, SourceConfigHash,
+    SourceConflictRecord,
 };
 
 /// Canonical state DB filename. The single source of truth so the default and
@@ -232,6 +234,25 @@ const MIGRATIONS: &[&str] = &[
     // content. DEFAULT 1 keeps every legacy row at today's content-restore
     // behavior.
     "ALTER TABLE file_backups ADD COLUMN existed INTEGER NOT NULL DEFAULT 1;",
+    // Migration 9: declarative backup runs (`spec.backups[]`). Distinct from
+    // `file_backups`: that table stores pre-overwrite content inline for
+    // rollback, while a backup run is an out-of-band snapshot whose payload
+    // lives on the filesystem. `destination_path`/`size_bytes` are NULL when a
+    // run produced no artifact (a pre-hook or copy failure), which is also the
+    // predicate retention pruning uses to find deletable snapshots.
+    "CREATE TABLE IF NOT EXISTS backup_runs (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        name              TEXT NOT NULL,
+        source            TEXT NOT NULL,
+        destination_path  TEXT,
+        size_bytes        INTEGER,
+        status            TEXT NOT NULL,
+        error             TEXT,
+        started_at        TEXT NOT NULL,
+        finished_at       TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_backup_runs_name ON backup_runs (name);",
 ];
 
 /// SQLite-backed state store for cfgd.

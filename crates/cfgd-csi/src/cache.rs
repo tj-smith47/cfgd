@@ -133,7 +133,9 @@ impl Cache {
             if freed >= overflow {
                 break;
             }
-            let size = dir_size(path);
+            // An unreadable entry reads as zero freed bytes: cache accounting is
+            // advisory, and a transient read failure must not abort the sweep.
+            let size = cfgd_core::dir_size(path).unwrap_or(0);
             if let Err(e) = std::fs::remove_dir_all(path) {
                 tracing::warn!(path = %path.posix(), error = %e, "failed to evict cache entry");
                 continue;
@@ -255,22 +257,6 @@ fn dir_size_excluding_markers(path: &Path) -> u64 {
                 if let Ok(meta) = p.metadata() {
                     total = total.saturating_add(meta.len());
                 }
-            }
-        }
-    }
-    total
-}
-
-/// Recursively compute total dir size (all files).
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                total = total.saturating_add(dir_size(&p));
-            } else if let Ok(meta) = p.metadata() {
-                total = total.saturating_add(meta.len());
             }
         }
     }

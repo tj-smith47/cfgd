@@ -46,6 +46,9 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `unix_secs_to_iso8601(secs)` — Unix epoch to ISO 8601
 - `iso8601_to_filename_safe(ts)` — strip `:`, `-`, `T`, `Z` from an ISO 8601 timestamp so it can be used as a path segment; use instead of inline `.replace([':', '-', 'T', 'Z'], "")`
 - `utc_now_filename_safe()` — convenience: current UTC time as a filename-safe string (composes the two above)
+- `BACKUP_TIMESTAMP_FORMAT` — the `strftime` shape of a `spec.backups[]` snapshot stamp (`%Y%m%dT%H%M%SZ`)
+- `unix_secs_to_backup_stamp(secs)` — render a Unix timestamp in `BACKUP_TIMESTAMP_FORMAT` (`20260512T143025Z`)
+- `utc_now_backup_stamp()` — convenience: current UTC time in `BACKUP_TIMESTAMP_FORMAT`; the `{timestamp}` `namePattern` variable
 - `parse_duration_str(s)` — parse "30s", "5m", "1h", or plain seconds into `Duration`
 
 ## YAML / merges

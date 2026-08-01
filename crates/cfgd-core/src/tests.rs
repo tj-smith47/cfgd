@@ -672,6 +672,41 @@ fn copy_dir_recursive_copies_tree() {
 }
 
 #[test]
+fn dir_size_sums_the_whole_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub/deeper")).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    std::fs::write(dir.path().join("sub/b.txt"), "bb").unwrap();
+    std::fs::write(dir.path().join("sub/deeper/c.txt"), "c").unwrap();
+    assert_eq!(dir_size(dir.path()).unwrap(), 6);
+}
+
+#[test]
+fn dir_size_of_a_file_is_its_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "12345").unwrap();
+    assert_eq!(dir_size(&file).unwrap(), 5);
+}
+
+#[test]
+fn dir_size_errors_on_a_missing_path() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(dir_size(&dir.path().join("nope")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn dir_size_skips_symlinks_instead_of_following_them() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    // A link back to the tree root would recurse forever if followed.
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("a.txt"), dir.path().join("link")).unwrap();
+    assert_eq!(dir_size(dir.path()).unwrap(), 3);
+}
+
+#[test]
 fn expand_tilde_with_home() {
     let result = expand_tilde(std::path::Path::new("~/test"));
     let home = home_dir_var().expect("home directory must be available in test");

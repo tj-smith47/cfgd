@@ -830,6 +830,28 @@ pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), 
     Ok(())
 }
 
+/// Total bytes of every regular file under `path`, or `path`'s own length when
+/// it is a file.
+///
+/// Symlinks are skipped rather than followed, matching [`copy_dir_recursive`]:
+/// a link back into an ancestor would otherwise recurse forever, and a link out
+/// of the tree would bill bytes the tree does not own.
+pub fn dir_size(path: &std::path::Path) -> std::result::Result<u64, std::io::Error> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_dir() {
+        return Ok(meta.len());
+    }
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
+        total = total.saturating_add(dir_size(&entry.path())?);
+    }
+    Ok(total)
+}
+
 /// Recursively copy a directory from source to target.
 /// Skips symlinks to prevent symlink-following attacks and infinite loops.
 pub fn copy_dir_recursive(
