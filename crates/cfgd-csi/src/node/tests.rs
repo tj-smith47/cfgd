@@ -1168,3 +1168,70 @@ fn walk_volume_stats_deeply_nested_dirs_counts_all_entries() {
     // Each file has bytes "content-N" = 9 bytes; 5 files = 45 bytes.
     assert_eq!(bytes, 45);
 }
+
+/// The three gRPC path guards must name the offending value and carry the
+/// validator's own reason, so a rejected mount is diagnosable from the kubelet
+/// event alone. Both rejected shapes are covered: `..` and a path that resolves
+/// to whatever it would be joined onto.
+#[tokio::test]
+async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+    let context: std::collections::HashMap<String, String> = [
+        ("module".to_string(), "nettools".to_string()),
+        ("version".to_string(), "1.0".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    for (bad, reason) in [
+        ("/var/lib/kubelet/../../etc", "contains '..'"),
+        (".", "names no file or directory"),
+    ] {
+        let err = node
+            .node_stage_volume(Request::new(NodeStageVolumeRequest {
+                volume_id: "vol-1".to_string(),
+                staging_target_path: bad.to_string(),
+                volume_context: context.clone(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let msg = err.message().to_string();
+        assert!(
+            msg.contains("staging_target_path") && msg.contains(bad) && msg.contains(reason),
+            "stage: {msg}"
+        );
+
+        let err = node
+            .node_publish_volume(Request::new(NodePublishVolumeRequest {
+                volume_id: "vol-1".to_string(),
+                target_path: bad.to_string(),
+                volume_context: context.clone(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let msg = err.message().to_string();
+        assert!(
+            msg.contains("target_path") && msg.contains(bad) && msg.contains(reason),
+            "publish: {msg}"
+        );
+
+        let err = node
+            .node_unpublish_volume(Request::new(NodeUnpublishVolumeRequest {
+                volume_id: "vol-1".to_string(),
+                target_path: bad.to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let msg = err.message().to_string();
+        assert!(
+            msg.contains("target_path") && msg.contains(bad) && msg.contains(reason),
+            "unpublish: {msg}"
+        );
+    }
+}

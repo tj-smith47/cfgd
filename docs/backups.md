@@ -122,8 +122,10 @@ namePattern: "daily/{filename}"          # nests snapshots in a subdirectory
 ```
 
 An unknown `{var}` is rejected when the config is parsed. At run time the rendered value must be a
-relative path whose every segment names something: an empty string, an absolute path, an empty
-segment (`a//b`, `daily/`), and `.` or `..` segments are all rejected. A snapshot therefore always
+relative path whose every segment names something: an empty string, a rooted path (`/daily`,
+`C:/daily`, `C:daily`, `\\server\share`), an empty segment (`a//b`, `daily/`), a `:` anywhere (a
+drive or NTFS data-stream separator), and `.` or `..` segments are all rejected. Windows shapes are
+rejected on Linux and macOS too, so a pattern is valid on every host or on none. A snapshot always
 lands inside `destination`, and a pattern can never resolve to a directory that already exists and
 holds other snapshots.
 

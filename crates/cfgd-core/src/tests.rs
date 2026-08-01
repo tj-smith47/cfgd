@@ -440,6 +440,30 @@ fn validate_plain_name_rejects_every_directory_reference() {
 }
 
 #[test]
+fn validate_plain_name_rejects_a_rooted_value_on_every_host() {
+    // `Path::join` discards the base for a rooted right-hand side, so any of
+    // these would silently relocate whatever the caller was building. Windows
+    // shapes are rejected on unix too: the name may have been written into
+    // shared state by a Windows host.
+    for candidate in [
+        "/abs",
+        r"\abs",
+        "C:/evil",
+        r"C:\evil",
+        "C:evil",
+        r"\\server\share",
+    ] {
+        assert!(
+            validate_plain_name(candidate).is_err(),
+            "'{candidate}' is rooted and must not be accepted as a name"
+        );
+    }
+    // A colon anywhere is an NTFS alternate-data-stream selector, not a name.
+    assert!(validate_plain_name("notes.txt:hidden").is_err());
+    assert!(validate_plain_name("daily/C:evil").is_err());
+}
+
+#[test]
 fn resolve_relative_path_rejects_an_input_that_collapses_onto_the_base() {
     let base = std::path::Path::new("/srv/config");
     // Validated before the join: `base.join(".")` carries the base's own

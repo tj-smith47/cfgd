@@ -852,7 +852,7 @@ pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), 
 /// for strings that *name something being created* (a snapshot, a cache
 /// directory for a source), where `.` is not path-writing convenience but a lie
 /// about what is named. `daily/2026` is accepted; `.`, `daily/.`, `./daily`,
-/// `/daily`, `daily/` and `daily//x` are not.
+/// `/daily`, `daily/`, `daily//x`, `C:/daily` and `C:daily` are not.
 ///
 /// Judged on the raw string rather than [`std::path::Path::components`], which
 /// normalizes `.` away: `"daily/."` iterates as the single plain component
@@ -863,6 +863,19 @@ pub fn validate_plain_name(raw: &str) -> std::result::Result<(), String> {
     if raw.is_empty() {
         return Err("it is empty".to_string());
     }
+    let rooted = |kind: &str| {
+        Err(format!(
+            "it starts from {kind}; a name is resolved inside the directory it belongs to, \
+             and `Path::join` throws the parent away when the value is rooted"
+        ))
+    };
+    for component in std::path::Path::new(raw).components() {
+        match component {
+            std::path::Component::Prefix(_) => return rooted("a drive or share"),
+            std::path::Component::RootDir => return rooted("a filesystem root"),
+            _ => {}
+        }
+    }
     for segment in raw.split(['/', '\\']) {
         if segment.is_empty() {
             return Err(
@@ -872,6 +885,15 @@ pub fn validate_plain_name(raw: &str) -> std::result::Result<(), String> {
         if segment == "." || segment == ".." {
             return Err(format!(
                 "the segment '{segment}' is a directory reference, not a name"
+            ));
+        }
+        // Windows reads `C:name` as drive-relative and `name:stream` as an NTFS
+        // alternate data stream, and unix parses neither as a prefix — so the
+        // shape is refused on every host, keeping a name written on one OS valid
+        // on the others rather than only where it happened to be created.
+        if segment.contains(':') {
+            return Err(format!(
+                "the segment '{segment}' contains ':', a drive or data-stream separator on Windows"
             ));
         }
     }

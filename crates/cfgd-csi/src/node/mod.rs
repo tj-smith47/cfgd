@@ -162,7 +162,8 @@ impl Node for CfgdNode {
         }
         if let Err(e) = cfgd_core::validate_no_traversal(Path::new(&req.staging_target_path)) {
             return Err(Status::invalid_argument(format!(
-                "staging_target_path traversal rejected: {e}"
+                "staging_target_path '{}' is not usable: {e}",
+                req.staging_target_path
             )));
         }
 
@@ -240,7 +241,7 @@ impl Node for CfgdNode {
         }
         if let Err(e) = cfgd_core::validate_no_traversal(Path::new(target_path)) {
             return Err(Status::invalid_argument(format!(
-                "target_path traversal rejected: {e}"
+                "target_path '{target_path}' is not usable: {e}"
             )));
         }
 
@@ -354,7 +355,7 @@ impl Node for CfgdNode {
         }
         if let Err(e) = cfgd_core::validate_no_traversal(std::path::Path::new(target_path)) {
             return Err(Status::invalid_argument(format!(
-                "target_path traversal rejected: {e}"
+                "target_path '{target_path}' is not usable: {e}"
             )));
         }
 
