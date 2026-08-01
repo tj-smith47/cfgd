@@ -648,7 +648,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run or inspect declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs only via this command or the daemon.\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd --output json backup list"
+        long_about = "Run or inspect declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]

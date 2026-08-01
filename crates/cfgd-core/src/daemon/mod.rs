@@ -333,7 +333,7 @@ pub(super) struct DaemonState {
     sources: Vec<SourceStatus>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
-    // notifier, so the §9 consolidated skill-stale notice fires at most once per
+    // notifier, so the consolidated skill-stale notice fires at most once per
     // distinct staleness state (not on every check tick).
     skills_stale_notified: Option<String>,
     module_last_reconcile: HashMap<String, String>,
@@ -518,6 +518,7 @@ pub(super) fn build_webhook_payload(title: &str, message: &str, timestamp_iso: &
 
 // --- Submodule declarations ---
 
+mod backup;
 mod checkin;
 mod daemon_config;
 mod drift;
@@ -531,6 +532,7 @@ mod sync;
 #[cfg(test)]
 mod tests;
 
+use backup::BackupTask;
 use checkin::*;
 use daemon_config::*;
 use git::*;
@@ -578,6 +580,9 @@ pub(super) struct PreLoopSetup {
     pub initial_source_status: Vec<SourceStatus>,
     pub managed_paths: Vec<PathBuf>,
     pub reconcile_tasks: Vec<ReconcileTask>,
+    /// One timer per SCHEDULED `spec.backups[]` entry. Schedule-less entries
+    /// are absent — those run during `cfgd apply`.
+    pub backup_tasks: Vec<BackupTask>,
     pub shortest_reconcile: Duration,
     pub shortest_sync: Duration,
     pub server_checkin_url: Option<String>,
@@ -594,6 +599,7 @@ pub(super) fn build_pre_loop_setup(
     profile_override: Option<&str>,
     hooks: &dyn DaemonHooks,
     scope: crate::Scope,
+    printer: &Printer,
 ) -> Result<PreLoopSetup> {
     let cfg = config::load_config(config_path)?;
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
@@ -669,6 +675,9 @@ pub(super) fn build_pre_loop_setup(
         .min()
         .unwrap_or(parsed.sync_interval);
 
+    let backup_tasks =
+        backup::resolve_backup_tasks(&cfg, config_path, profile_override, printer, scope);
+
     let server_checkin_url = find_server_url(&cfg);
 
     Ok(PreLoopSetup {
@@ -682,6 +691,7 @@ pub(super) fn build_pre_loop_setup(
         initial_source_status,
         managed_paths,
         reconcile_tasks,
+        backup_tasks,
         shortest_reconcile,
         shortest_sync,
         server_checkin_url,
@@ -690,6 +700,15 @@ pub(super) fn build_pre_loop_setup(
 
 // --- Main Daemon Entry Point ---
 
+/// The directory roots a caller relocates when the process-level `--runtime-dir`
+/// / `--state-dir` flags are set. `None` for either falls through to its env var
+/// (`CFGD_RUNTIME_DIR` / `CFGD_STATE_DIR`), then to the scope default.
+#[derive(Debug, Clone, Default)]
+pub struct DaemonDirOverrides {
+    pub runtime_dir: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
+}
+
 /// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")` — the
 /// daemon's self-update check and skill-staleness probes compare against the
 /// binary that is actually running, never cfgd-core's own crate version (the
@@ -697,28 +716,47 @@ pub(super) fn build_pre_loop_setup(
 pub async fn run_daemon(
     config_path: PathBuf,
     profile_override: Option<String>,
-    runtime_override: Option<PathBuf>,
+    dirs: DaemonDirOverrides,
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
     scope: crate::Scope,
     cfgd_version: &str,
 ) -> Result<()> {
-    // Resolve the bind socket once at the entry point so the `--runtime-dir`
-    // flag reaches the daemon (env/default when `None`); the client side
-    // resolves identically via `resolve_default_ipc_path(runtime_over, scope)`.
     run_daemon_with(
         config_path,
         profile_override,
         printer,
         hooks,
-        DaemonRunOverrides {
-            ipc_path: Some(resolve_default_ipc_path(runtime_override.as_deref(), scope)),
-            scope,
-            ..DaemonRunOverrides::default()
-        },
+        cli_run_overrides(dirs, scope),
         cfgd_version,
     )
     .await
+}
+
+/// Turn the process-level directory flags into [`DaemonRunOverrides`].
+///
+/// Resolves the bind socket once here so the `--runtime-dir` flag reaches the
+/// daemon (env/default when `None`); the client side resolves identically via
+/// [`resolve_default_ipc_path`].
+///
+/// `--state-dir` rides the same route: without it the loop falls through to
+/// `default_state_dir_for(scope)`, which honors `CFGD_STATE_DIR` but NOT the
+/// flag — so a `cfgd --state-dir X daemon` would write its drift events,
+/// backups, and apply lock somewhere `cfgd --state-dir X status` never looks,
+/// and the CLI and daemon apply locks would stop mutually excluding.
+///
+/// Split out of [`run_daemon`] so the flag plumbing is testable without
+/// starting a loop that binds a real socket.
+pub(super) fn cli_run_overrides(
+    dirs: DaemonDirOverrides,
+    scope: crate::Scope,
+) -> DaemonRunOverrides {
+    DaemonRunOverrides {
+        ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
+        state_dir_override: dirs.state_dir,
+        scope,
+        ..DaemonRunOverrides::default()
+    }
 }
 
 /// Test-shaped knobs for [`run_daemon_with`]. Production callers go through
@@ -794,6 +832,7 @@ pub(super) async fn run_daemon_with(
         profile_override.as_deref(),
         &*hooks,
         overrides.scope,
+        &printer,
     )?;
 
     // Materialize the state dir from scope when no explicit override is given,
@@ -850,7 +889,11 @@ pub(super) async fn run_daemon_with(
         }))
     };
 
-    let intervals = format_interval_lines(&setup.parsed, setup.compliance_interval);
+    let intervals = format_interval_lines(
+        &setup.parsed,
+        setup.compliance_interval,
+        setup.backup_tasks.len(),
+    );
     print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
 
     // Initial server check-in at startup (skippable for offline tests).
@@ -979,6 +1022,7 @@ pub(super) async fn run_daemon_with(
         triggers,
         setup.reconcile_tasks,
         setup.sync_tasks,
+        setup.backup_tasks,
         reconcile_secs,
         sync_secs,
     )
@@ -1085,11 +1129,13 @@ pub(super) fn check_already_running(_ipc_path: &Path, _scope: crate::Scope) -> R
 }
 
 /// Build the "Intervals: ..." line components for the startup banner. Returns
-/// a vector of `key=value` segments the printer joins with `, `. Sync and
-/// compliance lines are conditional; reconcile is always present.
+/// a vector of `key=value` segments the printer joins with `, `. Sync,
+/// compliance, and backup segments are conditional; reconcile is always
+/// present.
 pub(super) fn format_interval_lines(
     parsed: &ParsedDaemonConfig,
     compliance_interval: Option<Duration>,
+    scheduled_backups: usize,
 ) -> Vec<String> {
     let mut intervals = vec![format!(
         "reconcile={}s",
@@ -1105,6 +1151,9 @@ pub(super) fn format_interval_lines(
     }
     if let Some(interval) = compliance_interval {
         intervals.push(format!("compliance={}s", interval.as_secs()));
+    }
+    if scheduled_backups > 0 {
+        intervals.push(format!("backups={scheduled_backups} scheduled"));
     }
     intervals
 }
@@ -1260,8 +1309,7 @@ async fn wait_for_shutdown(printer: Arc<Printer>) {
 /// the two callers want different fallbacks (daemon reconcile loop default vs.
 /// leader-election lease-window default), so a single shared helper with a
 /// parameterised default would just push the default decision back to every
-/// call site without saving any code. Kept local and documented per
-/// dedup-audit S1 (decision: keep + document).
+/// call site without saving any code. Kept local deliberately.
 pub(crate) fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }

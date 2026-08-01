@@ -10,6 +10,8 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 3. **Sync loop** — Pulls from the git remote on interval. Optionally auto-commits and pushes local changes. When using [multi-source config](sources.md), syncs each source independently.
 
+4. **Backup timers** — Runs each `spec.backups[]` entry that declares a `schedule`, on its own interval or cron. See [Declarative Backups](backups.md#daemon-scheduling).
+
 ## Architecture
 
 ```
@@ -18,19 +20,19 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 │  tokio::select!      │
 └──────┬───────────────┘
        │
-  ┌────┼────────────┐
-  │    │            │
-┌─▼──┐ ┌─▼──┐ ┌────▼───┐
-│File│ │Sync│ │Health  │
-│Watch│ │Timer│ │API     │
-│    │ │    │ │(socket)│
-└─┬──┘ └─┬──┘ └────────┘
-  │      │
-  └──┬───┘
-     ▼
- ┌────────┐
- │Reconcile│
- │+ Notify │
+  ┌────┼───────┬────────────┐
+  │    │       │            │
+┌─▼──┐ ┌─▼──┐ ┌─▼────┐ ┌───▼────┐
+│File│ │Sync│ │Backup│ │Health  │
+│Watch│ │Timer│ │Timers│ │API     │
+│    │ │    │ │      │ │(socket)│
+└─┬──┘ └─┬──┘ └─┬────┘ └────────┘
+  │      │      │
+  └──┬───┘      ▼
+     ▼      ┌────────┐
+ ┌────────┐ │ Backup │
+ │Reconcile│ │ engine │
+ │+ Notify │ └────────┘
  └────────┘
 ```
 
@@ -209,19 +211,24 @@ manual stop command rather than aborting.
 ## Live config reload (SIGHUP)
 
 Sending `SIGHUP` to the running daemon reloads the **reconcile and sync timer
-intervals only**. The reload is intentionally narrow:
+intervals and the scheduled-backup timer set**. The reload is intentionally
+narrow:
 
 ```sh
 kill -HUP "$(cfgd daemon status --output json | jq .pid)"
-# → status: "Reloading configuration (SIGHUP) — timer intervals only;
-#            other fields require restart"
+# → status: "Reloading configuration (SIGHUP) — timer intervals and backup
+#            schedules only; other fields require restart"
 # → status: "Timer intervals reloaded: reconcile=300s, sync=600s
 #            (other field changes require restart)"
+# → status: "Backup schedules reloaded: 1 added, 0 removed, 1 rescheduled"
 ```
 
 Fields that **do** reload on SIGHUP:
 - `daemon.reconcile.interval`
 - `daemon.sync.interval`
+- `backups` (add, remove, or reschedule a `spec.backups[]` entry — a unit whose
+  `schedule` did not change keeps its pending deadline rather than restarting
+  the clock)
 
 Fields that **require a daemon restart** to take effect:
 - `profile` (active-profile change)
@@ -236,7 +243,8 @@ Restart with `cfgd daemon` (foreground) or the service-manager equivalent
 `sc.exe stop cfgd && sc.exe start cfgd`).
 
 > Why so narrow? Reconcile / sync intervals are read from atomics each tick, so
-> they can change in-flight without races. The other fields are baked into
+> they can change in-flight without races, and a backup timer owns no long-lived
+> machinery — rebuilding the set is a pure swap of deadlines. The other fields are baked into
 > the watcher set, the `DaemonLoopContext`, and the source-status state
 > machine at startup; changing them in-flight would require tearing down and
 > rebuilding those structures, which is not implemented and would race

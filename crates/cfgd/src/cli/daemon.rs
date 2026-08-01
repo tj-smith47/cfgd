@@ -50,12 +50,15 @@ pub(super) fn cmd_daemon(
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
         std::sync::Arc::new(WorkstationDaemonHooks);
     let rt = tokio::runtime::Runtime::new()?;
-    let runtime_override = cli.runtime_dir.clone();
+    let dirs = cfgd_core::daemon::DaemonDirOverrides {
+        runtime_dir: cli.runtime_dir.clone(),
+        state_dir: cli.state_dir.clone(),
+    };
     let result = rt.block_on(async {
         cfgd_core::daemon::run_daemon(
             config_path,
             profile_override,
-            runtime_override,
+            dirs,
             daemon_printer,
             hooks,
             cli.scope(),

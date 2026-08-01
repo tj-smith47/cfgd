@@ -616,6 +616,7 @@ name = "cfgd-core"
 version = "0.6.1"
 dependencies = [
  "cfgd-crd",
+ "chrono",
  "console",
  "croner",
  "directories",

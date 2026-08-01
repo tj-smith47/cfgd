@@ -39,7 +39,8 @@ the snapshot is consistent.
 
 A schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the
 reconciler's file/package/module phases (skipped in `--dry-run`, shown in the plan preview
-instead). A scheduled backup runs only via `cfgd backup run` or the daemon.
+instead). A scheduled backup runs on its own timer in the [daemon](#daemon-scheduling), or on
+demand via `cfgd backup run`.
 
 Each schedule-less backup runs independently during apply — a unit that fails to complete (source
 missing, a hook errored, or a state-store write failure) is reported as a `✗`/`Warn` status and
@@ -230,6 +231,25 @@ records either, so a stale one cannot evict a snapshot you asked to keep.
 A duration (`6h`, `30m`, `1d`) or a cron expression, 5-field (`0 3 * * *`) or 6-field with leading
 seconds (`30 0 3 * * *`). Omitted means the backup runs on every apply.
 
+Setting it hands the backup to the [daemon's timers](#daemon-scheduling) and takes it out of
+apply. A cron expression is read in the machine's **local** timezone, the same as a crontab entry:
+`0 3 * * *` is 3am where the machine sits, not 3am UTC. A duration is a plain period between runs,
+measured from the daemon's start (or from its last reload), with no alignment to the wall clock —
+use cron when the run has to land at a particular time of day.
+
+```yaml
+backups:
+  - name: openlist-db
+    source: /var/lib/openlist/data.db
+    schedule: "0 3 * * *"    # 3am local, daily
+  - name: scratch
+    source: ~/scratch
+    schedule: 6h             # every six hours from daemon start
+  - name: pre-apply
+    source: ~/.ssh
+                             # no schedule → runs during `cfgd apply`
+```
+
 ### `preBackup` / `postBackup`
 
 Hooks in the same shape as [`spec.scripts`](lifecycle-scripts.md) entries — `run`, `shell`,
@@ -290,7 +310,58 @@ its source, destination, size, status, error, and start/finish timestamps.
 **One run at a time per backup.** Two concurrent runs of the same `name` can render the same
 snapshot name and prune against the same history; the delete paths are idempotent, so the worst
 outcome today is a duplicated warning, but concurrent runs of one backup are not a supported
-configuration. The command and daemon surfaces that drive the engine serialize their work.
+configuration. Each surface that drives the engine serializes its own work: `cfgd backup run` and
+`cfgd apply` run their units one after another, and the daemon runs every scheduled backup on its
+single reconcile loop. What is *not* coordinated is running `cfgd backup run` by hand at the same
+moment the daemon's timer for that same backup fires — don't.
+
+## Daemon scheduling
+
+A backup with a `schedule` gets a timer in the [daemon](daemon.md) alongside the reconcile and sync
+tasks. Nothing else changes: the timer dispatches the same engine `cfgd backup run` does, so a
+scheduled run writes the same `backup_runs` row, runs the same hooks, and prunes to the same
+`retention`. Only `CFGD_CONTEXT` differs — it is `reconcile` for a daemon-driven run and `apply`
+for a CLI-driven one.
+
+```console
+$ cfgd daemon
+Daemon
+
+Starting cfgd daemon...
+
+✓ Health: /run/user/1000/cfgd/cfgd.sock
+
+✓ Intervals: reconcile=300s, backups=2 scheduled
+
+Daemon running — press Ctrl+C to stop
+ INFO scheduled backup tick backup=openlist-db
+
+✓ backup 'openlist-db'
+```
+
+Timer behaviour:
+
+- **Only scheduled backups get timers.** A schedule-less entry belongs to `cfgd apply` and is never
+  installed as a timer.
+- **The set reloads on `SIGHUP`** — see [Live config reload](daemon.md#live-config-reload-sighup).
+  Added, removed, and rescheduled units are picked up without a restart, and a unit whose schedule
+  did not change keeps its pending deadline, so reloading does not restart the clock on a daily
+  backup.
+
+  ```console
+  $ kill -HUP "$(cfgd daemon status -o json | jq .pid)"
+  # in the daemon's output:
+  Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart
+
+  ✓ Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled
+  ```
+- **A unit never overlaps itself.** The daemon's loop runs one tick at a time and waits for a run to
+  finish, so a unit's next fire is not even evaluated while its own run is in flight. Fires that
+  elapse during a long run are **skipped**, not queued: cfgd logs how many were passed over and arms
+  the next one from now. A backup that consistently takes longer than its own schedule therefore
+  runs back-to-back rather than piling up.
+- **A failed run does not stop the timer.** The failure is recorded like any other, reported on the
+  daemon's output, and the unit is re-armed for its next fire.
 
 ## Restoring
 
@@ -309,8 +380,8 @@ rsync -a --delete ~/.local/state/cfgd/backups/photos/Pictures.20260801T031500Z/ 
 
 ## Limitations
 
-- Scheduled backups (`schedule` set) are not yet driven by the daemon — only `cfgd backup run`
-  reaches them explicitly today.
+- A missed schedule is skipped, not caught up: a daemon that was stopped over a backup's fire time
+  takes the next scheduled run, not the one it slept through.
 - Snapshots are full copies — no incremental, deduplicating, or compressed modes.
 - Symlinks inside a directory source are skipped rather than recreated.
 - Concurrent runs of one backup are unsupported (see above).

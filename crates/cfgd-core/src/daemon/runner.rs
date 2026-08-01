@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, mpsc, oneshot};
 
+use super::backup::{BackupTask, reload_backup_tasks, resolve_backup_tasks, run_scheduled_backup};
 use super::reconcile::{ReconcileCtx, handle_reconcile};
 use super::sync::{handle_compliance_snapshot, handle_sync, handle_version_check};
 use super::{
@@ -28,6 +29,11 @@ use crate::state::StateStore;
 /// Shared message for every per-tick error in the select loop; the `tick` field
 /// distinguishes which handler failed.
 const TICK_FAILED_MSG: &str = "daemon tick failed; loop continues";
+
+/// How long the backup timer branch parks when no backup is scheduled. Nothing
+/// depends on the wakeup — it exists only so the branch has a deadline to hold
+/// while the other arms of the select drive the loop.
+const BACKUP_IDLE_PARK: Duration = Duration::from_secs(3600);
 
 pub(super) struct DaemonLoopContext {
     pub state: Arc<Mutex<DaemonState>>,
@@ -71,11 +77,17 @@ pub(super) struct DaemonTriggers {
 /// production pump tasks; the SIGHUP branch updates them so subsequent ticks
 /// fire at the new cadence. In tests, the atomics are inspected to verify the
 /// SIGHUP branch took the expected action.
+///
+/// `backup_tasks` needs no pump: reconcile and sync run on one fixed cadence
+/// each, whereas every scheduled backup carries its own (and a cron's gaps are
+/// uneven), so the loop parks on the soonest deadline in the set instead of
+/// polling a shared interval and asking each unit whether it is due yet.
 pub(super) async fn run_daemon_loop(
     ctx: DaemonLoopContext,
     mut triggers: DaemonTriggers,
     mut reconcile_tasks: Vec<ReconcileTask>,
     mut sync_tasks: Vec<SyncTask>,
+    mut backup_tasks: Vec<BackupTask>,
     reconcile_interval_secs: Arc<AtomicU64>,
     sync_interval_secs: Arc<AtomicU64>,
 ) -> Result<()> {
@@ -83,6 +95,8 @@ pub(super) async fn run_daemon_loop(
     let debounce = Duration::from_millis(DEBOUNCE_MS);
 
     loop {
+        let backup_deadline = tokio::time::Instant::from_std(next_backup_deadline(&backup_tasks));
+
         tokio::select! {
             Some(path) = triggers.file_rx.recv() => {
                 if let Err(e) = handle_file_change_tick(&ctx, &mut last_change, debounce, path).await {
@@ -114,12 +128,18 @@ pub(super) async fn run_daemon_loop(
                 }
             }
 
+            _ = tokio::time::sleep_until(backup_deadline) => {
+                if let Err(e) = handle_backup_tick(&ctx, &mut backup_tasks).await {
+                    tracing::error!(error = %e, tick = "backup", "{TICK_FAILED_MSG}");
+                }
+            }
+
             Some(()) = triggers.sighup_rx.recv() => {
                 apply_sighup_reload(
-                    &ctx.config_path,
+                    &ctx,
                     &reconcile_interval_secs,
                     &sync_interval_secs,
-                    &ctx.printer,
+                    &mut backup_tasks,
                 );
             }
 
@@ -356,6 +376,82 @@ pub(super) async fn handle_sync_tick(
     Ok(())
 }
 
+/// The soonest deadline in the timer set, or a far park when nothing is
+/// scheduled.
+pub(super) fn next_backup_deadline(backup_tasks: &[BackupTask]) -> Instant {
+    backup_tasks
+        .iter()
+        .map(BackupTask::next_fire)
+        .min()
+        .unwrap_or_else(|| Instant::now() + BACKUP_IDLE_PARK)
+}
+
+/// Run every scheduled backup whose deadline has passed.
+///
+/// **Overlap**: the daemon's select loop processes one tick at a time and this
+/// handler awaits each run, so a unit's next fire is not even evaluated while
+/// its own run is in flight — two concurrent runs of one backup are impossible
+/// by construction, the same way two concurrent reconciles are. What the loop's
+/// serialization does NOT decide on its own is what happens to the fires that
+/// elapsed during a long run, so `BackupTask::advance` drops them (logging how
+/// many) rather than queueing a burst of catch-up runs against a source that
+/// has not changed meanwhile.
+pub(super) async fn handle_backup_tick(
+    ctx: &DaemonLoopContext,
+    backup_tasks: &mut [BackupTask],
+) -> Result<()> {
+    let now = Instant::now();
+    let mut due: Vec<(String, crate::config::BackupSpec)> = Vec::new();
+    for task in backup_tasks.iter_mut() {
+        if !task.is_due(now) {
+            continue;
+        }
+        let missed = task.advance(now);
+        if missed > 0 {
+            tracing::warn!(
+                backup = %task.spec.name,
+                missed_fires = missed,
+                "backup: schedule elapsed while the daemon was busy — skipped the missed fire(s)"
+            );
+        }
+        due.push((task.profile_name.clone(), task.spec.clone()));
+    }
+    if due.is_empty() {
+        return Ok(());
+    }
+
+    let config_dir = ctx
+        .config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let state_dir = match ctx.state_dir_override.clone() {
+        Some(d) => d,
+        None => match crate::state::default_state_dir_for(ctx.scope) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = %e, "backup: cannot determine state directory — runs skipped");
+                return Ok(());
+            }
+        },
+    };
+
+    for (profile_name, spec) in due {
+        tracing::info!(backup = %spec.name, "scheduled backup tick");
+        let printer = Arc::clone(&ctx.printer);
+        let config_dir = config_dir.clone();
+        let state_dir = state_dir.clone();
+        crate::spawn_blocking_with_test_home(move || {
+            run_scheduled_backup(&spec, &config_dir, &profile_name, &state_dir, &printer);
+        })
+        .await
+        .map_err(|e| DaemonError::WatchError {
+            message: format!("backup task failed: {}", e),
+        })?;
+    }
+    Ok(())
+}
+
 pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result<()> {
     tracing::trace!("version check tick");
     // Load the live config so the check honors `spec.update.policy`. A load
@@ -392,31 +488,39 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
 /// Apply a SIGHUP-driven config reload.
 ///
 /// **Scope (intentional)**: SIGHUP refreshes ONLY the reconcile and sync timer
-/// intervals. All other daemon-config fields (profile, sources list,
-/// `drift_policy`, `notify_on_drift`, `on_change_reconcile`, compliance config,
-/// packages, files) require a daemon **restart** to take effect, because they
-/// are baked into [`DaemonLoopContext`] / per-source watchers at startup and
-/// changing them in-flight would require tearing down + rebuilding the file
-/// watcher set, the notifier, and the source-status state machine — work that
-/// is not implemented and would be racy with in-flight reconciles.
+/// intervals and the scheduled-backup timer set. All other daemon-config fields
+/// (profile, sources list, `drift_policy`, `notify_on_drift`,
+/// `on_change_reconcile`, compliance config, packages, files) require a daemon
+/// **restart** to take effect, because they are baked into
+/// [`DaemonLoopContext`] / per-source watchers at startup and changing them
+/// in-flight would require tearing down + rebuilding the file watcher set, the
+/// notifier, and the source-status state machine — work that is not implemented
+/// and would be racy with in-flight reconciles.
 ///
-/// This scope is intentional; a user editing those fields and sending SIGHUP
-/// must restart the daemon. The startup banner and the reload-completion line
-/// both surface this explicitly so it isn't a silent surprise.
+/// `spec.backups[]` is inside the scope because a backup timer owns no
+/// long-lived machinery: rebuilding the set is a pure swap of deadlines, and
+/// unchanged units keep the deadline they had, so a reload never restarts the
+/// clock on a backup the user did not touch.
+///
+/// This scope is intentional; a user editing the out-of-scope fields and
+/// sending SIGHUP must restart the daemon. The startup banner and the
+/// reload-completion line both surface this explicitly so it isn't a silent
+/// surprise.
 ///
 /// Split out from the select! branch so the parsing + atomic-update logic is
 /// directly testable without spawning signal handlers.
 pub(super) fn apply_sighup_reload(
-    config_path: &Path,
+    ctx: &DaemonLoopContext,
     reconcile_secs: &AtomicU64,
     sync_secs: &AtomicU64,
-    printer: &Printer,
+    backup_tasks: &mut Vec<BackupTask>,
 ) {
+    let printer = &ctx.printer;
     printer.status_simple(
         Role::Info,
-        "Reloading configuration (SIGHUP) — timer intervals only; other fields require restart",
+        "Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart",
     );
-    match config::load_config(config_path) {
+    match config::load_config(&ctx.config_path) {
         Ok(new_cfg) => {
             let (new_reconcile, new_sync) = compute_sighup_intervals(&new_cfg);
             let mut changed = Vec::new();
@@ -428,17 +532,38 @@ pub(super) fn apply_sighup_reload(
                 sync_secs.store(d.as_secs(), Ordering::Relaxed);
                 changed.push(format!("sync={:?}", d));
             }
-            if changed.is_empty() {
+
+            let rebuilt = resolve_backup_tasks(
+                &new_cfg,
+                &ctx.config_path,
+                ctx.profile_override.as_deref(),
+                printer,
+                ctx.scope,
+            );
+            let backups = reload_backup_tasks(backup_tasks, rebuilt);
+
+            if changed.is_empty() && backups.is_empty() {
                 printer.status_simple(
                     Role::Info,
                     "Config validated; no timer changes detected (other field changes require restart)",
                 );
-            } else {
+                return;
+            }
+            if !changed.is_empty() {
                 printer.status_simple(
                     Role::Ok,
                     format!(
                         "Timer intervals reloaded: {} (other field changes require restart)",
                         changed.join(", ")
+                    ),
+                );
+            }
+            if !backups.is_empty() {
+                printer.status_simple(
+                    Role::Ok,
+                    format!(
+                        "Backup schedules reloaded: {} added, {} removed, {} rescheduled",
+                        backups.added, backups.removed, backups.rescheduled
                     ),
                 );
             }

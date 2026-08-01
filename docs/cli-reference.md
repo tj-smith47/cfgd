@@ -717,6 +717,10 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `{ name, status, clean, destinationPath?, error? }`. For `backup list`: an array of
 `{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean? }`.
 
+`backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`
+additionally runs on the [daemon's timer](backups.md#daemon-scheduling), and a schedule-less one
+runs during `cfgd apply`.
+
 ## Image Commands
 
 ### `cfgd image pack <DIR> <ARTIFACT>`

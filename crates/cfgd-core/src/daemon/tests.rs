@@ -7594,6 +7594,19 @@ mod harness {
         assert_eq!(sync, Some(StdDuration::from_secs(600)));
     }
 
+    /// A `DaemonLoopContext` pointed at `config_path`, plus the printer buffer
+    /// the reload writes into. `apply_sighup_reload` reads the profile override
+    /// and scope off the context to rebuild backup timers, so the reload tests
+    /// need a real one rather than a bare printer.
+    pub(super) fn sighup_ctx(
+        tmp: &tempfile::TempDir,
+        config_path: &Path,
+    ) -> (DaemonLoopContext, Arc<std::sync::Mutex<String>>) {
+        let (mut ctx, _state, buf) = make_test_ctx(tmp, false, false, None);
+        ctx.config_path = config_path.to_path_buf();
+        (ctx, buf)
+    }
+
     #[test]
     fn apply_sighup_reload_warns_on_unparseable_config() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -7601,8 +7614,9 @@ mod harness {
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let mut backup_tasks = Vec::new();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("Config reload failed"),
@@ -7625,8 +7639,9 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let mut backup_tasks = Vec::new();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("Timer intervals reloaded"),
@@ -7638,7 +7653,7 @@ mod harness {
     }
 
     #[test]
-    fn apply_sighup_reload_states_scope_is_timer_only_to_avoid_silent_surprise() {
+    fn apply_sighup_reload_states_scope_is_timers_and_backups_only() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(
@@ -7648,11 +7663,12 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let mut backup_tasks = Vec::new();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
         let captured = buf.lock().unwrap().clone();
         assert!(
-            captured.contains("timer intervals only"),
+            captured.contains("timer intervals and backup schedules only"),
             "SIGHUP start message must state scope: {}",
             captured
         );
@@ -7674,8 +7690,9 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let mut backup_tasks = Vec::new();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("no timer changes detected"),
@@ -7966,6 +7983,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -7998,6 +8016,7 @@ mod harness {
         let handle = tokio::spawn(runner::run_daemon_loop(
             ctx,
             triggers,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             reconcile_secs,
@@ -8035,6 +8054,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8066,6 +8086,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8093,6 +8114,7 @@ mod harness {
         let handle = tokio::spawn(runner::run_daemon_loop(
             ctx,
             triggers,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             reconcile_secs,
@@ -8276,6 +8298,7 @@ mod harness {
             triggers,
             tasks,
             Vec::new(),
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8334,6 +8357,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8384,6 +8408,7 @@ mod harness {
             triggers,
             reconcile_tasks,
             sync_tasks,
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8425,6 +8450,7 @@ mod harness {
             triggers,
             reconcile_tasks,
             Vec::new(),
+            Vec::new(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8463,6 +8489,7 @@ mod harness {
             ctx,
             triggers,
             tasks,
+            Vec::new(),
             Vec::new(),
             reconcile_secs,
             sync_secs,
@@ -9083,8 +9110,14 @@ mod harness {
         let config_path = write_happy_path_config(&tmp);
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User)
-            .expect("happy setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        )
+        .expect("happy setup");
 
         // Default reconcile + sync interval = 300s (5m)
         assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
@@ -9134,8 +9167,14 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        )
+        .expect("setup");
 
         assert!(setup.compliance_config.is_some());
         assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
@@ -9159,8 +9198,14 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        )
+        .expect("setup");
 
         // Compliance config present but interval None because enabled=false short-circuits filter.
         assert!(setup.compliance_config.is_some());
@@ -9175,7 +9220,13 @@ mod harness {
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
         let hooks = NoopHooks;
 
-        let result = build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User);
+        let result = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        );
 
         match result {
             Ok(_) => panic!("invalid yaml must error"),
@@ -9216,6 +9267,7 @@ mod harness {
             Some("override-profile"),
             &hooks,
             crate::Scope::User,
+            &Printer::for_test().0,
         )
         .expect("setup");
 
@@ -9243,8 +9295,14 @@ mod harness {
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        )
+        .expect("setup");
 
         // No profile resolution → no managed paths, reconcile_tasks contains just __default__
         assert!(setup.managed_paths.is_empty());
@@ -9270,8 +9328,14 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        )
+        .expect("setup");
 
         assert!(setup.parsed.auto_pull);
         assert!(setup.parsed.auto_push);
@@ -9299,8 +9363,14 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &hooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+        )
+        .expect("setup");
 
         assert_eq!(
             setup.server_checkin_url.as_deref(),
@@ -9533,7 +9603,7 @@ mod harness {
     #[serial_test::serial]
     async fn handle_version_check_surfaces_consolidated_skill_stale_when_up_to_date() {
         // Binary current (tag == running) + a stale user-scope skill under Notify
-        // → the §9 consolidated skill-stale notice fires once, recorded in state
+        // → the consolidated skill-stale notice fires once, recorded in state
         // by its per-scope signature. Rule 3 wired through `handle_version_check`.
         use crate::generate::SkillKind;
         use crate::providers::skill::SkillScope;
@@ -9938,7 +10008,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None);
+        let lines = super::super::format_interval_lines(&parsed, None, 0);
         assert_eq!(lines, vec!["reconcile=300s".to_string()]);
     }
 
@@ -9955,7 +10025,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None);
+        let lines = super::super::format_interval_lines(&parsed, None, 0);
         assert_eq!(
             lines,
             vec![
@@ -9978,7 +10048,8 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(900)));
+        let lines =
+            super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(900)), 0);
         assert_eq!(
             lines,
             vec!["reconcile=30s".to_string(), "compliance=900s".to_string()]
@@ -10617,7 +10688,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None);
+        let lines = super::super::format_interval_lines(&parsed, None, 0);
         assert_eq!(
             lines,
             vec![
@@ -10640,7 +10711,8 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(600)));
+        let lines =
+            super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(600)), 0);
         assert_eq!(
             lines,
             vec![
@@ -12832,6 +12904,7 @@ mod discover_managed_paths_extra {
 mod tests_run_daemon_wrapper {
     use crate::config::CfgdConfig;
     use crate::config::PackagesSpec;
+    use crate::daemon::DaemonDirOverrides;
     use crate::daemon::DaemonHooks;
     use crate::daemon::run_daemon;
     use crate::daemon::{MergedProfile, ResolvedProfile};
@@ -12863,6 +12936,40 @@ mod tests_run_daemon_wrapper {
         }
     }
 
+    #[test]
+    fn cli_run_overrides_carry_the_state_dir_and_runtime_dir_flags() {
+        use crate::daemon::cli_run_overrides;
+        let state = PathBuf::from("/srv/cfgd-state");
+        let runtime = PathBuf::from("/srv/cfgd-run");
+        let over = cli_run_overrides(
+            DaemonDirOverrides {
+                runtime_dir: Some(runtime.clone()),
+                state_dir: Some(state.clone()),
+            },
+            crate::Scope::User,
+        );
+        assert_eq!(
+            over.state_dir_override.as_deref(),
+            Some(state.as_path()),
+            "--state-dir must reach the loop, or the daemon's drift events, backups, and apply lock land where the CLI never looks"
+        );
+        let ipc = over.ipc_path.expect("runtime dir resolves an ipc path");
+        assert!(
+            ipc.starts_with(&runtime),
+            "--runtime-dir must bind the socket under the given root, got {ipc:?}"
+        );
+    }
+
+    #[test]
+    fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
+        use crate::daemon::cli_run_overrides;
+        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User);
+        assert!(
+            over.state_dir_override.is_none(),
+            "no flag → fall through to CFGD_STATE_DIR / the scope default"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn run_daemon_with_invalid_config_returns_err_early() {
         let printer = Arc::new(test_printer());
@@ -12871,7 +12978,7 @@ mod tests_run_daemon_wrapper {
         let result = run_daemon(
             bogus_path,
             None,
-            None,
+            DaemonDirOverrides::default(),
             printer,
             hooks,
             crate::Scope::User,
@@ -12882,5 +12989,505 @@ mod tests_run_daemon_wrapper {
             result.is_err(),
             "missing config must propagate as Err, got Ok"
         );
+    }
+}
+
+// ===========================================================================
+// Scheduled-backup timers
+//
+// `daemon::backup` owns scheduling only; the run itself goes through the same
+// `crate::backup::run_backup` the CLI drives, so these tests assert the timer
+// arithmetic, the SIGHUP rebuild, and that a fire lands a real `backup_runs`
+// row — not the engine's own semantics, which `backup/tests.rs` covers.
+// ===========================================================================
+
+mod backup_timers {
+    use super::harness::{make_test_ctx, make_triggers, sighup_ctx};
+    use super::*;
+    use crate::daemon::backup::{
+        BackupSchedule, BackupTask, build_backup_tasks, reload_backup_tasks,
+    };
+    use crate::state::StateStore;
+    use std::sync::atomic::AtomicU64;
+    use std::time::{Duration as StdDuration, Instant};
+
+    /// A backup spec with an optional schedule, everything else defaulted.
+    fn spec(name: &str, source: &Path, schedule: Option<&str>) -> config::BackupSpec {
+        let mut yaml = format!("name: {name}\nsource: {}\n", crate::to_posix_string(source));
+        if let Some(s) = schedule {
+            yaml.push_str(&format!("schedule: \"{s}\"\n"));
+        }
+        serde_yaml::from_str(&yaml).expect("backup spec should parse")
+    }
+
+    fn task(name: &str, source: &Path, schedule: &str, now: Instant) -> BackupTask {
+        BackupTask::new(&spec(name, source, Some(schedule)), "workstation", now)
+            .expect("schedule should install a timer")
+    }
+
+    /// Write a config plus a `default` profile whose `spec.backups` block is
+    /// `backups_yaml` (already indented four spaces).
+    fn write_config_with_backups(tmp: &tempfile::TempDir, backups_yaml: &str) -> PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n{backups_yaml}"
+            ),
+        )
+        .unwrap();
+        config_path
+    }
+
+    // ----- schedule parsing -----
+
+    #[test]
+    fn schedule_parses_the_interval_form() {
+        assert!(matches!(
+            BackupSchedule::parse("6h"),
+            Some(BackupSchedule::Interval(d)) if d == StdDuration::from_secs(21600)
+        ));
+    }
+
+    #[test]
+    fn schedule_parses_the_cron_form() {
+        assert!(matches!(
+            BackupSchedule::parse("0 3 * * *"),
+            Some(BackupSchedule::Cron(_))
+        ));
+        assert!(
+            matches!(
+                BackupSchedule::parse("30 0 3 * * *"),
+                Some(BackupSchedule::Cron(_))
+            ),
+            "6-field (leading seconds) cron must parse"
+        );
+    }
+
+    #[test]
+    fn schedule_floors_a_zero_interval_so_the_timer_cannot_spin() {
+        assert!(matches!(
+            BackupSchedule::parse("0"),
+            Some(BackupSchedule::Interval(d)) if d == StdDuration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn schedule_rejects_a_value_that_is_neither_form() {
+        assert!(BackupSchedule::parse("every tuesday").is_none());
+    }
+
+    // ----- next-fire computation -----
+
+    #[test]
+    fn interval_next_fire_is_one_period_out() {
+        let now = Instant::now();
+        let t = task("db", Path::new("/tmp/db"), "45s", now);
+        assert_eq!(t.next_fire(), now + StdDuration::from_secs(45));
+    }
+
+    #[test]
+    fn cron_next_fire_matches_croners_own_search() {
+        let now = Instant::now();
+        let t = task("db", Path::new("/tmp/db"), "0 * * * *", now);
+        let cron: croner::Cron = "0 * * * *".parse().unwrap();
+        let wall = chrono::Local::now();
+        let expected = (cron.find_next_occurrence(&wall, false).unwrap() - wall)
+            .to_std()
+            .unwrap();
+        let actual = t.next_fire().duration_since(now);
+        let skew = actual.abs_diff(expected);
+        assert!(
+            skew < StdDuration::from_secs(2),
+            "cron deadline {actual:?} should track croner's {expected:?}"
+        );
+        assert!(
+            t.next_fire() > now,
+            "a cron deadline must be strictly in the future"
+        );
+    }
+
+    #[test]
+    fn a_task_is_due_only_once_its_deadline_has_passed() {
+        let now = Instant::now();
+        let t = task("db", Path::new("/tmp/db"), "60s", now);
+        assert!(!t.is_due(now));
+        assert!(!t.is_due(now + StdDuration::from_secs(59)));
+        assert!(t.is_due(now + StdDuration::from_secs(60)));
+    }
+
+    // ----- overlap / missed-fire behaviour -----
+
+    #[test]
+    fn advance_skips_the_fires_that_elapsed_while_the_loop_was_busy() {
+        let past = Instant::now() - StdDuration::from_secs(10);
+        let mut t = task("db", Path::new("/tmp/db"), "1s", past);
+        let now = Instant::now();
+        let missed = t.advance(now);
+        assert!(
+            (8..=10).contains(&missed),
+            "a 1s schedule 10s behind should report ~9 skipped fires, got {missed}"
+        );
+        assert!(
+            t.next_fire() > now,
+            "advance must arm a deadline in the future, never queue the backlog"
+        );
+        assert!(
+            t.next_fire() <= now + StdDuration::from_secs(1),
+            "the next fire stays on the declared cadence"
+        );
+    }
+
+    #[test]
+    fn advance_reports_no_missed_fires_for_a_prompt_tick() {
+        let now = Instant::now();
+        let mut t = task("db", Path::new("/tmp/db"), "30s", now);
+        let due_at = now + StdDuration::from_secs(30);
+        assert_eq!(t.advance(due_at), 0);
+        assert_eq!(t.next_fire(), due_at + StdDuration::from_secs(30));
+    }
+
+    #[test]
+    fn advance_on_a_cron_schedule_arms_a_future_deadline() {
+        let past = Instant::now() - StdDuration::from_secs(120);
+        let mut t = task("db", Path::new("/tmp/db"), "* * * * *", past);
+        let now = Instant::now();
+        let missed = t.advance(now);
+        assert!(
+            missed > 0,
+            "a per-minute cron two minutes behind must report skipped fires"
+        );
+        assert!(t.next_fire() > now);
+        assert!(
+            t.next_fire() <= now + StdDuration::from_secs(61),
+            "the next per-minute occurrence is at most a minute out"
+        );
+    }
+
+    // ----- task-set construction -----
+
+    #[test]
+    fn only_scheduled_backups_get_a_timer() {
+        let now = Instant::now();
+        let specs = vec![
+            spec("scheduled", Path::new("/tmp/a"), Some("1h")),
+            spec("apply-time", Path::new("/tmp/b"), None),
+        ];
+        let tasks = build_backup_tasks(&specs, "workstation", now);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].spec.name, "scheduled");
+        assert_eq!(tasks[0].profile_name, "workstation");
+    }
+
+    #[test]
+    fn an_unparseable_schedule_installs_no_timer() {
+        let specs = vec![spec("broken", Path::new("/tmp/a"), Some("every tuesday"))];
+        assert!(build_backup_tasks(&specs, "workstation", Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn next_backup_deadline_takes_the_soonest_of_the_set() {
+        let now = Instant::now();
+        let tasks = vec![
+            task("late", Path::new("/tmp/a"), "1h", now),
+            task("soon", Path::new("/tmp/b"), "30s", now),
+        ];
+        assert_eq!(
+            runner::next_backup_deadline(&tasks),
+            now + StdDuration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn next_backup_deadline_parks_when_nothing_is_scheduled() {
+        let deadline = runner::next_backup_deadline(&[]);
+        assert!(
+            deadline > Instant::now() + StdDuration::from_secs(60),
+            "an empty timer set must park rather than spin the loop"
+        );
+    }
+
+    // ----- SIGHUP rebuild -----
+
+    #[test]
+    fn reload_carries_the_pending_deadline_of_an_unchanged_unit() {
+        let past = Instant::now() - StdDuration::from_secs(30);
+        let mut current = vec![task("db", Path::new("/tmp/db"), "1h", past)];
+        let carried = current[0].next_fire();
+        let rebuilt = vec![task("db", Path::new("/tmp/db"), "1h", Instant::now())];
+
+        let summary = reload_backup_tasks(&mut current, rebuilt);
+        assert!(summary.is_empty(), "an untouched unit is not a change");
+        assert_eq!(
+            current[0].next_fire(),
+            carried,
+            "a reload must not restart the clock on a backup the user did not touch"
+        );
+    }
+
+    #[test]
+    fn reload_counts_added_removed_and_rescheduled_units() {
+        let now = Instant::now();
+        let mut current = vec![
+            task("kept", Path::new("/tmp/a"), "1h", now),
+            task("changed", Path::new("/tmp/b"), "1h", now),
+            task("dropped", Path::new("/tmp/c"), "1h", now),
+        ];
+        let rebuilt = vec![
+            task("kept", Path::new("/tmp/a"), "1h", now),
+            task("changed", Path::new("/tmp/b"), "15m", now),
+            task("new", Path::new("/tmp/d"), "1h", now),
+        ];
+
+        let summary = reload_backup_tasks(&mut current, rebuilt);
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.removed, 1);
+        assert_eq!(summary.rescheduled, 1);
+        assert!(!summary.is_empty());
+        let names: Vec<&str> = current.iter().map(|t| t.spec.name.as_str()).collect();
+        assert_eq!(names, vec!["kept", "changed", "new"]);
+    }
+
+    #[test]
+    fn reload_restarts_the_clock_on_a_rescheduled_unit() {
+        let past = Instant::now() - StdDuration::from_secs(30);
+        let mut current = vec![task("db", Path::new("/tmp/db"), "1h", past)];
+        let stale = current[0].next_fire();
+        let rebuilt = vec![task("db", Path::new("/tmp/db"), "15m", Instant::now())];
+
+        reload_backup_tasks(&mut current, rebuilt);
+        assert_ne!(current[0].next_fire(), stale);
+        assert!(current[0].next_fire() > Instant::now());
+    }
+
+    #[test]
+    fn sighup_reload_picks_up_added_changed_and_removed_units() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let posix = crate::to_posix_string(&source);
+
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: kept\n      source: {posix}\n      schedule: 1h\n    - name: dropped\n      source: {posix}\n      schedule: 1h\n"
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut tasks = Vec::new();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut tasks);
+        let names: Vec<&str> = tasks.iter().map(|t| t.spec.name.as_str()).collect();
+        assert_eq!(names, vec!["kept", "dropped"], "startup-equivalent rebuild");
+        let kept_deadline = tasks[0].next_fire();
+
+        // Drop one, reschedule the survivor, add a new one.
+        write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: kept\n      source: {posix}\n      schedule: 15m\n    - name: added\n      source: {posix}\n      schedule: 1h\n"
+            ),
+        );
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut tasks);
+        let names: Vec<&str> = tasks.iter().map(|t| t.spec.name.as_str()).collect();
+        assert_eq!(names, vec!["kept", "added"]);
+        assert_ne!(
+            tasks[0].next_fire(),
+            kept_deadline,
+            "a changed schedule re-arms the timer"
+        );
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
+            "reload must report the timer-set delta: {captured}"
+        );
+    }
+
+    #[test]
+    fn sighup_reload_installs_no_timer_for_a_schedule_less_backup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: apply-time\n      source: {}\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
+        let mut tasks = Vec::new();
+        runner::apply_sighup_reload(&ctx, &AtomicU64::new(300), &AtomicU64::new(300), &mut tasks);
+        assert!(
+            tasks.is_empty(),
+            "a schedule-less backup belongs to apply, not to the daemon"
+        );
+    }
+
+    // ----- the tick itself -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_runs_a_due_unit_and_records_it_like_the_cli_does() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let past = Instant::now() - StdDuration::from_secs(5);
+        let mut tasks = vec![task("db", &source, "1s", past)];
+        runner::handle_backup_tick(&ctx, &mut tasks).await.unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let record = store
+            .latest_backup_run("db")
+            .unwrap()
+            .expect("the tick must write a backup_runs row");
+        assert_eq!(record.name, "db");
+        assert_eq!(record.status, crate::state::BackupRunStatus::Success);
+        assert!(record.is_clean(), "unexpected error: {:?}", record.error);
+        assert_eq!(record.source, crate::to_posix_string(&source));
+        assert_eq!(record.size_bytes, Some(7));
+        let snapshot = PathBuf::from(
+            record
+                .destination_path
+                .as_ref()
+                .expect("a successful run records its artifact"),
+        );
+        assert!(snapshot.exists(), "snapshot missing at {snapshot:?}");
+        assert!(
+            tasks[0].next_fire() > Instant::now(),
+            "the fired unit must be re-armed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_leaves_a_unit_that_is_not_due_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let mut tasks = vec![task("db", &source, "1h", Instant::now())];
+        let armed = tasks[0].next_fire();
+        runner::handle_backup_tick(&ctx, &mut tasks).await.unwrap();
+
+        assert_eq!(tasks[0].next_fire(), armed, "deadline must not move");
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        assert!(
+            store.latest_backup_run("db").unwrap().is_none(),
+            "a unit that is not due must not run"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_hooks_run_in_the_reconcile_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let marker = tmp.path().join("hook.out");
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let mut s = spec("db", &source, Some("1s"));
+        // native-ok: the path is interpolated into a shell command for THIS host.
+        #[cfg(unix)]
+        let run = format!(
+            "printf '%s' \"$CFGD_CONTEXT:$CFGD_PHASE:$CFGD_PROFILE\" > '{}'",
+            marker.display()
+        );
+        #[cfg(windows)]
+        let run = format!(
+            "echo %CFGD_CONTEXT%:%CFGD_PHASE%:%CFGD_PROFILE%> \"{}\"",
+            marker.display()
+        );
+        s.pre_backup = vec![config::ScriptEntry::Simple(run)];
+
+        let past = Instant::now() - StdDuration::from_secs(5);
+        let mut tasks =
+            vec![BackupTask::new(&s, "workstation", past).expect("schedule installs a timer")];
+        runner::handle_backup_tick(&ctx, &mut tasks).await.unwrap();
+
+        let contents = std::fs::read_to_string(&marker)
+            .expect("preBackup hook should have run")
+            .trim()
+            .to_string();
+        assert_eq!(contents, "reconcile:preBackup:workstation");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_records_a_failure_without_taking_the_loop_down() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let missing = tmp.path().join("never-created.db");
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let past = Instant::now() - StdDuration::from_secs(5);
+        let mut tasks = vec![task("db", &missing, "1s", past)];
+        runner::handle_backup_tick(&ctx, &mut tasks)
+            .await
+            .expect("an operational failure is recorded, never propagated");
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let record = store.latest_backup_run("db").unwrap().expect("row written");
+        assert_eq!(record.status, crate::state::BackupRunStatus::Failed);
+        assert!(record.destination_path.is_none());
+    }
+
+    // ----- the loop's timer branch -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_loop_fires_a_backup_timer_without_any_external_trigger() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+        let (triggers, senders) = make_triggers();
+
+        let tasks = vec![task("db", &source, "1s", Instant::now())];
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            tasks,
+            Arc::new(AtomicU64::new(300)),
+            Arc::new(AtomicU64::new(300)),
+        ));
+
+        // No channel is pumped: only the timer branch can produce this row.
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let deadline = Instant::now() + StdDuration::from_secs(10);
+        loop {
+            if store.latest_backup_run("db").unwrap().is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the loop's backup timer never fired"
+            );
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
+
+        senders.shutdown_tx.send(()).unwrap();
+        handle.await.unwrap().unwrap();
     }
 }

@@ -744,8 +744,10 @@ Paths are relative to the config root directory. If the path resolves to an exis
 ### spec.backups[]
 
 Declarative snapshot backups of a file or directory. See [Declarative Backups](../backups.md) for
-run semantics (hook ordering, atomicity, retention counting) and restore guidance. The CLI surface
-(`cfgd backup ...`) and daemon scheduling that drive the engine are not yet implemented.
+run semantics (hook ordering, atomicity, retention counting) and restore guidance. A schedule-less
+entry runs during `cfgd apply`; a scheduled one runs on the
+[daemon's timers](../backups.md#daemon-scheduling). Either can be run on demand with
+`cfgd backup run [name]`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -753,7 +755,7 @@ run semantics (hook ordering, atomicity, retention counting) and restore guidanc
 | `source` | string (path) | Yes | | File or directory to snapshot; a leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive/data-stream separator on Windows) needs an explicit `namePattern` that omits `{filename}`. |
 | `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot under the destination; the rendered value must be relative and every segment must name something (`.`, `..`, empty segments, rooted values like `/daily` or `C:/daily`, and `:` anywhere are rejected at run time — the rejection names the `{filename}` it interpolated so a colon in the source filename points at itself). |
-| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`). Omitted means "run on every apply". |
+| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
 | `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
 | `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure skips the copy and records a failed run; `postBackup` still runs. |
 | `postBackup` | list | No | `[]` | Scripts run after the copy step, and after a failed `preBackup` — always attempted, so whatever `preBackup` stopped gets restarted. Same shape as [spec.scripts](#specscripts) entries. |
@@ -765,7 +767,7 @@ backups:
     source: /var/lib/openlist/data.db     # file or directory
     destination: ~/backups/openlist       # optional; default <state_dir>/backups/<name>/
     namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
-    schedule: "0 3 * * *"                 # optional; cron expr OR interval ("6h"); omitted → runs on every apply
+    schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
     retention: 7                          # optional; default 10; newest N kept per backup
     preBackup:                            # optional; existing ScriptEntry shape
       - run: systemctl stop openlist

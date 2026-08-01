@@ -152,9 +152,9 @@ pub(crate) async fn handle_version_check(
 
     if !check.update_available {
         tracing::debug!(version = %check.current, "cfgd is up to date");
-        // Binary current → the §9 consolidated skill-stale surface may apply
-        // (rule 3). Rule 1 means this only runs when no binary update is
-        // pending, so the two surfaces can never both fire.
+        // Binary current → the consolidated skill-stale surface may apply.
+        // It only runs when no binary update is pending, so the two surfaces
+        // can never both fire.
         surface_stale_skills(update_cfg, state, notifier, cfgd_version).await;
         return;
     }
@@ -213,8 +213,8 @@ async fn notify_update_available(
     }
 }
 
-/// Emit the §9 consolidated skill-stale surface in the daemon when the binary is
-/// current (rule 3). The decision + effectful orchestration (the scope table,
+/// Emit the consolidated skill-stale surface in the daemon when the binary is
+/// current. The decision + effectful orchestration (the scope table,
 /// `Auto` refresh → re-aggregate → project-only remainder) is single-sourced in
 /// [`run_standalone_skill_action`](crate::upgrade::run_standalone_skill_action);
 /// this function only renders the returned outcome via the notifier:
@@ -223,7 +223,7 @@ async fn notify_update_available(
 ///   remainder is notified (project-scope is never written).
 /// * **Notify / Prompt** → one consolidated notifier message covering both
 ///   scopes (`Prompt` cannot prompt in the daemon, so it surfaces like `Notify`
-///   per the §9 "≤1 surface" headline).
+///   per the "≤1 surface" rule).
 /// * **Manual** → silent.
 ///
 /// Deduped via `state.skills_stale_notified` so the notice fires at most once per

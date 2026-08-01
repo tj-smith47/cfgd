@@ -62,6 +62,14 @@ schemars = "1.2"
 # Cron expression parsing for `spec.backups[].schedule` — validated at parse
 # time as a fallback when the value isn't a `parse_duration_str` interval.
 croner = "3"
+# croner's occurrence search is typed on `chrono::DateTime`, so the daemon's
+# backup timers cannot compute a cron's next fire without it. Scoped to
+# `clock` + `std` for `Local::now()`; every other timestamp in the crate still
+# goes through `util/time.rs`, which has no chrono dependency.
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "std",
+] }
 
 # Output & Theming
 console = "0.16"
