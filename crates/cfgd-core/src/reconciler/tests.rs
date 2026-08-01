@@ -7447,7 +7447,7 @@ fn apply_module_deploy_files_modify_strategy_returns_strategy_not_implemented() 
         .as_ref()
         .expect("Modify strategy must surface as an action error");
     assert!(
-        error.contains("Modify") || error.contains("not yet implemented"),
+        error.contains("Modify") && error.contains("not yet implemented"),
         "expected a strategy-not-implemented error, got: {error}"
     );
     assert!(

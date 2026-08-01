@@ -11633,6 +11633,76 @@ fn cmd_diff_with_module() {
     );
 }
 
+#[test]
+fn cmd_diff_module_modify_strategy_returns_strategy_not_implemented() {
+    // Drives `cmd_diff_module`'s `ensure_strategy_implemented()?` call site
+    // (reached via `cmd_diff`'s module-filter delegation) — a `Modify`-strategy
+    // module file must surface the typed StrategyNotImplemented error rather
+    // than falling through to `diff_one`, which would try to read the module
+    // directory itself as a file (source resolves to the module dir when
+    // `source` is empty, as it is for Modify).
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("cfgd-diff-modify-target");
+    let module_yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          key: value\n",
+        cfgd_core::to_posix_string(&target)
+    );
+    let h = CliTestHarness::builder()
+        .module("diff-modify-mod", &module_yaml)
+        .build();
+
+    let err =
+        super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-modify-mod"), false).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
+            Some(cfgd_core::errors::CfgdError::File(
+                cfgd_core::errors::FileError::StrategyNotImplemented { .. }
+            ))
+        ),
+        "expected typed FileError::StrategyNotImplemented, got: {err}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Modify") && msg.contains("not yet implemented"),
+        "expected a strategy-not-implemented message, got: {msg}"
+    );
+}
+
+#[test]
+fn cmd_diff_full_profile_modify_strategy_returns_strategy_not_implemented() {
+    // Drives `cmd_diff`'s own `ensure_strategy_implemented()?` call site (the
+    // no-module-filter, full-profile path) via a profile that pulls in a
+    // module with a `Modify`-strategy file.
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("cfgd-diff-modify-target");
+    let module_yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-modify-mod\nspec:\n  packages: []\n  files:\n    - target: {}\n      strategy: modify\n      modify:\n        ensure:\n          key: value\n",
+        cfgd_core::to_posix_string(&target)
+    );
+    let profile_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - diff-modify-mod\n";
+    let h = CliTestHarness::builder()
+        .profile("default", profile_yaml)
+        .module("diff-modify-mod", &module_yaml)
+        .build();
+
+    let err = super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
+            Some(cfgd_core::errors::CfgdError::File(
+                cfgd_core::errors::FileError::StrategyNotImplemented { .. }
+            ))
+        ),
+        "expected typed FileError::StrategyNotImplemented, got: {err}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Modify") && msg.contains("not yet implemented"),
+        "expected a strategy-not-implemented message, got: {msg}"
+    );
+}
+
 // --- cmd_verify ---
 
 #[test]
