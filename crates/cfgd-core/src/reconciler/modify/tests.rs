@@ -604,6 +604,39 @@ fn ini_rejects_padded_and_empty_names() {
 }
 
 #[test]
+fn ini_rejects_a_key_name_starting_with_a_comment_marker() {
+    // `#foo = 1` reads back as a comment, so the merge would never find the key
+    // and would append it again on every reconcile.
+    for ensure in [
+        "a:\n  \"#foo\": 1\n",
+        "a:\n  \";foo\": 1\n",
+        "\"#top\": 1\n",
+    ] {
+        let err = apply_err("", &spec(None, ensure), "/tmp/app.ini");
+        assert_ensure_shape(&err);
+        assert!(
+            err.to_string().contains("comment marker"),
+            "explains why: {err}"
+        );
+    }
+}
+
+#[test]
+fn ini_allows_a_section_name_starting_with_a_comment_marker() {
+    // `[#foo]` still parses as a header, so it round-trips and must not be
+    // rejected alongside the key-name case.
+    let out = assert_converges("", &spec(None, "\"#foo\":\n  x: 1\n"), "/tmp/app.ini");
+    assert_eq!(out, "[#foo]\nx = 1\n");
+}
+
+#[test]
+fn ini_allows_a_comment_marker_inside_a_key_name() {
+    // Only a LEADING marker breaks the round-trip; `a#b = 1` reads back as `a#b`.
+    let out = assert_converges("", &spec(None, "a:\n  \"x#y\": 1\n"), "/tmp/app.ini");
+    assert_eq!(out, "[a]\nx#y = 1\n");
+}
+
+#[test]
 fn ini_values_are_literal_not_templated() {
     let out = assert_converges(
         "",
@@ -931,6 +964,79 @@ fn json_rejects_a_non_string_key_nested_in_the_overlay() {
 }
 
 #[test]
+fn json_rejects_a_non_string_key_inside_a_sequence() {
+    // The overlay walk must descend into lists: a mapping nested in a list is
+    // just as unable to round-trip as a top-level one.
+    let err = apply_err("{}", &spec(None, "list:\n  - 42: x\n"), "/tmp/a.json");
+    assert_ensure_shape(&err);
+    assert!(
+        err.to_string().contains("list.[0]."),
+        "names the path: {err}"
+    );
+}
+
+#[test]
+fn json_rejects_non_finite_numbers() {
+    for ensure in ["ratio: .nan\n", "ratio: .inf\n", "ratio: -.inf\n"] {
+        let err = apply_err("{}", &spec(None, ensure), "/tmp/a.json");
+        assert_ensure_shape(&err);
+        assert!(
+            err.to_string().contains("NaN or Infinity"),
+            "explains why: {err}"
+        );
+    }
+}
+
+#[test]
+fn json_rejects_a_non_finite_number_nested_in_a_sequence() {
+    let err = apply_err("{}", &spec(None, "list: [1, .inf]\n"), "/tmp/a.json");
+    assert_ensure_shape(&err);
+    assert!(err.to_string().contains("list.[1]."), "names it: {err}");
+}
+
+#[test]
+fn json_unwraps_tagged_values_like_ini_and_toml() {
+    let out = assert_converges(
+        "{}",
+        &spec(None, "v: !Tag 5\nlist:\n  - !Tag inner\n"),
+        "/tmp/a.json",
+    );
+    assert_eq!(
+        out,
+        "{\n  \"v\": 5,\n  \"list\": [\n    \"inner\"\n  ]\n}\n"
+    );
+}
+
+#[test]
+fn json_target_with_duplicate_keys_takes_the_last_occurrence() {
+    // A user-owned file may legally repeat a key; `serde_json` and browsers
+    // both take the last. Erroring would fail the whole apply over a quirk.
+    let out = assert_converges(
+        r#"{"a": 1, "b": 2, "a": 3}"#,
+        &spec(None, "c: 4\n"),
+        "/tmp/a.json",
+    );
+    assert_eq!(out, "{\n  \"a\": 3,\n  \"b\": 2,\n  \"c\": 4\n}\n");
+}
+
+#[test]
+fn json_duplicate_key_is_still_editable() {
+    let out = assert_converges(r#"{"a": 1, "a": 2}"#, &spec(None, "a: 9\n"), "/tmp/a.json");
+    assert_eq!(out, "{\n  \"a\": 9\n}\n");
+}
+
+#[test]
+fn json_target_with_nested_duplicate_keys_takes_the_last_occurrence() {
+    let out = apply(
+        r#"{"outer": {"k": 1, "k": 2}}"#,
+        &spec(None, "other: 1\n"),
+        "/tmp/a.json",
+    );
+    let parsed: serde_yaml::Value = serde_json::from_str(&out).expect("valid json");
+    assert_eq!(parsed["outer"]["k"], serde_yaml::Value::from(2));
+}
+
+#[test]
 fn json_rejects_a_structured_key() {
     let err = apply_err("{}", &spec(None, "? [a, b]\n: value\n"), "/tmp/a.json");
     assert_ensure_shape(&err);
@@ -1044,6 +1150,22 @@ fn yaml_invalid_current_content_is_a_typed_error() {
         |e| matches!(e, FileError::ModifyParse { .. }),
         "ModifyParse",
     );
+}
+
+#[test]
+fn yaml_preserves_the_targets_key_order() {
+    // Backs the docs caveat: the YAML engine loses comments and blank lines,
+    // but NOT key order. Asserted on the raw text — re-parsing hides ordering.
+    let current = "zeta: 1\nalpha: 2\nmiddle: 3\n";
+    let out = assert_converges(current, &spec(None, "alpha: 9\n"), "/tmp/a.yaml");
+    assert_eq!(out, "zeta: 1\nalpha: 9\nmiddle: 3\n");
+}
+
+#[test]
+fn yaml_accepts_non_finite_numbers_json_rejects() {
+    // YAML can express `.nan`/`.inf`, so the JSON-only guard must not leak here.
+    let out = apply("", &spec(None, "ratio: .inf\n"), "/tmp/a.yaml");
+    assert_eq!(out, "ratio: .inf\n");
 }
 
 #[test]

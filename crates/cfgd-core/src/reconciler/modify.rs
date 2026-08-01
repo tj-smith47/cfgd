@@ -226,8 +226,7 @@ fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
     let mut doc: serde_yaml::Value = if current.trim().is_empty() {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
-        serde_json::from_str::<serde_yaml::Value>(current)
-            .map_err(|e| parse_error(target, ModifyFormat::Json, e))?
+        parse_json_last_wins(current).map_err(|e| parse_error(target, ModifyFormat::Json, e))?
     };
     if !doc.is_mapping() {
         return Err(parse_error(
@@ -237,35 +236,178 @@ fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
         )
         .into());
     }
-    validate_json_keys(overlay, target, "")?;
-    crate::deep_merge_yaml(&mut doc, &serde_yaml::Value::Mapping(overlay.clone()));
+    let overlay = prepare_json_overlay(
+        &serde_yaml::Value::Mapping(overlay.clone()),
+        target,
+        &mut String::new(),
+    )?;
+    crate::deep_merge_yaml(&mut doc, &overlay);
     let mut out = serde_json::to_string_pretty(&doc)
         .map_err(|e| serialize_error(target, ModifyFormat::Json, e))?;
     out.push('\n');
     Ok(out)
 }
 
-/// Reject a non-string key anywhere in a JSON `ensure` overlay.
+/// Validate a JSON `ensure` overlay and normalize what JSON expresses
+/// differently from YAML.
 ///
-/// JSON object keys are strings, so a `42:` key would be *written* as `"42"`
-/// but the next pass reads the target back with a string key while the overlay
-/// still carries a number — the merge would not recognize its own output and
-/// would append a duplicate on every reconcile.
-fn validate_json_keys(overlay: &serde_yaml::Mapping, target: &Path, prefix: &str) -> Result<()> {
-    for (key, value) in overlay {
-        let Some(name) = key.as_str() else {
+/// Three concerns share one walk because they share one cause — a value YAML can
+/// hold that JSON cannot round-trip:
+///
+/// - a non-string key would be *written* as `"42"` and read back as a string
+///   while the overlay still carries a number, so the pair would duplicate on
+///   every reconcile;
+/// - `.nan` / `.inf` serialize to `null`, silently writing a different value
+///   than the spec asked for;
+/// - a `!Tag` would emit `{"!Tag": v}` — an object the author never wrote. INI
+///   and TOML unwrap tags, so JSON does too.
+///
+/// Sequences are walked as well: a mapping nested inside a list is just as
+/// unable to round-trip as a top-level one.
+fn prepare_json_overlay(
+    value: &serde_yaml::Value,
+    target: &Path,
+    path: &mut String,
+) -> Result<serde_yaml::Value> {
+    Ok(match value {
+        serde_yaml::Value::Mapping(map) => {
+            let mut out = serde_yaml::Mapping::with_capacity(map.len());
+            for (key, child) in map {
+                let Some(name) = key.as_str() else {
+                    return Err(shape_error(
+                        target,
+                        ModifyFormat::Json,
+                        format!("object keys must be strings, but {path}{key:?} is not"),
+                    )
+                    .into());
+                };
+                let restore = path.len();
+                path.push_str(name);
+                path.push('.');
+                let prepared = prepare_json_overlay(child, target, path)?;
+                path.truncate(restore);
+                out.insert(serde_yaml::Value::String(name.to_string()), prepared);
+            }
+            serde_yaml::Value::Mapping(out)
+        }
+        serde_yaml::Value::Sequence(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let restore = path.len();
+                path.push_str(&format!("[{index}]."));
+                out.push(prepare_json_overlay(item, target, path)?);
+                path.truncate(restore);
+            }
+            serde_yaml::Value::Sequence(out)
+        }
+        serde_yaml::Value::Number(n) if n.is_f64() && !n.as_f64().is_some_and(f64::is_finite) => {
             return Err(shape_error(
                 target,
                 ModifyFormat::Json,
-                format!("object keys must be strings, but {prefix}{key:?} is not"),
+                format!(
+                    "{}{n} is not representable in JSON (no NaN or Infinity)",
+                    path
+                ),
             )
             .into());
-        };
-        if let serde_yaml::Value::Mapping(nested) = value {
-            validate_json_keys(nested, target, &format!("{prefix}{name}."))?;
         }
+        serde_yaml::Value::Tagged(tagged) => prepare_json_overlay(&tagged.value, target, path)?,
+        other => other.clone(),
+    })
+}
+
+/// Parse JSON text into an insertion-ordered [`serde_yaml::Value`], resolving a
+/// repeated object key to its last occurrence.
+///
+/// A plain `serde_json::from_str::<serde_yaml::Value>` rejects duplicate keys
+/// outright, which would turn a tolerable quirk of a user-owned file into a hard
+/// failure of the whole apply. `serde_json`'s own default is last-wins, so this
+/// keeps `Modify` as permissive as the parser the file is written for while
+/// still preserving key order (`Mapping::insert` overwrites the value and keeps
+/// the key's original position).
+fn parse_json_last_wins(
+    current: &str,
+) -> std::result::Result<serde_yaml::Value, serde_json::Error> {
+    serde_json::from_str::<LastWinsJson>(current).map(|parsed| parsed.0)
+}
+
+/// Deserialization shim for [`parse_json_last_wins`].
+struct LastWinsJson(serde_yaml::Value);
+
+impl<'de> serde::Deserialize<'de> for LastWinsJson {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(LastWinsJsonVisitor)
     }
-    Ok(())
+}
+
+struct LastWinsJsonVisitor;
+
+impl<'de> serde::de::Visitor<'de> for LastWinsJsonVisitor {
+    type Value = LastWinsJson;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::Bool(v)))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::Number(v.into())))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::Number(v.into())))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::Number(v.into())))
+    }
+
+    fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::String(v.to_string())))
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::Null))
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+        Ok(LastWinsJson(serde_yaml::Value::Null))
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(LastWinsJsonVisitor)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut items = Vec::new();
+        while let Some(LastWinsJson(item)) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(LastWinsJson(serde_yaml::Value::Sequence(items)))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut out = serde_yaml::Mapping::new();
+        while let Some((key, LastWinsJson(value))) = map.next_entry::<String, LastWinsJson>()? {
+            out.insert(serde_yaml::Value::String(key), value);
+        }
+        Ok(LastWinsJson(serde_yaml::Value::Mapping(out)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -507,19 +649,19 @@ fn merge_ini(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result
         })?;
         match value {
             serde_yaml::Value::Mapping(section) => {
-                validate_ini_name(name, "section name", target)?;
+                validate_ini_name(name, IniNameKind::Section, target)?;
                 let mut pairs = Vec::with_capacity(section.len());
                 for (k, v) in section {
                     let k = k.as_str().ok_or_else(|| {
                         shape_error(target, ModifyFormat::Ini, "key names must be strings")
                     })?;
-                    validate_ini_name(k, "key name", target)?;
+                    validate_ini_name(k, IniNameKind::Key, target)?;
                     pairs.push((k, ini_scalar(v, target, &format!("{name}.{k}"))?));
                 }
                 doc.set_section_keys(name, &pairs);
             }
             other => {
-                validate_ini_name(name, "key name", target)?;
+                validate_ini_name(name, IniNameKind::Key, target)?;
                 let rendered = ini_scalar(other, target, name)?;
                 doc.set_global_key(name, &rendered);
             }
@@ -532,6 +674,22 @@ fn merge_ini(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result
 /// [`ini_key_name`] / [`ini_section_name`] on the next pass.
 const INI_NAME_FORBIDDEN: &[char] = &['\n', '\r', '=', '[', ']'];
 
+/// Which reader has to be able to read the rendered name back.
+#[derive(Clone, Copy)]
+enum IniNameKind {
+    Section,
+    Key,
+}
+
+impl IniNameKind {
+    fn label(self) -> &'static str {
+        match self {
+            IniNameKind::Section => "section name",
+            IniNameKind::Key => "key name",
+        }
+    }
+}
+
 /// Reject a section or key name that cannot survive a write/read round-trip.
 ///
 /// INI has no escape syntax: a name carrying a newline, `=`, or a bracket
@@ -540,12 +698,26 @@ const INI_NAME_FORBIDDEN: &[char] = &['\n', '\r', '=', '[', ']'];
 /// append another copy — unbounded growth of a user-owned file with no error.
 /// Padding is rejected for the same reason: the readers trim, so `" x"` would
 /// never match the `" x = v"` line it just wrote.
-fn validate_ini_name(name: &str, what: &str, target: &Path) -> Result<()> {
+fn validate_ini_name(name: &str, kind: IniNameKind, target: &Path) -> Result<()> {
+    let what = kind.label();
     if name.is_empty() || name.trim() != name {
         return Err(shape_error(
             target,
             ModifyFormat::Ini,
             format!("{what} '{name}' must not be empty or padded with whitespace"),
+        )
+        .into());
+    }
+    // A key line opening with a comment marker reads back as a comment, so the
+    // merge would never see its own key again. Section names are unaffected:
+    // `[#foo]` still parses as a header, so it round-trips.
+    if matches!(kind, IniNameKind::Key) && name.starts_with(['#', ';']) {
+        return Err(shape_error(
+            target,
+            ModifyFormat::Ini,
+            format!(
+                "{what} '{name}' starts with a comment marker — the line would read back as a comment"
+            ),
         )
         .into());
     }

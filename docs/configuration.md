@@ -328,6 +328,10 @@ The format decides how much of the target's original text survives:
 | `Json` | `serde_json` | n/a (JSON has none) | preserved | Reindented as 2-space pretty JSON |
 | `Yaml` | `serde_yaml` | **lost** | preserved | The document is reflowed |
 
+A JSON target that repeats an object key keeps the last occurrence, matching how
+`serde_json` and every browser parse it — a duplicate key is tolerated, not an
+error, because the target belongs to the user, not to cfgd.
+
 A trailing comment behaves differently in the two comment-preserving formats,
 because their editors work at different levels. TOML keeps a comment attached to
 the value it trails, so an updated key keeps a comment that may now be stale:
@@ -342,9 +346,10 @@ there, so cfgd never tries to keep part of a value). Comments on their *own*
 line are untouched in both.
 
 > **YAML comment caveat.** The YAML engine parses the target and re-serializes
-> it, so comments, blank lines, anchors, and key order are lost — only the data
-> survives. When a YAML target's comments matter, use `script` mode and edit the
-> text with a comment-preserving tool (`yq`, `sed`, a Python script) instead.
+> it, so comments, blank lines, and anchors are lost — the data and its key
+> order survive, nothing else. When a YAML target's comments matter, use
+> `script` mode and edit the text with a comment-preserving tool (`yq`, `sed`,
+> a Python script) instead.
 
 `format` is inferred from the target's extension when omitted:
 
