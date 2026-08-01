@@ -184,9 +184,38 @@ pub(crate) fn run_backup_run(
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
 
     let mut records = Vec::with_capacity(targets.len());
+    let mut outputs: Vec<BackupRunOutput> = Vec::with_capacity(targets.len());
+    // The first unit found already running. Reported after the loop so a
+    // `backup run` with no name still runs every OTHER unit — the collision is
+    // one unit's, not the command's — while the exit code stays nonzero,
+    // because the user asked for a run of that unit and did not get one.
+    let mut busy: Option<cfgd_core::errors::BackupError> = None;
     for spec in targets {
         let unit = BackupUnit::new(spec, &config_dir, &profile_name, &state_dir);
-        let record = run_backup(&unit, &state, printer)?;
+        let record = match run_backup(&unit, &state, printer) {
+            Ok(record) => record,
+            Err(cfgd_core::errors::CfgdError::Backup(
+                e @ cfgd_core::errors::BackupError::Busy { .. },
+            )) => {
+                let holder = match &e {
+                    cfgd_core::errors::BackupError::Busy { holder, .. } => holder.clone(),
+                    _ => String::new(),
+                };
+                printer
+                    .status(Role::Fail, format!("backup '{}'", spec.name))
+                    .detail(format!("already running ({holder})"));
+                outputs.push(BackupRunOutput {
+                    name: spec.name.clone(),
+                    status: "skipped".to_string(),
+                    destination_path: None,
+                    clean: false,
+                    error: Some(format!("already running ({holder})")),
+                });
+                busy.get_or_insert(e);
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         let subject = format!("backup '{}'", record.name);
         // `is_clean()` is the exit-code predicate; the human status line uses
         // the same three-way split: a fully clean run is Ok, a Success run
@@ -207,10 +236,13 @@ pub(crate) fn run_backup_run(
             }
             None => printer.status_simple(role, subject),
         }
+        outputs.push(BackupRunOutput::from(&record));
         records.push(record);
     }
 
-    let outputs: Vec<BackupRunOutput> = records.iter().map(BackupRunOutput::from).collect();
     printer.emit(Doc::new().with_data(&outputs));
+    if let Some(e) = busy {
+        return Err(cfgd_core::errors::CfgdError::from(e).into());
+    }
     Ok(records)
 }

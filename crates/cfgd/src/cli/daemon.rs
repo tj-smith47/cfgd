@@ -199,7 +199,13 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         ));
     }
 
-    if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref(), scope) {
+    let dirs = cfgd_core::daemon::DaemonDirOverrides {
+        runtime_dir: cli.runtime_dir.clone(),
+        state_dir: cli.state_dir.clone(),
+    };
+    if let Err(e) =
+        cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref(), scope, &dirs)
+    {
         let msg = format!(
             "Failed to install daemon service: {}",
             cfgd_core::output::collapse_to_subject_line(&e),
@@ -475,14 +481,42 @@ mod tests {
     fn windows_service_binpath_argv_parses_via_cli() {
         use clap::Parser;
         let cfg = std::path::Path::new("C:/ProgramData/cfgd/cfgd.yaml");
+        let no_dirs = cfgd_core::daemon::DaemonDirOverrides::default();
+        let both_dirs = cfgd_core::daemon::DaemonDirOverrides {
+            state_dir: Some(std::path::PathBuf::from("C:/cfgd-state")),
+            runtime_dir: Some(std::path::PathBuf::from("C:/cfgd-run")),
+        };
+        let state_only = cfgd_core::daemon::DaemonDirOverrides {
+            state_dir: Some(std::path::PathBuf::from("C:/cfgd-state")),
+            runtime_dir: None,
+        };
         let cases = [
-            (None, false, cfgd_core::Scope::User),
-            (Some("laptop"), true, cfgd_core::Scope::User),
-            (None, true, cfgd_core::Scope::System),
-            (Some("srv"), true, cfgd_core::Scope::System),
+            (None, false, cfgd_core::Scope::User, &no_dirs),
+            (Some("laptop"), true, cfgd_core::Scope::User, &no_dirs),
+            (None, true, cfgd_core::Scope::System, &no_dirs),
+            (Some("srv"), true, cfgd_core::Scope::System, &no_dirs),
+            (None, false, cfgd_core::Scope::User, &both_dirs),
+            (Some("srv"), true, cfgd_core::Scope::System, &both_dirs),
+            (None, false, cfgd_core::Scope::System, &state_only),
         ];
-        for (profile, event_log, scope) in cases {
-            let argv = cfgd_core::daemon::service_binpath_argv(cfg, profile, event_log, scope);
+        for (profile, event_log, scope, dirs) in cases {
+            let argv =
+                cfgd_core::daemon::service_binpath_argv(cfg, profile, event_log, scope, dirs);
+            if let Some(dir) = dirs.state_dir.as_deref() {
+                assert!(
+                    argv.windows(2)
+                        .any(|w| w[0] == "--state-dir" && w[1] == cfgd_core::to_posix_string(dir)),
+                    "argv {argv:?} dropped the --state-dir the install ran under",
+                );
+            }
+            if let Some(dir) = dirs.runtime_dir.as_deref() {
+                assert!(
+                    argv.windows(2).any(
+                        |w| w[0] == "--runtime-dir" && w[1] == cfgd_core::to_posix_string(dir)
+                    ),
+                    "argv {argv:?} dropped the --runtime-dir the install ran under",
+                );
+            }
             let full = std::iter::once("cfgd".to_string()).chain(argv.iter().cloned());
             let cli = Cli::try_parse_from(full).unwrap_or_else(|e| {
                 panic!(
@@ -497,6 +531,16 @@ mod tests {
                     })
                 ),
                 "argv {argv:?} did not parse to `daemon service`",
+            );
+            assert_eq!(
+                cli.state_dir.as_deref(),
+                dirs.state_dir.as_deref(),
+                "argv {argv:?} did not round-trip --state-dir through clap",
+            );
+            assert_eq!(
+                cli.runtime_dir.as_deref(),
+                dirs.runtime_dir.as_deref(),
+                "argv {argv:?} did not round-trip --runtime-dir through clap",
             );
         }
     }

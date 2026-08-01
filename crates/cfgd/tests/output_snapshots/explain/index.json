@@ -325,7 +325,7 @@
             "type": "integer"
           },
           {
-            "description": "When to run this backup: a duration interval (e.g. `\"6h\"`) or a cron expression, validated at parse time. Cron expressions may be 5-field (`minute hour day month weekday`, e.g. `\"0 3 * * *\"`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `\"30 0 3 * * *\"`), and are evaluated in the machine's LOCAL timezone, like a crontab entry. Setting this hands the backup to the daemon's timers and takes it out of apply; omitted means \"run on every apply\".",
+            "description": "When to run this backup: a duration interval (e.g. `\"6h\"`) or a cron expression, validated at parse time. Cron expressions may be 5-field (`minute hour day month weekday`, e.g. `\"0 3 * * *\"`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `\"30 0 3 * * *\"`), and are evaluated in the machine's LOCAL timezone, like a crontab entry. An interval is measured from the unit's last recorded run, so a `\"1d\"` backup on a machine rebooted daily still fires daily. Setting this hands the backup to the daemon's timers and takes it out of apply; omitted means \"run on every apply\".",
             "name": "schedule",
             "required": false,
             "type": "string"

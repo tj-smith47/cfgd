@@ -1990,6 +1990,7 @@ pub fn execute(
                 apply_modules,
                 cache_dir: cli.cache_dir.as_deref(),
                 state_dir: cli.state_dir.as_deref(),
+                runtime_dir: cli.runtime_dir.as_deref(),
                 scope: cli.scope(),
             },
         ),

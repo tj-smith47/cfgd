@@ -322,6 +322,16 @@ pub enum BackupError {
         }
     )]
     UnknownName { name: String, valid: Vec<String> },
+
+    /// Another process (or another thread of this one) is already running this
+    /// exact backup. Reported instead of waiting: the engine's staging path,
+    /// destination replace, and retention prune all assume a single writer per
+    /// unit, and two runs of one unit a second apart produce a torn snapshot
+    /// recorded as a success.
+    #[error(
+        "backup '{name}' is already running ({holder}); wait for it to finish or stop the other run"
+    )]
+    Busy { name: String, holder: String },
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -154,6 +154,15 @@ pub(crate) fn resolve_daemon_modules(
 /// down working state. A benign never-synced cache-miss is NOT an error — it is
 /// handled inside `load_sources_cached` as warn+skip, so it stays a happy path
 /// and reconcile proceeds local-only.
+///
+/// ONE caller degrades instead of skipping: the backup timer resolution
+/// ([`backup::resolve_backup_tasks`]) falls back to the local set and marks it
+/// `degraded`. The reasoning above does not transfer to it — a backup prunes
+/// only its own recorded runs and writes only into its own destination, so the
+/// local set cannot uninstall anything, while skipping would silently stop the
+/// machine's backups. The degradation is bounded rather than swallowed: it is
+/// visible in the startup banner, it is refused outright on a reload (the
+/// running set is kept), and it re-resolves on a timer until it succeeds.
 pub(crate) fn compose_daemon_desired_state(
     cfg: &config::CfgdConfig,
     local: &ResolvedProfile,
@@ -532,7 +541,7 @@ mod sync;
 #[cfg(test)]
 mod tests;
 
-use backup::BackupTask;
+use backup::BackupTimers;
 use checkin::*;
 use daemon_config::*;
 use git::*;
@@ -580,9 +589,10 @@ pub(super) struct PreLoopSetup {
     pub initial_source_status: Vec<SourceStatus>,
     pub managed_paths: Vec<PathBuf>,
     pub reconcile_tasks: Vec<ReconcileTask>,
-    /// One timer per SCHEDULED `spec.backups[]` entry. Schedule-less entries
-    /// are absent — those run during `cfgd apply`.
-    pub backup_tasks: Vec<BackupTask>,
+    /// One timer per SCHEDULED `spec.backups[]` entry, plus the re-resolve
+    /// deadline a degraded resolution arms. Schedule-less entries are absent —
+    /// those run during `cfgd apply`.
+    pub backup_timers: BackupTimers,
     pub shortest_reconcile: Duration,
     pub shortest_sync: Duration,
     pub server_checkin_url: Option<String>,
@@ -600,6 +610,7 @@ pub(super) fn build_pre_loop_setup(
     hooks: &dyn DaemonHooks,
     scope: crate::Scope,
     printer: &Printer,
+    state_dir: Option<&Path>,
 ) -> Result<PreLoopSetup> {
     let cfg = config::load_config(config_path)?;
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
@@ -675,8 +686,30 @@ pub(super) fn build_pre_loop_setup(
         .min()
         .unwrap_or(parsed.sync_interval);
 
-    let backup_tasks =
-        backup::resolve_backup_tasks(&cfg, config_path, profile_override, printer, scope);
+    let now = std::time::Instant::now();
+    // A profile that will not resolve leaves the daemon with no timers AND no
+    // retry: the reconcile path reports the same failure every tick, so a
+    // second voice repeating it every five minutes buys nothing. Composition
+    // failure is the opposite — invisible elsewhere, and self-healing — so
+    // `BackupTimers::new` arms the retry for it.
+    let backup_timers = match backup::resolve_backup_tasks(
+        &cfg,
+        config_path,
+        profile_override,
+        printer,
+        scope,
+        state_dir,
+        now,
+    ) {
+        Ok(resolved) => BackupTimers::new(resolved, now),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "backup timers: profile resolution failed — no scheduled backups installed"
+            );
+            BackupTimers::empty()
+        }
+    };
 
     let server_checkin_url = find_server_url(&cfg);
 
@@ -691,7 +724,7 @@ pub(super) fn build_pre_loop_setup(
         initial_source_status,
         managed_paths,
         reconcile_tasks,
-        backup_tasks,
+        backup_timers,
         shortest_reconcile,
         shortest_sync,
         server_checkin_url,
@@ -827,21 +860,32 @@ pub(super) async fn run_daemon_with(
     printer.heading("Daemon");
     printer.status_simple(Role::Info, "Starting cfgd daemon...");
 
+    let ipc_path = overrides
+        .ipc_path
+        .clone()
+        .unwrap_or_else(|| resolve_default_ipc_path(None, overrides.scope));
+    // Ahead of the config work: a second daemon cannot start whatever the
+    // config says, and composing sources first meant the loser printed a
+    // profile's worth of warnings before finding that out.
+    check_already_running(&ipc_path, overrides.scope)?;
+
+    // Materialize the state dir from scope when no explicit override is given,
+    // so every downstream site (reconcile ticks, /drift endpoint, the backup
+    // timers' restart seeding) all agree on the same path rather than each
+    // re-deriving it independently from scope.
+    let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
+        Some(ref d) => Some(d.clone()),
+        None => crate::state::default_state_dir_for(overrides.scope).ok(),
+    };
+
     let setup = build_pre_loop_setup(
         &config_path,
         profile_override.as_deref(),
         &*hooks,
         overrides.scope,
         &printer,
+        resolved_state_dir.as_deref(),
     )?;
-
-    // Materialize the state dir from scope when no explicit override is given,
-    // so every downstream site (reconcile ticks, /drift endpoint) all agree on
-    // the same path rather than each re-deriving it independently from scope.
-    let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
-        Some(ref d) => Some(d.clone()),
-        None => crate::state::default_state_dir_for(overrides.scope).ok(),
-    };
 
     let (daemon_state, state_dir_warning) =
         init_daemon_state_with_warning(resolved_state_dir.as_deref(), overrides.scope);
@@ -870,12 +914,6 @@ pub(super) async fn run_daemon_with(
         (Some(file_rx), Some(watcher))
     };
 
-    let ipc_path = overrides
-        .ipc_path
-        .clone()
-        .unwrap_or_else(|| resolve_default_ipc_path(None, overrides.scope));
-    check_already_running(&ipc_path, overrides.scope)?;
-
     // Start health server (skippable in tests that don't need /healthz).
     let health_handle = if overrides.skip_health_server {
         None
@@ -892,7 +930,8 @@ pub(super) async fn run_daemon_with(
     let intervals = format_interval_lines(
         &setup.parsed,
         setup.compliance_interval,
-        setup.backup_tasks.len(),
+        setup.backup_timers.len(),
+        setup.backup_timers.is_degraded(),
     );
     print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
 
@@ -913,6 +952,8 @@ pub(super) async fn run_daemon_with(
             message: format!("startup check-in task failed: {}", e),
         })?;
     }
+
+    let abort = Arc::new(crate::AbortFlag::new());
 
     // Shared atomics: SIGHUP updates these so pump tasks pick up the new
     // cadence on the next tick. (See `runner::apply_sighup_reload`.)
@@ -974,8 +1015,13 @@ pub(super) async fn run_daemon_with(
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_printer = Arc::clone(&printer);
+        let shutdown_abort = Arc::clone(&abort);
         let shutdown_task = tokio::spawn(async move {
-            wait_for_shutdown(shutdown_printer).await;
+            let code = wait_for_shutdown(shutdown_printer).await;
+            // Raised BEFORE the trigger: the loop may be awaiting a blocking
+            // backup hook, and the select! arm that observes the trigger cannot
+            // run until that await returns. The flag is what lets it return.
+            shutdown_abort.set(code);
             let _ = shutdown_tx.send(());
         });
 
@@ -1003,6 +1049,7 @@ pub(super) async fn run_daemon_with(
 
     let ctx = DaemonLoopContext {
         state: Arc::clone(&state),
+        abort: Arc::clone(&abort),
         hooks: Arc::clone(&hooks),
         notifier: Arc::clone(&setup.notifier),
         config_path: config_path.clone(),
@@ -1022,7 +1069,7 @@ pub(super) async fn run_daemon_with(
         triggers,
         setup.reconcile_tasks,
         setup.sync_tasks,
-        setup.backup_tasks,
+        setup.backup_timers,
         reconcile_secs,
         sync_secs,
     )
@@ -1136,6 +1183,7 @@ pub(super) fn format_interval_lines(
     parsed: &ParsedDaemonConfig,
     compliance_interval: Option<Duration>,
     scheduled_backups: usize,
+    backups_degraded: bool,
 ) -> Vec<String> {
     let mut intervals = vec![format!(
         "reconcile={}s",
@@ -1152,8 +1200,17 @@ pub(super) fn format_interval_lines(
     if let Some(interval) = compliance_interval {
         intervals.push(format!("compliance={}s", interval.as_secs()));
     }
-    if scheduled_backups > 0 {
-        intervals.push(format!("backups={scheduled_backups} scheduled"));
+    if scheduled_backups > 0 || backups_degraded {
+        // The degraded note rides the count because the count alone is
+        // misleading: it is the LOCALLY-declared set, and an operator reading
+        // "backups=2 scheduled" has no way to tell that a source's third one is
+        // missing until it fails to happen.
+        let note = if backups_degraded {
+            " (source composition unavailable)"
+        } else {
+            ""
+        };
+        intervals.push(format!("backups={scheduled_backups} scheduled{note}"));
     }
     intervals
 }
@@ -1270,7 +1327,10 @@ fn spawn_sighup_pump(tx: mpsc::Sender<()>) -> Result<tokio::task::JoinHandle<()>
 
 /// Wait for SIGTERM (Unix) or Ctrl+C (any platform) and print the matching
 /// shutdown message. Returns when either fires.
-async fn wait_for_shutdown(printer: Arc<Printer>) {
+/// Block until the operator asks the daemon to stop, returning the POSIX
+/// `128 + signum` code for the signal that arrived — the value in-flight work
+/// sees through [`crate::AbortFlag::aborted`].
+async fn wait_for_shutdown(printer: Arc<Printer>) -> u8 {
     #[cfg(unix)]
     {
         let sigterm = async {
@@ -1287,9 +1347,11 @@ async fn wait_for_shutdown(printer: Arc<Printer>) {
         tokio::select! {
             _ = sigterm => {
                 printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon...");
+                143
             }
             _ = tokio::signal::ctrl_c() => {
                 printer.status_simple(Role::Info, "Shutting down daemon...");
+                130
             }
         }
     }
@@ -1297,6 +1359,7 @@ async fn wait_for_shutdown(printer: Arc<Printer>) {
     {
         let _ = tokio::signal::ctrl_c().await;
         printer.status_simple(Role::Info, "Shutting down daemon...");
+        130
     }
 }
 

@@ -4486,7 +4486,14 @@ fn generate_launchd_plist_contains_correct_structure() {
     let config = Path::new("/Users/testuser/.config/cfgd/config.yaml");
     let home = Path::new("/Users/testuser");
 
-    let plist = generate_launchd_plist(binary, config, None, home, crate::Scope::User);
+    let plist = generate_launchd_plist(
+        binary,
+        config,
+        None,
+        home,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     assert!(
         plist.contains("<?xml version=\"1.0\""),
@@ -4551,7 +4558,14 @@ fn generate_launchd_plist_with_profile() {
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(binary, config, Some("work"), home, crate::Scope::User);
+    let plist = generate_launchd_plist(
+        binary,
+        config,
+        Some("work"),
+        home,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -4588,7 +4602,13 @@ fn generate_systemd_unit_contains_correct_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, None, crate::Scope::User);
+    let unit = generate_systemd_unit(
+        binary,
+        config,
+        None,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     assert!(
         unit.contains("[Unit]"),
@@ -4645,7 +4665,13 @@ fn generate_systemd_unit_with_profile() {
     let binary = Path::new("/opt/bin/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, Some("server"), crate::Scope::User);
+    let unit = generate_systemd_unit(
+        binary,
+        config,
+        Some("server"),
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     assert!(
         unit.contains(
@@ -4670,8 +4696,14 @@ fn install_then_uninstall_launchd_service_round_trips_plist() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_launchd_service(&binary, &config, Some("work"), crate::Scope::User)
-        .expect("install ok");
+    install_launchd_service(
+        &binary,
+        &config,
+        Some("work"),
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+    .expect("install ok");
 
     let plist = tmp
         .path()
@@ -4707,7 +4739,14 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_systemd_service(&binary, &config, None, crate::Scope::User).expect("install ok");
+    install_systemd_service(
+        &binary,
+        &config,
+        None,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+    .expect("install ok");
 
     let unit_path = tmp.path().join(".config/systemd/user/cfgd.service");
     assert!(unit_path.exists(), "unit should be installed");
@@ -4744,8 +4783,13 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    crate::daemon::service::install_service(&config, None, crate::Scope::User)
-        .expect("install_service ok");
+    crate::daemon::service::install_service(
+        &config,
+        None,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+    .expect("install_service ok");
     // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
     // panic. Skip exists() assertions — the dispatcher branch depends on
     // target_os and we just want both arms exercised.
@@ -6738,7 +6782,14 @@ fn generate_launchd_plist_xml_structure_complete() {
     let config = Path::new("/Users/alice/.config/cfgd/config.yaml");
     let home = Path::new("/Users/alice");
 
-    let plist = generate_launchd_plist(binary, config, None, home, crate::Scope::User);
+    let plist = generate_launchd_plist(
+        binary,
+        config,
+        None,
+        home,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     // Verify required XML structure
     assert!(
@@ -6803,7 +6854,14 @@ fn generate_launchd_plist_includes_profile_flag() {
     let config = Path::new("/home/user/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(binary, config, Some("work"), home, crate::Scope::User);
+    let plist = generate_launchd_plist(
+        binary,
+        config,
+        Some("work"),
+        home,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -6844,7 +6902,13 @@ fn generate_systemd_unit_complete_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, None, crate::Scope::User);
+    let unit = generate_systemd_unit(
+        binary,
+        config,
+        None,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     assert!(unit.contains("[Unit]"), "should contain [Unit] section");
     assert!(
@@ -6900,7 +6964,13 @@ fn generate_systemd_unit_includes_profile() {
     let binary = Path::new("/opt/cfgd/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, Some("server"), crate::Scope::User);
+    let unit = generate_systemd_unit(
+        binary,
+        config,
+        Some("server"),
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    );
 
     let expected_exec = format!(
         "ExecStart={} --config {} --profile {} --quiet daemon",
@@ -7473,6 +7543,7 @@ mod harness {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(NoopHooks),
@@ -7615,8 +7686,8 @@ mod harness {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
         let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_tasks = Vec::new();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
+        let mut backup_timers = crate::daemon::BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("Config reload failed"),
@@ -7640,8 +7711,8 @@ mod harness {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
         let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_tasks = Vec::new();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
+        let mut backup_timers = crate::daemon::BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("Timer intervals reloaded"),
@@ -7664,8 +7735,8 @@ mod harness {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
         let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_tasks = Vec::new();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
+        let mut backup_timers = crate::daemon::BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("timer intervals and backup schedules only"),
@@ -7691,8 +7762,8 @@ mod harness {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
         let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_tasks = Vec::new();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_tasks);
+        let mut backup_timers = crate::daemon::BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("no timer changes detected"),
@@ -7983,7 +8054,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8018,7 +8089,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8054,7 +8125,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8086,7 +8157,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8116,7 +8187,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8251,6 +8322,7 @@ mod harness {
         let printer = Arc::new(printer);
         let (ran_tx, ran_rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingPlanFilesHooks { ran: ran_tx }),
@@ -8298,7 +8370,7 @@ mod harness {
             triggers,
             tasks,
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8335,6 +8407,7 @@ mod harness {
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingRegistryHooks),
@@ -8357,7 +8430,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8408,7 +8481,7 @@ mod harness {
             triggers,
             reconcile_tasks,
             sync_tasks,
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8450,7 +8523,7 @@ mod harness {
             triggers,
             reconcile_tasks,
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8490,7 +8563,7 @@ mod harness {
             triggers,
             tasks,
             Vec::new(),
-            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8584,6 +8657,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
@@ -8658,6 +8732,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
@@ -8717,6 +8792,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
@@ -9116,6 +9192,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("happy setup");
 
@@ -9173,6 +9250,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("setup");
 
@@ -9204,6 +9282,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("setup");
 
@@ -9226,6 +9305,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         );
 
         match result {
@@ -9268,6 +9348,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("setup");
 
@@ -9301,6 +9382,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("setup");
 
@@ -9334,6 +9416,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("setup");
 
@@ -9369,6 +9452,7 @@ mod harness {
             &hooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
         )
         .expect("setup");
 
@@ -10008,7 +10092,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None, 0);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, false);
         assert_eq!(lines, vec!["reconcile=300s".to_string()]);
     }
 
@@ -10025,7 +10109,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None, 0);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, false);
         assert_eq!(
             lines,
             vec![
@@ -10048,8 +10132,12 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines =
-            super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(900)), 0);
+        let lines = super::super::format_interval_lines(
+            &parsed,
+            Some(StdDuration::from_secs(900)),
+            0,
+            false,
+        );
         assert_eq!(
             lines,
             vec!["reconcile=30s".to_string(), "compliance=900s".to_string()]
@@ -10688,7 +10776,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None, 0);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, false);
         assert_eq!(
             lines,
             vec![
@@ -10711,8 +10799,12 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines =
-            super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(600)), 0);
+        let lines = super::super::format_interval_lines(
+            &parsed,
+            Some(StdDuration::from_secs(600)),
+            0,
+            false,
+        );
         assert_eq!(
             lines,
             vec![
@@ -13005,7 +13097,8 @@ mod backup_timers {
     use super::harness::{make_test_ctx, make_triggers, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
-        BackupSchedule, BackupTask, build_backup_tasks, reload_backup_tasks,
+        BackupSchedule, BackupTask, BackupTimers, ResolvedBackupTasks, build_backup_tasks,
+        reload_backup_tasks, resolve_backup_tasks,
     };
     use crate::state::StateStore;
     use std::sync::atomic::AtomicU64;
@@ -13021,8 +13114,30 @@ mod backup_timers {
     }
 
     fn task(name: &str, source: &Path, schedule: &str, now: Instant) -> BackupTask {
-        BackupTask::new(&spec(name, source, Some(schedule)), "workstation", now)
-            .expect("schedule should install a timer")
+        BackupTask::new(
+            &spec(name, source, Some(schedule)),
+            "workstation",
+            now,
+            None,
+        )
+        .expect("schedule should install a timer")
+    }
+
+    /// A clean (non-degraded) timer set around `tasks` — the shape a healthy
+    /// resolution produces.
+    fn timers(tasks: Vec<BackupTask>) -> BackupTimers {
+        BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks,
+                degraded: false,
+            },
+            Instant::now(),
+        )
+    }
+
+    /// No recorded history — every unit's interval starts from now.
+    fn no_history(_: &str) -> Option<String> {
+        None
     }
 
     /// Write a config plus a `default` profile whose `spec.backups` block is
@@ -13179,7 +13294,7 @@ mod backup_timers {
             spec("scheduled", Path::new("/tmp/a"), Some("1h")),
             spec("apply-time", Path::new("/tmp/b"), None),
         ];
-        let tasks = build_backup_tasks(&specs, "workstation", now);
+        let tasks = build_backup_tasks(&specs, "workstation", now, &no_history);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].spec.name, "scheduled");
         assert_eq!(tasks[0].profile_name, "workstation");
@@ -13188,25 +13303,25 @@ mod backup_timers {
     #[test]
     fn an_unparseable_schedule_installs_no_timer() {
         let specs = vec![spec("broken", Path::new("/tmp/a"), Some("every tuesday"))];
-        assert!(build_backup_tasks(&specs, "workstation", Instant::now()).is_empty());
+        assert!(build_backup_tasks(&specs, "workstation", Instant::now(), &no_history).is_empty());
     }
 
     #[test]
     fn next_backup_deadline_takes_the_soonest_of_the_set() {
         let now = Instant::now();
-        let tasks = vec![
+        let set = timers(vec![
             task("late", Path::new("/tmp/a"), "1h", now),
             task("soon", Path::new("/tmp/b"), "30s", now),
-        ];
+        ]);
         assert_eq!(
-            runner::next_backup_deadline(&tasks),
+            runner::next_backup_deadline(&set),
             now + StdDuration::from_secs(30)
         );
     }
 
     #[test]
     fn next_backup_deadline_parks_when_nothing_is_scheduled() {
-        let deadline = runner::next_backup_deadline(&[]);
+        let deadline = runner::next_backup_deadline(&BackupTimers::empty());
         assert!(
             deadline > Instant::now() + StdDuration::from_secs(60),
             "an empty timer set must park rather than spin the loop"
@@ -13284,11 +13399,11 @@ mod backup_timers {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
-        let mut tasks = Vec::new();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut tasks);
-        let names: Vec<&str> = tasks.iter().map(|t| t.spec.name.as_str()).collect();
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let names: Vec<&str> = set.tasks().iter().map(|t| t.spec.name.as_str()).collect();
         assert_eq!(names, vec!["kept", "dropped"], "startup-equivalent rebuild");
-        let kept_deadline = tasks[0].next_fire();
+        let kept_deadline = set.tasks()[0].next_fire();
 
         // Drop one, reschedule the survivor, add a new one.
         write_config_with_backups(
@@ -13297,11 +13412,11 @@ mod backup_timers {
                 "    - name: kept\n      source: {posix}\n      schedule: 15m\n    - name: added\n      source: {posix}\n      schedule: 1h\n"
             ),
         );
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut tasks);
-        let names: Vec<&str> = tasks.iter().map(|t| t.spec.name.as_str()).collect();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let names: Vec<&str> = set.tasks().iter().map(|t| t.spec.name.as_str()).collect();
         assert_eq!(names, vec!["kept", "added"]);
         assert_ne!(
-            tasks[0].next_fire(),
+            set.tasks()[0].next_fire(),
             kept_deadline,
             "a changed schedule re-arms the timer"
         );
@@ -13327,10 +13442,11 @@ mod backup_timers {
             ),
         );
         let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
-        let mut tasks = Vec::new();
-        runner::apply_sighup_reload(&ctx, &AtomicU64::new(300), &AtomicU64::new(300), &mut tasks);
-        assert!(
-            tasks.is_empty(),
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &AtomicU64::new(300), &AtomicU64::new(300), &mut set);
+        assert_eq!(
+            set.len(),
+            0,
             "a schedule-less backup belongs to apply, not to the daemon"
         );
     }
@@ -13347,8 +13463,8 @@ mod backup_timers {
         ctx.config_path = write_config_with_backups(&tmp, "");
 
         let past = Instant::now() - StdDuration::from_secs(5);
-        let mut tasks = vec![task("db", &source, "1s", past)];
-        runner::handle_backup_tick(&ctx, &mut tasks).await.unwrap();
+        let mut set = timers(vec![task("db", &source, "1s", past)]);
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
 
         let store = StateStore::open_in_dir(tmp.path()).unwrap();
         let record = store
@@ -13368,7 +13484,7 @@ mod backup_timers {
         );
         assert!(snapshot.exists(), "snapshot missing at {snapshot:?}");
         assert!(
-            tasks[0].next_fire() > Instant::now(),
+            set.tasks()[0].next_fire() > Instant::now(),
             "the fired unit must be re-armed"
         );
     }
@@ -13382,11 +13498,11 @@ mod backup_timers {
         let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = write_config_with_backups(&tmp, "");
 
-        let mut tasks = vec![task("db", &source, "1h", Instant::now())];
-        let armed = tasks[0].next_fire();
-        runner::handle_backup_tick(&ctx, &mut tasks).await.unwrap();
+        let mut set = timers(vec![task("db", &source, "1h", Instant::now())]);
+        let armed = set.tasks()[0].next_fire();
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
 
-        assert_eq!(tasks[0].next_fire(), armed, "deadline must not move");
+        assert_eq!(set.tasks()[0].next_fire(), armed, "deadline must not move");
         let store = StateStore::open_in_dir(tmp.path()).unwrap();
         assert!(
             store.latest_backup_run("db").unwrap().is_none(),
@@ -13419,9 +13535,10 @@ mod backup_timers {
         s.pre_backup = vec![config::ScriptEntry::Simple(run)];
 
         let past = Instant::now() - StdDuration::from_secs(5);
-        let mut tasks =
-            vec![BackupTask::new(&s, "workstation", past).expect("schedule installs a timer")];
-        runner::handle_backup_tick(&ctx, &mut tasks).await.unwrap();
+        let mut set = timers(vec![
+            BackupTask::new(&s, "workstation", past, None).expect("schedule installs a timer"),
+        ]);
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
 
         let contents = std::fs::read_to_string(&marker)
             .expect("preBackup hook should have run")
@@ -13439,8 +13556,8 @@ mod backup_timers {
         ctx.config_path = write_config_with_backups(&tmp, "");
 
         let past = Instant::now() - StdDuration::from_secs(5);
-        let mut tasks = vec![task("db", &missing, "1s", past)];
-        runner::handle_backup_tick(&ctx, &mut tasks)
+        let mut set = timers(vec![task("db", &missing, "1s", past)]);
+        runner::handle_backup_tick(&ctx, &mut set)
             .await
             .expect("an operational failure is recorded, never propagated");
 
@@ -13462,13 +13579,13 @@ mod backup_timers {
         ctx.config_path = write_config_with_backups(&tmp, "");
         let (triggers, senders) = make_triggers();
 
-        let tasks = vec![task("db", &source, "1s", Instant::now())];
+        let set = timers(vec![task("db", &source, "1s", Instant::now())]);
         let handle = tokio::spawn(runner::run_daemon_loop(
             ctx,
             triggers,
             Vec::new(),
             Vec::new(),
-            tasks,
+            set,
             Arc::new(AtomicU64::new(300)),
             Arc::new(AtomicU64::new(300)),
         ));
@@ -13489,5 +13606,401 @@ mod backup_timers {
 
         senders.shutdown_tx.send(()).unwrap();
         handle.await.unwrap().unwrap();
+    }
+
+    // ----- restart seeding of interval schedules -----
+
+    /// An ISO 8601 timestamp `ago` in the past — the shape `finished_at` holds.
+    fn finished_secs_ago(ago: u64) -> String {
+        crate::unix_secs_to_iso8601(crate::unix_secs_now() - ago)
+    }
+
+    /// Assert `actual` sits within a second of `expected` — the seeding
+    /// arithmetic reads two clocks, so an exact match would be flaky.
+    fn assert_fires_near(actual: Instant, expected: Instant) {
+        let slack = StdDuration::from_secs(2);
+        assert!(
+            actual >= expected.checked_sub(slack).unwrap() && actual <= expected + slack,
+            "next fire is off by more than {slack:?}"
+        );
+    }
+
+    #[test]
+    fn an_interval_schedule_resumes_from_the_last_recorded_run() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some(&finished_secs_ago(1800)),
+        )
+        .expect("timer installs");
+        // Half the period has already elapsed, so only half is left — NOT a
+        // fresh hour, which is what makes a daily backup on a daily-rebooted
+        // machine never fire.
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(1800));
+    }
+
+    #[test]
+    fn an_overdue_interval_schedule_fires_promptly_after_a_restart() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some(&finished_secs_ago(7200)),
+        )
+        .expect("timer installs");
+        assert!(
+            t.is_due(now),
+            "a unit whose period elapsed while the machine was down is due now"
+        );
+    }
+
+    #[test]
+    fn an_interval_schedule_with_no_history_starts_a_full_period_out() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            None,
+        )
+        .expect("timer installs");
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_recorded_run_in_the_future_falls_back_to_a_full_period() {
+        let now = Instant::now();
+        let future = crate::unix_secs_to_iso8601(crate::unix_secs_now() + 3600);
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some(&future),
+        )
+        .expect("timer installs");
+        // A stepped-back clock or a state dir carried over from another machine
+        // must not arm a deadline in the past.
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
+    }
+
+    #[test]
+    fn an_unparseable_recorded_timestamp_falls_back_to_a_full_period() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some("not-a-timestamp"),
+        )
+        .expect("timer installs");
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_cron_schedule_ignores_the_last_run() {
+        let now = Instant::now();
+        let seeded = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("0 3 * * *")),
+            "workstation",
+            now,
+            Some(&finished_secs_ago(86_400 * 7)),
+        )
+        .expect("timer installs");
+        let unseeded = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("0 3 * * *")),
+            "workstation",
+            now,
+            None,
+        )
+        .expect("timer installs");
+        // Cron occurrences are absolute wall-clock times: the next 3am is the
+        // next 3am no matter how many were slept through.
+        assert_fires_near(seeded.next_fire(), unseeded.next_fire());
+    }
+
+    #[test]
+    fn resolve_seeds_the_timer_set_from_the_state_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let state_dir = tmp.path().join("state");
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        store
+            .record_backup_run(&crate::state::BackupRunDraft {
+                name: "db".to_string(),
+                source: crate::to_posix_string(&source),
+                destination_path: Some("/snap".to_string()),
+                size_bytes: Some(1),
+                status: crate::state::BackupRunStatus::Success,
+                error: None,
+                started_at: finished_secs_ago(1830),
+                finished_at: finished_secs_ago(1800),
+            })
+            .unwrap();
+
+        let cfg = config::load_config(&config_path).unwrap();
+        let (printer, _) = crate::output::Printer::for_test();
+        let now = Instant::now();
+        let resolved = resolve_backup_tasks(
+            &cfg,
+            &config_path,
+            None,
+            &printer,
+            crate::Scope::User,
+            Some(&state_dir),
+            now,
+        )
+        .expect("a valid profile resolves");
+
+        assert_eq!(resolved.tasks.len(), 1);
+        assert!(!resolved.degraded);
+        assert_fires_near(
+            resolved.tasks[0].next_fire(),
+            now + StdDuration::from_secs(1800),
+        );
+    }
+
+    #[test]
+    fn resolve_reports_an_unresolvable_profile_rather_than_an_empty_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: missing\n",
+        )
+        .unwrap();
+        let cfg = config::load_config(&config_path).unwrap();
+        let (printer, _) = crate::output::Printer::for_test();
+
+        // An `Ok(empty)` here is exactly the silent failure that let one SIGHUP
+        // wipe a working timer set: the caller could not tell "no backups" from
+        // "could not tell".
+        assert!(
+            resolve_backup_tasks(
+                &cfg,
+                &config_path,
+                None,
+                &printer,
+                crate::Scope::User,
+                None,
+                Instant::now(),
+            )
+            .is_err()
+        );
+    }
+
+    // ----- a degraded resolution is neither sticky nor destructive -----
+
+    #[test]
+    fn a_degraded_resolution_never_swaps_out_the_running_set() {
+        let now = Instant::now();
+        let mut set = timers(vec![
+            task("db", Path::new("/tmp/a"), "1h", now),
+            task("home", Path::new("/tmp/b"), "1h", now),
+        ]);
+        let armed: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+
+        let summary = set.apply_resolved(
+            ResolvedBackupTasks {
+                tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
+                degraded: true,
+            },
+            now,
+        );
+
+        assert!(
+            summary.is_none(),
+            "a degraded resolution reports no reload, because none happened"
+        );
+        assert_eq!(
+            set.len(),
+            2,
+            "the source-delivered timer must not be retired"
+        );
+        let kept: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+        assert_eq!(kept, armed, "the running deadlines must be untouched");
+        assert!(set.is_degraded(), "a degraded resolution must arm a retry");
+    }
+
+    #[test]
+    fn a_clean_resolution_clears_the_retry_and_swaps_the_set() {
+        let now = Instant::now();
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
+                degraded: true,
+            },
+            now,
+        );
+        assert!(set.is_degraded());
+
+        let summary = set
+            .apply_resolved(
+                ResolvedBackupTasks {
+                    tasks: vec![
+                        task("db", Path::new("/tmp/a"), "1h", now),
+                        task("home", Path::new("/tmp/b"), "1h", now),
+                    ],
+                    degraded: false,
+                },
+                now,
+            )
+            .expect("a clean resolution reloads");
+        assert_eq!(summary.added, 1);
+        assert_eq!(set.len(), 2);
+        assert!(!set.is_degraded());
+    }
+
+    #[test]
+    fn a_degraded_startup_holds_the_first_fire_back_past_the_retry() {
+        let now = Instant::now();
+        let set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: vec![task("db", Path::new("/tmp/a"), "1s", now)],
+                degraded: true,
+            },
+            now,
+        );
+        // Until the retry confirms these specs, a unit a source overrides may be
+        // carrying the local destination — and a run against the wrong
+        // destination prunes the source-era history out of the table.
+        assert!(
+            set.tasks()[0].next_fire() > now + StdDuration::from_secs(60),
+            "a degraded startup must not run before it has re-resolved"
+        );
+        assert!(set.is_degraded());
+    }
+
+    #[test]
+    fn sighup_over_a_broken_profile_keeps_the_running_schedules() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let posix = crate::to_posix_string(&source);
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {posix}\n      schedule: 1h\n    - name: home\n      source: {posix}\n      schedule: 6h\n"
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        assert_eq!(set.len(), 2);
+        let armed: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+        buf.lock().unwrap().clear();
+
+        // The profile the timers came from is now unreadable — a typo saved
+        // mid-edit, or a half-written file.
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "spec:\n  backups:\n   - name: [unclosed\n",
+        )
+        .unwrap();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+
+        assert_eq!(
+            set.len(),
+            2,
+            "one SIGHUP over a transient config error must not retire the machine's backups"
+        );
+        let kept: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+        assert_eq!(
+            kept, armed,
+            "the pending deadlines must survive the failure"
+        );
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedules NOT reloaded"),
+            "the operator must be told the reload was refused: {captured}"
+        );
+        assert!(
+            !captured.contains("2 removed"),
+            "a refused reload must never report the running set as removed: {captured}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_due_retry_re_resolves_and_restores_the_timer_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+
+        // A startup that could not compose sources: no timers, retry armed and
+        // already due (the daemon has been up longer than the retry window).
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: Vec::new(),
+                degraded: true,
+            },
+            Instant::now() - StdDuration::from_secs(3600),
+        );
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(
+            set.len(),
+            1,
+            "a healed config must restore the timers without a restart or a SIGHUP"
+        );
+        assert!(!set.is_degraded());
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedules restored: 1 scheduled"),
+            "the recovery must be visible: {captured}"
+        );
+    }
+
+    #[test]
+    fn the_startup_banner_says_when_the_timer_set_is_degraded() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(300),
+            sync_interval: StdDuration::from_secs(300),
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+        };
+        let clean = crate::daemon::format_interval_lines(&parsed, None, 2, false);
+        assert!(clean.iter().any(|l| l == "backups=2 scheduled"));
+
+        let degraded = crate::daemon::format_interval_lines(&parsed, None, 2, true);
+        // "backups=2 scheduled" alone is a lie when a source's third one is
+        // missing from the set.
+        assert!(
+            degraded
+                .iter()
+                .any(|l| l == "backups=2 scheduled (source composition unavailable)"),
+            "got: {degraded:?}"
+        );
     }
 }

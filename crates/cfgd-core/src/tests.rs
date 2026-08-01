@@ -530,6 +530,45 @@ fn acquire_apply_lock_detects_contention() {
 }
 
 #[test]
+fn a_held_lock_reports_the_holding_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = acquire_apply_lock(dir.path()).unwrap();
+    let err = acquire_apply_lock(dir.path()).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains(&format!("pid {}", std::process::id())),
+        "the refusal must name who to go look at: {err}"
+    );
+}
+
+#[test]
+fn a_lock_with_no_recorded_pid_says_so_rather_than_printing_a_bare_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let guard = acquire_backup_lock(dir.path(), "db").unwrap();
+    // A holder that has not yet written its PID, or a non-cfgd holder such as
+    // `flock(1)`, leaves the file empty.
+    std::fs::write(dir.path().join("locks").join("backup-db.lock"), b"").unwrap();
+    let err = acquire_backup_lock(dir.path(), "db").unwrap_err();
+    assert!(
+        err.to_string().contains("unknown pid"),
+        "an unnamed holder must not render as a bare `pid `: {err}"
+    );
+    drop(guard);
+}
+
+#[test]
+fn backup_locks_are_per_unit_and_live_under_the_locks_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let _db = acquire_backup_lock(dir.path(), "db").unwrap();
+    // A different unit is unaffected — the lock must not serialize the whole
+    // machine's backups behind one slow one.
+    let _home = acquire_backup_lock(dir.path(), "home").expect("a different unit must not block");
+    assert!(dir.path().join("locks").join("backup-db.lock").exists());
+    assert!(dir.path().join("locks").join("backup-home.lock").exists());
+    assert!(acquire_backup_lock(dir.path(), "db").is_err());
+}
+
+#[test]
 fn merge_aliases_override_by_name() {
     let mut base = vec![
         config::ShellAlias {

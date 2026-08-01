@@ -230,6 +230,16 @@ Fields that **do** reload on SIGHUP:
   `schedule` did not change keeps its pending deadline rather than restarting
   the clock)
 
+The backup-timer swap is all-or-nothing. A reload whose config does not fully
+resolve — a profile saved mid-edit, a source cache being rewritten — keeps the
+schedules already running and retries on its own, rather than swapping in a
+partial set:
+
+```sh
+# → status: "Backup schedules NOT reloaded: config did not fully resolve —
+#            keeping the 2 running schedule(s), retrying automatically"
+```
+
 Fields that **require a daemon restart** to take effect:
 - `profile` (active-profile change)
 - `sources` list (add / remove / re-prioritize)
@@ -292,7 +302,17 @@ and loaded with `launchctl bootstrap system`. Logs go to `/var/log/cfgd.log` and
 
 The generated service bakes `--scope system` into `ExecStart` (Linux) and `ProgramArguments`
 (macOS), so the daemon and any `cfgd --scope system <command>` admin-CLI invocations resolve
-the same roots. Path defaults under system scope:
+the same roots. Any `--state-dir` / `--runtime-dir` the install itself ran under is baked in the
+same way — the installed service is a fresh process with none of the invoking shell's flags, so
+without that the daemon would write its state somewhere the CLI never looks:
+
+```bash
+sudo cfgd --scope system --state-dir /srv/cfgd/state daemon install
+# ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/cfgd.yaml --scope system \
+#           --state-dir /srv/cfgd/state --quiet daemon
+```
+
+Path defaults under system scope:
 
 | Root | Linux | macOS |
 |---|---|---|

@@ -713,8 +713,14 @@ An unknown name given to `cfgd backup run` is exit code `6` (see [Exit Codes](#e
 lists every valid name. A run that recorded a failure — a bad copy, or `postBackup` erroring after
 a good one — also exits nonzero.
 
+A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
+rather than interleaved: `backup run` reports the holding process and exits `1`, while the other
+units it was asked to run still run. See
+[One run at a time](backups.md#run-semantics).
+
 Structured output (`-o json`) payload for `backup run`: an array of
-`{ name, status, clean, destinationPath?, error? }`. For `backup list`: an array of
+`{ name, status, clean, destinationPath?, error? }`, where `status` is `success`, `failed`, or
+`skipped` (the unit was already running). For `backup list`: an array of
 `{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean? }`.
 
 `backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`

@@ -523,6 +523,32 @@ pub fn run_apply(
             // failed for exit-code purposes, and keep going.
             let record = match cfgd_core::backup::run_backup(&unit, &state, printer) {
                 Ok(record) => record,
+                // Another surface (a daemon timer fire, a hand-run) holds this
+                // unit's lock, so the unit IS being backed up right now — just
+                // not by us. Skipping is the correct outcome of the engine's
+                // one-writer-per-unit rule, not an apply failure, so it does
+                // not move the exit code; the structured payload still carries
+                // the skip so a script can see the run did not come from here.
+                Err(cfgd_core::errors::CfgdError::Backup(
+                    cfgd_core::errors::BackupError::Busy { holder, .. },
+                )) => {
+                    printer
+                        .status(Role::Skipped, format!("backup '{backup_name}'"))
+                        .detail(format!("already running ({holder})"));
+                    tracing::info!(
+                        backup = %backup_name,
+                        holder = %holder,
+                        "backup already running elsewhere; skipped"
+                    );
+                    backup_outputs.push(BackupRunOutput {
+                        name: backup_name.clone(),
+                        status: "skipped".to_string(),
+                        destination_path: None,
+                        clean: false,
+                        error: Some(format!("already running ({holder})")),
+                    });
+                    continue;
+                }
                 Err(e) => {
                     printer
                         .status(Role::Fail, format!("backup '{backup_name}'"))

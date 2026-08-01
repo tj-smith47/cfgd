@@ -608,3 +608,69 @@ fn backup_timestamp_span(window: &[char]) -> Option<usize> {
     }
     Some(16)
 }
+
+#[test]
+fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
+    // The engine allows one writer per unit. `backup run` with no name must not
+    // abandon the rest of the set over one unit another process holds — but the
+    // command still fails, because a run the user asked for did not happen.
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
+
+    let err = cmd_backup_run(&cli, &printer, None).unwrap_err();
+    drop(printer);
+
+    let human = strip_ansi(&cap.human());
+    assert!(
+        human.contains("already running"),
+        "the busy unit must be reported: {human}"
+    );
+    assert!(
+        err.to_string().contains("docs") && err.to_string().contains("already running"),
+        "the command must fail naming the busy unit: {err}"
+    );
+    assert!(
+        !state_dir.path().join("backups").join("docs").exists(),
+        "a refused run must not touch the busy unit's destination"
+    );
+    assert_eq!(
+        std::fs::read_dir(state_dir.path().join("backups").join("weekly"))
+            .expect("the unblocked unit must still have run")
+            .count(),
+        1,
+        "one unit's collision must not abandon the rest of the set"
+    );
+}
+
+#[test]
+fn apply_skips_a_busy_backup_without_failing_the_apply() {
+    // Unlike `backup run`, apply did not ask for this specific unit — the unit
+    // IS being backed up, just by whoever holds the lock — so the skip is
+    // reported and the apply stays clean.
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
+
+    let result = run_apply(&cli, &printer, &apply_args()).expect("apply must not error");
+    drop(printer);
+
+    let human = strip_ansi(&cap.human());
+    assert!(
+        human.contains("already running"),
+        "the skip must be visible: {human}"
+    );
+    assert_eq!(
+        result.status,
+        cfgd_core::state::ApplyStatus::Success,
+        "a unit another process is backing up is not an apply failure"
+    );
+    assert!(
+        !state_dir.path().join("backups").join("docs").exists(),
+        "a skipped unit's destination must be untouched"
+    );
+}

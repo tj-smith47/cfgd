@@ -17,6 +17,7 @@ pub fn service_binpath_argv(
     profile: Option<&str>,
     enable_event_log: bool,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> Vec<String> {
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
@@ -35,6 +36,10 @@ pub fn service_binpath_argv(
     if scope == crate::Scope::System {
         argv.push("--scope".to_string());
         argv.push("system".to_string());
+    }
+    for (flag, dir) in super::service_dir_flags(dirs) {
+        argv.push(flag.to_string());
+        argv.push(crate::strip_windows_verbatim(&dir.display().to_string()).to_string());
     }
     if enable_event_log {
         argv.push("--enable-event-log".to_string());
@@ -68,6 +73,7 @@ pub(crate) fn install_windows_service(
     profile: Option<&str>,
     enable_event_log: bool,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> Result<()> {
     // A test with a scoped HOME override must never run real `sc.exe create`
     // against the runner — that mutates the host's service database and
@@ -83,7 +89,7 @@ pub(crate) fn install_windows_service(
     // Single source of truth for the SCM-launched argv (see service_binpath_argv):
     // rebuild the sc.exe binPath command-line string from those exact tokens so
     // the parsed contract the test pins and the string sc.exe stores never drift.
-    let argv = service_binpath_argv(config_path, profile, enable_event_log, scope);
+    let argv = service_binpath_argv(config_path, profile, enable_event_log, scope, dirs);
     let mut bin_args = format!("\"{}\"", binary_str);
     for tok in &argv {
         bin_args.push(' ');
@@ -422,6 +428,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     let mut config_path = crate::default_config_dir().join("config.yaml");
     let mut profile_override: Option<String> = None;
     let mut scope = crate::Scope::User;
+    let mut dirs = DaemonDirOverrides::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -439,6 +446,17 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
             // %ProgramData% roots the install registered against.
             "--scope" if i + 1 < args.len() => {
                 scope = crate::Scope::from_system_flag(args[i + 1] == "system");
+                i += 2;
+            }
+            // Baked into the binPath by `install_windows_service` whenever the
+            // install carried them, so the SCM-launched daemon resolves the
+            // same state/runtime roots the operator's CLI does.
+            "--state-dir" if i + 1 < args.len() => {
+                dirs.state_dir = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--runtime-dir" if i + 1 < args.len() => {
+                dirs.runtime_dir = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             _ => {
@@ -463,12 +481,10 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {
-        // Windows service has no CLI runtime or state-dir override; both fall
-        // through to env/default.
         if let Err(e) = run_daemon(
             config_path,
             profile_override,
-            DaemonDirOverrides::default(),
+            dirs,
             printer,
             hooks,
             scope,

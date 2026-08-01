@@ -233,9 +233,14 @@ seconds (`30 0 3 * * *`). Omitted means the backup runs on every apply.
 
 Setting it hands the backup to the [daemon's timers](#daemon-scheduling) and takes it out of
 apply. A cron expression is read in the machine's **local** timezone, the same as a crontab entry:
-`0 3 * * *` is 3am where the machine sits, not 3am UTC. A duration is a plain period between runs,
-measured from the daemon's start (or from its last reload), with no alignment to the wall clock —
-use cron when the run has to land at a particular time of day.
+`0 3 * * *` is 3am where the machine sits, not 3am UTC.
+
+A duration is a plain period between runs, with no alignment to the wall clock — use cron when the
+run has to land at a particular time of day. The period is measured from the unit's **last recorded
+run**, not from the daemon's start, so it survives restarts: a `schedule: 1d` backup on a laptop
+rebooted every morning still fires once a day, and a unit whose period elapsed while the machine
+was off runs shortly after the daemon comes back. With no recorded run yet, the first fire is one
+full period out.
 
 ```yaml
 backups:
@@ -244,7 +249,7 @@ backups:
     schedule: "0 3 * * *"    # 3am local, daily
   - name: scratch
     source: ~/scratch
-    schedule: 6h             # every six hours from daemon start
+    schedule: 6h             # every six hours, measured from the last run
   - name: pre-apply
     source: ~/.ssh
                              # no schedule → runs during `cfgd apply`
@@ -307,13 +312,28 @@ snapshot under a name a restore would trust.
 Every run — success or failure — is recorded in the `backup_runs` table of the state database with
 its source, destination, size, status, error, and start/finish timestamps.
 
-**One run at a time per backup.** Two concurrent runs of the same `name` can render the same
-snapshot name and prune against the same history; the delete paths are idempotent, so the worst
-outcome today is a duplicated warning, but concurrent runs of one backup are not a supported
-configuration. Each surface that drives the engine serializes its own work: `cfgd backup run` and
-`cfgd apply` run their units one after another, and the daemon runs every scheduled backup on its
-single reconcile loop. What is *not* coordinated is running `cfgd backup run` by hand at the same
-moment the daemon's timer for that same backup fires — don't.
+**One run at a time per backup, enforced.** Each run takes an exclusive lock on its own unit
+(`<state-dir>/locks/backup-<name>.lock`) for the whole run, hooks included. Two runs of one unit
+would otherwise share a staging directory and prune against the same history, and the loser's
+cleanup would land inside the winner's half-copied tree — a torn snapshot recorded as a success.
+
+The lock is per unit, not global: different backups still run at the same time. It is held by
+*every* surface with no opt-out, so a `cfgd backup run` you type while the daemon's timer for that
+same unit is firing is refused rather than interleaved:
+
+```console
+$ cfgd backup run openlist-db
+Run Backups
+
+✗ backup 'openlist-db' — already running (pid 4127)
+Error: backup 'openlist-db' is already running (pid 4127); wait for it to finish or stop the other run
+$ echo $?
+1
+```
+
+Each surface reports the collision in its own idiom: `cfgd backup run` fails (you asked for a run
+and did not get one), while `cfgd apply` and the daemon's timer report a skip and carry on — the
+unit *is* being backed up, just not by them.
 
 ## Daemon scheduling
 
@@ -355,6 +375,25 @@ Timer behaviour:
 
   ✓ Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled
   ```
+
+  The swap is all-or-nothing. A reload that cannot fully resolve the config — a profile saved
+  mid-edit, a source cache being rewritten — keeps the schedules that are already running and
+  retries on its own, so one `SIGHUP` over a transient error can never retire a working timer set:
+
+  ```console
+  ⚠ Backup schedules NOT reloaded: config did not fully resolve — keeping the 2 running schedule(s), retrying automatically
+  ```
+- **A degraded start is visible and temporary.** If sources cannot be composed at startup, the
+  daemon installs the locally-declared backups rather than none, says so in the banner, holds their
+  first fire back until it has re-resolved, and keeps retrying:
+
+  ```console
+  ✓ Intervals: reconcile=300s, backups=2 scheduled (source composition unavailable)
+  ```
+
+  ```console
+  ✓ Backup schedules restored: 3 scheduled
+  ```
 - **A unit never overlaps itself.** The daemon's loop runs one tick at a time and waits for a run to
   finish, so a unit's next fire is not even evaluated while its own run is in flight. Fires that
   elapse during a long run are **skipped**, not queued: cfgd logs how many were passed over and arms
@@ -362,6 +401,9 @@ Timer behaviour:
   runs back-to-back rather than piling up.
 - **A failed run does not stop the timer.** The failure is recorded like any other, reported on the
   daemon's output, and the unit is re-armed for its next fire.
+- **Shutdown is not held hostage by a hook.** `SIGTERM` / Ctrl-C reaches an in-flight `preBackup` or
+  `postBackup` hook, so a `systemctl stop cfgd` during a backup does not wait out the hook's own
+  timeout.
 
 ## Restoring
 
@@ -380,9 +422,11 @@ rsync -a --delete ~/.local/state/cfgd/backups/photos/Pictures.20260801T031500Z/ 
 
 ## Limitations
 
-- A missed schedule is skipped, not caught up: a daemon that was stopped over a backup's fire time
-  takes the next scheduled run, not the one it slept through.
+- A missed **cron** occurrence is skipped, not caught up: a daemon that was stopped over a `0 3 * * *`
+  fire takes the next 3am, not the one it slept through. (Interval schedules do resume from the last
+  recorded run — see [`schedule`](#schedule).)
 - Snapshots are full copies — no incremental, deduplicating, or compressed modes.
 - Symlinks inside a directory source are skipped rather than recreated.
-- Concurrent runs of one backup are unsupported (see above).
+- Concurrent runs of one backup are refused, not queued: the second caller is told who holds the
+  unit (see above).
 - `spec.backups[]` is available on the YAML/TOML profile path only; CRD parity is not implemented.

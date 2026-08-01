@@ -31,10 +31,34 @@ pub use windows::service_binpath_argv;
 // --- Service Management ---
 // launchd on macOS, systemd on Linux, Windows Service on Windows.
 
+/// The `--state-dir` / `--runtime-dir` tokens an installed service must carry,
+/// in a fixed order, for whichever of the two were set.
+///
+/// One source of truth for all three generators: the systemd unit, the launchd
+/// plist, and the Windows binPath must agree on which flags are baked in, or
+/// the same `cfgd daemon install` produces a differently-configured daemon per
+/// platform.
+pub(crate) fn service_dir_flags(dirs: &DaemonDirOverrides) -> Vec<(&'static str, &Path)> {
+    let mut flags: Vec<(&'static str, &Path)> = Vec::new();
+    if let Some(dir) = dirs.state_dir.as_deref() {
+        flags.push(("--state-dir", dir));
+    }
+    if let Some(dir) = dirs.runtime_dir.as_deref() {
+        flags.push(("--runtime-dir", dir));
+    }
+    flags
+}
+
+/// Install cfgd as a platform service.
+///
+/// `dirs` is the invoking process's `--state-dir` / `--runtime-dir`; both are
+/// baked into the generated unit so the installed daemon resolves the same
+/// directories the operator's CLI does.
 pub fn install_service(
     config_path: &Path,
     profile: Option<&str>,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> Result<()> {
     let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("cannot determine binary path: {}", e),
@@ -42,14 +66,21 @@ pub fn install_service(
     #[cfg(windows)]
     {
         let enable_event_log = read_event_log_flag(config_path);
-        install_windows_service(&cfgd_binary, config_path, profile, enable_event_log, scope)
+        install_windows_service(
+            &cfgd_binary,
+            config_path,
+            profile,
+            enable_event_log,
+            scope,
+            dirs,
+        )
     }
     #[cfg(unix)]
     {
         if cfg!(target_os = "macos") {
-            install_launchd_service(&cfgd_binary, config_path, profile, scope)
+            install_launchd_service(&cfgd_binary, config_path, profile, scope, dirs)
         } else {
-            install_systemd_service(&cfgd_binary, config_path, profile, scope)
+            install_systemd_service(&cfgd_binary, config_path, profile, scope, dirs)
         }
     }
 }

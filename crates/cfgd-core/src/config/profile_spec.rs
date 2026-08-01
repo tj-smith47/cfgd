@@ -970,8 +970,10 @@ pub struct BackupSpec {
     /// (`minute hour day month weekday`, e.g. `"0 3 * * *"`) or 6-field with a
     /// leading seconds field (`second minute hour day month weekday`, e.g.
     /// `"30 0 3 * * *"`), and are evaluated in the machine's LOCAL timezone,
-    /// like a crontab entry. Setting this hands the backup to the daemon's
-    /// timers and takes it out of apply; omitted means "run on every apply".
+    /// like a crontab entry. An interval is measured from the unit's last
+    /// recorded run, so a `"1d"` backup on a machine rebooted daily still fires
+    /// daily. Setting this hands the backup to the daemon's timers and takes it
+    /// out of apply; omitted means "run on every apply".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
     /// Number of newest snapshots to keep for this backup; older snapshots are

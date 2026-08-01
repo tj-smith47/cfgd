@@ -1233,3 +1233,180 @@ fn a_nested_pattern_creates_the_intermediate_directories() {
     assert_eq!(path, snapshot_dir(&h, "db").join("daily").join("data.db"));
     assert!(path.exists());
 }
+
+// ---------------------------------------------------------------------------
+// One writer per unit
+// ---------------------------------------------------------------------------
+
+/// A `preBackup` hook that marks `started`, then blocks long enough for another
+/// run to attempt the same unit while this one is mid-flight.
+fn slow_start_hook(started: &Path) -> ScriptEntry {
+    // native-ok: the path is interpolated into a shell command for THIS host.
+    #[cfg(unix)]
+    let run = format!("touch '{}'; sleep 2", started.display());
+    #[cfg(windows)]
+    let run = format!(
+        "type nul > \"{}\" & ping -n 3 127.0.0.1 > nul",
+        started.display()
+    );
+    hook(&run)
+}
+
+/// Run one unit against a FILE-backed store in `state_dir` — the shape two
+/// concurrent runs need, since each owns its own connection.
+fn run_against_dir(
+    spec: &BackupSpec,
+    home: &Path,
+    config_dir: &Path,
+    state_dir: &Path,
+) -> Result<BackupRunRecord> {
+    crate::with_test_home(home, || {
+        let store = StateStore::open_in_dir(state_dir).expect("file-backed store");
+        let (printer, _) = Printer::for_test();
+        let unit = BackupUnit::new(spec, config_dir, "workstation", state_dir);
+        run_backup(&unit, &store, &printer)
+    })
+}
+
+fn busy_holder(err: &crate::errors::CfgdError) -> String {
+    match err {
+        crate::errors::CfgdError::Backup(BackupError::Busy { holder, .. }) => holder.clone(),
+        other => panic!("expected a Busy error, got: {other}"),
+    }
+}
+
+#[test]
+fn a_run_is_refused_while_the_unit_lock_is_held() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let s = spec("db", &source);
+
+    let _held = crate::acquire_backup_lock(&h.state_dir(), "db").expect("take the unit lock");
+
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    let err = crate::with_test_home(&h.root, || {
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        run_backup(&unit, &h.store, &h.printer).expect_err("a held unit lock must refuse the run")
+    });
+
+    assert!(
+        busy_holder(&err).contains("pid"),
+        "the refusal must name the holder: {err}"
+    );
+    assert!(
+        h.store.latest_backup_run("db").expect("query").is_none(),
+        "a refused run is not a run — nothing may be recorded"
+    );
+    assert!(
+        !snapshot_dir(&h, "db").exists(),
+        "a refused run must not touch the destination"
+    );
+}
+
+#[test]
+fn the_unit_lock_is_released_when_the_run_finishes() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+    let s = spec("db", &source);
+
+    let first = h.run(&s);
+    assert_eq!(first.status, BackupRunStatus::Success);
+    // A second run proves the guard is not a one-shot: if the lock leaked, this
+    // is where every subsequent scheduled fire would start failing.
+    let second = h.run(&s);
+    assert_eq!(second.status, BackupRunStatus::Success);
+}
+
+#[test]
+fn two_different_units_do_not_block_each_other() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, b"payload").expect("write source");
+
+    let _held =
+        crate::acquire_backup_lock(&h.state_dir(), "other").expect("take another unit lock");
+
+    let record = h.run(&spec("db", &source));
+    assert_eq!(
+        record.status,
+        BackupRunStatus::Success,
+        "the lock is per unit, not global: {:?}",
+        record.error
+    );
+}
+
+#[test]
+fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whole() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(source.join("nested")).expect("source tree");
+    std::fs::write(source.join("one.txt"), b"first").expect("write");
+    std::fs::write(source.join("nested/two.txt"), b"second").expect("write");
+
+    let started = h.root.join("first-run-started");
+    let mut slow = spec("db", &source);
+    slow.pre_backup = vec![slow_start_hook(&started)];
+
+    let home = h.root.clone();
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    let slow_spec = slow.clone();
+    let first = std::thread::spawn(move || {
+        run_against_dir(&slow_spec, &home, &config_dir, &state_dir).expect("first run recorded")
+    });
+
+    // Sync point: the hook has fired, so the first run holds the unit lock and
+    // has not reached the copy yet.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !started.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first run's preBackup hook never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let quick = spec("db", &source);
+    let err = run_against_dir(&quick, &h.root, &h.config_dir(), &h.state_dir())
+        .expect_err("a second run of the SAME unit must be refused, not interleaved");
+    assert!(busy_holder(&err).contains("pid"), "got: {err}");
+
+    let record = first.join().expect("first run thread");
+    assert_eq!(
+        record.status,
+        BackupRunStatus::Success,
+        "the refused run must not have disturbed the one in flight: {:?}",
+        record.error
+    );
+
+    // The whole tree landed, and no staging directory survived — the torn
+    // half-copy this lock exists to prevent would show up as either a missing
+    // file or a leftover `.db.partial`.
+    let snapshot = PathBuf::from(record.destination_path.expect("artifact"));
+    assert_eq!(
+        std::fs::read_to_string(snapshot.join("one.txt")).expect("one.txt"),
+        "first"
+    );
+    assert_eq!(
+        std::fs::read_to_string(snapshot.join("nested/two.txt")).expect("two.txt"),
+        "second"
+    );
+    let leftovers: Vec<String> = snapshots(&snapshot_dir(&h, "db"))
+        .into_iter()
+        .filter(|n| n.ends_with(".partial"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a staging tree survived the run: {leftovers:?}"
+    );
+
+    let store = StateStore::open_in_dir(&h.state_dir()).expect("store");
+    assert_eq!(
+        store.backup_runs("db").expect("history").len(),
+        1,
+        "the refused run must not have recorded a row"
+    );
+}

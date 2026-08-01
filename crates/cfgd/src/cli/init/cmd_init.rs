@@ -25,6 +25,7 @@ pub struct InitArgs<'a> {
     pub apply_modules: &'a [String],
     pub cache_dir: Option<&'a Path>,
     pub state_dir: Option<&'a Path>,
+    pub runtime_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
 }
 
@@ -303,7 +304,14 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let config_path = target_dir.join("cfgd.yaml");
             let cfg = config::load_config(&config_path)?;
             let profile = cfg.spec.profile.as_deref();
-            match cfgd_core::daemon::install_service(&config_path, profile, args.scope) {
+            // The flags this `cfgd init` ran under are baked into the unit, so
+            // `cfgd --state-dir X init --install-daemon` installs a daemon that
+            // uses X rather than the scope default.
+            let dirs = cfgd_core::daemon::DaemonDirOverrides {
+                runtime_dir: args.runtime_dir.map(Path::to_path_buf),
+                state_dir: args.state_dir.map(Path::to_path_buf),
+            };
+            match cfgd_core::daemon::install_service(&config_path, profile, args.scope, &dirs) {
                 Ok(()) => {
                     printer.status_simple(Role::Ok, "Daemon service installed");
                     #[cfg(windows)]

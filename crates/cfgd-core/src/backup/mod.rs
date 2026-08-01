@@ -133,12 +133,22 @@ struct Artifact {
 ///
 /// Retention pruning runs after the record is written, so the run just taken
 /// counts toward `spec.retention`.
+///
+/// # Serialization
+///
+/// The unit's lock (`<state_dir>/locks/backup-<name>.lock`) is held for the
+/// whole run, hooks included. One unit therefore has exactly one writer no
+/// matter which surface dispatched it — a scheduled fire that lands on top of a
+/// `cfgd backup run` gets [`BackupError::Busy`] rather than a second staging
+/// tree in the same directory. Different units are unaffected: each takes its
+/// own lock and they still run concurrently.
 pub fn run_backup(
     unit: &BackupUnit<'_>,
     store: &StateStore,
     printer: &Printer,
 ) -> Result<BackupRunRecord> {
     let spec = unit.spec;
+    let _lock = acquire_unit_lock(unit)?;
     let started_at = crate::utc_now_iso8601();
     let source = unit.source();
 
@@ -176,6 +186,25 @@ pub fn run_backup(
     let record = finish(store, unit, &source, started_at, artifact, error, status)?;
     prune_retention(store, unit, printer);
     Ok(record)
+}
+
+/// Take the unit's exclusive lock, translating a held lock into the
+/// backup-shaped [`BackupError::Busy`].
+///
+/// `ApplyLockHeld` is the generic primitive's error; surfacing it verbatim
+/// would tell an operator their *apply* lock is held, which is a different
+/// mutex with different advice.
+fn acquire_unit_lock(unit: &BackupUnit<'_>) -> Result<crate::FileLockGuard> {
+    crate::acquire_backup_lock(unit.state_dir, &unit.spec.name).map_err(|e| match e {
+        crate::errors::CfgdError::State(crate::errors::StateError::ApplyLockHeld { holder }) => {
+            BackupError::Busy {
+                name: unit.spec.name.clone(),
+                holder,
+            }
+            .into()
+        }
+        other => other,
+    })
 }
 
 /// Write the run record. Split out so every exit path records the same shape.
