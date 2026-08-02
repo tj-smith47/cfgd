@@ -11,6 +11,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::path::Path;
 
 use cfgd::cli::apply::cmd_apply;
