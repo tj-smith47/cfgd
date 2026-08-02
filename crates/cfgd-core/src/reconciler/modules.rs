@@ -190,10 +190,10 @@ impl<'a> super::Reconciler<'a> {
                         None => None,
                     };
 
-                    // `Patch` rewrites the target's own content, so it is
-                    // computed here — before the backup/remove sequence below
-                    // deletes the very bytes it reads. A failure aborts with
-                    // the target still intact.
+                    // `Patch` rewrites the target's own content, so the merge is
+                    // computed against the live file here rather than against
+                    // what planning saw. A failure aborts with the target still
+                    // intact.
                     let patched = if strategy == crate::config::FileStrategy::Patch {
                         let spec = file.patch.as_ref().ok_or_else(|| {
                             crate::errors::FileError::PatchBlockMissing {

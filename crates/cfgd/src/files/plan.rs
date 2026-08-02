@@ -286,43 +286,39 @@ impl super::CfgdFileManager {
     }
 
     /// Show diffs for all managed files, with syntax highlighting.
-    /// Render and print file diffs for the profile. Returns `true` when at
-    /// least one file differs from its target (or is missing); `false` when
-    /// every managed file matches desired state. The caller uses this to
-    /// decide whether to emit `ExitCode::DriftDetected`.
-    pub fn diff(&self, profile: &MergedProfile, printer: &Printer) -> Result<bool> {
-        let mut has_diffs = false;
+    /// Render and print file diffs for the profile, returning one
+    /// [`FileDriftResult`] per managed file. The caller reports drift when any
+    /// record does not match, and serializes the records on the structured
+    /// path so `-o json` carries the same per-file detail the terminal shows.
+    pub fn diff(&self, profile: &MergedProfile, printer: &Printer) -> Result<Vec<FileDriftResult>> {
+        let mut results = Vec::new();
 
         for managed in &profile.files.managed {
             if managed.strategy == Some(FileStrategy::Patch) {
                 let target_path = expand_tilde(&managed.target);
                 let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
-                if render_patch_diff(&target_path, evaluated, printer) {
-                    has_diffs = true;
-                }
+                results.push(render_patch_diff(&target_path, evaluated, printer));
                 continue;
             }
 
             let source_path = self.resolve_source_path(&managed.source)?;
-            if self.diff_one(
+            results.push(self.diff_one(
                 &source_path,
                 &managed.target,
                 managed.origin.as_deref(),
                 printer,
-            )? {
-                has_diffs = true;
-            }
+            )?);
         }
 
-        Ok(has_diffs)
+        Ok(results)
     }
 
-    /// Render the inline content diff for a single source/target pair and report
-    /// whether it drifts. `source_path` must already be resolved; `target` is
+    /// Render the inline content diff for a single source/target pair and
+    /// return its drift record. `source_path` must already be resolved; `target` is
     /// `~`-expanded internally. A drifted target shows a unified diff; a missing
     /// target shows the would-be-created content syntax-highlighted; a missing
-    /// source emits a warning and reports no drift (mirrors the prior behavior of
-    /// skipping an unresolvable entry). Shared by the profile-file path
+    /// source emits a warning and reports a non-matching record naming it. The
+    /// record shape matches [`Self::file_drift_one`]. Shared by the profile-file path
     /// ([`Self::diff`]) and the module-file path so both render identically.
     pub fn diff_one(
         &self,
@@ -330,15 +326,23 @@ impl super::CfgdFileManager {
         target: &Path,
         origin: Option<&str>,
         printer: &Printer,
-    ) -> Result<bool> {
+    ) -> Result<FileDriftResult> {
         let target_path = expand_tilde(target);
+        let target_id = target_path.display_posix();
 
         if !source_path.exists() {
             printer.status_simple(
                 Role::Warn,
                 format!("Source not found: {}", source_path.posix()),
             );
-            return Ok(false);
+            // Reported as a non-match, not as "no drift": the desired content
+            // could not be determined, which is never the same as convergence.
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches: false,
+                expected: "managed source present".to_string(),
+                actual: format!("source not found: {}", source_path.posix()),
+            });
         }
 
         let rendered_content = if is_tera_template(source_path) {
@@ -356,17 +360,31 @@ impl super::CfgdFileManager {
                 source: e,
             })?;
 
-            if rendered_content != target_content {
+            let matches = rendered_content == target_content;
+            if !matches {
                 printer.status_simple(Role::Info, target_path.display_posix());
                 printer.diff(&target_content, &rendered_content);
-                return Ok(true);
             }
-            Ok(false)
+            Ok(FileDriftResult {
+                target: target_id,
+                matches,
+                expected: "content matches source".to_string(),
+                actual: if matches {
+                    "content matches source".to_string()
+                } else {
+                    "content differs from source".to_string()
+                },
+            })
         } else {
             printer.status_simple(Role::Info, format!("{} (new file)", target_path.posix()));
             let lang = detect_language(&target_path);
             printer.syntax_highlight(&rendered_content, &lang);
-            Ok(true)
+            Ok(FileDriftResult {
+                target: target_id,
+                matches: false,
+                expected: "present".to_string(),
+                actual: "missing".to_string(),
+            })
         }
     }
 
@@ -577,7 +595,7 @@ pub(crate) fn module_patch_binding(
     )
 }
 
-/// Render one `Patch` file's inline diff and report whether it drifts.
+/// Render one `Patch` file's inline diff and report its drift record.
 ///
 /// The counterpart of [`CfgdFileManager::diff_one`] for targets cfgd only
 /// partially owns: a converged target prints nothing, a drifted one shows
@@ -587,28 +605,26 @@ pub(crate) fn render_patch_diff(
     target: &Path,
     evaluated: Result<PatchOutcome>,
     printer: &Printer,
-) -> bool {
-    let outcome = match evaluated {
-        Ok(o) => o,
-        Err(e) => {
-            printer.status_simple(
-                Role::Warn,
-                format!("{}: {}", target.display_posix(), patch_failure_detail(&e)),
-            );
-            return true;
+) -> FileDriftResult {
+    match &evaluated {
+        Err(e) => printer.status_simple(
+            Role::Warn,
+            format!("{}: {}", target.display_posix(), patch_failure_detail(e)),
+        ),
+        Ok(outcome) if !outcome.is_up_to_date() => {
+            if target.exists() {
+                printer.status_simple(Role::Info, target.display_posix());
+                printer.diff(&outcome.current, &outcome.patched);
+            } else {
+                printer.status_simple(Role::Info, format!("{} (new file)", target.posix()));
+                printer.syntax_highlight(&outcome.patched, &detect_language(target));
+            }
         }
-    };
-    if outcome.is_up_to_date() {
-        return false;
+        Ok(_) => {}
     }
-    if target.exists() {
-        printer.status_simple(Role::Info, target.display_posix());
-        printer.diff(&outcome.current, &outcome.patched);
-    } else {
-        printer.status_simple(Role::Info, format!("{} (new file)", target.posix()));
-        printer.syntax_highlight(&outcome.patched, &detect_language(target));
-    }
-    true
+    // One record shape for the rendered and the silent path, so `diff -o json`
+    // and `verify -o json` cannot describe the same file differently.
+    patch_drift_result(target, evaluated)
 }
 
 /// Drift outcome for one `Patch` file: converged when re-running the merge over
@@ -1211,8 +1227,8 @@ mod tests {
         let resolved = make_resolved(FilesSpec::default());
         let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
         let printer = Printer::new(Verbosity::Quiet);
-        let has_diff = fm.diff(&resolved.merged, &printer).unwrap();
-        assert!(!has_diff);
+        let records = fm.diff(&resolved.merged, &printer).unwrap();
+        assert!(records.is_empty());
     }
 
     #[test]
@@ -1227,9 +1243,12 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        let has_diff = fm.diff(&resolved.merged, &printer).unwrap();
+        let records = fm.diff(&resolved.merged, &printer).unwrap();
 
-        assert!(!has_diff, "missing source should not count as a diff");
+        assert!(
+            records.iter().all(|r| !r.matches),
+            "an unresolvable source is drift, matching what verify reports"
+        );
         let output = buf.lock().unwrap();
         assert!(
             output.contains("Source not found") || output.contains("nonexistent"),
@@ -1380,7 +1399,12 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        assert!(fm.diff(&resolved.merged, &printer).unwrap());
+        assert!(
+            fm.diff(&resolved.merged, &printer)
+                .unwrap()
+                .iter()
+                .any(|r| !r.matches)
+        );
         let output = buf.lock().unwrap();
         assert!(
             output.contains("telemetry"),
@@ -1401,7 +1425,12 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        assert!(!fm.diff(&resolved.merged, &printer).unwrap());
+        assert!(
+            fm.diff(&resolved.merged, &printer)
+                .unwrap()
+                .iter()
+                .all(|r| r.matches)
+        );
         assert!(
             buf.lock().unwrap().is_empty(),
             "a converged file prints nothing"
@@ -1488,11 +1517,14 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        let has_diff = fm
+        let records = fm
             .diff(&resolved.merged, &printer)
             .expect("an unevaluable file must not fail the diff");
 
-        assert!(has_diff, "an unevaluable Patch file counts as drift");
+        assert!(
+            records.iter().any(|r| !r.matches),
+            "an unevaluable Patch file counts as drift"
+        );
         let output = buf.lock().unwrap();
         assert!(
             output.contains("cannot evaluate patch spec"),

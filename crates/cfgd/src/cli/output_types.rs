@@ -108,6 +108,12 @@ pub struct CheckinOutput {
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffOutput {
+    /// One record per managed file that does NOT match desired state, in the
+    /// same shape `verify` reports a resource: what was expected, what was
+    /// found. An unevaluable `strategy: Patch` file lands here with the reason
+    /// as its `actual`, so a blocked filter is visible to a structured consumer
+    /// and not only in the terminal.
+    pub files: Vec<cfgd_core::providers::FileDriftResult>,
     pub packages: Vec<PackageDrift>,
     pub system: Vec<SystemDriftOutput>,
     pub summary: DiffSummary,
@@ -733,8 +739,14 @@ mod tests {
     }
 
     #[test]
-    fn diff_output_nests_packages_system_and_summary() {
+    fn diff_output_nests_files_packages_system_and_summary() {
         let v = DiffOutput {
+            files: vec![cfgd_core::providers::FileDriftResult {
+                target: "~/.config/app/x.ini".to_string(),
+                matches: false,
+                expected: "content satisfies patch spec".to_string(),
+                actual: "cannot evaluate patch spec: blocked".to_string(),
+            }],
             packages: vec![PackageDrift {
                 manager: "brew".to_string(),
                 shape: "missing".to_string(),
@@ -753,6 +765,15 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&v).unwrap();
+        let files = json["files"].as_array().expect("files is array");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["target"], json!("~/.config/app/x.ini"));
+        assert_eq!(files[0]["matches"], json!(false));
+        assert_eq!(
+            files[0]["actual"],
+            json!("cannot evaluate patch spec: blocked"),
+            "the reason a file could not be evaluated must survive to the structured path"
+        );
         let pkgs = json["packages"].as_array().expect("packages is array");
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0]["manager"], json!("brew"));

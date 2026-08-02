@@ -1153,8 +1153,11 @@ fn diff_no_changes_prints_success() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
-    let has_drift = fm.diff(&resolved.merged, &printer).unwrap();
-    assert!(!has_drift, "identical content should report no drift");
+    let records = fm.diff(&resolved.merged, &printer).unwrap();
+    assert!(
+        records.iter().all(|r| r.matches),
+        "identical content should report no drift"
+    );
 }
 
 #[test]

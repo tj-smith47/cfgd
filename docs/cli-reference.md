@@ -164,6 +164,29 @@ cfgd status --module nvim                   # status for a single module (no pro
 
 Show detailed file diffs with syntax highlighting.
 
+```sh
+cfgd diff -o json            # structured drift payload
+```
+
+The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
+
+```json
+{
+  "files": [
+    {
+      "target": "~/.config/acme/app.ini",
+      "matches": false,
+      "expected": "content satisfies patch spec",
+      "actual": "cannot evaluate patch spec: file error: patch script for ~/.config/acme/app.ini is blocked: source 'acme' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"
+    }
+  ]
+}
+```
+
+A file cfgd could not evaluate — an unparseable target, a filter that exited non-zero, a patch script a source is [barred from running](sources.md#noscripts) — appears with the reason as its `actual`, so the cause is visible without reading the terminal rendering.
+
+A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
+
 ### `cfgd verify`
 
 Check that all managed resources match desired state.
@@ -172,6 +195,8 @@ Check that all managed resources match desired state.
 cfgd verify -o json          # structured pass/fail results
 cfgd verify --module nvim    # verify only a single module's resources (no profile required)
 ```
+
+Each entry in `results[]` carries `resourceType`, `resourceId`, `matches`, `expected`, and `actual`, alongside the top-level `passCount` / `failCount`.
 
 ### `cfgd doctor`
 

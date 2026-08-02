@@ -16,7 +16,7 @@ fn diff_module_file(
     file: &cfgd_core::modules::ResolvedFile,
     config_dir: &std::path::Path,
     printer: &Printer,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<cfgd_core::providers::FileDriftResult> {
     match &file.patch {
         Some(spec) => {
             let binding = crate::files::module_patch_binding(config_dir, resolved, module);
@@ -31,6 +31,20 @@ fn diff_module_file(
         // Module sources carry no tera origin, so pass None.
         None => Ok(fm.diff_one(&file.source, &file.target, None, printer)?),
     }
+}
+
+/// Keep only the records worth reporting: a converged file is the absence of a
+/// finding, and listing every one of them would bury the drifted and the
+/// unevaluable entries a consumer actually acts on.
+fn record_file_drift(
+    payload: &mut DiffOutput,
+    records: Vec<cfgd_core::providers::FileDriftResult>,
+) -> bool {
+    let drifted = records.iter().any(|r| !r.matches);
+    payload
+        .files
+        .extend(records.into_iter().filter(|r| !r.matches));
+    drifted
 }
 
 pub fn cmd_diff(
@@ -78,12 +92,13 @@ pub fn cmd_diff(
     let has_file_drift = {
         printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let mut drift = fm.diff(&resolved.merged, printer)?;
+        let mut drift = record_file_drift(&mut diff_payload, fm.diff(&resolved.merged, printer)?);
         // Module-deployed files render the same inline content diff as profile
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {
             for file in &module.files {
-                if diff_module_file(&fm, &resolved, module, file, &config_dir, printer)? {
+                let record = diff_module_file(&fm, &resolved, module, file, &config_dir, printer)?;
+                if record_file_drift(&mut diff_payload, vec![record]) {
                     drift = true;
                 }
             }
@@ -221,7 +236,8 @@ fn cmd_diff_module(
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
             for file in &module.files {
-                if diff_module_file(&fm, &resolved, module, file, config_dir, printer)? {
+                let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
+                if record_file_drift(&mut diff_payload, vec![record]) {
                     has_file_diff = true;
                 }
             }

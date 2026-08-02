@@ -170,6 +170,7 @@ pub fn verify(
 
 /// Result of verifying a single resource.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VerifyResult {
     pub resource_type: String,
     pub resource_id: String,

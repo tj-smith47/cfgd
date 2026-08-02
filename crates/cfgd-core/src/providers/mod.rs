@@ -210,7 +210,8 @@ pub enum FileAction {
 /// when the target exists and its bytes equal the rendered source; a missing
 /// source or missing target yields `matches: false` with `actual` describing the
 /// reason rather than an error.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileDriftResult {
     pub target: String,
     pub matches: bool,
