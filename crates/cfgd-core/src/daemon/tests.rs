@@ -11124,11 +11124,23 @@ mod harness {
             env!("CARGO_PKG_VERSION"),
         ));
 
-        // Give the daemon time to bind everything, spawn pumps, and emit the
-        // startup banner — proves the production trigger-setup block ran.
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        // Wait for the startup banner — the observable proof that the
+        // production trigger-setup block ran. Polled to a deadline rather than
+        // slept for a fixed span: binding the socket and spawning the pumps
+        // takes as long as the host is busy, and a machine running the whole
+        // suite in parallel misses a 150 ms budget while being perfectly
+        // healthy.
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        let mut banner = false;
+        while std::time::Instant::now() < deadline {
+            if buf.lock().unwrap().contains("Daemon running") {
+                banner = true;
+                break;
+            }
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
         assert!(
-            buf.lock().unwrap().contains("Daemon running"),
+            banner,
             "production-trigger path must emit the startup banner before shutdown"
         );
 
