@@ -31,20 +31,40 @@ type LockFile = nix::fcntl::Flock<std::fs::File>;
 #[cfg(windows)]
 type LockFile = std::fs::File;
 
+/// Terminator the holder appends after its PID, and the marker `holder_label`
+/// requires before it will believe what it read.
+///
+/// A holder truncates the file and then writes, so a contender reading inside
+/// that window sees a *prefix* — `12` for a process whose real ID is `12345`.
+/// A bare numeric parse accepts that prefix and names an unrelated process just
+/// as confidently as a correct answer, which is strictly worse than admitting
+/// the holder is unknown: nothing in the message tells the operator to distrust
+/// it. Requiring the terminator makes the record self-delimiting, so a torn
+/// read is detectable rather than plausible.
+const PID_RECORD_TERMINATOR: char = '\n';
+
 /// Describe whoever holds `lock_path`, for the error a refused acquire returns.
 ///
-/// The file is empty in two cases — a holder that has taken the lock but not
-/// yet written its PID, and a non-cfgd holder (`flock(1)`) that never writes
-/// one — and `pid ` with nothing after it reads like a bug in cfgd rather than
-/// a lock held elsewhere.
+/// Reports a PID only for a complete, well-formed record: the holder's ID
+/// followed by [`PID_RECORD_TERMINATOR`]. Everything else falls back to
+/// `unknown pid` — an empty file (a holder that has taken the lock but not yet
+/// written its PID, or a non-cfgd holder such as `flock(1)` that never writes
+/// one), a torn prefix, and any content that is not a bare number.
 fn holder_label(lock_path: &std::path::Path) -> String {
+    let unknown = || "unknown pid".to_string();
     let raw = std::fs::read_to_string(lock_path).unwrap_or_default();
-    let raw = raw.trim();
-    if raw.is_empty() {
-        "unknown pid".to_string()
-    } else {
-        format!("pid {raw}")
+    match raw.strip_suffix(PID_RECORD_TERMINATOR) {
+        Some(pid) => match pid.parse::<u32>() {
+            Ok(pid) => format!("pid {pid}"),
+            Err(_) => unknown(),
+        },
+        None => unknown(),
     }
+}
+
+/// The exact bytes a holder records in its lock file.
+fn pid_record() -> String {
+    format!("{}{PID_RECORD_TERMINATOR}", std::process::id())
 }
 
 /// RAII guard that releases an exclusive file lock when dropped.
@@ -96,7 +116,7 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
             }
         })?;
 
-    std::fs::write(lock_path, std::process::id().to_string().as_bytes())?;
+    std::fs::write(lock_path, pid_record().as_bytes())?;
 
     Ok(FileLockGuard {
         _file: locked,
@@ -163,7 +183,7 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
 
     let mut f = file;
     f.set_len(0)?;
-    write!(f, "{}", std::process::id())?;
+    write!(f, "{}", pid_record())?;
     f.sync_all()?;
 
     Ok(FileLockGuard {

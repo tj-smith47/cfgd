@@ -517,13 +517,16 @@ fn xml_escape_passthrough() {
 }
 
 #[test]
-#[cfg(unix)] // Windows LockFileEx prevents reading lock file content while held
 fn acquire_apply_lock_works() {
     let dir = tempfile::tempdir().unwrap();
     let guard = acquire_apply_lock(dir.path()).unwrap();
-    // Lock file should contain our PID
+    // The record is newline-terminated so a contender can tell a complete PID
+    // from a prefix it caught mid-write. Asserted on every OS: the Windows
+    // byte-range lock sits far past any content, so the file stays readable
+    // while held, and this is the only test that pins the on-disk shape both
+    // writers produce.
     let content = std::fs::read_to_string(dir.path().join("apply.lock")).unwrap();
-    assert_eq!(content, format!("{}", std::process::id()));
+    assert_eq!(content, format!("{}\n", std::process::id()));
     drop(guard);
 }
 
@@ -569,6 +572,28 @@ fn a_lock_with_no_recorded_pid_says_so_rather_than_printing_a_bare_pid() {
         err.to_string().contains("unknown pid"),
         "an unnamed holder must not render as a bare `pid `: {err}"
     );
+    drop(guard);
+}
+
+#[test]
+fn a_lock_holding_a_torn_or_garbled_pid_says_unknown_rather_than_naming_a_stranger() {
+    let dir = tempfile::tempdir().unwrap();
+    let guard = acquire_backup_lock(dir.path(), "db").unwrap();
+    let lock = dir.path().join("locks").join("backup-db.lock");
+    // `12` is what a contender reads if it catches the holder mid-write of
+    // `12345` — it parses as a perfectly good PID and would name whatever
+    // unrelated process owns it. The other cases are a non-cfgd holder writing
+    // its own format and a numeric value too large to be a PID.
+    for content in ["12", "1234\r\n", "flock(1)\n", "  \n", "99999999999999\n"] {
+        std::fs::write(&lock, content.as_bytes()).unwrap();
+        let err = acquire_backup_lock(dir.path(), "db")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown pid"),
+            "'{content:?}' is not a complete PID record and must not be reported as one: {err}"
+        );
+    }
     drop(guard);
 }
 

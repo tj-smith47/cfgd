@@ -55,13 +55,16 @@ Rollback is available for any apply that has backups in the state store.
 
 ## Apply Locking
 
-cfgd uses `flock()` to prevent concurrent applies. Only one `cfgd apply` can run at a time.
+cfgd takes an exclusive whole-file lock to prevent concurrent applies — `flock()` on Unix, `LockFileEx` on Windows. Only one `cfgd apply` can run at a time.
 
 - The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform — see `configuration.md`)
 - The daemon skips reconciliation ticks if the lock is held by a CLI apply
 - The lock is released automatically when the process exits
+- The holder records its PID in the lock file, and a refused apply names it: `apply lock held by another process: pid 12345`
 
-**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, `flock()` releases it automatically on file descriptor close. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
+**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, the OS releases it automatically when the file handle closes. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
+
+The message reads `unknown pid` when the file holds no complete PID record — a holder that is not cfgd (`flock(1)`, say) never writes one, and cfgd would rather say it does not know than name a process it is not sure about. Deleting the lock file is the same remedy.
 
 ## Graceful Interruption (SIGINT / SIGTERM)
 
