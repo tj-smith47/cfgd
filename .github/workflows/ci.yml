@@ -119,8 +119,16 @@ jobs:
           release: "14.3"
           usesh: "true"
           prepare: |
-            mkdir -p /usr/local/etc/pkg/repos
-            printf '%s\n' 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly" }' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            # vmactions flips the image to the `latest` branch, which dropped
+            # devel/task. Flip it back in place rather than shadowing the repo
+            # from /usr/local/etc/pkg/repos: a replacement stanza would lose
+            # signature_type/fingerprints and install packages unverified.
+            sed -i '' 's#/latest#/quarterly#g' /etc/pkg/FreeBSD.conf
+            # quarterly's FreeBSD:14:amd64 set is built against 14.4 (1404000)
+            # while this image's userland is 14.3 (1403000), so pkg rejects the
+            # whole catalogue. The ABI is identical and every package here is
+            # ordinary userland tooling, so the minor-version gate is noise.
+            export IGNORE_OSVERSION=yes
             pkg update -f
             pkg install -y rustup-init git task nextest gmake perl5
             rustup-init -y --default-toolchain stable --profile minimal
