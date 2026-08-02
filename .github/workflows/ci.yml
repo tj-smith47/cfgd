@@ -119,6 +119,9 @@ jobs:
           release: "14.3"
           usesh: "true"
           prepare: |
+            mkdir -p /usr/local/etc/pkg/repos
+            printf '%s\n' 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly" }' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg update -f
             pkg install -y rustup-init git task nextest gmake perl5
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
