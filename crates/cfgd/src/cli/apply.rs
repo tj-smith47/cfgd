@@ -281,14 +281,11 @@ pub fn run_apply(
         strip_scripts_from_plan(&mut plan);
     }
 
-    // Schedule-less backups run on every non-dry-run apply, unconditionally
-    // of the reconciler diff — computed once here so both the dry-run
-    // preview and the real run below use the exact same list.
-    let pending_backups: Vec<String> = effective_resolved
-        .merged
-        .backups
+    // Computed once so the dry-run preview and the real run below use the exact
+    // same list.
+    let pending_backup_specs = pending_backups(&effective_resolved.merged);
+    let pending_backups: Vec<String> = pending_backup_specs
         .iter()
-        .filter(|b| b.schedule.is_none())
         .map(|b| b.name.clone())
         .collect();
 
@@ -498,99 +495,18 @@ pub fn run_apply(
     // a failed post-hook) is user-declared work, so — unlike the best-effort
     // pruning above — it downgrades a `Success` apply to `Partial` and drives
     // the process exit code the same way a failed reconciler action would.
-    let mut backup_outputs = Vec::with_capacity(pending_backups.len());
-    if !pending_backups.is_empty() {
-        let profile_name = active_profile_name(cli, Some(&cfg));
-        let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
-        for backup_name in &pending_backups {
-            let Some(spec) = effective_resolved
-                .merged
-                .backups
-                .iter()
-                .find(|b| &b.name == backup_name)
-            else {
-                continue;
-            };
-            let unit =
-                cfgd_core::backup::BackupUnit::new(spec, &config_dir, &profile_name, &state_dir)
-                    .with_abort(&abort);
-            // Best-effort, matching the neighboring `record_source_apply` call
-            // above: `run_backup` only returns `Err` on a state-store write
-            // failure (ordinary snapshot/hook failures are captured into the
-            // returned record, not propagated), so a `?` here would abort
-            // every remaining backup AND the rest of apply over what's really
-            // a single unit's storage problem. Warn, count the unit as
-            // failed for exit-code purposes, and keep going.
-            let record = match cfgd_core::backup::run_backup(&unit, &state, printer) {
-                Ok(record) => record,
-                // Another surface (a daemon timer fire, a hand-run) holds this
-                // unit's lock, so the unit IS being backed up right now — just
-                // not by us. Skipping is the correct outcome of the engine's
-                // one-writer-per-unit rule, not an apply failure, so it does
-                // not move the exit code; the structured payload still carries
-                // the skip so a script can see the run did not come from here.
-                Err(cfgd_core::errors::CfgdError::Backup(
-                    cfgd_core::errors::BackupError::Busy { holder, .. },
-                )) => {
-                    printer
-                        .status(Role::Skipped, format!("backup '{backup_name}'"))
-                        .detail(format!("already running ({holder})"));
-                    tracing::info!(
-                        backup = %backup_name,
-                        holder = %holder,
-                        "backup already running elsewhere; skipped"
-                    );
-                    backup_outputs.push(BackupRunOutput {
-                        name: backup_name.clone(),
-                        status: "skipped".to_string(),
-                        destination_path: None,
-                        clean: false,
-                        error: Some(format!("already running ({holder})")),
-                    });
-                    continue;
-                }
-                Err(e) => {
-                    printer
-                        .status(Role::Fail, format!("backup '{backup_name}'"))
-                        .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                    tracing::warn!(
-                        backup = %backup_name,
-                        error = %e,
-                        "backup run failed; continuing with remaining backups"
-                    );
-                    downgrade_to_partial(&mut status);
-                    backup_outputs.push(BackupRunOutput {
-                        name: backup_name.clone(),
-                        status: "failed".to_string(),
-                        destination_path: None,
-                        clean: false,
-                        error: Some(e.to_string()),
-                    });
-                    continue;
-                }
-            };
-            let subject = format!("backup '{}'", record.name);
-            let role = if record.is_clean() {
-                Role::Ok
-            } else if record.status == cfgd_core::state::BackupRunStatus::Success {
-                Role::Warn
-            } else {
-                Role::Fail
-            };
-            match &record.error {
-                Some(e) => {
-                    printer
-                        .status(role, subject)
-                        .detail(cfgd_core::output::collapse_to_subject_line(e));
-                }
-                None => printer.status_simple(role, subject),
-            }
-            if !record.is_clean() {
-                downgrade_to_partial(&mut status);
-            }
-            backup_outputs.push(BackupRunOutput::from(&record));
-        }
-    }
+    let backup_outputs = run_pending_backups(
+        &pending_backup_specs,
+        &PendingBackupCtx {
+            cli,
+            cfg: &cfg,
+            config_dir: &config_dir,
+            state: &state,
+            printer,
+            abort: &abort,
+        },
+        &mut status,
+    )?;
 
     let output = ApplyOutput {
         status: status.display_str().to_string(),
@@ -606,6 +522,102 @@ pub fn run_apply(
         status,
         aborted_code: None,
     })
+}
+
+/// What [`run_pending_backups`] needs from the apply it runs inside.
+struct PendingBackupCtx<'a> {
+    cli: &'a Cli,
+    cfg: &'a CfgdConfig,
+    config_dir: &'a std::path::Path,
+    state: &'a cfgd_core::state::StateStore,
+    printer: &'a cfgd_core::output::Printer,
+    abort: &'a cfgd_core::AbortFlag,
+}
+
+/// Run the apply's schedule-less `spec.backups[]` units, downgrading `status`
+/// for any unit whose work did not complete cleanly.
+fn run_pending_backups(
+    specs: &[&cfgd_core::config::BackupSpec],
+    ctx: &PendingBackupCtx<'_>,
+    status: &mut cfgd_core::state::ApplyStatus,
+) -> anyhow::Result<Vec<BackupRunOutput>> {
+    let mut outputs = Vec::with_capacity(specs.len());
+    if specs.is_empty() {
+        return Ok(outputs);
+    }
+    let printer = ctx.printer;
+    let profile_name = active_profile_name(ctx.cli, Some(ctx.cfg));
+    let state_dir = cfgd_core::resolve_state_dir(ctx.cli.state_dir.as_deref(), ctx.cli.scope())?;
+    for spec in specs {
+        let backup_name = &spec.name;
+        let unit =
+            cfgd_core::backup::BackupUnit::new(spec, ctx.config_dir, &profile_name, &state_dir)
+                .with_abort(ctx.abort);
+        // Best-effort, matching the neighboring `record_source_apply` call in
+        // the caller: `run_backup` only returns `Err` on a state-store write
+        // failure (ordinary snapshot/hook failures are captured into the
+        // returned record, not propagated), so a `?` here would abort every
+        // remaining backup AND the rest of apply over what's really a single
+        // unit's storage problem. Warn, count the unit as failed for
+        // exit-code purposes, and keep going.
+        let record = match cfgd_core::backup::run_backup(&unit, ctx.state, printer) {
+            Ok(record) => record,
+            // Another surface (a daemon timer fire, a hand-run) holds this
+            // unit's lock, so the unit IS being backed up right now — just
+            // not by us. Skipping is the correct outcome of the engine's
+            // one-writer-per-unit rule, not an apply failure, so it does
+            // not move the exit code; the structured payload still carries
+            // the skip so a script can see the run did not come from here.
+            Err(cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::Busy {
+                holder,
+                ..
+            })) => {
+                printer
+                    .status(Role::Skipped, format!("backup '{backup_name}'"))
+                    .detail(format!("already running ({holder})"));
+                tracing::info!(
+                    backup = %backup_name,
+                    holder = %holder,
+                    "backup already running elsewhere; skipped"
+                );
+                outputs.push(BackupRunOutput {
+                    name: backup_name.clone(),
+                    status: "skipped".to_string(),
+                    destination_path: None,
+                    clean: false,
+                    error: Some(format!("already running ({holder})")),
+                });
+                continue;
+            }
+            Err(e) => {
+                printer
+                    .status(Role::Fail, format!("backup '{backup_name}'"))
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                tracing::warn!(
+                    backup = %backup_name,
+                    error = %e,
+                    "backup run failed; continuing with remaining backups"
+                );
+                downgrade_to_partial(status);
+                outputs.push(BackupRunOutput {
+                    name: backup_name.clone(),
+                    status: cfgd_core::state::BackupRunStatus::Failed
+                        .as_str()
+                        .to_string(),
+                    destination_path: None,
+                    clean: false,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+        cfgd_core::backup::report_backup_record(printer, &record);
+        if !record.is_clean() {
+            downgrade_to_partial(status);
+        }
+        outputs.push(BackupRunOutput::from(&record));
+    }
+    Ok(outputs)
 }
 
 /// Structured `-o json` payload emitted when an apply is cooperatively aborted

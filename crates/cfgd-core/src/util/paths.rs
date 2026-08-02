@@ -845,6 +845,22 @@ pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), 
     Ok(())
 }
 
+/// [`validate_no_traversal`], except that a pure self-reference (`.`, `./`) is
+/// accepted instead of rejected.
+///
+/// For call sites where "this directory itself" is a documented, legitimate
+/// answer — a module file whose `source: .` deploys the module's own tree, a
+/// git `subdir: "."` that is the repository root — while `..` traversal stays
+/// forbidden.
+pub fn validate_no_traversal_allowing_self(
+    path: &std::path::Path,
+) -> std::result::Result<(), String> {
+    if is_self_reference(path) {
+        return Ok(());
+    }
+    validate_no_traversal(path)
+}
+
 /// True when `path` is non-empty but built only from `.` segments (`.`, `./`,
 /// `./.`), so joining it onto a directory names that directory itself.
 ///

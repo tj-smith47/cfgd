@@ -422,7 +422,7 @@ fn refresh_backup_timers(
         Ok(resolved) => {
             let degraded = resolved.degraded;
             let summary = timers.apply_resolved(resolved, now);
-            if degraded {
+            if degraded.is_some() {
                 tracing::warn!(
                     adopted = summary.is_some(),
                     "backup timers: source composition unavailable — retrying"
@@ -492,15 +492,12 @@ pub(super) async fn handle_backup_tick(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    let state_dir = match ctx.state_dir_override.clone() {
-        Some(d) => d,
-        None => match crate::state::default_state_dir_for(ctx.scope) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!(error = %e, "backup: cannot determine state directory — runs skipped");
-                return Ok(());
-            }
-        },
+    // Startup materialized this from scope precisely so every downstream site
+    // agrees on one path; `None` here means that derivation already failed, and
+    // re-deriving it would just fail the same way.
+    let Some(state_dir) = ctx.state_dir_override.clone() else {
+        tracing::error!("backup: no state directory resolved at startup — runs skipped");
+        return Ok(());
     };
 
     for (profile_name, spec) in due {

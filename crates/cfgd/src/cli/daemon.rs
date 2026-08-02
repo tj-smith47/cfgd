@@ -50,10 +50,7 @@ pub(super) fn cmd_daemon(
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
         std::sync::Arc::new(WorkstationDaemonHooks);
     let rt = tokio::runtime::Runtime::new()?;
-    let dirs = cfgd_core::daemon::DaemonDirOverrides {
-        runtime_dir: cli.runtime_dir.clone(),
-        state_dir: cli.state_dir.clone(),
-    };
+    let dirs = cli.daemon_dir_overrides();
     let result = rt.block_on(async {
         cfgd_core::daemon::run_daemon(
             config_path,
@@ -199,10 +196,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         ));
     }
 
-    let dirs = cfgd_core::daemon::DaemonDirOverrides {
-        runtime_dir: cli.runtime_dir.clone(),
-        state_dir: cli.state_dir.clone(),
-    };
+    let dirs = cli.daemon_dir_overrides();
     if let Err(e) =
         cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref(), scope, &dirs)
     {

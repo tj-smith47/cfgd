@@ -169,14 +169,13 @@ pub(super) fn resolve_subdir(
             // `subdir: "."` is the repository root — an explicit way to spell
             // the default, and a legitimate answer even though it names nothing
             // of its own.
-            let rel = std::path::Path::new(sub);
-            if !crate::is_self_reference(rel) {
-                crate::validate_no_traversal(rel).map_err(|e| ModuleError::GitFetchFailed {
+            crate::validate_no_traversal_allowing_self(std::path::Path::new(sub)).map_err(|e| {
+                ModuleError::GitFetchFailed {
                     module: module.to_string(),
                     url: url.to_string(),
                     message: format!("subdir '{sub}' is not usable: {e}"),
-                })?;
-            }
+                }
+            })?;
             Ok(base.join(sub))
         }
         None => Ok(base),

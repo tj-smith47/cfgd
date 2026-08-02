@@ -108,9 +108,8 @@ pub struct ConfigSpec {
 fn global_file_strategy_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let accepted: Vec<&'static str> = FileStrategy::ALL
         .iter()
-        .copied()
         .filter(|s| s.valid_as_global_default())
-        .map(FileStrategy::as_str)
+        .map(|s| s.as_str())
         .collect();
     schemars::json_schema!({
         "type": "string",

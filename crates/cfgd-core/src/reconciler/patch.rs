@@ -52,8 +52,17 @@ impl<'a> PatchContext<'a> {
     }
 
     /// Run the script in `dir` instead of the user's home directory.
+    #[cfg(test)]
     pub fn with_working_dir(mut self, dir: &'a Path) -> Self {
         self.working_dir = Some(dir);
+        self
+    }
+
+    /// Bound the script's runtime. Only the timeout tests need a value other
+    /// than the module-script default `new` installs.
+    #[cfg(test)]
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -66,12 +75,6 @@ impl<'a> PatchContext<'a> {
     /// the inherited process environment.
     pub fn with_env(mut self, env: &'a [(String, String)]) -> Self {
         self.env = env;
-        self
-    }
-
-    /// Bound the script's runtime.
-    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.timeout = timeout;
         self
     }
 }
@@ -289,19 +292,10 @@ pub fn infer_format(target: &Path) -> Option<PatchFormat> {
     }
 }
 
-fn format_label(format: PatchFormat) -> &'static str {
-    match format {
-        PatchFormat::Ini => "ini",
-        PatchFormat::Json => "json",
-        PatchFormat::Yaml => "yaml",
-        PatchFormat::Toml => "toml",
-    }
-}
-
 fn parse_error(target: &Path, format: PatchFormat, message: impl std::fmt::Display) -> FileError {
     FileError::PatchParse {
         path: target.to_path_buf(),
-        format: format_label(format).to_string(),
+        format: format.as_str().to_ascii_lowercase(),
         message: message.to_string(),
     }
 }
@@ -313,7 +307,7 @@ fn serialize_error(
 ) -> FileError {
     FileError::PatchSerialize {
         path: target.to_path_buf(),
-        format: format_label(format).to_string(),
+        format: format.as_str().to_ascii_lowercase(),
         message: message.to_string(),
     }
 }
@@ -321,7 +315,7 @@ fn serialize_error(
 fn shape_error(target: &Path, format: PatchFormat, message: impl Into<String>) -> FileError {
     FileError::PatchEnsureShape {
         path: target.to_path_buf(),
-        format: format_label(format).to_string(),
+        format: format.as_str().to_ascii_lowercase(),
         message: message.into(),
     }
 }
@@ -344,7 +338,7 @@ fn ensure_mapping<'v>(
 // ---------------------------------------------------------------------------
 
 fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay = ensure_mapping(ensure, target, PatchFormat::Yaml)?;
+    ensure_mapping(ensure, target, PatchFormat::Yaml)?;
     let mut doc: serde_yaml::Value = if current.trim().is_empty() {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
@@ -364,7 +358,7 @@ fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
         )
         .into());
     }
-    crate::deep_merge_yaml(&mut doc, &serde_yaml::Value::Mapping(overlay.clone()));
+    crate::deep_merge_yaml(&mut doc, ensure);
     serde_yaml::to_string(&doc).map_err(|e| serialize_error(target, PatchFormat::Yaml, e).into())
 }
 
@@ -384,7 +378,7 @@ fn merge_yaml(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
 /// enabling `preserve_order` would have reordered every generated schema and
 /// CRD in the repo.
 fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Result<String> {
-    let overlay = ensure_mapping(ensure, target, PatchFormat::Json)?;
+    ensure_mapping(ensure, target, PatchFormat::Json)?;
     let mut doc: serde_yaml::Value = if current.trim().is_empty() {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
@@ -398,11 +392,7 @@ fn merge_json(current: &str, ensure: &serde_yaml::Value, target: &Path) -> Resul
         )
         .into());
     }
-    let overlay = prepare_json_overlay(
-        &serde_yaml::Value::Mapping(overlay.clone()),
-        target,
-        &mut String::new(),
-    )?;
+    let overlay = prepare_json_overlay(ensure, target, &mut String::new())?;
     crate::deep_merge_yaml(&mut doc, &overlay);
     let mut out = serde_json::to_string_pretty(&doc)
         .map_err(|e| serialize_error(target, PatchFormat::Json, e))?;

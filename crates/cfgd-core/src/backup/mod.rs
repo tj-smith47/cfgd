@@ -266,6 +266,33 @@ fn snapshot_and_record(
 
 /// Join a run's failures, write its record, and prune to `spec.retention`.
 ///
+/// Report a completed run on the status line every surface shares.
+///
+/// `is_clean()` is the exit-code predicate, and the human line uses the same
+/// three-way split: a fully clean run is Ok, a Success run with a failed
+/// `postBackup` hook is Warn (the snapshot is fine, but something needs
+/// attention), and no artifact at all is Fail. `cfgd apply`, `cfgd backup run`,
+/// and the daemon's scheduled fire all render through here so a run cannot look
+/// different depending on which surface produced it.
+pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) {
+    let subject = format!("backup '{}'", record.name);
+    let role = if record.is_clean() {
+        Role::Ok
+    } else if record.status == BackupRunStatus::Success {
+        Role::Warn
+    } else {
+        Role::Fail
+    };
+    match &record.error {
+        Some(e) => {
+            printer
+                .status(role, subject)
+                .detail(collapse_to_subject_line(e));
+        }
+        None => printer.status_simple(role, subject),
+    }
+}
+
 /// The shared tail of every path that produces a `backup_runs` row, so the
 /// hook-carrying [`run_backup`] and the hook-free [`snapshot_and_record`] can
 /// never disagree about a run's recorded status, error joining, or pruning.
@@ -299,7 +326,19 @@ fn record_run(
     };
     let error = (!failures.is_empty()).then(|| failures.join("; "));
 
-    let record = finish(store, unit, source, started_at, artifact, error, status)?;
+    let draft = BackupRunDraft {
+        name: unit.spec.name.clone(),
+        source: crate::to_posix_string(source),
+        destination_path: artifact
+            .as_ref()
+            .map(|a| crate::to_posix_string(a.path.as_path())),
+        size_bytes: artifact.as_ref().map(|a| a.size_bytes),
+        status,
+        error,
+        started_at,
+        finished_at: crate::utc_now_iso8601(),
+    };
+    let record = store.record_backup_run(&draft)?;
     prune_retention(store, unit, printer);
     Ok(record)
 }
@@ -321,31 +360,6 @@ fn acquire_unit_lock(unit: &BackupUnit<'_>) -> Result<crate::FileLockGuard> {
         }
         other => other,
     })
-}
-
-/// Write the run record. Split out so every exit path records the same shape.
-fn finish(
-    store: &StateStore,
-    unit: &BackupUnit<'_>,
-    source: &Path,
-    started_at: String,
-    artifact: Option<Artifact>,
-    error: Option<String>,
-    status: BackupRunStatus,
-) -> Result<BackupRunRecord> {
-    let draft = BackupRunDraft {
-        name: unit.spec.name.clone(),
-        source: crate::to_posix_string(source),
-        destination_path: artifact
-            .as_ref()
-            .map(|a| crate::to_posix_string(a.path.as_path())),
-        size_bytes: artifact.as_ref().map(|a| a.size_bytes),
-        status,
-        error,
-        started_at,
-        finished_at: crate::utc_now_iso8601(),
-    };
-    store.record_backup_run(&draft)
 }
 
 // ---------------------------------------------------------------------------
@@ -414,10 +428,7 @@ fn run_hooks(
         }
     }
 
-    match first_error {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
+    first_error.map_or(Ok(()), Err)
 }
 
 // ---------------------------------------------------------------------------
@@ -487,9 +498,7 @@ fn take_snapshot(
         source: e,
     };
 
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(copy_failed)?;
-    }
+    crate::ensure_parent_dir(&target).map_err(copy_failed)?;
     // The default destination lives under the state dir and holds copies of
     // whatever the user pointed at — possibly `~/.ssh`. Owner-only keeps a
     // sensitive snapshot from being readable through a 0755 parent even though
@@ -624,19 +633,13 @@ fn is_snapshot_within(path: &Path, destination: &Path) -> bool {
 /// Best-effort `0700` on a directory cfgd owns. No-op on Windows, and a failure
 /// is logged rather than raised — the snapshot itself is unaffected.
 fn restrict_to_owner(dir: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
-            tracing::warn!(
-                dir = %dir.posix(),
-                error = %e,
-                "backup: could not restrict the default destination to owner-only",
-            );
-        }
+    if let Err(e) = crate::set_file_permissions(dir, 0o700) {
+        tracing::warn!(
+            dir = %dir.posix(),
+            error = %e,
+            "backup: could not restrict the default destination to owner-only",
+        );
     }
-    #[cfg(not(unix))]
-    let _ = dir;
 }
 
 /// Render `namePattern` into the snapshot's path component(s).

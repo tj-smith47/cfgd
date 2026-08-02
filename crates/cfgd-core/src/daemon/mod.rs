@@ -657,10 +657,7 @@ pub(super) fn build_pre_loop_setup(
 
     let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
 
-    let profiles_dir = config_dir.join("profiles");
-    let profile_name = profile_override
-        .or(cfg.spec.profile.as_deref())
-        .unwrap_or("default");
+    let (profiles_dir, profile_name) = profile_context(config_path, &cfg, profile_override);
     let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
     let profile_chain: Vec<String> = resolved_profile
         .as_ref()
@@ -1235,17 +1232,37 @@ pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_
 /// posts the check-in payload, and clears any pending server config so the
 /// first reconcile tick picks it up. Extracted from the `spawn_blocking`
 /// closure so tests can drive the no-profile and resolve-failure arms without
+/// The directory a config's profiles live in.
+pub(super) fn profiles_dir_for(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("profiles")
+}
+
+/// Where profiles live and which profile a daemon run resolves, with the
+/// documented `default` fallback.
+///
+/// The startup check-in deliberately does NOT share this: a missing profile
+/// there is an error rather than a fall back to `default`.
+pub(super) fn profile_context<'a>(
+    config_path: &Path,
+    cfg: &'a CfgdConfig,
+    profile_override: Option<&'a str>,
+) -> (PathBuf, &'a str) {
+    let profile_name = profile_override
+        .or(cfg.spec.profile.as_deref())
+        .unwrap_or("default");
+    (profiles_dir_for(config_path), profile_name)
+}
+
 /// scheduling onto a tokio runtime.
 pub(super) fn run_startup_checkin_blocking(
     config_path: &Path,
     profile_override: Option<&str>,
     cfg: &CfgdConfig,
 ) {
-    let config_dir = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let profiles_dir = config_dir.join("profiles");
+    let profiles_dir = profiles_dir_for(config_path);
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
         Some(p) => p,
         None => {

@@ -469,10 +469,7 @@ impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
     fn from(record: &cfgd_core::state::BackupRunRecord) -> Self {
         Self {
             name: record.name.clone(),
-            status: match record.status {
-                cfgd_core::state::BackupRunStatus::Success => "success".to_string(),
-                cfgd_core::state::BackupRunStatus::Failed => "failed".to_string(),
-            },
+            status: record.status.as_str().to_string(),
             destination_path: record.destination_path.clone(),
             clean: record.is_clean(),
             error: record.error.clone(),

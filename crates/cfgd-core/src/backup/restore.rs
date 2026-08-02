@@ -580,9 +580,7 @@ fn overlay_restore(
     if meta.is_dir() {
         overlay_dir(payload, target).map_err(restore_failed)?;
     } else {
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(restore_failed)?;
-        }
+        crate::ensure_parent_dir(target).map_err(restore_failed)?;
         super::copy_file_snapshot(payload, &meta, target).map_err(restore_failed)?;
     }
     Ok(())

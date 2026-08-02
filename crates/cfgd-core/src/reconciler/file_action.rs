@@ -25,26 +25,7 @@ pub(super) fn apply_file_action_direct(
             patch,
             ..
         } => {
-            // `Patch` rewrites the target's own content, so the merge is
-            // computed against the live file rather than against what planning
-            // saw. A failure aborts with the target still intact.
-            let patched = match strategy {
-                FileStrategy::Patch => {
-                    let spec = patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
-                        path: target.clone(),
-                    })?;
-                    let binding = PatchBinding::profile(
-                        config_dir,
-                        profile_name,
-                        ReconcileContext::Reconcile,
-                    );
-                    Some(evaluate_patch(spec, target, &binding.context())?.patched)
-                }
-                _ => None,
-            };
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+            crate::ensure_parent_dir(target)?;
             // Remove existing target before deploying. `Patch` is exempt: the
             // removal clears a stale link ahead of `create_symlink`/`hard_link`,
             // while `Patch` writes through `atomic_write_merged`, which replaces
@@ -63,7 +44,19 @@ pub(super) fn apply_file_action_direct(
                     std::fs::copy(source, target)?;
                 }
                 FileStrategy::Patch => {
-                    crate::atomic_write_merged(target, patched.as_deref().unwrap_or_default())?;
+                    // `Patch` rewrites the target's own content, so the merge is
+                    // computed against the live file rather than against what
+                    // planning saw. A failure aborts with the target intact.
+                    let spec = patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
+                        path: target.clone(),
+                    })?;
+                    let binding = PatchBinding::profile(
+                        config_dir,
+                        profile_name,
+                        ReconcileContext::Reconcile,
+                    );
+                    let patched = evaluate_patch(spec, target, &binding.context())?.patched;
+                    crate::atomic_write_merged(target, &patched)?;
                 }
             }
             Ok(())

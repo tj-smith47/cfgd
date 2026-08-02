@@ -16,7 +16,7 @@ use crate::config::{self, BackupSpec, CfgdConfig};
 use crate::errors::Result;
 use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::ReconcileContext;
-use crate::state::{BackupRunStatus, StateStore};
+use crate::state::StateStore;
 
 /// How many missed fires `BackupTask::advance` walks before jumping straight to
 /// the next fire after now. A per-second schedule and a daemon that was blocked
@@ -258,10 +258,12 @@ pub(super) fn reload_backup_tasks(
 /// A freshly resolved timer set plus whether the resolution was complete.
 pub(super) struct ResolvedBackupTasks {
     pub(super) tasks: Vec<BackupTask>,
-    /// The local profile resolved, but source composition did not, so `tasks`
-    /// is the LOCALLY-DECLARED set — which can differ from the composed one for
-    /// any unit a source overrides.
-    pub(super) degraded: bool,
+    /// `Some` when the local profile resolved but source composition did not,
+    /// so `tasks` is the LOCALLY-DECLARED set — which can differ from the
+    /// composed one for any unit a source overrides. Carrying the reason rather
+    /// than a bool keeps the bool-to-reason mapping from being re-made (and
+    /// drifting) at each site that installs the set.
+    pub(super) degraded: Option<DegradedReason>,
 }
 
 /// Why a timer set is degraded. The three have different blast radii and
@@ -326,7 +328,7 @@ impl BackupTimers {
             mut tasks,
             degraded,
         } = resolved;
-        let retry_at = degraded.then(|| now + RESOLVE_RETRY);
+        let retry_at = degraded.map(|_| now + RESOLVE_RETRY);
         if let Some(deadline) = retry_at {
             for task in tasks.iter_mut() {
                 task.defer_until(deadline);
@@ -335,7 +337,7 @@ impl BackupTimers {
         Self {
             tasks,
             retry_at,
-            degraded: degraded.then_some(DegradedReason::SourcesUnavailable),
+            degraded,
         }
     }
 
@@ -472,7 +474,7 @@ impl BackupTimers {
         resolved: ResolvedBackupTasks,
         now: Instant,
     ) -> Option<BackupReloadSummary> {
-        if resolved.degraded {
+        if let Some(reason) = resolved.degraded {
             if self.tasks.is_empty() {
                 *self = Self::new(resolved, now);
                 return (!self.tasks.is_empty()).then_some(BackupReloadSummary {
@@ -481,8 +483,7 @@ impl BackupTimers {
                     rescheduled: 0,
                 });
             }
-            self.retry_at = Some(now + RESOLVE_RETRY);
-            self.degraded = Some(DegradedReason::SourcesUnavailable);
+            self.arm_retry(now, reason);
             return None;
         }
         self.retry_at = None;
@@ -513,24 +514,21 @@ pub(super) fn resolve_backup_tasks(
     state_dir: Option<&Path>,
     now: Instant,
 ) -> Result<ResolvedBackupTasks> {
-    let profiles_dir = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("profiles");
-    let profile_name = profile_override
-        .or(cfg.spec.profile.as_deref())
-        .unwrap_or("default");
+    let (profiles_dir, profile_name) = super::profile_context(config_path, cfg, profile_override);
 
     let local = config::resolve_profile(profile_name, &profiles_dir)?;
 
     let (specs, degraded) = match super::compose_daemon_desired_state(cfg, &local, printer, scope) {
-        Ok((resolved, _)) => (resolved.merged.backups, false),
+        Ok((resolved, _)) => (resolved.merged.backups, None),
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 "backup timers: source composition failed — falling back to locally-declared backups"
             );
-            (local.merged.backups.clone(), true)
+            (
+                local.merged.backups.clone(),
+                Some(DegradedReason::SourcesUnavailable),
+            )
         }
     };
 
@@ -597,25 +595,12 @@ pub(super) fn run_scheduled_backup(
     let subject = format!("backup '{}'", spec.name);
     match run_backup(&unit, &store, printer) {
         Ok(record) => {
-            // The same three-way split `cfgd backup run` reports: a clean run is
-            // Ok, a good snapshot with a failed postBackup hook is Warn, and no
-            // artifact at all is Fail.
-            let role = if record.is_clean() {
-                Role::Ok
-            } else if record.status == BackupRunStatus::Success {
-                Role::Warn
-            } else {
-                Role::Fail
-            };
+            crate::backup::report_backup_record(printer, &record);
             match &record.error {
                 Some(e) => {
-                    printer
-                        .status(role, subject)
-                        .detail(collapse_to_subject_line(e));
                     tracing::warn!(backup = %record.name, error = %e, "scheduled backup completed with errors");
                 }
                 None => {
-                    printer.status_simple(role, subject);
                     tracing::info!(backup = %record.name, "scheduled backup completed");
                 }
             }

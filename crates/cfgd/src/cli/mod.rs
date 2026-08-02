@@ -388,6 +388,15 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// The daemon directory flags this invocation ran under, so an installed
+    /// unit and a foreground run resolve the same directories.
+    pub fn daemon_dir_overrides(&self) -> cfgd_core::daemon::DaemonDirOverrides {
+        cfgd_core::daemon::DaemonDirOverrides {
+            runtime_dir: self.runtime_dir.clone(),
+            state_dir: self.state_dir.clone(),
+        }
+    }
+
     /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`Scope::System`]
     /// for `system`, [`Scope::User`] otherwise. Threaded into every directory
     /// resolver so the whole CLI surface agrees on one root.

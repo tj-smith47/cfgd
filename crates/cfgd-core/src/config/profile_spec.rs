@@ -620,28 +620,6 @@ case_insensitive_enum!(FileStrategy {
 });
 
 impl FileStrategy {
-    /// Every variant, in declaration order. Keep in step with the enum and the
-    /// `case_insensitive_enum!` token list above.
-    pub const ALL: &'static [FileStrategy] = &[
-        FileStrategy::Symlink,
-        FileStrategy::Copy,
-        FileStrategy::Template,
-        FileStrategy::Hardlink,
-        FileStrategy::Patch,
-    ];
-
-    /// Canonical PascalCase spelling — what cfgd serializes and what the
-    /// published editor schemas offer.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FileStrategy::Symlink => "Symlink",
-            FileStrategy::Copy => "Copy",
-            FileStrategy::Template => "Template",
-            FileStrategy::Hardlink => "Hardlink",
-            FileStrategy::Patch => "Patch",
-        }
-    }
-
     /// Whether the strategy is meaningful as the global `spec.fileStrategy`
     /// default.
     ///
@@ -1176,6 +1154,20 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A minimal valid backup unit; tests override only the field under test.
+    fn backup(name: &str) -> BackupSpec {
+        BackupSpec {
+            name: name.into(),
+            source: PathBuf::from("/a"),
+            destination: None,
+            name_pattern: default_backup_name_pattern(),
+            schedule: None,
+            retention: default_backup_retention(),
+            pre_backup: vec![],
+            post_backup: vec![],
+        }
+    }
+
     #[test]
     fn profile_spec_rejects_unknown_field() {
         let yaml = "modules: []\nbogus: 1\n";
@@ -1272,37 +1264,6 @@ mod tests {
     #[test]
     fn file_strategy_rejects_garbage() {
         serde_yaml::from_str::<FileStrategy>("move").expect_err("unknown FileStrategy must error");
-    }
-
-    /// `FileStrategy::ALL` is hand-written next to the enum, and nothing about
-    /// adding a variant forces it to be updated — a variant present in the enum
-    /// and in the `case_insensitive_enum!` token list but absent from `ALL`
-    /// would silently vanish from the published `spec.fileStrategy` schema.
-    ///
-    /// The macro embeds its own token list in serde's `unknown_variant` error,
-    /// so parsing that message recovers the deserializer's real accepted set
-    /// and pins `ALL` against it from the other direction.
-    #[test]
-    fn file_strategy_all_matches_the_deserializers_accepted_tokens() {
-        let err = serde_yaml::from_str::<FileStrategy>("definitely-not-a-strategy")
-            .expect_err("unknown FileStrategy must error");
-        let message = err.to_string();
-        let listed = message
-            .split_once("expected one of ")
-            .unwrap_or_else(|| panic!("error must list the accepted tokens, got: {message}"))
-            .1;
-        let accepted: std::collections::BTreeSet<&str> = listed
-            .split('`')
-            .skip(1)
-            .step_by(2)
-            .map(str::trim)
-            .collect();
-        let declared: std::collections::BTreeSet<&str> =
-            FileStrategy::ALL.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            declared, accepted,
-            "FileStrategy::ALL and the case_insensitive_enum! token list disagree"
-        );
     }
 
     #[test]
@@ -1414,16 +1375,7 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_rejects_empty_name() {
-        let specs = vec![BackupSpec {
-            name: "".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
-        }];
+        let specs = vec![backup("")];
         let err = validate_backup_specs(&specs).expect_err("empty name must be rejected");
         let msg = format!("{err}");
         assert!(msg.contains("must not be empty"), "got: {msg}");
@@ -1431,16 +1383,7 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_rejects_whitespace_only_name() {
-        let specs = vec![BackupSpec {
-            name: "   ".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
-        }];
+        let specs = vec![backup("   ")];
         let err = validate_backup_specs(&specs).expect_err("whitespace-only name must be rejected");
         let msg = format!("{err}");
         assert!(msg.contains("must not be empty"), "got: {msg}");
@@ -1449,16 +1392,7 @@ postBackup:
     #[test]
     fn validate_backup_specs_rejects_name_with_separator() {
         for bad in ["a/b", "a\\b"] {
-            let specs = vec![BackupSpec {
-                name: bad.into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
-            }];
+            let specs = vec![backup(bad)];
             let err = validate_backup_specs(&specs)
                 .expect_err("name with a path separator must be rejected");
             let msg = format!("{err}");
@@ -1471,16 +1405,7 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_rejects_traversal_name() {
-        let specs = vec![BackupSpec {
-            name: "..".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
-        }];
+        let specs = vec![backup("..")];
         let err = validate_backup_specs(&specs).expect_err("'..' name must be rejected");
         let msg = format!("{err}");
         assert!(msg.contains("directory reference"), "got: {msg}");
@@ -1501,16 +1426,7 @@ postBackup:
             "trailing:",
             "20260801T120000Z:snap",
         ] {
-            let specs = vec![BackupSpec {
-                name: bad.into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
-            }];
+            let specs = vec![backup(bad)];
             let err = validate_backup_specs(&specs)
                 .expect_err(&format!("a ':' in '{bad}' must be rejected"));
             let msg = format!("{err}");
@@ -1535,16 +1451,7 @@ postBackup:
             "-leading-dash",
             "..leading-dots",
         ] {
-            let specs = vec![BackupSpec {
-                name: good.into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
-            }];
+            let specs = vec![backup(good)];
             validate_backup_specs(&specs)
                 .unwrap_or_else(|e| panic!("'{good}' must stay legal, got: {e}"));
         }
@@ -1552,32 +1459,14 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_accepts_dashes_and_dots_in_name() {
-        let specs = vec![BackupSpec {
-            name: "openlist-db.v2".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
-        }];
+        let specs = vec![backup("openlist-db.v2")];
         validate_backup_specs(&specs)
             .expect("a name with internal dashes and dots should validate");
     }
 
     #[test]
     fn validate_backup_specs_accepts_dotdot_as_substring_in_name() {
-        let specs = vec![BackupSpec {
-            name: "a..b".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
-        }];
+        let specs = vec![backup("a..b")];
         validate_backup_specs(&specs).expect(
             "a name containing '..' as a substring (not the exact traversal segment) should validate",
         );
@@ -1586,25 +1475,10 @@ postBackup:
     #[test]
     fn validate_backup_specs_rejects_duplicate_names() {
         let specs = vec![
+            backup("db"),
             BackupSpec {
-                name: "db".into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
-            },
-            BackupSpec {
-                name: "db".into(),
                 source: PathBuf::from("/b"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
+                ..backup("db")
             },
         ];
         let err = validate_backup_specs(&specs).expect_err("duplicate names must be rejected");
@@ -1616,25 +1490,10 @@ postBackup:
     #[test]
     fn validate_backup_specs_accepts_unique_names() {
         let specs = vec![
+            backup("db"),
             BackupSpec {
-                name: "db".into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
-            },
-            BackupSpec {
-                name: "config".into(),
                 source: PathBuf::from("/b"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
-                schedule: None,
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
+                ..backup("config")
             },
         ];
         validate_backup_specs(&specs).expect("unique names should validate");
@@ -1644,14 +1503,8 @@ postBackup:
     fn validate_backup_specs_accepts_good_interval_schedule() {
         for schedule in ["30s", "5m", "1h", "1d", "3600"] {
             let specs = vec![BackupSpec {
-                name: "db".into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
                 schedule: Some(schedule.to_string()),
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
+                ..backup("db")
             }];
             validate_backup_specs(&specs)
                 .unwrap_or_else(|e| panic!("interval '{schedule}' should validate: {e}"));
@@ -1667,14 +1520,8 @@ postBackup:
             "30 0 3 * * *", // 6-field with a leading seconds field
         ] {
             let specs = vec![BackupSpec {
-                name: "db".into(),
-                source: PathBuf::from("/a"),
-                destination: None,
-                name_pattern: default_backup_name_pattern(),
                 schedule: Some(schedule.to_string()),
-                retention: default_backup_retention(),
-                pre_backup: vec![],
-                post_backup: vec![],
+                ..backup("db")
             }];
             validate_backup_specs(&specs)
                 .unwrap_or_else(|e| panic!("cron '{schedule}' should validate: {e}"));
@@ -1684,14 +1531,8 @@ postBackup:
     #[test]
     fn validate_backup_specs_rejects_bad_schedule_naming_both_attempts() {
         let specs = vec![BackupSpec {
-            name: "db".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
             schedule: Some("not-a-schedule".into()),
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
+            ..backup("db")
         }];
         let err = validate_backup_specs(&specs).expect_err("garbage schedule must be rejected");
         let msg = format!("{err}");
@@ -1704,14 +1545,8 @@ postBackup:
     #[test]
     fn validate_backup_specs_rejects_zero_retention() {
         let specs = vec![BackupSpec {
-            name: "db".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
             retention: 0,
-            pre_backup: vec![],
-            post_backup: vec![],
+            ..backup("db")
         }];
         let err = validate_backup_specs(&specs).expect_err("retention 0 must be rejected");
         let msg = format!("{err}");
@@ -1721,14 +1556,8 @@ postBackup:
     #[test]
     fn validate_backup_specs_accepts_retention_of_one() {
         let specs = vec![BackupSpec {
-            name: "db".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
-            name_pattern: default_backup_name_pattern(),
-            schedule: None,
             retention: 1,
-            pre_backup: vec![],
-            post_backup: vec![],
+            ..backup("db")
         }];
         validate_backup_specs(&specs).expect("retention of 1 should validate");
     }
@@ -1736,14 +1565,8 @@ postBackup:
     #[test]
     fn validate_backup_specs_rejects_unknown_name_pattern_var() {
         let specs = vec![BackupSpec {
-            name: "db".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
             name_pattern: "{bogus}.bak".into(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
+            ..backup("db")
         }];
         let err = validate_backup_specs(&specs).expect_err("unknown var must be rejected");
         let msg = format!("{err}");
@@ -1757,14 +1580,8 @@ postBackup:
     #[test]
     fn validate_backup_specs_accepts_all_known_name_pattern_vars() {
         let specs = vec![BackupSpec {
-            name: "db".into(),
-            source: PathBuf::from("/a"),
-            destination: None,
             name_pattern: "{name}-{filename}-{timestamp}".into(),
-            schedule: None,
-            retention: default_backup_retention(),
-            pre_backup: vec![],
-            post_backup: vec![],
+            ..backup("db")
         }];
         validate_backup_specs(&specs).expect("known vars should validate");
     }

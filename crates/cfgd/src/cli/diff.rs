@@ -47,17 +47,6 @@ fn record_file_drift(
     drifted
 }
 
-fn record_file_drifts(
-    payload: &mut DiffOutput,
-    records: Vec<cfgd_core::providers::FileDriftResult>,
-) -> bool {
-    // Non-short-circuiting `|`: every record has to be recorded, not just the
-    // ones up to the first drift.
-    records.into_iter().fold(false, |drift, record| {
-        record_file_drift(payload, record) | drift
-    })
-}
-
 pub fn cmd_diff(
     cli: &Cli,
     printer: &Printer,
@@ -103,7 +92,10 @@ pub fn cmd_diff(
     let has_file_drift = {
         printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let mut drift = record_file_drifts(&mut diff_payload, fm.diff(&resolved.merged, printer)?);
+        let mut drift = false;
+        for record in fm.diff(&resolved.merged, printer)? {
+            drift |= record_file_drift(&mut diff_payload, record);
+        }
         // Module-deployed files render the same inline content diff as profile
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {

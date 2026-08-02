@@ -30,6 +30,27 @@ fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
     )
 }
 
+/// Resolve one declared backup by name, or fail with the shared name-listing
+/// error. Every surface that takes a backup name resolves it through here so an
+/// unknown name reads the same from `list`, `run`, and `restore`.
+fn find_backup_spec<'a>(
+    backups: &'a [config::BackupSpec],
+    name: &str,
+) -> anyhow::Result<&'a config::BackupSpec> {
+    backups.iter().find(|b| b.name == name).ok_or_else(|| {
+        backup_not_found_error(name, backups.iter().map(|b| b.name.clone()).collect())
+    })
+}
+
+/// The three values every unit-constructing surface needs: where config lives,
+/// the run-history store, and the state dir a `BackupUnit` anchors to.
+fn unit_context(cli: &Cli) -> anyhow::Result<(PathBuf, cfgd_core::state::StateStore, PathBuf)> {
+    let config_dir = config_dir(cli);
+    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    Ok((config_dir, state, state_dir))
+}
+
 /// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
 /// caller assembles the entries from config + the state store.
 pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
@@ -155,25 +176,15 @@ pub fn cmd_backup_list(
     // name is the same typed, name-listing error `backup run` returns rather
     // than an empty table the caller has to interpret.
     let selected: Vec<&config::BackupSpec> = match name {
-        Some(n) => match backups.iter().find(|b| b.name == n) {
-            Some(b) => vec![b],
-            None => {
-                let valid: Vec<String> = backups.iter().map(|b| b.name.clone()).collect();
-                return Err(backup_not_found_error(n, valid));
+        Some(n) => {
+            let spec = find_backup_spec(&backups, n)?;
+            if snapshots {
+                return list_unit_snapshots(cli, printer, spec, &profile_name);
             }
-        },
+            vec![spec]
+        }
         None => backups.iter().collect(),
     };
-
-    if snapshots {
-        let spec = selected
-            .first()
-            .copied()
-            // Unreachable: `snapshots` implies a name, and a name that resolves
-            // to nothing returned above.
-            .ok_or_else(|| backup_not_found_error(name.unwrap_or_default(), Vec::new()))?;
-        return list_unit_snapshots(cli, printer, spec, &profile_name);
-    }
 
     if selected.is_empty() {
         printer.emit(build_backup_list_doc(&[]));
@@ -239,9 +250,7 @@ fn list_unit_snapshots(
     spec: &config::BackupSpec,
     profile_name: &str,
 ) -> anyhow::Result<()> {
-    let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
-    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let (config_dir, state, state_dir) = unit_context(cli)?;
     let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
 
     let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, &state)?
@@ -337,17 +346,9 @@ pub fn run_backup_restore(
     )?;
     let backups = composition.resolved.merged.backups;
 
-    let spec = match backups.iter().find(|b| b.name == args.name) {
-        Some(spec) => spec,
-        None => {
-            let valid: Vec<String> = backups.iter().map(|b| b.name.clone()).collect();
-            return Err(backup_not_found_error(args.name, valid));
-        }
-    };
+    let spec = find_backup_spec(&backups, args.name)?;
 
-    let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
-    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let (config_dir, state, state_dir) = unit_context(cli)?;
     let unit = BackupUnit::new(spec, &config_dir, &profile_name, &state_dir);
 
     let snapshots = cfgd_core::backup::list_snapshots(&unit, &state)?;
@@ -531,13 +532,7 @@ pub fn run_backup_run(
     let backups = composition.resolved.merged.backups;
 
     let targets: Vec<&config::BackupSpec> = match name {
-        Some(n) => match backups.iter().find(|b| b.name == n) {
-            Some(b) => vec![b],
-            None => {
-                let valid: Vec<String> = backups.iter().map(|b| b.name.clone()).collect();
-                return Err(backup_not_found_error(n, valid));
-            }
-        },
+        Some(n) => vec![find_backup_spec(&backups, n)?],
         None => backups.iter().collect(),
     };
 
@@ -550,9 +545,7 @@ pub fn run_backup_run(
         return Ok(BackupRunOutcome::default());
     }
 
-    let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
-    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let (config_dir, state, state_dir) = unit_context(cli)?;
 
     let mut outcome = BackupRunOutcome::default();
     let mut outputs: Vec<BackupRunOutput> = Vec::with_capacity(targets.len());
@@ -586,26 +579,7 @@ pub fn run_backup_run(
             }
             Err(e) => return Err(e.into()),
         };
-        let subject = format!("backup '{}'", record.name);
-        // `is_clean()` is the exit-code predicate; the human status line uses
-        // the same three-way split: a fully clean run is Ok, a Success run
-        // with a failed postBackup hook is Warn (the snapshot is fine, but
-        // something needs attention), and no artifact at all is Fail.
-        let role = if record.is_clean() {
-            Role::Ok
-        } else if record.status == BackupRunStatus::Success {
-            Role::Warn
-        } else {
-            Role::Fail
-        };
-        match &record.error {
-            Some(e) => {
-                printer
-                    .status(role, subject)
-                    .detail(cfgd_core::output::collapse_to_subject_line(e));
-            }
-            None => printer.status_simple(role, subject),
-        }
+        cfgd_core::backup::report_backup_record(printer, &record);
         outputs.push(BackupRunOutput::from(&record));
         outcome.records.push(record);
     }

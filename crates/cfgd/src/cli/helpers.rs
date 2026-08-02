@@ -219,6 +219,21 @@ pub(in crate::cli) fn parse_package_flag(
 /// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
 /// so the name must be the real one wherever the config knows it. Pass `cfg`
 /// when it is already loaded to avoid a second read.
+/// The `spec.backups[]` units an apply runs unconditionally.
+///
+/// A schedule-less unit has no timer to fire it, so every non-dry-run apply is
+/// its trigger. `plan` and `apply` share this so the preview can never list work
+/// the run then skips, or omit work the run then does.
+pub(in crate::cli) fn pending_backups(
+    merged: &cfgd_core::config::MergedProfile,
+) -> Vec<&cfgd_core::config::BackupSpec> {
+    merged
+        .backups
+        .iter()
+        .filter(|b| b.schedule.is_none())
+        .collect()
+}
+
 pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {
     if let Some(p) = cli.profile.as_deref() {
         return p.to_string();

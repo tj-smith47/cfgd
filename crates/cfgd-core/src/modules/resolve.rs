@@ -222,12 +222,12 @@ pub fn resolve_module_files(
             // `source: .` is the module's own directory — the documented way to
             // deploy a module's whole tree, and a legitimate answer here even
             // though it names nothing of its own.
-            if !crate::is_self_reference(rel) {
-                crate::validate_no_traversal(rel).map_err(|e| ModuleError::InvalidSpec {
+            crate::validate_no_traversal_allowing_self(rel).map_err(|e| {
+                ModuleError::InvalidSpec {
                     name: module.name.clone(),
                     message: format!("file source '{}' is not usable: {e}", entry.source),
-                })?;
-            }
+                }
+            })?;
             let source = module.dir.join(rel);
             // Verify the resolved path stays within the module directory
             // (prevents symlink-based escape from module boundary)

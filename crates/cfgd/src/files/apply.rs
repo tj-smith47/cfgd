@@ -147,28 +147,6 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                         _ => None,
                     };
 
-                    // `Patch` rewrites the target's own content, so the merge
-                    // runs against the live file here — against whatever the
-                    // target holds now rather than what planning saw, so an
-                    // out-of-band edit between plan and apply is folded in.
-                    let patched = match strategy {
-                        FileStrategy::Patch => {
-                            let spec =
-                                patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
-                                    path: target.clone(),
-                                })?;
-                            Some(
-                                self.evaluate_spec(
-                                    spec,
-                                    target,
-                                    cfgd_core::reconciler::ReconcileContext::Apply,
-                                )?
-                                .patched,
-                            )
-                        }
-                        _ => None,
-                    };
-
                     // Ensure parent directory exists and is writable
                     ensure_target_writable(target)?;
 
@@ -203,13 +181,26 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                             })?;
                         }
                         FileStrategy::Patch => {
-                            cfgd_core::atomic_write_merged(
-                                target,
-                                patched.as_deref().unwrap_or_default(),
-                            )
-                            .map_err(|e| FileError::Io {
-                                path: target.clone(),
-                                source: e,
+                            // The merge runs against the live file here — against
+                            // whatever the target holds now rather than what
+                            // planning saw, so an out-of-band edit between plan
+                            // and apply is folded in.
+                            let spec =
+                                patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
+                                    path: target.clone(),
+                                })?;
+                            let patched = self
+                                .evaluate_spec(
+                                    spec,
+                                    target,
+                                    cfgd_core::reconciler::ReconcileContext::Apply,
+                                )?
+                                .patched;
+                            cfgd_core::atomic_write_merged(target, &patched).map_err(|e| {
+                                FileError::Io {
+                                    path: target.clone(),
+                                    source: e,
+                                }
                             })?;
                         }
                         FileStrategy::Copy | FileStrategy::Template => {

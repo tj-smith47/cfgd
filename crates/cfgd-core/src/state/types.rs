@@ -264,7 +264,9 @@ pub enum BackupRunStatus {
 }
 
 impl BackupRunStatus {
-    pub(in crate::state) fn as_str(&self) -> &'static str {
+    /// The persisted token, and the one every `-o json` payload reports — the
+    /// DB spelling and the wire spelling are the same string by construction.
+    pub fn as_str(&self) -> &'static str {
         match self {
             BackupRunStatus::Success => "success",
             BackupRunStatus::Failed => "failed",

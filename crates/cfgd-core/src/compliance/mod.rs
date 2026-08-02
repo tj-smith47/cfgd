@@ -240,9 +240,8 @@ pub fn collect_file_checks(
 
     for file in effective_files(profile, modules, config_dir) {
         let target = crate::expand_tilde(&file.target);
-        let suffix = origin_suffix(&file.origin);
-
         let exists = target.exists();
+        let suffix = origin_suffix(&file.origin);
 
         if !exists {
             checks.push(ComplianceCheck {

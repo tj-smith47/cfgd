@@ -28,10 +28,7 @@ pub use apply::action_matches_phase_filter;
 pub use env_engine::launchd_env_plist;
 pub use format::{format_action_description, format_plan_items};
 pub use packages::stale_tracked_packages;
-pub use patch::{
-    PatchBinding, PatchContext, PatchOutcome, compute_patched, evaluate_patch, infer_format,
-    patch_failure_detail, resolve_format,
-};
+pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,

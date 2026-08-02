@@ -176,14 +176,9 @@ pub fn cmd_plan(
         strip_scripts_from_plan(&mut plan);
     }
 
-    // Schedule-less backups run on every apply, unconditionally of the
-    // reconciler diff — surface them in the preview so `plan` never omits
-    // work a real apply would do.
-    let pending_backups: Vec<String> = effective_resolved
-        .merged
-        .backups
+    // Surfaced in the preview so `plan` never omits work a real apply would do.
+    let pending_backups: Vec<String> = pending_backups(&effective_resolved.merged)
         .iter()
-        .filter(|b| b.schedule.is_none())
         .map(|b| b.name.clone())
         .collect();
 

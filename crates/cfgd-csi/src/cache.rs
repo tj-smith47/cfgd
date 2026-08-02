@@ -242,6 +242,10 @@ fn is_complete(path: &Path) -> bool {
 }
 
 /// Recursively compute the total size of files, excluding marker files.
+///
+/// Deliberately not `cfgd_core::dir_size`: eviction accounting must exclude the
+/// cache's own bookkeeping files, and it follows symlinks (a module may publish
+/// one) where the core helper skips them.
 fn dir_size_excluding_markers(path: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {

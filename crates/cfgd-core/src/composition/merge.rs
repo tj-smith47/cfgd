@@ -148,13 +148,7 @@ pub(super) fn merge_with_policy(
         }
 
         // Backups: append, deduplicate by name (higher-priority layer overrides)
-        for backup in &spec.backups {
-            if let Some(existing) = merged.backups.iter_mut().find(|b| b.name == backup.name) {
-                *existing = backup.clone();
-            } else {
-                merged.backups.push(backup.clone());
-            }
-        }
+        crate::merge_backups(&mut merged.backups, &spec.backups);
 
         // Modules: union (deduplicated)
         union_extend(&mut merged.modules, &spec.modules);
