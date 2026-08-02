@@ -28,9 +28,17 @@ on:
 permissions:
   contents: read
 
+# Repo-global, not per-ref: the suites share one real cluster. Namespaces are
+# run-scoped, but the CRDs, the cfgd-system operator/webhook/server and the CSI
+# release are singletons. setup-cluster.sh's Lease only serializes setup against
+# setup — it is released when that job exits, so a second run's setup would
+# redeploy those singletons underneath a first run's still-executing tests.
+# cancel-in-progress stays false so a concurrent run queues instead of killing
+# the run holding the cluster; the cost is that a newer queued run supersedes an
+# older queued one, which surfaces as a cancelled run rather than a false green.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: e2e-${{ github.repository }}
+  cancel-in-progress: false
 
 # REGISTRY is identical (vars.E2E_REGISTRY) for every job that needs it, so it
 # lives here. CFGD_E2E_SETUP_DONE and IMAGE_TAG stay per-job: cli-tests runs
