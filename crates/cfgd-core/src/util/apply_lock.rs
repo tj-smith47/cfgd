@@ -10,6 +10,19 @@ pub const APPLY_LOCK_FILENAME: &str = "apply.lock";
 /// own artifacts, and so the set of locks can be listed in one place.
 const LOCKS_SUBDIR: &str = "locks";
 
+/// High half of the byte offset `LockFileEx` locks, i.e. the lock sits one byte
+/// past 2^63 into the file.
+///
+/// `LockFileEx` ranges are **mandatory**, not advisory: while one process holds
+/// a range exclusively, no other process may even READ those bytes. Locking
+/// byte 0 — the obvious choice, and what this did — therefore made the PID
+/// stored in the file unreadable by precisely the caller that needs it, the one
+/// being refused, so every contended acquire reported `unknown pid`. The range
+/// is parked far past any content the file will ever hold, which leaves the PID
+/// readable while keeping the exclusion exactly as strict.
+#[cfg(windows)]
+const LOCK_RANGE_OFFSET_HIGH: u32 = 0x8000_0000;
+
 /// Platform-specific lock file type.
 /// Unix: `nix::fcntl::Flock` (safe RAII flock, unlocks on drop).
 /// Windows: plain `File` (LockFileEx releases on handle close).
@@ -102,6 +115,7 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
     use windows_sys::Win32::Storage::FileSystem::{
         LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
     };
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -111,15 +125,20 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
         .open(lock_path)?;
 
     let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-    // SAFETY: `OVERLAPPED` is a plain-old-data struct of integers and a
-    // handle field; the all-zero bit pattern is the documented "no event,
-    // offset 0" initial value for synchronous-style LockFileEx calls.
-    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let mut overlapped = OVERLAPPED {
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 {
+                Offset: 0,
+                OffsetHigh: LOCK_RANGE_OFFSET_HIGH,
+            },
+        },
+        ..Default::default()
+    };
     // SAFETY: `handle` is a valid, open, owned Win32 file handle derived
     // from `file`, which outlives the call. `&mut overlapped` points to a
     // stack-local, aligned, writable OVERLAPPED struct. The lock byte
-    // range (offset 0, length 1) is fixed and valid. Non-blocking lock
-    // (LOCKFILE_FAIL_IMMEDIATELY) avoids indefinite wait.
+    // range (one byte at `LOCK_RANGE_OFFSET_HIGH << 32`) is fixed and valid.
+    // Non-blocking lock (LOCKFILE_FAIL_IMMEDIATELY) avoids indefinite wait.
     let ret = unsafe {
         LockFileEx(
             handle,

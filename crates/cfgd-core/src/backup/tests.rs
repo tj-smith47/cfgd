@@ -1234,7 +1234,10 @@ fn snapshot_name_rejects_an_absolute_pattern() {
     s.name_pattern = "/etc/passwd".to_string();
     let err = snapshot_name(&s, Path::new("/var/lib/app/data.db"))
         .expect_err("absolute pattern must be rejected");
-    assert!(err.to_string().contains("absolute"), "got: {err}");
+    assert!(
+        err.to_string().contains("starts from a filesystem root"),
+        "got: {err}"
+    );
 }
 
 #[test]

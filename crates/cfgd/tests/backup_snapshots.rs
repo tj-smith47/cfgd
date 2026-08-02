@@ -36,8 +36,8 @@ use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
 use common::{
-    apply_args, apply_args_dry_run, backup_profile_setup, backup_profile_with_one_failure_setup,
-    cli_for,
+    apply_args, apply_args_dry_run, backup_list_profile_setup, backup_profile_setup,
+    backup_profile_with_one_failure_setup, cli_for,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -78,19 +78,18 @@ fn backup_list_empty_json() {
 
 #[test]
 fn backup_list_populated_human() {
-    let (config_dir, state_dir, source) = backup_profile_setup();
+    // A fixed `source:` on purpose: the table pads every column to the widest
+    // Source, so a tempdir path would make the golden's whole layout depend on
+    // how long the host's temp root is.
+    let (config_dir, state_dir) = backup_list_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
     cmd_backup_list(&cli, &printer, None, false).unwrap();
     drop(printer);
 
-    // The table's Source column renders the tempdir-backed fixture path
-    // (`backup_profile_setup`'s `notes.txt`), which changes every run, and the
-    // Next Run column is a real future clock time.
-    let normalized =
-        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&source, "<SOURCE>")]);
-    let normalized = normalize_iso8601(&normalized);
+    // Next Run is a real future clock time.
+    let normalized = normalize_iso8601(&strip_ansi(&cap.human()));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "backup/list_populated.txt",

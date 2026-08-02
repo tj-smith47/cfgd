@@ -13137,10 +13137,25 @@ mod tests_run_daemon_wrapper {
             "--state-dir must reach the loop, or the daemon's drift events, backups, and apply lock land where the CLI never looks"
         );
         let ipc = over.ipc_path.expect("runtime dir resolves an ipc path");
+        // The endpoint's SHAPE is the one thing that genuinely differs by OS: a
+        // unix socket is a file under the runtime dir, a Windows named pipe is a
+        // kernel object in the flat `\\.\pipe\` namespace that no directory can
+        // contain. Each side asserts its own real contract rather than the
+        // check being dropped on the platform where it does not fit.
+        #[cfg(unix)]
         assert!(
             ipc.starts_with(&runtime),
             "--runtime-dir must bind the socket under the given root, got {ipc:?}"
         );
+        #[cfg(windows)]
+        {
+            let _ = &runtime;
+            assert_eq!(
+                ipc,
+                PathBuf::from(r"\\.\pipe\cfgd"),
+                "a named pipe cannot live under --runtime-dir, but scope must still pick the per-user endpoint"
+            );
+        }
     }
 
     #[test]

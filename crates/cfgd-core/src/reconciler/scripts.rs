@@ -741,6 +741,31 @@ fn spawn_capture_reader<R: std::io::Read + Send + 'static>(
     })
 }
 
+/// `cmd.exe /C <run>` with the script text passed through **verbatim**.
+///
+/// `Command::arg` escapes for `CommandLineToArgvW`, which `cmd.exe` does not
+/// implement: it turns every `"` in the script into `\"`, and `cmd` reads that
+/// backslash as part of the filename. A hook as ordinary as
+/// `echo hi > "C:\path\marker"` therefore redirected into `\C:\path\marker\`
+/// and silently wrote nothing. `raw_arg` appends the text unmodified, which is
+/// what `cmd.exe` is documented to expect and what a user typing the same line
+/// at a prompt gets.
+///
+/// Defined on every platform because `shell: cmd` is a config value a unix host
+/// can parse and dispatch; the spawn simply fails there, as it always has.
+fn cmd_command(run_str: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("cmd.exe");
+    c.arg("/C");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.raw_arg(run_str);
+    }
+    #[cfg(not(windows))]
+    c.arg(run_str);
+    c
+}
+
 /// Build the `Command` for an inline script based on the chosen shell interpreter.
 ///
 /// When `cfgd_env_path` is `Some`, bash and zsh commands are prepended with a
@@ -762,9 +787,7 @@ fn build_inline_command(
             }
             #[cfg(windows)]
             {
-                let mut c = std::process::Command::new("cmd.exe");
-                c.arg("/C").arg(run_str);
-                c
+                cmd_command(run_str)
             }
         }
         ScriptShell::Sh => {
@@ -803,11 +826,7 @@ fn build_inline_command(
             c.arg("-NoProfile").arg("-Command").arg(run_str);
             c
         }
-        ScriptShell::Cmd => {
-            let mut c = std::process::Command::new("cmd.exe");
-            c.arg("/C").arg(run_str);
-            c
-        }
+        ScriptShell::Cmd => cmd_command(run_str),
     };
     c.current_dir(working_dir);
     #[cfg(unix)]

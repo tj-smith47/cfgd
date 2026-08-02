@@ -235,10 +235,32 @@ pub fn backup_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf)
     std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
     std::fs::write(&source_file, "hello backup").unwrap();
 
+    write_backup_profile(&config_dir, &source_file.display().to_string());
+    (config_dir, state_dir, source_file)
+}
+
+/// The same two backups, but `source:` is a FIXED literal instead of a tempdir
+/// path — and no file is created, because `cfgd backup list` renders the
+/// declared string and never stats it.
+///
+/// `backup list`'s Source column is padded to the widest value in it, so a
+/// host-dependent source makes the whole rendered TABLE host-dependent: a
+/// golden blessed against Linux's `/tmp/.tmpXXXXXX/...` mismatches macOS's much
+/// longer `/private/var/folders/...` and Windows' `C:\Users\...\AppData\Local\Temp\...`.
+/// Normalizing the path after rendering cannot fix it — the padding is already
+/// baked into every other column.
+pub fn backup_list_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    write_backup_profile(&config_dir, "/var/lib/app/notes.txt");
+    (config_dir, state_dir)
+}
+
+/// Write the shared `withbackups` profile (a schedule-less `docs` and a cron
+/// `weekly`) declaring `source` for both, plus the `cfgd.yaml` selecting it.
+fn write_backup_profile(config_dir: &tempfile::TempDir, source: &str) {
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      retention: 3\n    - name: weekly\n      source: {}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
-        source_file.display(),
-        source_file.display(),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -246,8 +268,6 @@ pub fn backup_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf)
 
     let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
-
-    (config_dir, state_dir, source_file)
 }
 
 /// Build a tempdir-backed profile with TWO schedule-less backups, declared

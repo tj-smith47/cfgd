@@ -673,14 +673,13 @@ fn snapshot_name(spec: &BackupSpec, source: &Path) -> std::result::Result<PathBu
     if rendered.trim().is_empty() {
         return Err(invalid("it is empty".to_string()));
     }
-    let path = PathBuf::from(&rendered);
-    if path.is_absolute() {
-        return Err(invalid(
-            "it is absolute; namePattern is relative to the destination".to_string(),
-        ));
-    }
+    // Rootedness is left to `validate_plain_name`, which judges it from the
+    // path's components on every host. `Path::is_absolute` does not: on Windows
+    // `/etc/passwd` is drive-relative rather than absolute, so a pre-check here
+    // would reject the same pattern with a different message depending on which
+    // OS parsed it.
     crate::validate_plain_name(&rendered).map_err(invalid)?;
-    Ok(path)
+    Ok(PathBuf::from(&rendered))
 }
 
 /// Copy a file to `target` atomically: stream into a sibling temp file, fsync,
