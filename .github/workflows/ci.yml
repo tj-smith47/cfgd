@@ -4,7 +4,6 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
 
 # Read-only by default; the coverage job alone elevates to contents: write
 # (its badge publish pushes to the badges branch).

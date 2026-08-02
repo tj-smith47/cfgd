@@ -246,8 +246,12 @@ echo "  All pre-flight checks passed"
 buildcache_args() {
     [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
     local ref="${REGISTRY}/$1:buildcache"
+    # ignore-error: the cache export is an optimization, and a registry-side
+    # blob rejection during it aborts an otherwise-successful build — which
+    # fails setup, which cascades every E2E suite to "skipped" without a
+    # single test having run. A cold next build is the correct penalty.
     printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
-                  "--cache-to" "type=registry,ref=${ref},mode=max"
+                  "--cache-to" "type=registry,ref=${ref},mode=max,ignore-error=true"
 }
 
 echo "Extracting cfgd-gen-crds from Dockerfile.operator..."
