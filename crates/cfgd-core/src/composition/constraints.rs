@@ -1,5 +1,56 @@
+use crate::PathDisplayExt;
 use crate::config::{MergedProfile, PolicyItems, ProfileSpec, SourceConstraints};
 use crate::errors::{CompositionError, Result};
+
+/// Describe every element of `spec` that runs source-supplied code, in the
+/// wording an error or a plan note uses.
+///
+/// The single enumeration of what `constraints.no_scripts` governs. The
+/// fail-closed check and the `allowScripts` disclosure note both read this
+/// list, so a new script surface cannot reach one without reaching the other.
+pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
+    let mut surfaces = Vec::new();
+
+    if let Some(ref scripts) = spec.scripts {
+        for (label, entries) in [
+            ("preApply", &scripts.pre_apply),
+            ("postApply", &scripts.post_apply),
+            ("preReconcile", &scripts.pre_reconcile),
+            ("postReconcile", &scripts.post_reconcile),
+            ("onChange", &scripts.on_change),
+            ("onDrift", &scripts.on_drift),
+        ] {
+            if !entries.is_empty() {
+                surfaces.push(format!("a {label} script"));
+            }
+        }
+    }
+
+    for backup in &spec.backups {
+        for (label, entries) in [
+            ("preBackup", &backup.pre_backup),
+            ("postBackup", &backup.post_backup),
+        ] {
+            if !entries.is_empty() {
+                surfaces.push(format!("a {label} hook on backup '{}'", backup.name));
+            }
+        }
+    }
+
+    if let Some(ref files) = spec.files {
+        for managed in &files.managed {
+            if managed
+                .patch
+                .as_ref()
+                .is_some_and(|patch| patch.script.is_some())
+            {
+                surfaces.push(format!("a patch script for {}", managed.target.posix()));
+            }
+        }
+    }
+
+    surfaces
+}
 
 /// Validate security constraints for a source's contribution to the composed profile.
 ///
@@ -16,16 +67,11 @@ pub fn validate_constraints(
     // Check script constraint
     if constraints.no_scripts
         && !allow_scripts
-        && let Some(ref scripts) = spec.scripts
-        && (!scripts.pre_apply.is_empty()
-            || !scripts.post_apply.is_empty()
-            || !scripts.pre_reconcile.is_empty()
-            || !scripts.post_reconcile.is_empty()
-            || !scripts.on_drift.is_empty()
-            || !scripts.on_change.is_empty())
+        && let Some(kind) = script_surfaces(spec).into_iter().next()
     {
         return Err(CompositionError::ScriptsNotAllowed {
             source_name: source_name.to_string(),
+            kind,
         }
         .into());
     }
@@ -41,15 +87,40 @@ pub fn validate_constraints(
     }
 
     // Check path containment
-    if !constraints.allowed_target_paths.is_empty()
-        && let Some(ref files) = spec.files
-    {
-        for managed in &files.managed {
-            let target_str = managed.target.to_string_lossy();
-            if !path_matches_any(&target_str, &constraints.allowed_target_paths) {
+    if !constraints.allowed_target_paths.is_empty() {
+        if let Some(ref files) = spec.files {
+            for managed in &files.managed {
+                // Folded to `/`: the allow-list globs are authored once in the
+                // source manifest and must match identically on every
+                // subscriber's OS.
+                let target_str = crate::to_posix_string(&managed.target);
+                if !path_matches_any(&target_str, &constraints.allowed_target_paths) {
+                    return Err(CompositionError::PathNotAllowed {
+                        source_name: source_name.to_string(),
+                        path: target_str,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        // A backup's `destination` is a path the source makes cfgd WRITE to, so
+        // it is bound by the same allow-list as a managed file's target. Its
+        // `source` is deliberately unconstrained: snapshotting a path the
+        // allow-list does not cover (`~/.ssh` before a risky apply) is the
+        // feature's primary use, and a snapshot can only ever land inside a
+        // destination this check already covers.
+        for backup in &spec.backups {
+            let Some(ref destination) = backup.destination else {
+                // The default destination is `<state_dir>/backups/<name>/` —
+                // cfgd's own state dir, not a path the source chose.
+                continue;
+            };
+            let destination_str = crate::to_posix_string(destination);
+            if !path_matches_any(&destination_str, &constraints.allowed_target_paths) {
                 return Err(CompositionError::PathNotAllowed {
                     source_name: source_name.to_string(),
-                    path: target_str.to_string(),
+                    path: destination_str,
                 }
                 .into());
             }
@@ -64,7 +135,7 @@ pub fn validate_constraints(
         && let Some(ref files) = spec.files
     {
         for managed in &files.managed {
-            let target_str = managed.target.to_string_lossy();
+            let target_str = crate::to_posix_string(&managed.target);
             if let Some(matched_pattern) =
                 find_matching_pattern(&target_str, &enc_constraint.required_targets)
             {
@@ -72,7 +143,7 @@ pub fn validate_constraints(
                     None => {
                         return Err(CompositionError::EncryptionRequired {
                             source_name: source_name.to_string(),
-                            path: target_str.to_string(),
+                            path: target_str,
                             pattern: matched_pattern,
                         }
                         .into());
@@ -83,7 +154,7 @@ pub fn validate_constraints(
                         {
                             return Err(CompositionError::EncryptionBackendMismatch {
                                 source_name: source_name.to_string(),
-                                path: target_str.to_string(),
+                                path: target_str.clone(),
                                 pattern: matched_pattern.clone(),
                                 actual_backend: enc_spec.backend.clone(),
                                 required_backend: required_backend.clone(),
@@ -95,7 +166,7 @@ pub fn validate_constraints(
                         {
                             return Err(CompositionError::EncryptionModeMismatch {
                                 source_name: source_name.to_string(),
-                                path: target_str.to_string(),
+                                path: target_str,
                                 pattern: matched_pattern,
                                 actual_mode: format!("{:?}", enc_spec.mode),
                                 required_mode: format!("{:?}", required_mode),
@@ -148,7 +219,7 @@ pub fn check_locked_violations(
             if local_file.target == locked_file.target && local_file.source != locked_file.source {
                 return Err(CompositionError::LockedResource {
                     source_name: source_name.to_string(),
-                    resource: locked_file.target.to_string_lossy().to_string(),
+                    resource: crate::to_posix_string(&locked_file.target),
                 }
                 .into());
             }

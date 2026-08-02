@@ -20,7 +20,7 @@ mod record;
 #[cfg(test)]
 mod tests;
 
-pub use constraints::{check_locked_violations, validate_constraints};
+pub use constraints::{check_locked_violations, script_surfaces, validate_constraints};
 pub use engine::compose;
 pub use packages::merge_packages;
 pub use permissions::{PermissionChange, detect_permission_changes};

@@ -786,14 +786,29 @@ pub(in crate::cli) fn compose_with_sources(
     // Surface the documented "scripts are shown in cfgd plan" promise: when a
     // subscriber opted in (`allowScripts: true`) to a source whose
     // `constraints.no_scripts` would otherwise block scripts, the script
-    // execution must be visible. Non-fatal — the opt-in already permitted it.
+    // execution must be visible. Naming the concrete surfaces matters because
+    // two of the three do not look like lifecycle scripts from the outside: a
+    // backup hook runs on the daemon's timer, and a patch filter runs on
+    // read-only commands too. Non-fatal — the opt-in already permitted it.
     for spec in &cfg.spec.sources {
         if spec.subscription.allow_scripts
             && let Some(cached) = mgr.get(&spec.name)
             && cached.manifest.spec.policy.constraints.no_scripts
         {
+            let surfaces: Vec<String> = result
+                .resolved
+                .layers
+                .iter()
+                .filter(|layer| layer.source == spec.name)
+                .flat_map(|layer| composition::script_surfaces(&layer.spec))
+                .collect();
+            let carries = if surfaces.is_empty() {
+                String::new()
+            } else {
+                format!(" — it carries {}", surfaces.join(", "))
+            };
             printer.note(format!(
-                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription)",
+                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription){carries}",
                 spec.name
             ));
         }

@@ -443,8 +443,10 @@ pub enum CompositionError {
     )]
     InvalidReject { source_name: String, key: String },
 
-    #[error("source '{source_name}' is not allowed to run scripts")]
-    ScriptsNotAllowed { source_name: String },
+    #[error(
+        "source '{source_name}' carries {kind}, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)"
+    )]
+    ScriptsNotAllowed { source_name: String, kind: String },
 
     #[error(
         "required source '{source_name}' is not available (not synced or failed to load); fix the source or set its sync.required to false"

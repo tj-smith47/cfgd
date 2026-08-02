@@ -331,6 +331,54 @@ fn backup_run_all_runs_every_declared_backup_including_scheduled() {
 }
 
 #[test]
+#[serial_test::serial]
+fn backup_run_aborts_on_a_source_constraint_violation_but_list_still_reports() {
+    // `backup run` executes hooks and writes snapshots, so it composes in
+    // Enforce like apply/plan/daemon: a source contribution that violates the
+    // source's own constraints must stop the run, not be recorded and run
+    // anyway. `backup list` only reads, so it stays on Report and still shows
+    // the inventory.
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, rejected_destination) =
+        common::violating_backup_source_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (sync_printer, _sync_cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    drop(sync_printer);
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let err = cfgd::cli::backup::run_backup_run(&cli, &printer, None)
+        .expect_err("a source constraint violation must abort backup run");
+    drop(printer);
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains(&rejected_destination) && msg.contains("acme"),
+        "the abort must name the offending destination and source: {msg}"
+    );
+    assert!(
+        !std::path::Path::new(&rejected_destination).exists(),
+        "no snapshot may be written by a run that composed a violating source"
+    );
+
+    let (list_printer, list_cap) =
+        Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &list_printer).expect("listing stays on Report mode");
+    drop(list_printer);
+    let payload = list_cap.json().expect("backup list doc carries a payload");
+    assert_eq!(
+        payload
+            .as_array()
+            .expect("array payload")
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["exfil"],
+        "a read surface still reports the inventory it recorded a violation for"
+    );
+}
+
+#[test]
 fn build_backup_list_doc_json_matches_serde_roundtrip() {
     // Pure data-roundtrip test on `BackupListEntry`/`build_backup_list_doc` —
     // pins the `-o json` shape without standing up config/state fixtures.

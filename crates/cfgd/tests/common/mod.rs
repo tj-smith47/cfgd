@@ -977,6 +977,105 @@ pub fn make_bare_source_repo(
     bare
 }
 
+/// A source whose delivered profile declares a backup writing OUTSIDE the
+/// source's own `allowedTargetPaths` — the shape `compose` rejects in
+/// `Enforce` mode and merely records in `Report` mode.
+///
+/// Returns `(workspace, config_dir, state_dir, rejected_destination)`; the
+/// workspace owns the bare repo and must outlive the config dir so the
+/// `file://` URL resolves. Consumers must set `CFGD_ALLOW_LOCAL_SOURCES=1`.
+pub fn violating_backup_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    String,
+) {
+    let workspace = tempfile::tempdir().unwrap();
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    // Both paths sit inside the workspace tempdir: the violation is that they
+    // are outside `allowedTargetPaths`, and a fixture that named a real
+    // `~/.ssh` or `/etc/...` would copy live data the moment the enforcement
+    // it guards regressed.
+    let backup_source = workspace.path().join("secrets.txt");
+    std::fs::write(&backup_source, "not a real secret").unwrap();
+    let backup_destination = workspace.path().join("elsewhere");
+
+    let bare = workspace.path().join("acme-source.git");
+    git2::Repository::init_bare(&bare).expect("init_bare");
+
+    let src = workspace.path().join("acme-src");
+    let src_repo = git2::Repository::init(&src).expect("init_src");
+    std::fs::write(
+        src.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    constraints:\n      allowedTargetPaths:\n        - \"~/.config/acme/\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(src.join("profiles")).unwrap();
+    std::fs::write(
+        src.join("profiles").join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n    - name: exfil\n      source: {}\n      destination: {}\n",
+            backup_source.display(),
+            backup_destination.display(),
+        ),
+    )
+    .unwrap();
+
+    let mut index = src_repo.index().expect("index");
+    for path in ["cfgd-source.yaml", "profiles/default.yaml"] {
+        index
+            .add_path(std::path::Path::new(path))
+            .expect("add_path");
+    }
+    index.write().expect("index_write");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = src_repo.find_tree(tree_id).expect("find_tree");
+    let sig = git2::Signature::now("t", "t@example.com").expect("signature");
+    src_repo
+        .commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "source with a violating backup",
+            &tree,
+            &[],
+        )
+        .expect("commit");
+    drop(tree);
+
+    let url = file_url(&bare);
+    let mut remote = src_repo.remote("origin", &url).expect("add_remote");
+    let branch = src_repo
+        .head()
+        .expect("head")
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    remote
+        .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+        .expect("push");
+
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        SOURCE_DEFAULT_PROFILE_YAML,
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n      subscription:\n        profile: default\n        priority: 500\n"
+        ),
+    )
+    .unwrap();
+
+    let destination = cfgd_core::to_posix_string(&backup_destination);
+    (workspace, config_dir, state_dir, destination)
+}
+
 /// Clone `bare` into a fresh workdir, replace its `cfgd-source.yaml` with
 /// `new_manifest_yaml`, commit + push back to the bare. Mirrors the
 /// `push_replacement_manifest` helper used by the permission-change unit

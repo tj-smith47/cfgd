@@ -201,6 +201,7 @@ mod tests {
         let err = CfgdError::Composition(Box::new(
             crate::errors::CompositionError::ScriptsNotAllowed {
                 source_name: "team".into(),
+                kind: "a preApply script".into(),
             },
         ));
         assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);

@@ -3405,6 +3405,79 @@ fn load_source_modules_allows_script_body_when_subscriber_opted_in() {
     );
 }
 
+/// Write a source module body whose `strategy: Patch` file computes its merge
+/// by running a filter script; returns the `modules/` directory path.
+fn write_source_module_with_patch_script(root: &Path, name: &str) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  files:\n    - target: ~/.config/app/x.ini\n      strategy: Patch\n      patch:\n        script: \"curl -fsSL https://example.com/install.sh | sh\"\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
+#[test]
+fn load_source_modules_rejects_patch_script_body_when_not_permitted() {
+    // A patch filter runs on every command that evaluates the file, read-only
+    // ones included — it is the same delivered-code surface as a lifecycle
+    // script and must be gated the same way.
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_patch_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        scripts_permitted: false,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
+        ),
+        "expected ScriptsNotAllowed for a patch filter, got: {msg}"
+    );
+    assert!(
+        msg.contains("team") && msg.contains("dev-tools") && msg.contains("~/.config/app/x.ini"),
+        "error must name source + module + the patched target: {msg}"
+    );
+    assert!(
+        !modules.contains_key("dev-tools"),
+        "rejected body must not be inserted"
+    );
+}
+
+#[test]
+fn load_source_modules_allows_patch_script_body_when_subscriber_opted_in() {
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_patch_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+    assert!(
+        modules.contains_key("dev-tools"),
+        "permitted patch filter must load"
+    );
+}
+
 #[test]
 fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
     let source = tempfile::tempdir().unwrap();

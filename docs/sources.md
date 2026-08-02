@@ -204,6 +204,8 @@ The full algorithm for each resource:
    - **Subscriber `overrides`**: applied just above the source's own recommended/standard items (so they beat what the source recommends) but below its required/locked tiers. Overrides ride one step above the source's own items, so they share the source's rank against local config (priority 1000): below local at the default source priority (500), but above local only if you deliberately raise the source to priority ≥ 1000 (the same "higher priority wins" rule). Because an override rides at its own source's rank, it refines only that source — a *higher-priority sibling source* still wins over it; to override across sources, raise this source's priority or set the value in your local config. Scalar fields (env, aliases, system, files) replace the source's value by name; list fields (packages, modules) are added (union), not replaced.
    - **Multiple non-local sources conflict**: higher priority wins; equal priority — alphabetical source name
 
+A source's profile can also deliver `spec.backups[]` (see [Declarative Backups](backups.md)). Backups merge by **append, deduplicated by `name`** — the same rule profile inheritance uses: a higher-priority layer redeclaring a name replaces that entry wholesale, and any name only one layer declares survives. Their `preBackup`/`postBackup` hooks are governed by [`noScripts`](#noscripts) and their `destination` by [`allowedTargetPaths`](#allowedtargetpaths).
+
 ## CLI Commands
 
 Connect to a team's config source — cfgd fetches the manifest, shows available profiles and policy breakdown, and walks you through subscribing:
@@ -313,9 +315,28 @@ constraints:
 
 If the source tries to deploy a file to `~/.bashrc` (not in the allowed list), cfgd rejects that file and reports the violation in `cfgd plan`. The rest of the source's items still apply normally.
 
+Two paths are covered, and one deliberately is not:
+
+| Field | Constrained | Why |
+|---|---|---|
+| `spec.files.managed[].target` | yes | the file the source writes |
+| `spec.backups[].destination` | yes | the directory the source makes cfgd write snapshots into. Omitting it defaults to `<state_dir>/backups/<name>/` — cfgd's own state dir, not a path the source chose — which is always allowed |
+| `spec.backups[].source` | **no** | a backup `source` is read, never written. Snapshotting a path the allow-list does not cover (`~/.ssh` before a risky apply) is the feature's primary use, and the snapshot can only ever land inside a `destination`, which *is* constrained. Under `noScripts` the source also cannot run a hook that could move the snapshot elsewhere |
+
 ### `noScripts`
 
-When `true` (the default), the source cannot deliver lifecycle scripts. This covers both **profile-layer** scripts (`preApply`/`postApply`/`preReconcile`/`postReconcile`/`onChange`/`onDrift` on the source's profiles and policy tiers) and **module-body** scripts (the same hooks, plus `prefer: [script]` package installs, on any module the source delivers via `provides.modules`). If a source declares any of these while `noScripts: true`, cfgd rejects them as a fatal error — at composition time for profile-layer scripts and at module-load time for module bodies.
+When `true` (the default), the source cannot deliver anything that executes code. Every surface is covered, because "a script" is not always spelled `scripts:`:
+
+| Surface | Where it is declared | When it runs | Rejected at |
+|---|---|---|---|
+| Lifecycle scripts | `spec.scripts.{preApply,postApply,preReconcile,postReconcile,onChange,onDrift}` on the source's profiles and policy tiers | apply / reconcile | composition time |
+| Backup hooks | `spec.backups[].preBackup` / `postBackup` | `cfgd apply`, `cfgd backup run`, the daemon's timer | composition time |
+| Patch filters | `spec.files.managed[].patch.script` (`strategy: Patch`) | every command that evaluates the file — including read-only `cfgd diff` / `status` / `verify` / `compliance` | composition time |
+| Module-body scripts | the same lifecycle hooks, `prefer: [script]` package installs, and `spec.files[].patch.script` on any module delivered via `provides.modules` | apply / reconcile / evaluation | module-load time |
+
+A rejection names the exact surface it found, e.g. `source 'acme' carries a preBackup hook on backup 'db', but it is not allowed to run scripts`.
+
+A `patch.ensure` block is a declarative merge, not code, and is never rejected by `noScripts`.
 
 Subscribers can relax this by setting `allowScripts: true` in their subscription:
 
@@ -328,7 +349,13 @@ spec:
         allowScripts: true   # opt in to this source's scripts
 ```
 
-With `allowScripts: true`, the source's scripts are permitted and `cfgd plan` surfaces a note that they will run, so the execution is visible before any apply.
+With `allowScripts: true`, the source's scripts are permitted and `cfgd plan` surfaces a note naming each surface it found, so the execution is visible before any apply:
+
+```
+» source 'acme' scripts will run because allowScripts is set (constraints.no_scripts
+  is overridden by your subscription) — it carries a preApply script, a preBackup hook
+  on backup 'db', a patch script for ~/.config/acme/app.ini
+```
 
 ### `allowSystemChanges`
 
@@ -632,9 +659,9 @@ Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Su
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `noScripts: true` by default; scripts require explicit subscriber approval and are shown in plan |
+| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and each surface is named in plan |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
-| Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level |
+| Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level over `files.managed[].target` and `backups[].destination` (see [`allowedTargetPaths`](#allowedtargetpaths)) |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |
 | MITM | Git SSH/HTTPS transport security; optional signature verification |
 | Version pinning bypass | `pinVersion` resolved against git tags/refs, not the source's self-reported `metadata.version` — a source cannot edit its manifest to escape the pin, and a tag outside `~2` is never checked out |

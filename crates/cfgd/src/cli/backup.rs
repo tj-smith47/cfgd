@@ -79,9 +79,9 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
     // Cache-only composition (no network refresh) and Report constraint mode:
-    // listing/running backups is a read/maintenance surface, the same class
-    // as `status`/`diff`/`compliance`, not a mutating surface like
-    // apply/plan/daemon that composes in Enforce mode.
+    // listing backups is a read surface, the same class as
+    // `status`/`diff`/`compliance`. `backup run` is not — it composes in
+    // Enforce because it runs hooks and writes snapshots.
     let composition = compose_with_sources(
         cli,
         &cfg,
@@ -180,13 +180,18 @@ pub fn run_backup_run(
     printer.heading("Run Backups");
 
     let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    // Cache-only composition (no network refresh), but Enforce constraint mode:
+    // `backup run` executes user-declared hooks and writes snapshots, so it is a
+    // mutating surface like apply/plan/daemon and must abort on a source
+    // violation rather than record it and continue. Only `backup list`, which
+    // reads, composes in Report.
     let composition = compose_with_sources(
         cli,
         &cfg,
         &local_resolved,
         printer,
         false,
-        composition::ConstraintMode::Report,
+        composition::ConstraintMode::Enforce,
     )?;
     let backups = composition.resolved.merged.backups;
 

@@ -231,8 +231,9 @@ pub fn load_source_modules(
 }
 
 /// Describe the first script-bearing element of a module body, or `None` if the
-/// body carries no lifecycle scripts and no `prefer: [script]` package installs.
-/// Used to enforce a source's `no_scripts` constraint over delivered bodies.
+/// body runs no source-supplied code: no lifecycle scripts, no `prefer: [script]`
+/// package installs, and no `strategy: Patch` filter script. Used to enforce a
+/// source's `no_scripts` constraint over delivered bodies.
 fn module_script_kind(module: &LoadedModule) -> Option<String> {
     if let Some(ref scripts) = module.spec.scripts {
         let lifecycle = [
@@ -255,6 +256,18 @@ fn module_script_kind(module: &LoadedModule) -> Option<String> {
                 "a 'prefer: [script]' install for package '{}'",
                 pkg.name
             ));
+        }
+    }
+    // A `strategy: Patch` filter runs on EVERY command, read-only ones
+    // included — the merge is computed by executing it — so it is the widest
+    // reaching of the three surfaces, not the narrowest.
+    for file in &module.spec.files {
+        if file
+            .patch
+            .as_ref()
+            .is_some_and(|patch| patch.script.is_some())
+        {
+            return Some(format!("a patch script for {}", file.target));
         }
     }
     None
