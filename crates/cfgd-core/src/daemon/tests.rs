@@ -10972,18 +10972,21 @@ mod harness {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
     async fn wait_for_shutdown_returns_on_sigterm() {
-        // Driving wait_for_shutdown directly: spawn it on its own task, raise
-        // SIGTERM at our own PID, and verify the function returns AND the
-        // printer captured the SIGTERM message.
+        // Driving the shutdown wait directly: register, raise SIGTERM at our
+        // own PID, and verify the wait returns AND the printer captured the
+        // SIGTERM message.
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
-        let handle = tokio::spawn(super::super::wait_for_shutdown(Arc::clone(&printer)));
-        // Allow the SIGTERM signal listener to register.
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        // Registration is synchronous, so the signal cannot arrive before the
+        // handler exists — no sleep is needed to make this deterministic, and
+        // the delivery the assertions rely on is a latched pending
+        // notification rather than a race the test happened to win.
+        let signals = super::super::ShutdownSignals::install();
         // SAFETY: libc::kill against own PID is well-defined.
         unsafe {
             libc::kill(libc::getpid(), libc::SIGTERM);
         }
+        let handle = tokio::spawn(signals.wait(Arc::clone(&printer)));
         let joined = tokio::time::timeout(StdDuration::from_secs(3), handle).await;
         assert!(
             joined.is_ok(),
@@ -11124,12 +11127,14 @@ mod harness {
             env!("CARGO_PKG_VERSION"),
         ));
 
-        // Wait for the startup banner — the observable proof that the
-        // production trigger-setup block ran. Polled to a deadline rather than
-        // slept for a fixed span: binding the socket and spawning the pumps
-        // takes as long as the host is busy, and a machine running the whole
-        // suite in parallel misses a 150 ms budget while being perfectly
-        // healthy.
+        // Wait for the startup banner. It is proof the SIGTERM handler is
+        // installed, not merely that setup started: registration happens
+        // synchronously before the banner is printed, so a banner in the
+        // buffer means the signal raised below is delivered to the daemon
+        // rather than to the default disposition that would kill this test
+        // process. Polled to a deadline rather than slept for a fixed span —
+        // a machine running the whole suite in parallel misses a fixed budget
+        // while being perfectly healthy.
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         let mut banner = false;
         while std::time::Instant::now() < deadline {

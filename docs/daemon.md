@@ -38,6 +38,8 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 The daemon runs as a single tokio async runtime. Shutdown is graceful via SIGTERM/SIGINT (Unix) or the Windows Service control manager stop signal (Windows).
 
+The signal handlers are installed **before** the `Daemon running` banner is printed, so the banner is a promise you can act on immediately: a supervisor that starts cfgd and signals it in the same breath gets the clean shutdown path, not an abrupt kill.
+
 ## Configuration
 
 ```yaml

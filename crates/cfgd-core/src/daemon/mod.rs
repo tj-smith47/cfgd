@@ -904,6 +904,12 @@ pub(super) async fn run_daemon_with(
     // External-triggers mode supplies its own file_rx; production wires up a
     // notify-based watcher and pushes via file_tx → file_rx.
     let using_external_triggers = overrides.external_triggers.is_some();
+    // Installed here, ahead of the startup banner, so the banner's "press
+    // Ctrl+C to stop" is true from the instant it is printed. Only the
+    // production path takes it: a caller supplying its own triggers is a test,
+    // and installing process-wide handlers would change the behaviour of the
+    // process running the suite.
+    let shutdown_signals = (!using_external_triggers).then(ShutdownSignals::install);
     let (file_rx_for_triggers, _watcher_handle): (
         Option<mpsc::Receiver<PathBuf>>,
         Option<notify::RecommendedWatcher>,
@@ -1017,8 +1023,11 @@ pub(super) async fn run_daemon_with(
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_printer = Arc::clone(&printer);
         let shutdown_abort = Arc::clone(&abort);
+        let signals = shutdown_signals.ok_or_else(|| DaemonError::WatchError {
+            message: "internal: production path did not install shutdown signals".to_string(),
+        })?;
         let shutdown_task = tokio::spawn(async move {
-            let code = wait_for_shutdown(shutdown_printer).await;
+            let code = signals.wait(shutdown_printer).await;
             // Raised BEFORE the trigger: the loop may be awaiting a blocking
             // backup hook, and the select! arm that observes the trigger cannot
             // run until that await returns. The flag is what lets it return.
@@ -1323,39 +1332,103 @@ fn spawn_sighup_pump(tx: mpsc::Sender<()>) -> Result<tokio::task::JoinHandle<()>
     }))
 }
 
-/// Wait for SIGTERM (Unix) or Ctrl+C (any platform) and print the matching
-/// shutdown message. Returns when either fires.
-/// Block until the operator asks the daemon to stop, returning the POSIX
-/// `128 + signum` code for the signal that arrived — the value in-flight work
-/// sees through [`crate::AbortFlag::aborted`].
-async fn wait_for_shutdown(printer: Arc<Printer>) -> u8 {
-    #[cfg(unix)]
-    {
-        let sigterm = async {
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(mut s) => {
-                    s.recv().await;
-                }
+/// The signal streams the daemon shuts down on, registered up front.
+///
+/// Registration is a separate, synchronous step from waiting because the OS
+/// handler is installed when the stream is *built*, not when it is first
+/// polled. Building them inside the spawned wait task therefore left a window
+/// — from the startup banner until that task first ran — in which a SIGTERM
+/// met the default disposition and killed the process outright: no cleanup, no
+/// `Daemon stopped`, precisely the abrupt exit the daemon promises not to do,
+/// while the banner already claimed it was running and interruptible.
+/// [`ShutdownSignals::install`] runs before the banner is printed, so the
+/// banner is true the moment it appears.
+///
+/// A registration failure is recorded as `None` and waited on as `pending`,
+/// keeping a daemon that cannot hear one signal running and responsive to the
+/// other rather than failing startup outright.
+#[cfg(unix)]
+struct ShutdownSignals {
+    sigterm: Option<tokio::signal::unix::Signal>,
+    sigint: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+impl ShutdownSignals {
+    fn install() -> Self {
+        fn register(
+            kind: tokio::signal::unix::SignalKind,
+            name: &str,
+        ) -> Option<tokio::signal::unix::Signal> {
+            match tokio::signal::unix::signal(kind) {
+                Ok(s) => Some(s),
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to register SIGTERM handler");
-                    std::future::pending::<()>().await;
+                    tracing::warn!(error = %e, signal = name, "failed to register shutdown handler");
+                    None
                 }
             }
-        };
+        }
+        Self {
+            sigterm: register(tokio::signal::unix::SignalKind::terminate(), "SIGTERM"),
+            sigint: register(tokio::signal::unix::SignalKind::interrupt(), "SIGINT"),
+        }
+    }
+
+    /// Block until the operator asks the daemon to stop, returning the POSIX
+    /// `128 + signum` code for the signal that arrived — the value in-flight
+    /// work sees through [`crate::AbortFlag::aborted`].
+    async fn wait(self, printer: Arc<Printer>) -> u8 {
+        async fn recv(signal: Option<tokio::signal::unix::Signal>) {
+            match signal {
+                Some(mut s) => {
+                    s.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        }
         tokio::select! {
-            _ = sigterm => {
+            _ = recv(self.sigterm) => {
                 printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon...");
                 143
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = recv(self.sigint) => {
                 printer.status_simple(Role::Info, "Shutting down daemon...");
                 130
             }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+}
+
+/// Windows counterpart: no SIGTERM exists, so Ctrl+C is the whole surface.
+/// `tokio::signal::windows::ctrl_c` installs the console handler when it is
+/// called, giving the same before-the-banner guarantee as the unix arm — the
+/// portable `tokio::signal::ctrl_c` would defer it to the first poll.
+#[cfg(windows)]
+struct ShutdownSignals {
+    ctrl_c: Option<tokio::signal::windows::CtrlC>,
+}
+
+#[cfg(windows)]
+impl ShutdownSignals {
+    fn install() -> Self {
+        match tokio::signal::windows::ctrl_c() {
+            Ok(c) => Self { ctrl_c: Some(c) },
+            Err(e) => {
+                tracing::warn!(error = %e, signal = "CTRL_C", "failed to register shutdown handler");
+                Self { ctrl_c: None }
+            }
+        }
+    }
+
+    /// Block until the operator asks the daemon to stop, returning the POSIX
+    /// `128 + signum` code the rest of the daemon speaks in.
+    async fn wait(self, printer: Arc<Printer>) -> u8 {
+        match self.ctrl_c {
+            Some(mut c) => {
+                c.recv().await;
+            }
+            None => std::future::pending::<()>().await,
+        }
         printer.status_simple(Role::Info, "Shutting down daemon...");
         130
     }
