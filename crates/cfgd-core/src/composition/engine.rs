@@ -7,7 +7,9 @@ use crate::config::{
 };
 use crate::errors::{CfgdError, CompositionError, Result};
 
-use super::constraints::{block_barred_scripts, check_locked_violations, validate_constraints};
+use super::constraints::{
+    block_barred_scripts, check_locked_violations, collect_constraint_violations,
+};
 use super::layers::build_source_layers;
 use super::merge::merge_with_policy;
 use super::packages::validate_reject_keys;
@@ -46,12 +48,21 @@ pub fn compose(
     // them without aborting.
     let mut constraint_violations: Vec<ConstraintViolation> = Vec::new();
     for input in sources {
-        match (mode, enforce_source_constraints(input, local)) {
-            (_, Ok(())) => {}
-            (ConstraintMode::Enforce, Err(e)) => return Err(e),
-            (ConstraintMode::Report, Err(e)) => {
-                constraint_violations.push(violation_from_error(&input.source_name, e));
+        let mut found = source_constraint_violations(input, local);
+        match mode {
+            ConstraintMode::Enforce => {
+                if !found.is_empty() {
+                    return Err(found.remove(0));
+                }
             }
+            // Every violation, not just the first: the per-file degradation a
+            // read path renders covers all of them, so a warning naming only
+            // one would disagree with what the operator sees below it.
+            ConstraintMode::Report => constraint_violations.extend(
+                found
+                    .into_iter()
+                    .map(|e| violation_from_error(&input.source_name, e)),
+            ),
         }
     }
 
@@ -133,7 +144,7 @@ pub fn compose(
 /// mode. The `detail` is the error's Display verbatim, so reported wording is
 /// byte-identical to the fail-closed message; `kind`/`path` are extracted from
 /// the underlying `CompositionError` variant. A non-`CompositionError` (which
-/// `enforce_source_constraints` never produces) degrades to an `unknown` kind
+/// [`source_constraint_violations`] never produces) degrades to a generic kind
 /// carrying the message, so no violation is ever silently dropped.
 fn violation_from_error(source_name: &str, err: CfgdError) -> ConstraintViolation {
     let detail = err.to_string();
@@ -171,22 +182,32 @@ fn violation_from_error(source_name: &str, err: CfgdError) -> ConstraintViolatio
     }
 }
 
-/// Run a single source's security-policy checks. Returns the FIRST violation as
-/// an error (the caller decides — Enforce returns it, Report maps it to a
-/// [`ConstraintViolation`] and continues to the next source). Reject-key,
-/// per-layer/per-tier constraint, and locked-override checks are all covered.
-fn enforce_source_constraints(input: &CompositionInput, local: &ResolvedProfile) -> Result<()> {
+/// Every security-policy violation a single source commits, in the order the
+/// checks run. Reject-key, per-layer/per-tier constraint, and locked-override
+/// checks are all covered.
+///
+/// The caller decides what to do with the list: `Enforce` aborts on the first
+/// entry, `Report` maps every entry to a [`ConstraintViolation`] and continues
+/// to the next source.
+fn source_constraint_violations(
+    input: &CompositionInput,
+    local: &ResolvedProfile,
+) -> Vec<CfgdError> {
+    let mut violations = Vec::new();
+
     // Reject-key typos would silently fail to filter, applying the unwanted item.
-    validate_reject_keys(&input.source_name, &input.subscription.reject)?;
+    if let Err(e) = validate_reject_keys(&input.source_name, &input.subscription.reject) {
+        violations.push(e);
+    }
 
     // Every profile-layer spec the source ships must satisfy its constraints.
     for layer in &input.layers {
-        validate_constraints(
+        violations.extend(collect_constraint_violations(
             &input.source_name,
             &input.constraints,
             &layer.spec,
             input.allow_scripts,
-        )?;
+        ));
     }
 
     // Policy-tier files/scripts/system were never path/script-checked before.
@@ -196,18 +217,20 @@ fn enforce_source_constraints(input: &CompositionInput, local: &ResolvedProfile)
         &input.policy.recommended,
     ] {
         if has_content(tier) {
-            let spec = policy_items_to_spec(tier);
-            validate_constraints(
+            violations.extend(collect_constraint_violations(
                 &input.source_name,
                 &input.constraints,
-                &spec,
+                &policy_items_to_spec(tier),
                 input.allow_scripts,
-            )?;
+            ));
         }
     }
 
     // Local config may not override a resource the source has locked.
-    check_locked_violations(&input.source_name, &input.policy.locked, &local.merged)?;
+    if let Err(e) = check_locked_violations(&input.source_name, &input.policy.locked, &local.merged)
+    {
+        violations.push(e);
+    }
 
-    Ok(())
+    violations
 }

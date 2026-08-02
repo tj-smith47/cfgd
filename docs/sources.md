@@ -337,19 +337,21 @@ When `true` (the default), the source cannot deliver anything that executes code
 How the block shows up depends on whether the command changes the machine:
 
 - **Commands that change the machine** (`apply`, `plan`, `daemon`, `backup run`, `source add`) abort composition on the first violation and run nothing. The error names the exact surface, e.g. `source 'acme' carries a preBackup hook on backup 'db', but it is not allowed to run scripts`.
-- **Read-only commands** (`status`, `diff`, `verify`, `compliance`, `backup list`, `checkin`) still have to describe the machine, so they keep composing and report the violation as a warning instead. The source's contribution stays visible — but a patch filter it is barred from running is marked unrunnable at composition time, so evaluating the file reports a per-file failure naming the source rather than executing the filter:
+- **Read-only commands** (`status`, `diff`, `verify`, `compliance`, `backup list`, `checkin`) still have to describe the machine, so they keep composing and report every violation as a warning instead. The source's contribution stays visible — but a patch filter it is barred from running is marked unrunnable at composition time, so evaluating the file reports a per-file failure naming the source rather than executing the filter:
 
   ```
-  ⚠ source 'acme' violates its constraints
-    source 'acme' carries a patch script for ~/.config/acme/app.ini, but it is not
-    allowed to run scripts (set subscription.allowScripts: true to opt in, or relax
-    the source's constraints.no_scripts)
-  ⚠ ~/.config/acme/app.ini: cannot evaluate patch spec: patch script for
-    ~/.config/acme/app.ini is blocked: source 'acme' is not allowed to run scripts
-    (constraints.noScripts); set subscription.allowScripts: true to opt in
+  ⚠ source 'acme' violates its constraints — composition error: source 'acme' carries a patch script for ~/.config/acme/app.ini, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)
+
+  Files
+
+  ⚠ ~/.config/acme/app.ini: cannot evaluate patch spec: file error: patch script for ~/.config/acme/app.ini is blocked: source 'acme' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in
   ```
+
+  Under `-o json` the same file appears in the payload's `files[]` array with `matches: false` and the block as its `actual`, so the reason survives on the structured path too.
 
   Lifecycle scripts and backup hooks need no such marking: no read-only command executes one.
+
+  **Carve-out — module bodies.** The read-only path above applies to what the source's *profiles* declare. A source-delivered **module** carrying a script is rejected at module-load time, which is fail-closed in every mode: a read-only command aborts with exit code 4 rather than degrading, e.g. `module error: module 'mymod' delivered by source 'acme' carries a patch script for ~/.config/acme/app.ini, but the source is not allowed to run scripts`. Module delivery is all-or-nothing — there is no partial module to describe.
 
 A `patch.ensure` block is a declarative merge, not code, and is never rejected by `noScripts`.
 
@@ -364,13 +366,13 @@ spec:
         allowScripts: true   # opt in to this source's scripts
 ```
 
-With `allowScripts: true`, the source's scripts are permitted and `cfgd plan` surfaces a note naming each surface it found, so the execution is visible before any apply:
+With `allowScripts: true`, the source's scripts are permitted and every command that composes sources warns, naming each surface it found, so the execution is visible before any apply. It is a warning rather than a note deliberately: a note renders only under `-v`, which is not where the line announcing that third-party code will run belongs.
 
 ```
-» source 'acme' scripts will run because allowScripts is set (constraints.no_scripts
-  is overridden by your subscription) — it carries a preApply script, a preBackup hook
-  on backup 'db', a patch script for ~/.config/acme/app.ini
+⚠ source 'acme' scripts will run because allowScripts is set — constraints.no_scripts is overridden by your subscription; it carries a preApply script, a preBackup hook on backup 'db', a patch script for ~/.config/acme/app.ini
 ```
+
+A source that ships no script surface at all prints nothing — there is no risk to disclose.
 
 ### `allowSystemChanges`
 
@@ -527,6 +529,8 @@ Source: acme-corp
 
 When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.
 
+`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Fetched` / `Last Commit` values above and the `Config Sources` table in `cfgd status` reflect whichever of the three last touched the source.
+
 **Committing the lockfile** to your config repo (alongside `cfgd.yaml`) is recommended: it guarantees that every machine applying the config checks out the identical commits, and `git diff sources.lock` shows exactly what a source update advanced to.
 
 `cfgd source remove` prunes the corresponding entry from `sources.lock` automatically.
@@ -674,7 +678,7 @@ Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Su
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and each surface is named in plan. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it |
+| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and every surface is named in a warning on any command that composes sources. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it; a source-delivered module carrying a script is rejected at load time in every mode |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
 | Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level over `files.managed[].target` and `backups[].destination` (see [`allowedTargetPaths`](#allowedtargetpaths)) |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |

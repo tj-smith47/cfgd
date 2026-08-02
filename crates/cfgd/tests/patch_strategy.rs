@@ -385,6 +385,30 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
         "diff must warn that the source breaks its own constraints: {diff_out}"
     );
 
+    let (json_printer, json_cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    cfgd_core::with_test_home(home.path(), || {
+        cfgd::cli::diff::cmd_diff(&cli, &json_printer, None, false).expect("diff renders")
+    });
+    drop(json_printer);
+    let payload = json_cap.json().expect("diff doc carries a payload");
+    assert_untouched("diff -o json");
+    let files = payload["files"].as_array().expect("files is an array");
+    let blocked = files
+        .iter()
+        .find(|f| {
+            f["target"]
+                .as_str()
+                .is_some_and(|t| t.ends_with("settings.json"))
+        })
+        .expect("the degraded file must appear in the structured payload");
+    assert_eq!(blocked["matches"], serde_json::json!(false));
+    assert!(
+        blocked["actual"]
+            .as_str()
+            .is_some_and(|a| a.contains("is blocked") && a.contains("acme")),
+        "the block reason must survive to the structured path: {blocked}"
+    );
+
     let (verify_printer, verify_cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
         cfgd::cli::verify::cmd_verify(&cli, &verify_printer, None, false)
@@ -423,4 +447,60 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
         );
         assert_untouched(surface);
     }
+}
+
+#[test]
+#[serial_test::serial]
+fn the_allow_scripts_disclosure_reaches_the_operator_at_default_verbosity() {
+    // The one line telling an operator that third-party code will run on their
+    // machine cannot live behind `-v`.
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(true);
+    let home = tempfile::tempdir().unwrap();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (sync_printer, _sync_cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    drop(sync_printer);
+
+    let (printer, cap) = Printer::for_test_doc();
+    cfgd_core::with_test_home(home.path(), || {
+        cfgd::cli::diff::cmd_diff(&cli, &printer, None, false).expect("diff renders")
+    });
+    drop(printer);
+    let out = cap.human();
+
+    assert!(
+        out.contains("source 'acme' scripts will run because allowScripts is set"),
+        "the disclosure must print without -v: {out}"
+    );
+    assert!(
+        out.contains("a postApply script") && out.contains("a patch script for"),
+        "the disclosure must name every surface it found: {out}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn no_disclosure_is_printed_for_an_opted_in_source_that_ships_no_scripts() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(false);
+    let home = tempfile::tempdir().unwrap();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (sync_printer, _sync_cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    drop(sync_printer);
+
+    let (printer, cap) = Printer::for_test_doc();
+    cfgd_core::with_test_home(home.path(), || {
+        cfgd::cli::diff::cmd_diff(&cli, &printer, None, false).expect("diff renders")
+    });
+    drop(printer);
+    let out = cap.human();
+
+    assert!(
+        !out.contains("scripts will run"),
+        "a source with no script surface has nothing to disclose: {out}"
+    );
 }

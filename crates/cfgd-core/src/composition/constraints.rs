@@ -1,6 +1,6 @@
 use crate::PathDisplayExt;
 use crate::config::{MergedProfile, PolicyItems, ProfileLayer, ProfileSpec, SourceConstraints};
-use crate::errors::{CompositionError, Result};
+use crate::errors::{CfgdError, CompositionError, Result};
 
 /// Describe every element of `spec` that runs source-supplied code, in the
 /// wording an error or a plan note uses.
@@ -88,41 +88,54 @@ pub fn block_barred_scripts(
     }
 }
 
-/// Validate security constraints for a source's contribution to the composed profile.
+/// Every security-constraint violation `spec` commits against `constraints`,
+/// in declaration order.
+///
+/// Collecting rather than short-circuiting is what lets `Report` mode agree
+/// with itself: a source with two barred patch filters degrades both files, so
+/// the warning has to name both. `validate_constraints` takes the first entry
+/// for the fail-closed paths, which abort on it anyway.
 ///
 /// `allow_scripts` is the subscriber's `subscription.allowScripts` opt-in: when
 /// `true` the source's `constraints.no_scripts` no longer rejects scripts (the
 /// subscriber has accepted the risk), matching the source-delivered module-body
 /// enforcement. Path/system/encryption constraints are unaffected.
-pub fn validate_constraints(
+pub fn collect_constraint_violations(
     source_name: &str,
     constraints: &SourceConstraints,
     spec: &ProfileSpec,
     allow_scripts: bool,
-) -> Result<()> {
-    // Check script constraint
-    if constraints.no_scripts
-        && !allow_scripts
-        && let Some(kind) = script_surfaces(spec).into_iter().next()
-    {
-        return Err(CompositionError::ScriptsNotAllowed {
-            source_name: source_name.to_string(),
-            kind,
+) -> Vec<CfgdError> {
+    let mut violations: Vec<CfgdError> = Vec::new();
+
+    if constraints.no_scripts && !allow_scripts {
+        for kind in script_surfaces(spec) {
+            violations.push(
+                CompositionError::ScriptsNotAllowed {
+                    source_name: source_name.to_string(),
+                    kind,
+                }
+                .into(),
+            );
         }
-        .into());
     }
 
-    // Check system change constraint
-    if !constraints.allow_system_changes && !spec.system.is_empty() {
-        let first_key = spec.system.keys().next().cloned().unwrap_or_default();
-        return Err(CompositionError::SystemChangeNotAllowed {
-            source_name: source_name.to_string(),
-            setting: first_key,
+    if !constraints.allow_system_changes {
+        // `spec.system` is a HashMap, so sort: a reported list an operator
+        // reads must not reshuffle between two runs of the same command.
+        let mut settings: Vec<&String> = spec.system.keys().collect();
+        settings.sort();
+        for setting in settings {
+            violations.push(
+                CompositionError::SystemChangeNotAllowed {
+                    source_name: source_name.to_string(),
+                    setting: setting.clone(),
+                }
+                .into(),
+            );
         }
-        .into());
     }
 
-    // Check path containment
     if !constraints.allowed_target_paths.is_empty() {
         if let Some(ref files) = spec.files {
             for managed in &files.managed {
@@ -131,11 +144,13 @@ pub fn validate_constraints(
                 // subscriber's OS.
                 let target_str = crate::to_posix_string(&managed.target);
                 if !path_matches_any(&target_str, &constraints.allowed_target_paths) {
-                    return Err(CompositionError::PathNotAllowed {
-                        source_name: source_name.to_string(),
-                        path: target_str,
-                    }
-                    .into());
+                    violations.push(
+                        CompositionError::PathNotAllowed {
+                            source_name: source_name.to_string(),
+                            path: target_str,
+                        }
+                        .into(),
+                    );
                 }
             }
         }
@@ -154,11 +169,13 @@ pub fn validate_constraints(
             };
             let destination_str = crate::to_posix_string(destination);
             if !path_matches_any(&destination_str, &constraints.allowed_target_paths) {
-                return Err(CompositionError::PathNotAllowed {
-                    source_name: source_name.to_string(),
-                    path: destination_str,
-                }
-                .into());
+                violations.push(
+                    CompositionError::PathNotAllowed {
+                        source_name: source_name.to_string(),
+                        path: destination_str,
+                    }
+                    .into(),
+                );
             }
         }
     }
@@ -172,50 +189,72 @@ pub fn validate_constraints(
     {
         for managed in &files.managed {
             let target_str = crate::to_posix_string(&managed.target);
-            if let Some(matched_pattern) =
+            let Some(matched_pattern) =
                 find_matching_pattern(&target_str, &enc_constraint.required_targets)
-            {
-                match managed.encryption.as_ref() {
-                    None => {
-                        return Err(CompositionError::EncryptionRequired {
-                            source_name: source_name.to_string(),
-                            path: target_str,
-                            pattern: matched_pattern,
-                        }
-                        .into());
+            else {
+                continue;
+            };
+            match managed.encryption.as_ref() {
+                None => violations.push(
+                    CompositionError::EncryptionRequired {
+                        source_name: source_name.to_string(),
+                        path: target_str,
+                        pattern: matched_pattern,
                     }
-                    Some(enc_spec) => {
-                        if let Some(ref required_backend) = enc_constraint.backend
-                            && enc_spec.backend != *required_backend
-                        {
-                            return Err(CompositionError::EncryptionBackendMismatch {
+                    .into(),
+                ),
+                Some(enc_spec) => {
+                    if let Some(ref required_backend) = enc_constraint.backend
+                        && enc_spec.backend != *required_backend
+                    {
+                        violations.push(
+                            CompositionError::EncryptionBackendMismatch {
                                 source_name: source_name.to_string(),
                                 path: target_str.clone(),
                                 pattern: matched_pattern.clone(),
                                 actual_backend: enc_spec.backend.clone(),
                                 required_backend: required_backend.clone(),
                             }
-                            .into());
-                        }
-                        if let Some(ref required_mode) = enc_constraint.mode
-                            && enc_spec.mode != *required_mode
-                        {
-                            return Err(CompositionError::EncryptionModeMismatch {
+                            .into(),
+                        );
+                    }
+                    if let Some(ref required_mode) = enc_constraint.mode
+                        && enc_spec.mode != *required_mode
+                    {
+                        violations.push(
+                            CompositionError::EncryptionModeMismatch {
                                 source_name: source_name.to_string(),
                                 path: target_str,
                                 pattern: matched_pattern,
                                 actual_mode: format!("{:?}", enc_spec.mode),
                                 required_mode: format!("{:?}", required_mode),
                             }
-                            .into());
-                        }
+                            .into(),
+                        );
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    violations
+}
+
+/// The first violation [`collect_constraint_violations`] finds, as an error —
+/// the fail-closed form used by `Enforce` mode, which aborts on it anyway.
+pub fn validate_constraints(
+    source_name: &str,
+    constraints: &SourceConstraints,
+    spec: &ProfileSpec,
+    allow_scripts: bool,
+) -> Result<()> {
+    match collect_constraint_violations(source_name, constraints, spec, allow_scripts)
+        .into_iter()
+        .next()
+    {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Check if a path matches any of the allowed patterns.

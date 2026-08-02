@@ -21,7 +21,8 @@ mod record;
 mod tests;
 
 pub use constraints::{
-    block_barred_scripts, check_locked_violations, script_surfaces, validate_constraints,
+    block_barred_scripts, check_locked_violations, collect_constraint_violations, script_surfaces,
+    validate_constraints,
 };
 pub use engine::compose;
 pub use packages::merge_packages;

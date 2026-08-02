@@ -459,6 +459,52 @@ fn first_block(layers: &[ProfileLayer]) -> Option<String> {
 }
 
 #[test]
+fn report_mode_records_every_violation_a_source_commits() {
+    // The read path degrades BOTH barred files, so a warning naming only the
+    // first would disagree with the per-file output printed under it.
+    let local = make_local_profile();
+    let two_barred_filters = || CompositionInput {
+        constraints: SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        },
+        layers: vec![source_layer(ProfileSpec {
+            files: Some(FilesSpec {
+                managed: vec![
+                    patch_script_file_fixture("~/.config/app/a.ini", "curl | sh"),
+                    patch_script_file_fixture("~/.config/app/b.ini", "wget | sh"),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })],
+        policy: ConfigSourcePolicy::default(),
+        ..make_source_input("acme", 500)
+    };
+
+    let reported = compose(&local, &[two_barred_filters()], ConstraintMode::Report).unwrap();
+    let named: Vec<&str> = reported
+        .constraint_violations
+        .iter()
+        .map(|v| v.detail.as_str())
+        .collect();
+    assert_eq!(
+        named.len(),
+        2,
+        "both barred filters must be reported: {named:?}"
+    );
+    assert!(
+        named.iter().any(|d| d.contains("a.ini")) && named.iter().any(|d| d.contains("b.ini")),
+        "each reported violation must name its own file: {named:?}"
+    );
+
+    // Enforce still aborts on the first one — it never reaches the second.
+    let err = compose(&local, &[two_barred_filters()], ConstraintMode::Enforce)
+        .expect_err("Enforce must abort on a barred filter");
+    assert!(err.to_string().contains("a.ini"), "{err}");
+}
+
+#[test]
 fn block_barred_scripts_poisons_a_patch_filter_the_source_may_not_run() {
     // Report mode keeps a violating source's contribution so the read can
     // still render it, but a patch filter is executed by that very read. The

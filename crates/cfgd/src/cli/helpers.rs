@@ -805,7 +805,11 @@ pub(in crate::cli) fn compose_with_sources(
     // execution must be visible. Naming the concrete surfaces matters because
     // two of the three do not look like lifecycle scripts from the outside: a
     // backup hook runs on the daemon's timer, and a patch filter runs on
-    // read-only commands too. Non-fatal — the opt-in already permitted it.
+    // read-only commands too.
+    //
+    // A `Warn` status, not `note`: a note renders only at `-v`, which is not a
+    // place to put the one line telling an operator that third-party code is
+    // about to run on their machine. Non-fatal — the opt-in already permitted it.
     for spec in &cfg.spec.sources {
         if spec.subscription.allow_scripts
             && let Some(cached) = mgr.get(&spec.name)
@@ -824,11 +828,18 @@ pub(in crate::cli) fn compose_with_sources(
             if surfaces.is_empty() {
                 continue;
             }
-            printer.note(format!(
-                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription) — it carries {}",
-                spec.name,
-                surfaces.join(", ")
-            ));
+            printer
+                .status(
+                    Role::Warn,
+                    format!(
+                        "source '{}' scripts will run because allowScripts is set",
+                        spec.name
+                    ),
+                )
+                .detail(format!(
+                    "constraints.no_scripts is overridden by your subscription; it carries {}",
+                    surfaces.join(", ")
+                ));
         }
     }
 
