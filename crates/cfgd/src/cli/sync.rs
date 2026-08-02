@@ -154,6 +154,40 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                     .detail(format!("commit: {}", commit_short));
                             }
 
+                            // Record the fetch in the state store, the same way
+                            // `source add` / `source update` do. Without this a
+                            // `cfgd status` immediately after a successful sync
+                            // reports the source as "not yet fetched": the
+                            // freshness ledger only ever heard from the two
+                            // `source` subcommands, never from the command
+                            // whose whole job is refreshing sources.
+                            let recorded =
+                                open_state_store(cli.state_dir.as_deref()).and_then(|state| {
+                                    Ok(state.upsert_config_source(
+                                        &source_spec.name,
+                                        &source_spec.origin.url,
+                                        &source_spec.origin.branch,
+                                        cached.last_commit.as_deref(),
+                                        cached.manifest.metadata.version.as_deref(),
+                                        source_spec.sync.pin_version.as_deref(),
+                                    )?)
+                                });
+                            // Best-effort, matching how sync treats a
+                            // sources.lock write failure: the cache is already
+                            // refreshed, and a read-only state dir must not
+                            // turn a successful sync into a failure.
+                            if let Err(e) = recorded {
+                                sources_sec
+                                    .status(
+                                        cfgd_core::output::Role::Warn,
+                                        format!(
+                                            "could not record the fetch for '{}'",
+                                            source_spec.name
+                                        ),
+                                    )
+                                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                            }
+
                             // Record the resolved commit in sources.lock.
                             if let Some(ref commit) = cached.last_commit {
                                 let lock_entry = cfgd_core::config::SourceLockEntry {

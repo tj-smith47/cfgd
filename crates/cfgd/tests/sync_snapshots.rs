@@ -238,6 +238,61 @@ fn sync_bridge_one_blank_line() {
 }
 
 // ─────────────────────────────────────────────────────
+#[test]
+#[serial]
+fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() {
+    // `sync` is the command whose whole job is refreshing sources, but the
+    // freshness ledger used to hear only from `source add` / `source update`,
+    // so `cfgd status` right after a green sync still reported the source as
+    // never fetched.
+    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(false);
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_sync(&cli, &printer).expect("the source must sync");
+    drop(printer);
+
+    let state =
+        cfgd_core::state::StateStore::open_in_dir(state_dir.path()).expect("state store opens");
+    let records = state.config_sources().expect("config_sources reads");
+    let acme = records
+        .iter()
+        .find(|r| r.name == "acme")
+        .expect("a synced source must leave a state record");
+    assert!(
+        acme.last_fetched.is_some() && acme.last_commit.is_some(),
+        "the record must carry the fetch time and the resolved commit: {acme:?}"
+    );
+
+    // The record is what keeps `status` off the "not yet fetched" branch.
+    let output = cfgd::cli::status::StatusOutput {
+        last_apply: None,
+        drift: Vec::new(),
+        sources: records,
+        pending_decisions: Vec::new(),
+        modules: Vec::new(),
+        managed_resources: Vec::new(),
+    };
+    let (status_printer, status_cap) = Printer::for_test_doc();
+    status_printer.emit(cfgd::cli::status::build_fleet_status_doc(
+        &output,
+        &["acme".to_string()],
+        Path::new("/tmp/cfgd.yaml"),
+        "default",
+    ));
+    drop(status_printer);
+    let rendered = strip_ansi(&status_cap.human());
+    assert!(
+        !rendered.contains("not yet fetched"),
+        "status must report the synced source, not claim it was never fetched: {rendered}"
+    );
+    assert!(
+        rendered.contains("acme"),
+        "the source must appear in the Config Sources table: {rendered}"
+    );
+}
+
 // snapshot helpers
 // ─────────────────────────────────────────────────────
 

@@ -981,11 +981,16 @@ pub fn make_bare_source_repo(
 ///
 /// `build` receives the workspace directory (so a fixture can put files the
 /// manifest or profile references inside it) and returns the source's
-/// `cfgd-source.yaml` and its `profiles/default.yaml`. Returns
+/// `cfgd-source.yaml` and its `profiles/default.yaml`. `subscription_extra` is
+/// appended verbatim under the config's `subscription:` block (already indented
+/// eight spaces), e.g. `"        allowScripts: true\n"`. Returns
 /// `(workspace, config_dir, state_dir)`; the workspace owns the bare repo and
 /// must outlive the config dir so the `file://` URL resolves. Consumers must
 /// set `CFGD_ALLOW_LOCAL_SOURCES=1`.
-pub fn local_source_setup<F>(build: F) -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir)
+pub fn local_source_setup<F>(
+    subscription_extra: &str,
+    build: F,
+) -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir)
 where
     F: FnOnce(&std::path::Path) -> (String, String),
 {
@@ -1041,7 +1046,7 @@ where
     std::fs::write(
         config_dir.path().join("cfgd.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n      subscription:\n        profile: default\n        priority: 500\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n      subscription:\n        profile: default\n        priority: 500\n{subscription_extra}"
         ),
     )
     .unwrap();
@@ -1061,7 +1066,7 @@ pub fn violating_backup_source_setup() -> (
     String,
 ) {
     let mut destination = String::new();
-    let (workspace, config_dir, state_dir) = local_source_setup(|workspace| {
+    let (workspace, config_dir, state_dir) = local_source_setup("", |workspace| {
         // Both paths sit inside the workspace tempdir: the violation is that
         // they are outside `allowedTargetPaths`, and a fixture that named a
         // real `~/.ssh` or `/etc/...` would copy live data the moment the
@@ -1082,6 +1087,51 @@ pub fn violating_backup_source_setup() -> (
     (workspace, config_dir, state_dir, destination)
 }
 
+/// A source whose `constraints.noScripts` is the default `true` but whose
+/// subscriber set `allowScripts: true`.
+///
+/// `carries_scripts` decides whether the delivered profile ships any script
+/// surface at all — the disclosure must name every surface when it does and
+/// stay silent when it does not.
+///
+/// Returns `(workspace, config_dir, state_dir, target)`.
+pub fn opted_in_script_source_setup(
+    carries_scripts: bool,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+) {
+    let mut target = std::path::PathBuf::new();
+    let (workspace, config_dir, state_dir) = local_source_setup(
+        "        allowScripts: true\n",
+        |workspace| {
+            let target_path = workspace.join("settings.json");
+            std::fs::write(&target_path, "{\n  \"kept\": true\n}\n").unwrap();
+            target = target_path.clone();
+            let patch = if carries_scripts {
+                "          script: cat\n"
+            } else {
+                "          ensure:\n            kept: true\n"
+            };
+            let scripts = if carries_scripts {
+                "  scripts:\n    postApply:\n      - \"true\"\n"
+            } else {
+                ""
+            };
+            (
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n{scripts}  files:\n    managed:\n      - target: {}\n        strategy: Patch\n        patch:\n{patch}",
+                    cfgd_core::to_posix_string(&target_path),
+                ),
+            )
+        },
+    );
+    (workspace, config_dir, state_dir, target)
+}
+
 /// A source whose delivered profile declares a `strategy: Patch` file driven by
 /// a `patch.script` filter, while the source's own `constraints.noScripts`
 /// (the default) bars it from running scripts.
@@ -1098,7 +1148,7 @@ pub fn barred_patch_script_source_setup() -> (
 ) {
     let mut target = std::path::PathBuf::new();
     let mut marker = std::path::PathBuf::new();
-    let (workspace, config_dir, state_dir) = local_source_setup(|workspace| {
+    let (workspace, config_dir, state_dir) = local_source_setup("", |workspace| {
         let target_path = workspace.join("settings.json");
         std::fs::write(&target_path, "{\n  \"kept\": true\n}\n").unwrap();
         let marker_path = workspace.join("filter-ran.marker");
