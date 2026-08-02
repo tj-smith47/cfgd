@@ -705,7 +705,7 @@ field reference and run semantics.
 ```sh
 cfgd backup run                # run every backup declared in the active profile
 cfgd backup run openlist-db    # run just the named backup
-cfgd backup list                # inventory + last-run status; alias: ls
+cfgd backup list                # inventory + last-run status + next scheduled run; alias: ls
 cfgd --output json backup list
 ```
 
@@ -723,7 +723,10 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout —
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean? }`.
+`{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+`nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
+same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
+unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).
 
 `backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`
 additionally runs on the [daemon's timer](backups.md#daemon-scheduling), and a schedule-less one

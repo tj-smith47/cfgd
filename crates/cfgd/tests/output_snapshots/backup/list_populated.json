@@ -6,6 +6,7 @@
   },
   {
     "name": "weekly",
+    "nextRunAt": "<NEXT_RUN>",
     "retention": 3,
     "schedule": "0 3 * * *",
     "source": "<SOURCE>"

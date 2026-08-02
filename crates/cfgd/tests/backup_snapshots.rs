@@ -84,9 +84,11 @@ fn backup_list_populated_human() {
     drop(printer);
 
     // The table's Source column renders the tempdir-backed fixture path
-    // (`backup_profile_setup`'s `notes.txt`), which changes every run.
+    // (`backup_profile_setup`'s `notes.txt`), which changes every run, and the
+    // Next Run column is a real future clock time.
     let normalized =
         cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&source, "<SOURCE>")]);
+    let normalized = normalize_iso8601(&normalized);
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "backup/list_populated.txt",
@@ -122,11 +124,39 @@ fn backup_list_populated_json() {
         );
     }
 
+    // The scheduled unit answers the operator's actual question ("is the timer
+    // going to fire?"); the schedule-less one runs during apply, on no clock of
+    // its own, and must not invent one.
+    let docs = payload
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "docs")
+        .expect("docs entry");
+    assert!(
+        docs.get("nextRunAt").is_none(),
+        "a schedule-less unit has no next run: {docs}"
+    );
+    let weekly = payload
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "weekly")
+        .expect("weekly entry");
+    let next = weekly["nextRunAt"]
+        .as_str()
+        .expect("a cron unit carries nextRunAt");
+    assert!(
+        next > cfgd_core::utc_now_iso8601().as_str(),
+        "the next cron occurrence must be in the future: {next}"
+    );
+
     // `assert_json_snapshot_in` has no normalization hook, and the `source`
     // field embeds the tempdir-backed fixture path — replicate its
     // pretty-print shape manually with normalization applied first.
     let rendered = serde_json::to_string_pretty(&payload).unwrap();
     let normalized = cfgd_core::normalize_for_snapshot(&rendered, &[(&source, "<SOURCE>")]);
+    let normalized = normalize_iso8601(&normalized);
     cfgd_core::test_helpers::assert_snapshot_golden(
         Path::new(SNAPSHOT_ROOT),
         "backup/list_populated.json",
@@ -390,6 +420,7 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         last_run_status: Some("success".to_string()),
         last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
         last_run_clean: Some(true),
+        next_run_at: None,
     }];
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_backup_list_doc(&entries));
@@ -632,6 +663,47 @@ fn normalize_backup_timestamp(raw: &str) -> String {
         }
     }
     out
+}
+
+/// Replace every ISO 8601 UTC stamp (`YYYY-MM-DDTHH:MM:SSZ`) with a stable
+/// placeholder — `backup list`'s Next Run column and `nextRunAt` field are real
+/// future clock times. Safe to apply wholesale in the `list` cases, where no
+/// unit has a recorded run and `lastRunAt` is therefore absent.
+fn normalize_iso8601(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if iso8601_span(&chars[i..]) {
+            out.push_str("<NEXT_RUN>");
+            i += 20;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// True when `window` opens on an ISO 8601 UTC stamp (`2026-08-02T03:00:00Z`,
+/// 20 chars).
+fn iso8601_span(window: &[char]) -> bool {
+    if window.len() < 20 {
+        return false;
+    }
+    let digits = |s: &[char]| s.iter().all(|c| c.is_ascii_digit());
+    digits(&window[0..4])
+        && window[4] == '-'
+        && digits(&window[5..7])
+        && window[7] == '-'
+        && digits(&window[8..10])
+        && window[10] == 'T'
+        && digits(&window[11..13])
+        && window[13] == ':'
+        && digits(&window[14..16])
+        && window[16] == ':'
+        && digits(&window[17..19])
+        && window[19] == 'Z'
 }
 
 /// Detect an 8-digit date + `T` + 6-digit time + `Z` span

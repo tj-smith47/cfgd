@@ -346,6 +346,12 @@ pub struct BackupListEntry {
     /// `lastRunStatus` text. `None` when there is no recorded run yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_clean: Option<bool>,
+    /// When the daemon's timer will next fire this unit, as an ISO 8601 UTC
+    /// stamp on the same scale as `lastRunAt`. `None` for a schedule-less unit
+    /// (it runs during `cfgd apply`, on no clock of its own) and for a
+    /// schedule with no upcoming occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<String>,
 }
 
 /// Outcome of one unit run by `cfgd backup run`.

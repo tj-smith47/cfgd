@@ -39,7 +39,14 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
         return doc.with_data(entries);
     }
 
-    let mut t = Table::new(["Name", "Source", "Schedule", "Retention", "Last Run"]);
+    let mut t = Table::new([
+        "Name",
+        "Source",
+        "Schedule",
+        "Retention",
+        "Last Run",
+        "Next Run",
+    ]);
     for e in entries {
         let last_run = match (&e.last_run_status, &e.last_run_at) {
             (Some(status), Some(at)) if e.last_run_clean == Some(false) => {
@@ -54,6 +61,7 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
             e.schedule.clone().unwrap_or_else(|| "-".into()),
             e.retention.to_string(),
             last_run,
+            e.next_run_at.clone().unwrap_or_else(|| "-".into()),
         ]);
     }
     doc = doc.table(t);
@@ -113,6 +121,15 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 }),
                 last_run_at: last.as_ref().map(|r| r.finished_at.clone()),
                 last_run_clean: last.as_ref().map(BackupRunRecord::is_clean),
+                // Seeded from the same `finished_at` the daemon anchors an
+                // interval schedule on, so the listed time is the one the
+                // timer will actually use rather than a second opinion.
+                next_run_at: spec.schedule.as_deref().and_then(|schedule| {
+                    cfgd_core::backup::next_run_at(
+                        schedule,
+                        last.as_ref().map(|r| r.finished_at.as_str()),
+                    )
+                }),
             }
         })
         .collect();

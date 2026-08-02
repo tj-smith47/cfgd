@@ -72,10 +72,10 @@ Run Backups
 $ cfgd backup list
 Backups
 
-Name          Source                       Schedule    Retention  Last Run
-─────────────────────────────────────────────────────────────────────────
-openlist-db   /var/lib/openlist/data.db    -           7          success @ 2026-08-01T03:15:00Z
-weekly        ~/Pictures                   0 3 * * *   3          never
+Name          Source                       Schedule    Retention  Last Run                        Next Run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+openlist-db   /var/lib/openlist/data.db    -           7          success @ 2026-08-01T03:15:00Z   -
+weekly        ~/Pictures                   0 3 * * *   3          never                            2026-08-02T03:00:00Z
 
 $ cfgd --output json backup run openlist-db
 [
@@ -102,8 +102,17 @@ as the payload's `hint` field — and a run whose snapshot did not complete clea
 [Run Semantics](#run-semantics) for what "clean" means — also exits nonzero so a script can
 detect it without parsing output.
 
-`cfgd backup list` (alias `ls`) shows every declared backup and its last recorded run; both
-commands honor the global `-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers.
+`cfgd backup list` (alias `ls`) shows every declared backup, its last recorded run, and when the
+daemon's timer will next fire it (`nextRunAt` in `-o json`); both commands honor the global
+`-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers.
+
+**Next Run** is computed the same way the daemon seeds its timer — from the unit's `schedule` and
+its last recorded `finished_at` (see [`schedule`](#schedule)) — so the listed time is the one the
+timer will actually use, not a second opinion. It renders as an ISO 8601 UTC stamp on the same
+scale as Last Run. A schedule-less unit shows `-` (`nextRunAt` omitted from the JSON payload): it
+runs during `cfgd apply`, on no clock of its own. An overdue interval unit shows a time at or
+before now — the daemon fires it as soon as it comes back. Reading it does not require a running
+daemon; without one, it is what the timer *would* be armed to.
 
 ## Field Reference
 

@@ -13188,8 +13188,8 @@ mod backup_timers {
     use super::harness::{NoopHooks, make_test_ctx, make_triggers, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
-        BackupSchedule, BackupTask, BackupTimers, ResolvedBackupTasks, build_backup_tasks,
-        reload_backup_tasks, resolve_backup_tasks,
+        BackupTask, BackupTimers, ResolvedBackupTasks, build_backup_tasks, reload_backup_tasks,
+        resolve_backup_tasks,
     };
     use crate::state::StateStore;
     use std::sync::atomic::AtomicU64;
@@ -13249,44 +13249,6 @@ mod backup_timers {
         )
         .unwrap();
         config_path
-    }
-
-    // ----- schedule parsing -----
-
-    #[test]
-    fn schedule_parses_the_interval_form() {
-        assert!(matches!(
-            BackupSchedule::parse("6h"),
-            Some(BackupSchedule::Interval(d)) if d == StdDuration::from_secs(21600)
-        ));
-    }
-
-    #[test]
-    fn schedule_parses_the_cron_form() {
-        assert!(matches!(
-            BackupSchedule::parse("0 3 * * *"),
-            Some(BackupSchedule::Cron(_))
-        ));
-        assert!(
-            matches!(
-                BackupSchedule::parse("30 0 3 * * *"),
-                Some(BackupSchedule::Cron(_))
-            ),
-            "6-field (leading seconds) cron must parse"
-        );
-    }
-
-    #[test]
-    fn schedule_floors_a_zero_interval_so_the_timer_cannot_spin() {
-        assert!(matches!(
-            BackupSchedule::parse("0"),
-            Some(BackupSchedule::Interval(d)) if d == StdDuration::from_secs(1)
-        ));
-    }
-
-    #[test]
-    fn schedule_rejects_a_value_that_is_neither_form() {
-        assert!(BackupSchedule::parse("every tuesday").is_none());
     }
 
     // ----- next-fire computation -----

@@ -21,8 +21,12 @@ use crate::reconciler::{
 };
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
+pub mod schedule;
+
 #[cfg(test)]
 mod tests;
+
+pub use schedule::next_run_at;
 
 /// One `spec.backups[]` entry bound to the runtime context it needs.
 ///

@@ -10,16 +10,13 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 
+use crate::backup::schedule::BackupSchedule;
 use crate::backup::{BackupUnit, run_backup};
 use crate::config::{self, BackupSpec, CfgdConfig};
 use crate::errors::Result;
 use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::ReconcileContext;
 use crate::state::{BackupRunStatus, StateStore};
-
-/// Floor for an interval schedule. `parse_duration_str` accepts `0`, which
-/// would turn the loop's timer branch into a spin.
-const MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How many missed fires `BackupTask::advance` walks before jumping straight to
 /// the next fire after now. A per-second schedule and a daemon that was blocked
@@ -37,96 +34,6 @@ const SCHEDULE_STALL_RETRY: Duration = Duration::from_secs(3600);
 /// short enough that a source cache caught mid-rewrite restores its timers
 /// within minutes rather than at the next daemon restart.
 const RESOLVE_RETRY: Duration = Duration::from_secs(300);
-
-/// How a scheduled backup decides when to fire next.
-pub(super) enum BackupSchedule {
-    /// A fixed period between runs (`6h`, `30m`, `1d`).
-    Interval(Duration),
-    /// A cron expression, evaluated against the machine's LOCAL time so
-    /// `0 3 * * *` means 3am where the machine sits — the same reading a
-    /// crontab entry gets.
-    Cron(Box<croner::Cron>),
-}
-
-impl BackupSchedule {
-    /// Parse a `spec.backups[].schedule`.
-    ///
-    /// Interval first, then cron: the identical precedence
-    /// `config::validate_backup_schedule` applies, so a value the config parser
-    /// accepted is interpreted here exactly as it was validated. `None` means
-    /// neither form parsed, which the parser should already have rejected.
-    pub(super) fn parse(schedule: &str) -> Option<Self> {
-        if let Ok(d) = crate::parse_duration_str(schedule) {
-            return Some(Self::Interval(d.max(MIN_INTERVAL)));
-        }
-        schedule
-            .parse::<croner::Cron>()
-            .ok()
-            .map(|c| Self::Cron(Box::new(c)))
-    }
-
-    /// The first fire when the daemon starts, given the unit's last recorded
-    /// run.
-    ///
-    /// An interval schedule is a cadence, not an uptime offset: `1d` means one
-    /// snapshot a day, and arming it at `now + 1d` on every start means a
-    /// laptop rebooted daily never reaches its own deadline. Seeding from the
-    /// last recorded finish makes the cadence survive restarts — an overdue
-    /// unit fires promptly, an up-to-date one waits out the remainder.
-    ///
-    /// Cron is unaffected: its occurrences are absolute wall-clock times, so
-    /// the next one is already the correct answer after any downtime. A cron
-    /// unit that slept through its window waits for the next window, which is
-    /// what the same line in a crontab does.
-    fn first_fire(&self, now: Instant, last_finished: Option<&str>) -> Option<Instant> {
-        let Self::Interval(period) = self else {
-            return self
-                .next_after(now, Local::now())
-                .map(|(instant, _)| instant);
-        };
-        let elapsed = last_finished
-            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-            // A negative elapsed means the recorded finish is in the future
-            // (the clock was stepped back, or the state dir came from another
-            // machine); `to_std` rejects it and the full period is used.
-            .and_then(|finished| {
-                (chrono::Utc::now() - finished.with_timezone(&chrono::Utc))
-                    .to_std()
-                    .ok()
-            });
-        match elapsed {
-            Some(e) if e < *period => Some(now + (*period - e)),
-            Some(_) => Some(now),
-            None => Some(now + *period),
-        }
-    }
-
-    /// The first fire strictly after `from`, as both a monotonic deadline and
-    /// the wall-clock time it corresponds to.
-    ///
-    /// Both clocks are threaded through because the two schedule kinds need
-    /// different ones: an interval is a pure monotonic offset (immune to the
-    /// operator setting the clock), while cron is defined on wall time and has
-    /// nothing to anchor to without it.
-    fn next_after(
-        &self,
-        from: Instant,
-        from_wall: DateTime<Local>,
-    ) -> Option<(Instant, DateTime<Local>)> {
-        match self {
-            Self::Interval(period) => {
-                let wall =
-                    from_wall.checked_add_signed(chrono::TimeDelta::from_std(*period).ok()?)?;
-                Some((from + *period, wall))
-            }
-            Self::Cron(cron) => {
-                let next_wall = cron.find_next_occurrence(&from_wall, false).ok()?;
-                let delta = (next_wall - from_wall).to_std().ok()?;
-                Some((from + delta, next_wall))
-            }
-        }
-    }
-}
 
 /// One scheduled `spec.backups[]` entry bound to its next deadline.
 ///
@@ -153,7 +60,7 @@ impl BackupTask {
     ///
     /// `last_finished` is the unit's most recent recorded `finished_at`, which
     /// anchors an interval schedule across restarts — see
-    /// [`BackupSchedule::first_fire`].
+    /// [`BackupSchedule::first_delay`].
     pub(super) fn new(
         spec: &BackupSpec,
         profile_name: &str,
@@ -169,14 +76,17 @@ impl BackupTask {
             );
             return None;
         };
-        let next_fire = schedule.first_fire(now, last_finished).unwrap_or_else(|| {
-            tracing::warn!(
-                backup = %spec.name,
-                schedule = %schedule_str,
-                "backup timer: schedule has no upcoming occurrence — retrying later"
-            );
-            now + SCHEDULE_STALL_RETRY
-        });
+        let next_fire = schedule
+            .first_delay(Local::now(), last_finished)
+            .map(|delay| now + delay)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    backup = %spec.name,
+                    schedule = %schedule_str,
+                    "backup timer: schedule has no upcoming occurrence — retrying later"
+                );
+                now + SCHEDULE_STALL_RETRY
+            });
         Some(Self {
             spec: spec.clone(),
             profile_name: profile_name.to_string(),
@@ -200,6 +110,23 @@ impl BackupTask {
     /// delayed by this, not accelerated past its own cadence.
     fn defer_until(&mut self, deadline: Instant) {
         self.next_fire = self.next_fire.max(deadline);
+    }
+
+    /// The first fire strictly after `from`, as both a monotonic deadline and
+    /// the wall-clock time it corresponds to.
+    ///
+    /// Both clocks are threaded through because the two schedule kinds need
+    /// different ones: an interval is a pure monotonic offset (immune to the
+    /// operator setting the clock), while cron is defined on wall time and has
+    /// nothing to anchor to without it.
+    fn next_after(
+        &self,
+        from: Instant,
+        from_wall: DateTime<Local>,
+    ) -> Option<(Instant, DateTime<Local>)> {
+        let delay = self.schedule.delay_after(from_wall)?;
+        let wall = from_wall.checked_add_signed(chrono::TimeDelta::from_std(delay).ok()?)?;
+        Some((from + delay, wall))
     }
 
     /// Consume the fire that is due and arm the next one, returning how many
@@ -231,7 +158,7 @@ impl BackupTask {
 
         let mut missed = 0u32;
         loop {
-            let Some((next, next_wall)) = self.schedule.next_after(cursor, cursor_wall) else {
+            let Some((next, next_wall)) = self.next_after(cursor, cursor_wall) else {
                 tracing::warn!(
                     backup = %self.spec.name,
                     schedule = %self.schedule_str,
@@ -247,7 +174,6 @@ impl BackupTask {
             missed += 1;
             if missed >= MAX_MISSED_CATCHUP {
                 self.next_fire = self
-                    .schedule
                     .next_after(now, now_wall)
                     .map(|(instant, _)| instant)
                     .unwrap_or(now + SCHEDULE_STALL_RETRY);
