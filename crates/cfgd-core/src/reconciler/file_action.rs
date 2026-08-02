@@ -25,9 +25,9 @@ pub(super) fn apply_file_action_direct(
             patch,
             ..
         } => {
-            // `Patch` rewrites the target's own content, so it is computed
-            // before the remove-then-deploy sequence below deletes the very
-            // bytes it reads.
+            // `Patch` rewrites the target's own content, so the merge is
+            // computed against the live file rather than against what planning
+            // saw. A failure aborts with the target still intact.
             let patched = match strategy {
                 FileStrategy::Patch => {
                     let spec = patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
