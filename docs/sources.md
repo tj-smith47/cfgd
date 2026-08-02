@@ -327,14 +327,29 @@ Two paths are covered, and one deliberately is not:
 
 When `true` (the default), the source cannot deliver anything that executes code. Every surface is covered, because "a script" is not always spelled `scripts:`:
 
-| Surface | Where it is declared | When it runs | Rejected at |
+| Surface | Where it is declared | When it would run | Blocked at |
 |---|---|---|---|
 | Lifecycle scripts | `spec.scripts.{preApply,postApply,preReconcile,postReconcile,onChange,onDrift}` on the source's profiles and policy tiers | apply / reconcile | composition time |
 | Backup hooks | `spec.backups[].preBackup` / `postBackup` | `cfgd apply`, `cfgd backup run`, the daemon's timer | composition time |
 | Patch filters | `spec.files.managed[].patch.script` (`strategy: Patch`) | every command that evaluates the file — including read-only `cfgd diff` / `status` / `verify` / `compliance` | composition time |
 | Module-body scripts | the same lifecycle hooks, `prefer: [script]` package installs, and `spec.files[].patch.script` on any module delivered via `provides.modules` | apply / reconcile / evaluation | module-load time |
 
-A rejection names the exact surface it found, e.g. `source 'acme' carries a preBackup hook on backup 'db', but it is not allowed to run scripts`.
+How the block shows up depends on whether the command changes the machine:
+
+- **Commands that change the machine** (`apply`, `plan`, `daemon`, `backup run`, `source add`) abort composition on the first violation and run nothing. The error names the exact surface, e.g. `source 'acme' carries a preBackup hook on backup 'db', but it is not allowed to run scripts`.
+- **Read-only commands** (`status`, `diff`, `verify`, `compliance`, `backup list`, `checkin`) still have to describe the machine, so they keep composing and report the violation as a warning instead. The source's contribution stays visible — but a patch filter it is barred from running is marked unrunnable at composition time, so evaluating the file reports a per-file failure naming the source rather than executing the filter:
+
+  ```
+  ⚠ source 'acme' violates its constraints
+    source 'acme' carries a patch script for ~/.config/acme/app.ini, but it is not
+    allowed to run scripts (set subscription.allowScripts: true to opt in, or relax
+    the source's constraints.no_scripts)
+  ⚠ ~/.config/acme/app.ini: cannot evaluate patch spec: patch script for
+    ~/.config/acme/app.ini is blocked: source 'acme' is not allowed to run scripts
+    (constraints.noScripts); set subscription.allowScripts: true to opt in
+  ```
+
+  Lifecycle scripts and backup hooks need no such marking: no read-only command executes one.
 
 A `patch.ensure` block is a declarative merge, not code, and is never rejected by `noScripts`.
 
@@ -659,7 +674,7 @@ Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Su
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and each surface is named in plan |
+| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and each surface is named in plan. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
 | Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level over `files.managed[].target` and `backups[].destination` (see [`allowedTargetPaths`](#allowedtargetpaths)) |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |

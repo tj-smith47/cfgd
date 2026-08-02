@@ -1173,6 +1173,7 @@ fn patch_update(target: &Path) -> Action {
             format: Some(cfgd_core::config::PatchFormat::Json),
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     })
 }
@@ -1256,6 +1257,7 @@ fn unmanaged_prompt_skips_patch_module_files() {
             format: Some(cfgd_core::config::PatchFormat::Ini),
             ensure: Some(serde_yaml::from_str("core:\n  editor: vim").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     };
     let mut plan = one_phase_plan(vec![Action::Module(ModuleAction::local(

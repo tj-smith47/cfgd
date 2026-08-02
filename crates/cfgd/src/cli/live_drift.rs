@@ -421,6 +421,7 @@ mod tests {
             format: None,
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
+            blocked_by: None,
         };
         modules[0].files[0].strategy = Some(FileStrategy::Patch);
         modules[0].files[0].patch = Some(spec.clone());
@@ -461,6 +462,7 @@ mod tests {
             format: None,
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
+            blocked_by: None,
         });
 
         let results = module_file_verify_results(dir.path(), &resolved, &modules)

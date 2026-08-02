@@ -9,6 +9,7 @@ fn spec(format: Option<PatchFormat>, ensure: &str) -> PatchSpec {
         format,
         ensure: Some(serde_yaml::from_str(ensure).expect("ensure fixture parses")),
         script: None,
+        blocked_by: None,
     }
 }
 
@@ -17,6 +18,7 @@ fn script_spec(script: &str) -> PatchSpec {
         format: None,
         ensure: None,
         script: Some(script.to_string()),
+        blocked_by: None,
     }
 }
 
@@ -137,6 +139,7 @@ fn neither_ensure_nor_script_is_typed_error() {
         format: Some(PatchFormat::Json),
         ensure: None,
         script: None,
+        blocked_by: None,
     };
     let err = apply_err("{}", &s, "/tmp/a.json");
     assert_file_err(
@@ -147,11 +150,38 @@ fn neither_ensure_nor_script_is_typed_error() {
 }
 
 #[test]
+fn a_blocked_spec_never_runs_its_filter() {
+    // The marker composition sets when a source may not run scripts. Every
+    // evaluation path funnels through `compute_patched`, so refusing here is
+    // what makes the filter unrunnable from a read-only command.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("filter-ran.marker");
+    let s = PatchSpec {
+        blocked_by: Some("acme".to_string()),
+        ..script_spec(&format!("touch {} && cat", crate::to_posix_string(&marker)))
+    };
+    let err = compute_patched("{}\n", &s, Path::new("/tmp/a.json"), &ctx_for(dir.path()))
+        .expect_err("a blocked spec must not be evaluated");
+    assert_file_err(
+        &err,
+        |e| matches!(e, FileError::PatchScriptBlocked { .. }),
+        "PatchScriptBlocked",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("acme") && msg.contains("allowScripts"),
+        "the error must name the source and the opt-in: {msg}"
+    );
+    assert!(!marker.exists(), "the filter must never have been spawned");
+}
+
+#[test]
 fn both_ensure_and_script_is_typed_error() {
     let s = PatchSpec {
         format: Some(PatchFormat::Json),
         ensure: Some(serde_yaml::from_str("a: 1").expect("fixture")),
         script: Some("cat".to_string()),
+        blocked_by: None,
     };
     let err = apply_err("{}", &s, "/tmp/a.json");
     assert_file_err(

@@ -1244,6 +1244,7 @@ mod tests {
             format: None,
             ensure: Some(serde_yaml::from_str(ensure).unwrap()),
             script: None,
+            blocked_by: None,
         });
         managed
     }

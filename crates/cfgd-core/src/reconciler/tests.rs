@@ -7414,6 +7414,7 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
         format: None,
         ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
         script: None,
+        blocked_by: None,
     };
     let file = ResolvedFile {
         source: PathBuf::new(),
@@ -7503,6 +7504,7 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
             format: None,
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     };
 
@@ -7555,8 +7557,8 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
     assert_eq!(result.status, ApplyStatus::Success);
 }
 
-#[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn apply_module_deploy_files_patch_preserves_the_targets_mode() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -7580,6 +7582,7 @@ fn apply_module_deploy_files_patch_preserves_the_targets_mode() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_module_deploy_files_patch_writes_through_a_symlinked_target() {
     let dir = tempfile::tempdir().unwrap();
     let real = dir.path().join("repo").join("settings.json");
@@ -10602,6 +10605,7 @@ fn clone_action_create_preserves_all_fields() {
             format: Some(crate::config::PatchFormat::Ini),
             ensure: None,
             script: Some("rewrite.sh".into()),
+            blocked_by: None,
         }),
     };
     let cloned = action.clone_action();
@@ -10761,6 +10765,7 @@ fn apply_file_action_direct_patch_merges_into_existing_target() {
             format: None,
             ensure: Some(serde_yaml::from_str("added: true").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     };
     super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
@@ -10771,8 +10776,8 @@ fn apply_file_action_direct_patch_merges_into_existing_target() {
     assert_eq!(written["added"], true);
 }
 
-#[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn apply_file_action_direct_patch_preserves_the_targets_mode() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -10792,6 +10797,7 @@ fn apply_file_action_direct_patch_preserves_the_targets_mode() {
             format: None,
             ensure: Some(serde_yaml::from_str("added: true").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     };
     super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
@@ -10804,6 +10810,7 @@ fn apply_file_action_direct_patch_preserves_the_targets_mode() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_file_action_direct_patch_writes_through_a_symlinked_target() {
     let dir = tempfile::tempdir().unwrap();
     let real = dir.path().join("repo").join("settings.json");
@@ -10823,6 +10830,7 @@ fn apply_file_action_direct_patch_writes_through_a_symlinked_target() {
             format: None,
             ensure: Some(serde_yaml::from_str("added: true").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     };
     super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();

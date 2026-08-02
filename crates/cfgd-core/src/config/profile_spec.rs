@@ -698,6 +698,17 @@ pub struct PatchSpec {
     /// inline command. Mutually exclusive with `ensure`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
+    /// Name of the source whose `constraints.noScripts` bars this filter, set
+    /// by composition when the subscriber did not opt in.
+    ///
+    /// Not part of the config surface (`#[serde(skip)]`, so `deny_unknown_fields`
+    /// rejects it in YAML and it never reaches the published schema): composition
+    /// is the only writer. Poisoning the spec rather than dropping it keeps the
+    /// file visible on read-only surfaces while making the filter unrunnable by
+    /// construction — every evaluation path funnels through `compute_patched`,
+    /// which refuses a marked spec.
+    #[serde(skip)]
+    pub blocked_by: Option<String>,
 }
 
 /// Controls when encryption is required for a managed file.

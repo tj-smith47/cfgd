@@ -337,3 +337,90 @@ fn module_script_resolves_relative_to_the_module_dir() {
         "the module's script must resolve under the module dir and see its metadata"
     );
 }
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
+    // A `patch.script` is the one script surface a read-only command executes:
+    // `diff` and `verify` evaluate every `Patch` file, and evaluating one runs
+    // the filter. Report mode keeps composing so the read can still render, so
+    // the block has to live in the spec itself rather than in the abort.
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, target, marker) =
+        common::barred_patch_script_source_setup();
+    let home = tempfile::tempdir().unwrap();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let original = std::fs::read_to_string(&target).unwrap();
+
+    let (sync_printer, _sync_cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    drop(sync_printer);
+
+    let assert_untouched = |surface: &str| {
+        assert!(
+            !marker.exists(),
+            "{surface} must not run a filter the source is barred from running"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            original,
+            "{surface} must not rewrite the target through a blocked filter"
+        );
+    };
+
+    let (diff_printer, diff_cap) = Printer::for_test_doc();
+    cfgd_core::with_test_home(home.path(), || {
+        cfgd::cli::diff::cmd_diff(&cli, &diff_printer, None, false).expect("diff still renders")
+    });
+    drop(diff_printer);
+    let diff_out = diff_cap.human();
+    assert_untouched("diff");
+    assert!(
+        diff_out.contains("is blocked") && diff_out.contains("acme"),
+        "diff must degrade the file with a status naming the source: {diff_out}"
+    );
+    assert!(
+        diff_out.contains("violates its constraints"),
+        "diff must warn that the source breaks its own constraints: {diff_out}"
+    );
+
+    let (verify_printer, verify_cap) = Printer::for_test_doc();
+    cfgd_core::with_test_home(home.path(), || {
+        cfgd::cli::verify::cmd_verify(&cli, &verify_printer, None, false)
+            .expect("verify still renders")
+    });
+    drop(verify_printer);
+    let verify_out = verify_cap.human();
+    assert_untouched("verify");
+    assert!(
+        verify_out.contains("is blocked") && verify_out.contains("acme"),
+        "verify must report the file as failing with the block as its reason: {verify_out}"
+    );
+
+    for (surface, result) in [
+        ("plan", {
+            let (printer, _cap) = Printer::for_test_doc();
+            cfgd_core::with_test_home(home.path(), || {
+                cmd_plan(&cli, &printer, &plan_args())
+                    .err()
+                    .map(|e| format!("{e:#}"))
+            })
+        }),
+        ("apply", {
+            let (printer, _cap) = Printer::for_test_doc();
+            cfgd_core::with_test_home(home.path(), || {
+                cmd_apply(&cli, &printer, &apply_args())
+                    .err()
+                    .map(|e| format!("{e:#}"))
+            })
+        }),
+    ] {
+        let msg = result.unwrap_or_else(|| panic!("{surface} must abort on a barred source"));
+        assert!(
+            msg.contains("acme") && msg.contains("not allowed to run scripts"),
+            "{surface}'s abort must name the source and the constraint: {msg}"
+        );
+        assert_untouched(surface);
+    }
+}

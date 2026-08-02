@@ -194,6 +194,11 @@ pub enum FileError {
 
     #[error("patch block for {path} must set exactly one of 'ensure' or 'script'")]
     PatchSpecInvalid { path: PathBuf },
+
+    #[error(
+        "patch script for {path} is blocked: source '{source_name}' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"
+    )]
+    PatchScriptBlocked { path: PathBuf, source_name: String },
 }
 
 #[derive(Debug, thiserror::Error)]

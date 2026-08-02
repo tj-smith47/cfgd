@@ -42,6 +42,12 @@ See Hard Rule #1 in `hard-rules.md`.
 | `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin` — anything whose whole job is to describe state |
 | `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
 
+`Report` is not "skip the check": `compose` still warns per violation, and any script surface a
+read path would EXECUTE is marked unrunnable in the composed spec (`composition::block_barred_scripts`
+poisons a barred source's `patch.script`, so evaluating the file degrades instead of running it).
+Adding a script surface that a `Report`-mode command evaluates means extending that marking too —
+a surface only `Enforce` reaches needs nothing.
+
 ## Structured-output coverage (cmd_* → has_data_payload?)
 
 Every `cmd_*` function in `crates/cfgd/src/cli/` must appear in this

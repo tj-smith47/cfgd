@@ -783,6 +783,22 @@ pub(in crate::cli) fn compose_with_sources(
     let result = mgr.compose(&cfg.spec.sources, local_resolved, mode)?;
     display_and_persist_conflicts(cli, &result, printer);
 
+    // Report mode accumulates violations instead of aborting; without this the
+    // only surface that ever showed them was a compliance snapshot, so an
+    // operator running `diff` saw a source's contribution rendered with no sign
+    // that it breaks the source's own constraints.
+    for violation in &result.constraint_violations {
+        printer
+            .status(
+                Role::Warn,
+                format!(
+                    "source '{}' violates its constraints",
+                    violation.source_name
+                ),
+            )
+            .detail(&violation.detail);
+    }
+
     // Surface the documented "scripts are shown in cfgd plan" promise: when a
     // subscriber opted in (`allowScripts: true`) to a source whose
     // `constraints.no_scripts` would otherwise block scripts, the script
@@ -802,14 +818,16 @@ pub(in crate::cli) fn compose_with_sources(
                 .filter(|layer| layer.source == spec.name)
                 .flat_map(|layer| composition::script_surfaces(&layer.spec))
                 .collect();
-            let carries = if surfaces.is_empty() {
-                String::new()
-            } else {
-                format!(" — it carries {}", surfaces.join(", "))
-            };
+            // A source that ships no script surface has nothing to disclose;
+            // announcing that its scripts "will run" would name a risk the
+            // subscriber does not actually carry.
+            if surfaces.is_empty() {
+                continue;
+            }
             printer.note(format!(
-                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription){carries}",
-                spec.name
+                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription) — it carries {}",
+                spec.name,
+                surfaces.join(", ")
             ));
         }
     }

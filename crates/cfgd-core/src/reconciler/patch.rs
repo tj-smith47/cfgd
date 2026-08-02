@@ -237,6 +237,15 @@ pub fn compute_patched(
     target: &Path,
     ctx: &PatchContext<'_>,
 ) -> Result<String> {
+    // The single chokepoint every evaluation path (plan, apply, diff, verify,
+    // compliance) funnels through, so a poisoned spec cannot run anywhere.
+    if let Some(source_name) = spec.blocked_by.as_deref() {
+        return Err(FileError::PatchScriptBlocked {
+            path: target.to_path_buf(),
+            source_name: source_name.to_string(),
+        }
+        .into());
+    }
     match (spec.ensure.as_ref(), spec.script.as_deref()) {
         (Some(ensure), None) => match resolve_format(spec, target)? {
             PatchFormat::Ini => merge_ini(current, ensure, target),

@@ -977,51 +977,32 @@ pub fn make_bare_source_repo(
     bare
 }
 
-/// A source whose delivered profile declares a backup writing OUTSIDE the
-/// source's own `allowedTargetPaths` — the shape `compose` rejects in
-/// `Enforce` mode and merely records in `Report` mode.
+/// Publish a `file://` git source and subscribe a fresh config dir to it.
 ///
-/// Returns `(workspace, config_dir, state_dir, rejected_destination)`; the
-/// workspace owns the bare repo and must outlive the config dir so the
-/// `file://` URL resolves. Consumers must set `CFGD_ALLOW_LOCAL_SOURCES=1`.
-pub fn violating_backup_source_setup() -> (
-    tempfile::TempDir,
-    tempfile::TempDir,
-    tempfile::TempDir,
-    String,
-) {
+/// `build` receives the workspace directory (so a fixture can put files the
+/// manifest or profile references inside it) and returns the source's
+/// `cfgd-source.yaml` and its `profiles/default.yaml`. Returns
+/// `(workspace, config_dir, state_dir)`; the workspace owns the bare repo and
+/// must outlive the config dir so the `file://` URL resolves. Consumers must
+/// set `CFGD_ALLOW_LOCAL_SOURCES=1`.
+pub fn local_source_setup<F>(build: F) -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir)
+where
+    F: FnOnce(&std::path::Path) -> (String, String),
+{
     let workspace = tempfile::tempdir().unwrap();
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
 
-    // Both paths sit inside the workspace tempdir: the violation is that they
-    // are outside `allowedTargetPaths`, and a fixture that named a real
-    // `~/.ssh` or `/etc/...` would copy live data the moment the enforcement
-    // it guards regressed.
-    let backup_source = workspace.path().join("secrets.txt");
-    std::fs::write(&backup_source, "not a real secret").unwrap();
-    let backup_destination = workspace.path().join("elsewhere");
+    let (manifest_yaml, profile_yaml) = build(workspace.path());
 
     let bare = workspace.path().join("acme-source.git");
     git2::Repository::init_bare(&bare).expect("init_bare");
 
     let src = workspace.path().join("acme-src");
     let src_repo = git2::Repository::init(&src).expect("init_src");
-    std::fs::write(
-        src.join("cfgd-source.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    constraints:\n      allowedTargetPaths:\n        - \"~/.config/acme/\"\n",
-    )
-    .unwrap();
+    std::fs::write(src.join("cfgd-source.yaml"), manifest_yaml).unwrap();
     std::fs::create_dir_all(src.join("profiles")).unwrap();
-    std::fs::write(
-        src.join("profiles").join("default.yaml"),
-        format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n    - name: exfil\n      source: {}\n      destination: {}\n",
-            backup_source.display(),
-            backup_destination.display(),
-        ),
-    )
-    .unwrap();
+    std::fs::write(src.join("profiles").join("default.yaml"), profile_yaml).unwrap();
 
     let mut index = src_repo.index().expect("index");
     for path in ["cfgd-source.yaml", "profiles/default.yaml"] {
@@ -1034,14 +1015,7 @@ pub fn violating_backup_source_setup() -> (
     let tree = src_repo.find_tree(tree_id).expect("find_tree");
     let sig = git2::Signature::now("t", "t@example.com").expect("signature");
     src_repo
-        .commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            "source with a violating backup",
-            &tree,
-            &[],
-        )
+        .commit(Some("HEAD"), &sig, &sig, "source fixture", &tree, &[])
         .expect("commit");
     drop(tree);
 
@@ -1072,8 +1046,74 @@ pub fn violating_backup_source_setup() -> (
     )
     .unwrap();
 
-    let destination = cfgd_core::to_posix_string(&backup_destination);
+    (workspace, config_dir, state_dir)
+}
+
+/// A source whose delivered profile declares a backup writing OUTSIDE the
+/// source's own `allowedTargetPaths` — the shape `compose` rejects in
+/// `Enforce` mode and merely records in `Report` mode.
+///
+/// Returns `(workspace, config_dir, state_dir, rejected_destination)`.
+pub fn violating_backup_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    String,
+) {
+    let mut destination = String::new();
+    let (workspace, config_dir, state_dir) = local_source_setup(|workspace| {
+        // Both paths sit inside the workspace tempdir: the violation is that
+        // they are outside `allowedTargetPaths`, and a fixture that named a
+        // real `~/.ssh` or `/etc/...` would copy live data the moment the
+        // enforcement it guards regressed.
+        let backup_source = workspace.join("secrets.txt");
+        std::fs::write(&backup_source, "not a real secret").unwrap();
+        let backup_destination = workspace.join("elsewhere");
+        destination = cfgd_core::to_posix_string(&backup_destination);
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    constraints:\n      allowedTargetPaths:\n        - \"~/.config/acme/\"\n".to_string(),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n    - name: exfil\n      source: {}\n      destination: {}\n",
+                cfgd_core::to_posix_string(&backup_source),
+                cfgd_core::to_posix_string(&backup_destination),
+            ),
+        )
+    });
     (workspace, config_dir, state_dir, destination)
+}
+
+/// A source whose delivered profile declares a `strategy: Patch` file driven by
+/// a `patch.script` filter, while the source's own `constraints.noScripts`
+/// (the default) bars it from running scripts.
+///
+/// The filter writes `marker` before echoing stdin back, so a test can prove by
+/// its absence that no surface ran it. Returns
+/// `(workspace, config_dir, state_dir, target, marker)`.
+pub fn barred_patch_script_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let mut target = std::path::PathBuf::new();
+    let mut marker = std::path::PathBuf::new();
+    let (workspace, config_dir, state_dir) = local_source_setup(|workspace| {
+        let target_path = workspace.join("settings.json");
+        std::fs::write(&target_path, "{\n  \"kept\": true\n}\n").unwrap();
+        let marker_path = workspace.join("filter-ran.marker");
+        target = target_path.clone();
+        marker = marker_path.clone();
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - target: {}\n        strategy: Patch\n        patch:\n          script: \"touch {} && cat\"\n",
+                cfgd_core::to_posix_string(&target_path),
+                cfgd_core::to_posix_string(&marker_path),
+            ),
+        )
+    });
+    (workspace, config_dir, state_dir, target, marker)
 }
 
 /// Clone `bare` into a fresh workdir, replace its `cfgd-source.yaml` with

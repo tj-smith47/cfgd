@@ -1,5 +1,5 @@
 use crate::PathDisplayExt;
-use crate::config::{MergedProfile, PolicyItems, ProfileSpec, SourceConstraints};
+use crate::config::{MergedProfile, PolicyItems, ProfileLayer, ProfileSpec, SourceConstraints};
 use crate::errors::{CompositionError, Result};
 
 /// Describe every element of `spec` that runs source-supplied code, in the
@@ -50,6 +50,42 @@ pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
     }
 
     surfaces
+}
+
+/// Poison every `patch.script` in `layers` that `source_name` is not permitted
+/// to run, so a read path cannot execute it.
+///
+/// `Report` mode records a source's violation and keeps composing — the read
+/// still has to render — but a `patch.script` is not inert data: `diff`,
+/// `verify`, `status` and a compliance snapshot all evaluate a `Patch` file,
+/// and evaluating one runs the filter. Marking the spec (rather than dropping
+/// the file, which would describe a state `apply` would never produce) leaves
+/// the file visible and degrades it with a named failure at every evaluation
+/// site.
+///
+/// Called unconditionally: in `Enforce` mode a barred source carrying a script
+/// has already aborted composition, so marking is a no-op there.
+pub fn block_barred_scripts(
+    source_name: &str,
+    constraints: &SourceConstraints,
+    allow_scripts: bool,
+    layers: &mut [ProfileLayer],
+) {
+    if !constraints.no_scripts || allow_scripts {
+        return;
+    }
+    for layer in layers {
+        let Some(ref mut files) = layer.spec.files else {
+            continue;
+        };
+        for managed in &mut files.managed {
+            if let Some(ref mut patch) = managed.patch
+                && patch.script.is_some()
+            {
+                patch.blocked_by = Some(source_name.to_string());
+            }
+        }
+    }
 }
 
 /// Validate security constraints for a source's contribution to the composed profile.

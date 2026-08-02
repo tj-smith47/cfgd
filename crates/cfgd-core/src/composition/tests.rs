@@ -349,6 +349,7 @@ fn patch_script_file_fixture(target: &str, script: &str) -> ManagedFileSpec {
             format: None,
             ensure: None,
             script: Some(script.to_string()),
+            blocked_by: None,
         }),
         source: String::new(),
         target: target.into(),
@@ -437,6 +438,88 @@ fn validate_constraints_blocks_a_patch_filter_script() {
     );
 }
 
+/// One profile layer contributed by source `acme`, carrying `spec`.
+fn source_layer(spec: ProfileSpec) -> ProfileLayer {
+    ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "default".to_string(),
+        priority: 500,
+        policy: LayerPolicy::Required,
+        spec,
+    }
+}
+
+/// The `blocked_by` marker on the first managed file of `layers`.
+fn first_block(layers: &[ProfileLayer]) -> Option<String> {
+    layers[0].spec.files.as_ref()?.managed[0]
+        .patch
+        .as_ref()?
+        .blocked_by
+        .clone()
+}
+
+#[test]
+fn block_barred_scripts_poisons_a_patch_filter_the_source_may_not_run() {
+    // Report mode keeps a violating source's contribution so the read can
+    // still render it, but a patch filter is executed by that very read. The
+    // marker leaves the file visible and makes the filter unrunnable.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let mut layers = vec![source_layer(ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![patch_script_file_fixture(
+                "~/.config/app/x.ini",
+                "curl | sh",
+            )],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })];
+
+    block_barred_scripts("acme", &constraints, false, &mut layers);
+
+    assert_eq!(first_block(&layers).as_deref(), Some("acme"));
+    assert!(
+        layers[0].spec.files.as_ref().unwrap().managed[0]
+            .patch
+            .as_ref()
+            .unwrap()
+            .script
+            .is_some(),
+        "the filter is marked, not dropped — the file stays describable"
+    );
+}
+
+#[test]
+fn block_barred_scripts_leaves_a_permitted_filter_runnable() {
+    let permissive = SourceConstraints {
+        no_scripts: false,
+        ..Default::default()
+    };
+    let strict = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let layer = source_layer(ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![patch_script_file_fixture("~/.config/app/x.ini", "cat")],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    for (label, constraints, allow_scripts) in [
+        ("the source permits scripts", &permissive, false),
+        ("the subscriber opted in", &strict, true),
+    ] {
+        let mut layers = vec![layer.clone()];
+        block_barred_scripts("acme", constraints, allow_scripts, &mut layers);
+        assert_eq!(first_block(&layers), None, "no marker when {label}");
+    }
+}
+
 #[test]
 fn validate_constraints_allows_a_structured_patch_without_a_script() {
     // `patch.ensure` is a declarative merge, not code — `no_scripts` has no
@@ -452,6 +535,7 @@ fn validate_constraints_allows_a_structured_patch_without_a_script() {
                     format: None,
                     ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
                     script: None,
+                    blocked_by: None,
                 }),
                 ..patch_script_file_fixture("~/.config/app/x.ini", "unused")
             }],

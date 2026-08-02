@@ -9,7 +9,7 @@ pub struct VerifyOutput {
     pub fail_count: usize,
 }
 
-pub(super) fn cmd_verify(
+pub fn cmd_verify(
     cli: &Cli,
     printer: &Printer,
     module_filter: Option<&str>,

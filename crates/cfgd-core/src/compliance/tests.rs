@@ -1144,6 +1144,7 @@ fn patch_profile(target: &std::path::Path, ensure: &str) -> MergedProfile {
                     format: None,
                     ensure: Some(serde_yaml::from_str(ensure).unwrap()),
                     script: None,
+                    blocked_by: None,
                 }),
                 source: String::new(),
                 target: target.to_path_buf(),
@@ -1178,6 +1179,7 @@ fn collect_file_checks_module_patch_attributes_origin() {
             format: None,
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     }];
 

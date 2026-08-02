@@ -7,7 +7,7 @@ use crate::config::{
 };
 use crate::errors::{CfgdError, CompositionError, Result};
 
-use super::constraints::{check_locked_violations, validate_constraints};
+use super::constraints::{block_barred_scripts, check_locked_violations, validate_constraints};
 use super::layers::build_source_layers;
 use super::merge::merge_with_policy;
 use super::packages::validate_reject_keys;
@@ -75,7 +75,13 @@ pub fn compose(
         }
         source_env.insert(input.source_name.clone(), env);
 
-        let source_layers = build_source_layers(input, &mut conflicts)?;
+        let mut source_layers = build_source_layers(input, &mut conflicts)?;
+        block_barred_scripts(
+            &input.source_name,
+            &input.constraints,
+            input.allow_scripts,
+            &mut source_layers,
+        );
         all_layers.extend(source_layers);
     }
 

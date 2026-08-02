@@ -3454,6 +3454,7 @@ fn apply_create_patch_writes_a_new_target_from_the_ensure_block() {
             format: None,
             ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     }];
 
@@ -3485,6 +3486,7 @@ fn apply_update_patch_preserves_unmentioned_keys() {
             format: None,
             ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     }];
 
@@ -3500,8 +3502,8 @@ fn apply_update_patch_preserves_unmentioned_keys() {
     assert_eq!(written["tabSize"], 4);
 }
 
-#[cfg(unix)]
 #[test]
+#[cfg(unix)]
 fn apply_update_patch_preserves_the_targets_mode() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -3527,6 +3529,7 @@ fn apply_update_patch_preserves_the_targets_mode() {
             format: None,
             ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     }];
 
@@ -3544,6 +3547,7 @@ fn apply_update_patch_preserves_the_targets_mode() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_update_patch_writes_through_a_symlinked_target() {
     // `~/.gitconfig -> ~/dotfiles/gitconfig` is the layout this strategy
     // exists for: the link must survive and the repo file must receive the
@@ -3569,6 +3573,7 @@ fn apply_update_patch_writes_through_a_symlinked_target() {
             format: None,
             ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
             script: None,
+            blocked_by: None,
         }),
     }];
 
