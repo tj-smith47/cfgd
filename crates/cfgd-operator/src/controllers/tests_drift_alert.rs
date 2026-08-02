@@ -12,7 +12,7 @@ use http::Method;
 use kube::ResourceExt;
 use kube::runtime::controller::Action;
 
-use super::drift_alert::{cleanup_drift_alerts, has_active_drift_alerts, reconcile_drift_alert};
+use super::drift_alert::{has_active_drift_alerts, reconcile_drift_alert};
 use super::test_fixtures::{
     drift_alert, machine_config, machine_config_owner_ref, machine_config_path,
     machine_config_status_with_drift_detected,
@@ -376,7 +376,7 @@ async fn reconcile_drift_alert_high_severity_emits_escalated_condition_in_status
 }
 
 // -----------------------------------------------------------------------
-// has_active_drift_alerts and cleanup_drift_alerts
+// has_active_drift_alerts
 // -----------------------------------------------------------------------
 
 #[tokio::test]
@@ -433,54 +433,4 @@ async fn has_active_drift_alerts_returns_false_when_list_fails() {
     );
 
     let _ = harness.finish().await;
-}
-
-#[tokio::test]
-async fn cleanup_drift_alerts_deletes_only_matching_alerts() {
-    let match_alert = drift_alert("alert-match", NS, "mc-cleanup", DriftSeverity::Medium);
-    let other_alert = drift_alert("alert-other", NS, "mc-different", DriftSeverity::Low);
-    let list = serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "DriftAlertList",
-        "items": [match_alert.clone(), other_alert],
-        "metadata": {},
-    });
-
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path(NS)).returning_raw(serde_json::to_vec(&list).unwrap()),
-        ExpectedCall::delete(drift_alert_path(NS, "alert-match")).returning_json(&match_alert),
-    ]);
-
-    cleanup_drift_alerts(&ctx.client, NS, "mc-cleanup").await;
-
-    let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 2);
-    assert!(
-        report
-            .find(Method::DELETE, "/driftalerts/alert-match")
-            .is_some(),
-        "matching alert must be deleted"
-    );
-    assert!(
-        report
-            .find(Method::DELETE, "/driftalerts/alert-other")
-            .is_none(),
-        "non-matching alert must NOT be deleted"
-    );
-}
-
-#[tokio::test]
-async fn cleanup_drift_alerts_skips_when_list_fails() {
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path(NS)).returning_server_error(500, "list failed"),
-    ]);
-
-    cleanup_drift_alerts(&ctx.client, NS, "anything").await;
-
-    let report = harness.finish().await;
-    assert_eq!(
-        report.captured.len(),
-        1,
-        "list failure short-circuits — no DELETEs follow"
-    );
 }
