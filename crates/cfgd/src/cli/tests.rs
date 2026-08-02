@@ -13660,7 +13660,11 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
 // cmd_daemon_uninstall — output and completion
 // -----------------------------------------------------------------------
 
+// Serial: parses through the real clap `Cli`, whose globals are env-bound, and
+// then resolves real paths from it — a leaked `CFGD_STATE_DIR` would aim the
+// unit-file removal at another test's tempdir.
 #[test]
+#[serial_test::serial]
 fn daemon_uninstall_prints_platform_info_and_succeeds() {
     // Isolate HOME so the best-effort service stop is skipped (the thread-local
     // override short-circuits the real systemctl/launchctl shell-out) and the

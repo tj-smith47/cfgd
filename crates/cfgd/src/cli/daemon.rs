@@ -477,7 +477,11 @@ mod tests {
     // rejects any of them the process exits (code 2) before the service
     // dispatcher runs, so the service never starts (Windows error 1053). Runs on
     // the Linux CI host — `service_binpath_argv` is deliberately platform-neutral.
+    // Serial: this parses through the real clap `Cli`, whose globals are
+    // env-bound (`CFGD_STATE_DIR` and friends). A concurrent test that sets one
+    // would be read as this test's own input.
     #[test]
+    #[serial_test::serial]
     fn windows_service_binpath_argv_parses_via_cli() {
         use clap::Parser;
         let cfg = std::path::Path::new("C:/ProgramData/cfgd/cfgd.yaml");
