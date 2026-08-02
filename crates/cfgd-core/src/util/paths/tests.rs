@@ -648,5 +648,5 @@ fn copy_dir_mode_failure_never_fails_the_copy() {
     // shape: the chmod errors and the caller must still see a completed copy.
     // This also pins the signature — restoring the `?` stops it compiling.
     let src = tempfile::TempDir::new().unwrap();
-    super::copy_dir_mode(src.path(), &src.path().join("does-not-exist"));
+    super::carry_dir_mode(src.path(), &src.path().join("does-not-exist"));
 }

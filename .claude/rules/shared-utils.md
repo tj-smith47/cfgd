@@ -15,7 +15,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 | `util/time.rs` | Timestamps + duration parsing |
 | `util/yaml_merge.rs` | YAML deep merge + Vec<EnvVar/ShellAlias>/Vec<String> mergers |
 | `util/strings.rs` | Env-var / alias parsing + validation, shell/XML/k8s-name escaping & sanitization |
-| `util/paths.rs` | `default_config_dir`, `expand_tilde`, `resolve_relative_path`, `validate_path_within`, `validate_no_traversal`, `validate_plain_name`, `copy_dir_recursive`, plus the test-home thread-local: `TestHomeGuard`, `with_test_home`, `with_test_home_guard`, `spawn_blocking_with_test_home` |
+| `util/paths.rs` | `default_config_dir`, `expand_tilde`, `resolve_relative_path`, `validate_path_within`, `validate_no_traversal`, `validate_plain_name`, `copy_dir_recursive`, `carry_dir_mode`, plus the test-home thread-local: `TestHomeGuard`, `with_test_home`, `with_test_home_guard`, `spawn_blocking_with_test_home` |
 | `util/fs_perms.rs` | Cross-platform symlinks, permissions, exec-bit, inode/file-index identity |
 | `util/file_io.rs` | `atomic_write[_str]`, `atomic_write_merged`, `capture_file_state[_resolved]`, `FileState` struct |
 | `util/process.rs` | Command helpers (`command_output_with_timeout`, `command_available`, `terminate_process`, `stdout/stderr_lossy_trimmed`, `is_root`, `hostname_string`, `tracing_env_filter`, `require_tool`) |
@@ -86,7 +86,8 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `ensure_parent_dir(target)` — create the parent directory of a file path (and ancestors) if missing; use instead of the inline `if let Some(parent) = path.parent() { create_dir_all(parent)? }` idiom before writing a file. For creating a named directory itself, call `create_dir_all` directly
 - Scaffold writes in the `cfgd` binary crate go through `write_scaffold(kind, path, body)` in `crates/cfgd/src/cli/helpers.rs` — pairs `with_schema_modeline` (pinned to the binary crate's `CARGO_PKG_VERSION` by construction) with `atomic_write_str`. Never stamp a modeline with cfgd-core's version; rewrite paths of user-owned files (e.g. `save_module_document`) stay modeline-free and must NOT use it
 - Rewrites of user-owned YAML in the `cfgd` binary crate go through `rewrite_user_yaml(path, &value)` in `crates/cfgd/src/cli/helpers.rs` — serializes via serde_yaml and re-prepends the file's existing leading comment block (banner + modeline) using `cfgd_core::config::with_leading_comments(original, serialized)` (capture primitive: `leading_comment_block(original)` in `cfgd-core/src/config/comments.rs`). Preserve-only, never inject; mid-document comments are not recoverable. Use instead of raw `serde_yaml::to_string` + `atomic_write_str` on any user-owned manifest (`mutate_config_yaml` composes `with_leading_comments` inline because it also validates)
-- `copy_dir_recursive(src, dst)` — recursively copy a directory tree
+- `copy_dir_recursive(src, dst)` — recursively copy a directory tree. Skips symlinks on the READ side and creates the destination itself, so it is only correct when cfgd owns the destination. Writing into live user data (a restore overlay) needs a walker that stats each destination entry unfollowed — see `backup/restore.rs::overlay_dir`
+- `carry_dir_mode(src, dst)` — best-effort copy of a directory's mode; no-op on Windows. Call it AFTER populating `dst`, or a restrictive source mode blocks the very writes it is being applied around
 - `create_symlink(source, target)` — cross-platform; Windows errors with Developer Mode guidance
 - `is_same_inode(a, b) -> bool` — check same file (inode+dev on Unix, file index+volume on Windows)
 - `file_permissions_mode(metadata) -> Option<u32>` — Unix mode bits; `None` on Windows

@@ -745,11 +745,14 @@ An unknown name given to `cfgd backup run`, `backup list`, or `backup restore` i
 too and lists every available snapshot. A run that recorded a failure — a bad copy, or
 `postBackup` erroring after a good one — also exits nonzero.
 
-`backup restore` overlays the snapshot onto the target (files only in the target are left alone),
-takes a safety snapshot of the current contents first, and requires confirmation unless `--yes`
-(`CFGD_YES`) is given. `--to <path>` redirects the restore and skips the safety backup. Where cfgd
-cannot prompt — piped stdin, CI, or `-o json` — a restore without `--yes` is an error rather than
-a silent no-op. See [Restoring](backups.md#restoring).
+`backup restore` overlays the snapshot onto the target (files only in the target are left alone;
+a target entry whose kind differs from the snapshot's — including a symlink — is replaced, never
+written through), takes a safety snapshot of the current contents first, and requires confirmation
+unless `--yes` (`CFGD_YES`) is given. `--to <path>` redirects the restore; a path outside the
+backup's source also skips the safety snapshot, while a path at or inside the source still takes
+one. The unit's `preBackup` / `postBackup` hooks wrap the whole restore exactly once and see
+`CFGD_OPERATION=restore`. Where cfgd cannot prompt — piped stdin, CI, or `-o json` — a restore
+without `--yes` is an error rather than a silent no-op. See [Restoring](backups.md#restoring).
 
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
 rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
@@ -764,7 +767,11 @@ the payload is always one JSON value and the nonzero exit code carries the failu
 `{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
 For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
 where `name` is the snapshot's path relative to the backup's `destination`. For `backup restore`:
-a single `{ name, snapshot, restoredTo, restored, clean, safetySnapshot?, error? }`.
+a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetySnapshot?, error? }` —
+or, when the operator declines at the confirmation prompt,
+`{ name, snapshot, restoredTo, restored: false, declined: true }`. The declined payload omits
+`clean` deliberately: a decline exits `0`, and reporting `clean: false` beside a zero exit would
+contradict whichever of the two a consumer trusted.
 `nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
 same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
 unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).

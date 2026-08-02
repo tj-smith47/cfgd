@@ -981,9 +981,7 @@ fn copy_dir_into(
             std::fs::copy(entry.path(), &dst_path)?;
         }
     }
-    // Applied after the walk: a restrictive source mode (0500, 0300) set on the
-    // way in would block writing the very children being copied.
-    copy_dir_mode(src, dst);
+    carry_dir_mode(src, dst);
     Ok(())
 }
 
@@ -992,8 +990,11 @@ fn copy_dir_into(
 /// A filesystem with no mode bits (vfat, CIFS, some FUSE mounts) rejects the
 /// `chmod`; losing the mode there is not a reason to fail a copy that otherwise
 /// succeeded, since the target could not have honoured the mode anyway.
+///
+/// Apply it *after* populating `dst`: a restrictive source mode (`0500`,
+/// `0300`) set on the way in blocks writing the very children being copied.
 #[cfg(unix)]
-fn copy_dir_mode(src: &std::path::Path, dst: &std::path::Path) {
+pub fn carry_dir_mode(src: &std::path::Path, dst: &std::path::Path) {
     let applied =
         std::fs::metadata(src).and_then(|meta| std::fs::set_permissions(dst, meta.permissions()));
     if let Err(e) = applied {
@@ -1007,7 +1008,7 @@ fn copy_dir_mode(src: &std::path::Path, dst: &std::path::Path) {
 }
 
 #[cfg(not(unix))]
-fn copy_dir_mode(_src: &std::path::Path, _dst: &std::path::Path) {}
+pub fn carry_dir_mode(_src: &std::path::Path, _dst: &std::path::Path) {}
 
 /// Always-fold POSIX form of a path. Use anywhere a path crosses into JSON,
 /// YAML, SQLite, gateway API, OCI annotations, `file://` URLs, or snapshot

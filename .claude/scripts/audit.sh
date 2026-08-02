@@ -261,9 +261,18 @@ log_section "DRY — Duplicated Function Definitions"
 # output/ is skipped: Printer/SectionGuard/Doc/StatusBuilder deliberately mirror
 # one fluent method surface (output-module.md), so a method name shared across
 # those builders is intentional API symmetry, not duplicated logic.
-# `is_clean` is on the allow-list for the same reason: every backup outcome type
-# (BackupRunRecord, RestoreOutcome) answers the exit-code question under one
-# name, and renaming either to satisfy this heuristic would split the surface.
+#
+# ALLOWED_FN_PAIRS excuses one *specific* definition rather than a bare name, so
+# the name keeps its budget: `is_clean` is deliberately shared by the two backup
+# outcome types (BackupRunRecord, RestoreOutcome) which answer the exit-code
+# question under one name, but dropping only the second site means a THIRD
+# definition still trips the gate. Adding a name to the awk list below instead
+# would blind the check to that name forever.
+ALLOWED_FN_PAIRS=(
+    "is_clean crates/cfgd-core/src/backup/restore.rs"
+)
+allowed_pairs_file=$(mktemp)
+printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
 fn_dupes=""
 while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
@@ -274,7 +283,8 @@ while IFS= read -r -d '' rsfile; do
         | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z_]*\)(.*|\2 \1|' \
         || true
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
-    | sort -u | awk '{print $1}' | sort | uniq -c | sort -rn \
+    | sort -u | grep -vxF -f "$allowed_pairs_file" \
+    | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
         $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
         $2 != "name" && $2 != "is_available" && $2 != "can_bootstrap" && $2 != "bootstrap" && \
@@ -317,12 +327,11 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
         $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
-        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" && \
-        $2 != "is_clean" \
+        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)
-rm -f /tmp/cfgd_fn_dupes
+rm -f /tmp/cfgd_fn_dupes "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
     log_warn "Function names defined in multiple files (potential duplication):"
     echo "$fn_dupes" | head -10

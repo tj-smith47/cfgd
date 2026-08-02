@@ -355,25 +355,18 @@ pub fn run_backup_restore(
         cfgd_core::backup::select_snapshot(args.name, &snapshots, args.at)
             .map_err(|e| snapshot_selection_error(args.name, e))?;
 
-    let target = match args.to {
-        Some(path) => cfgd_core::expand_tilde(path),
-        None => unit.source(),
-    };
+    let target = cfgd_core::backup::restore_target(&unit, args.to);
 
     if !args.yes && !confirm_restore(printer, args.name, selected, &target)? {
-        printer.emit(
-            Doc::new()
-                .status(Role::Info, "Aborted")
-                .with_data(&BackupRestoreOutput {
-                    name: args.name.to_string(),
-                    snapshot: selected.name.clone(),
-                    restored_to: cfgd_core::to_posix_string(&target),
-                    restored: false,
-                    clean: false,
-                    safety_snapshot: None,
-                    error: Some("declined at the confirmation prompt".to_string()),
-                }),
-        );
+        printer.emit(Doc::new().status(Role::Info, "Aborted").with_data(
+            &BackupRestoreDeclinedOutput {
+                name: args.name.to_string(),
+                snapshot: selected.name.clone(),
+                restored_to: cfgd_core::to_posix_string(&target),
+                restored: false,
+                declined: true,
+            },
+        ));
         return Ok(None);
     }
 
@@ -393,13 +386,15 @@ pub fn run_backup_restore(
         "backup '{}' restored from {}",
         outcome.name, outcome.snapshot
     );
+    // `outcome.restored_to`, not the requested target: a symlinked source is
+    // followed, and the operator needs to be told where the bytes actually went.
     let detail = match &outcome.error {
         Some(e) => format!(
             "into {} — {}",
-            target.posix(),
+            outcome.restored_to,
             cfgd_core::output::collapse_to_subject_line(e)
         ),
-        None => format!("into {}", target.posix()),
+        None => format!("into {}", outcome.restored_to),
     };
     printer.status(role, subject).detail(detail);
     // `hint`, not `note`: where the overwritten data went is the one thing an
@@ -432,10 +427,19 @@ fn confirm_restore(
     );
     printer.prompt_confirm(&question).map_err(|e| {
         let hint = "pass --yes (or set CFGD_YES=1) to restore without a prompt".to_string();
+        // The prompt's own refusal quotes the whole question back; nesting that
+        // inside this message renders the prompt twice and reads as two
+        // different problems. Only a prompt that was actually reached and then
+        // failed has a cause worth repeating.
+        let message = if printer.can_prompt() {
+            cfgd_core::output::collapse_to_subject_line(&e)
+        } else {
+            format!("Restore of '{name}' needs confirmation, and this session cannot prompt")
+        };
         cli_error_with_hints(
             name,
             "confirmation_required",
-            format!("Restore of '{name}' needs confirmation: {e}"),
+            message,
             serde_json::json!({ "hint": hint, "snapshot": snapshot.name }),
             vec![hint],
         )

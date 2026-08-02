@@ -760,7 +760,20 @@ fn backup_timestamp_span(window: &[char]) -> Option<usize> {
     if window[15] != 'Z' {
         return None;
     }
-    Some(16)
+    // The engine appends `-N` when two snapshots of one unit render the same
+    // second. Whether a restore's safety snapshot collides with the snapshot it
+    // is restoring depends on which side of a second boundary the test lands
+    // on, so the suffix is absorbed into the placeholder rather than left to
+    // flip a golden at random. That the two payloads stay distinct is pinned
+    // deterministically by the engine's own collision test.
+    let mut len = 16;
+    if window.len() > 17 && window[16] == '-' && window[17].is_ascii_digit() {
+        len = 18;
+        while len < window.len() && window[len].is_ascii_digit() {
+            len += 1;
+        }
+    }
+    Some(len)
 }
 
 #[test]
@@ -1048,6 +1061,7 @@ fn backup_restore_json_shape() {
             "restoredTo": "<SOURCE>",
             "restored": true,
             "clean": true,
+            "sizeBytes": 12,
             "safetySnapshot": "<STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>",
         }),
     );
@@ -1066,12 +1080,6 @@ fn backup_restore_human() {
     let (run_printer, _run_cap) = Printer::for_test_doc();
     cmd_backup_run(&cli, &run_printer, Some("docs")).unwrap();
     drop(run_printer);
-    // `namePattern` stamps to the second: a restore inside the same second as
-    // the run makes the safety backup collide with the snapshot it is
-    // restoring, which adds a warning line. That path has its own deterministic
-    // engine test; crossing the second boundary keeps THIS golden about the
-    // ordinary restore.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
 
     let (printer, cap) = Printer::for_test_doc();
     run_backup_restore(&cli, &printer, &restore_args("docs")).unwrap();
@@ -1312,7 +1320,18 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
     let payload = cap
         .json()
         .expect("even a declined restore emits its payload");
-    assert_eq!(payload["restored"], false);
-    assert_eq!(payload["clean"], false);
-    assert_eq!(payload["error"], "declined at the confirmation prompt");
+    let normalized =
+        cfgd_core::normalize_for_snapshot(&payload.to_string(), &[(&source, "<SOURCE>")]);
+    let normalized = normalize_backup_timestamp(&normalized);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&normalized).unwrap(),
+        serde_json::json!({
+            "name": "docs",
+            "snapshot": "notes.txt.<TIMESTAMP>",
+            "restoredTo": "<SOURCE>",
+            "restored": false,
+            "declined": true,
+        }),
+        "a decline exits 0, so it must not claim `clean: false` — the key is absent entirely"
+    );
 }

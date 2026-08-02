@@ -399,9 +399,12 @@ pub struct BackupRestoreOutput {
     /// The overlay completed AND every hook succeeded — the same predicate
     /// `BackupRunOutput::clean` carries, and what the exit code gates on.
     pub clean: bool,
+    /// Size recorded for the snapshot that was restored, matching
+    /// `BackupSnapshotEntry::size_bytes` for the same snapshot.
+    pub size_bytes: u64,
     /// Snapshot of the target's previous contents, taken immediately before
-    /// the overlay. Omitted when `--to` redirected the restore (the live
-    /// source was never touched) or the source did not exist yet.
+    /// the overlay. Omitted when the restore was redirected away from the live
+    /// source or the source did not exist yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_snapshot: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -416,10 +419,34 @@ impl From<&cfgd_core::backup::RestoreOutcome> for BackupRestoreOutput {
             restored_to: outcome.restored_to.clone(),
             restored: outcome.restored,
             clean: outcome.is_clean(),
+            size_bytes: outcome.size_bytes,
             safety_snapshot: outcome.safety_snapshot.clone(),
             error: outcome.error.clone(),
         }
     }
+}
+
+/// A restore the operator declined at the confirmation prompt.
+///
+/// Deliberately not a [`BackupRestoreOutput`] with `restored: false`: that
+/// struct's `clean` is the predicate the exit code gates on, and a decline exits
+/// `0` — reporting `clean: false` alongside a zero exit would make every
+/// consumer that trusts one of the two wrong. `declined` says what happened
+/// without claiming anything about a restore that never ran.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreDeclinedOutput {
+    pub name: String,
+    /// The snapshot that would have been restored.
+    pub snapshot: String,
+    /// Where it would have landed.
+    pub restored_to: String,
+    /// Always `false`; present so a consumer can read the same key on both the
+    /// declined and the completed payload.
+    pub restored: bool,
+    /// Always `true` — the discriminator between this payload and a restore
+    /// that ran.
+    pub declined: bool,
 }
 
 /// Outcome of one unit run by `cfgd backup run`.

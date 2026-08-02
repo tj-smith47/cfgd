@@ -27,7 +27,9 @@ pub mod schedule;
 #[cfg(test)]
 mod tests;
 
-pub use restore::{RestoreOutcome, SnapshotInfo, list_snapshots, restore_backup, select_snapshot};
+pub use restore::{
+    RestoreOutcome, SnapshotInfo, list_snapshots, restore_backup, restore_target, select_snapshot,
+};
 pub use schedule::next_run_at;
 
 /// One `spec.backups[]` entry bound to the runtime context it needs.
@@ -110,6 +112,31 @@ struct Artifact {
     size_bytes: u64,
 }
 
+/// Which side of the backup a hook list is running for.
+///
+/// Reaches `preBackup` / `postBackup` hooks as `CFGD_OPERATION`. The two
+/// operations share one hook list — the unit declares it once — so a hook that
+/// must behave differently when data is coming *back* has nothing else to
+/// branch on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupOperation {
+    /// A snapshot is being taken (`cfgd backup run`, apply, the daemon timer,
+    /// and the safety snapshot a restore takes).
+    Backup,
+    /// A snapshot is being put back (`cfgd backup restore`).
+    Restore,
+}
+
+impl BackupOperation {
+    /// The `CFGD_OPERATION` value hooks see.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            BackupOperation::Backup => "backup",
+            BackupOperation::Restore => "restore",
+        }
+    }
+}
+
 /// Run one backup unit end to end and record the outcome.
 ///
 /// # Failure semantics
@@ -154,39 +181,106 @@ pub fn run_backup(
     printer: &Printer,
 ) -> Result<BackupRunRecord> {
     let _lock = acquire_unit_lock(unit)?;
-    run_backup_locked(unit, store, printer)
-}
-
-/// The body of [`run_backup`], with the unit's lock **already held** by the
-/// caller.
-///
-/// Split out for [`restore::restore_backup`], whose safety backup has to run
-/// inside the lock the restore itself took: the lock is non-reentrant (one
-/// `flock` per open file description), so a nested [`run_backup`] would report
-/// the restore as the holder of the unit it is restoring.
-fn run_backup_locked(
-    unit: &BackupUnit<'_>,
-    store: &StateStore,
-    printer: &Printer,
-) -> Result<BackupRunRecord> {
     let spec = unit.spec;
     let started_at = crate::utc_now_iso8601();
     let source = unit.source();
 
-    let pre_error = run_hooks(unit, &spec.pre_backup, ScriptPhase::PreBackup, printer).err();
+    let pre_error = run_hooks(
+        unit,
+        &spec.pre_backup,
+        ScriptPhase::PreBackup,
+        BackupOperation::Backup,
+        printer,
+    )
+    .err();
     // A failed `preBackup` means the source is not in the state the hook was
     // meant to put it in, so a snapshot of it would be untrustworthy.
-    let copy_outcome = match pre_error {
+    let copy = match pre_error {
         Some(_) => None,
         None => Some(take_snapshot(unit, &source)),
     };
-    let post_error = run_hooks(unit, &spec.post_backup, ScriptPhase::PostBackup, printer).err();
+    let post_error = run_hooks(
+        unit,
+        &spec.post_backup,
+        ScriptPhase::PostBackup,
+        BackupOperation::Backup,
+        printer,
+    )
+    .err();
 
+    record_run(
+        store,
+        unit,
+        printer,
+        &source,
+        started_at,
+        RunOutcome {
+            pre_error,
+            copy,
+            post_error,
+        },
+    )
+}
+
+/// What the three mutating steps of a run produced, before any of it is
+/// collapsed into a record. `copy` is `None` when the snapshot was skipped
+/// outright rather than attempted and failed.
+struct RunOutcome {
+    pre_error: Option<BackupError>,
+    copy: Option<std::result::Result<Artifact, BackupError>>,
+    post_error: Option<BackupError>,
+}
+
+/// Take the snapshot, record the run, and prune — with **no hooks**, and with
+/// the unit's lock already held by the caller.
+///
+/// The safety backup [`restore::restore_backup`] takes needs exactly this half
+/// of [`run_backup`]: an ordinary row and an ordinary retention prune, inside
+/// the lock and inside the hook envelope the restore already holds open.
+/// Re-entering [`run_backup`] would do neither — the `flock` is per open file
+/// description, so the nested acquire would report the restore as the holder of
+/// the unit it is restoring, and the unit's hooks would run a second time around
+/// a source the restore has already quiesced.
+pub(super) fn snapshot_and_record(
+    unit: &BackupUnit<'_>,
+    store: &StateStore,
+    printer: &Printer,
+) -> Result<BackupRunRecord> {
+    let started_at = crate::utc_now_iso8601();
+    let source = unit.source();
+    let copy = Some(take_snapshot(unit, &source));
+    record_run(
+        store,
+        unit,
+        printer,
+        &source,
+        started_at,
+        RunOutcome {
+            pre_error: None,
+            copy,
+            post_error: None,
+        },
+    )
+}
+
+/// Join a run's failures, write its record, and prune to `spec.retention`.
+///
+/// The shared tail of every path that produces a `backup_runs` row, so the
+/// hook-carrying [`run_backup`] and the hook-free [`snapshot_and_record`] can
+/// never disagree about a run's recorded status, error joining, or pruning.
+fn record_run(
+    store: &StateStore,
+    unit: &BackupUnit<'_>,
+    printer: &Printer,
+    source: &Path,
+    started_at: String,
+    outcome: RunOutcome,
+) -> Result<BackupRunRecord> {
     let mut failures = Vec::new();
-    if let Some(e) = pre_error {
+    if let Some(e) = outcome.pre_error {
         failures.push(collapse_to_subject_line(&e));
     }
-    let artifact = match copy_outcome {
+    let artifact = match outcome.copy {
         Some(Ok(artifact)) => Some(artifact),
         Some(Err(e)) => {
             failures.push(collapse_to_subject_line(&e));
@@ -194,7 +288,7 @@ fn run_backup_locked(
         }
         None => None,
     };
-    if let Some(e) = post_error {
+    if let Some(e) = outcome.post_error {
         failures.push(collapse_to_subject_line(&e));
     }
 
@@ -204,7 +298,7 @@ fn run_backup_locked(
     };
     let error = (!failures.is_empty()).then(|| failures.join("; "));
 
-    let record = finish(store, unit, &source, started_at, artifact, error, status)?;
+    let record = finish(store, unit, source, started_at, artifact, error, status)?;
     prune_retention(store, unit, printer);
     Ok(record)
 }
@@ -268,12 +362,13 @@ fn run_hooks(
     unit: &BackupUnit<'_>,
     entries: &[ScriptEntry],
     phase: ScriptPhase,
+    operation: BackupOperation,
     printer: &Printer,
 ) -> std::result::Result<(), BackupError> {
     if entries.is_empty() {
         return Ok(());
     }
-    let env = build_script_env(
+    let mut env = build_script_env(
         unit.config_dir,
         unit.profile_name,
         unit.context,
@@ -281,6 +376,15 @@ fn run_hooks(
         None,
         None,
     );
+    // `CFGD_PHASE` names the hook list (`preBackup`/`postBackup`) and is the
+    // same for both operations — the list is declared once and reused. A hook
+    // that must quiesce for a snapshot but drop-and-recreate for a restore can
+    // only branch if something distinguishes them, so the operation rides
+    // alongside rather than overloading the phase.
+    env.push((
+        "CFGD_OPERATION".to_string(),
+        operation.display_name().to_string(),
+    ));
     let working_dir = script_default_workdir(unit.config_dir);
     let mut first_error: Option<BackupError> = None;
 
@@ -358,17 +462,23 @@ fn take_snapshot(
         });
     }
 
-    let target = destination.join(snapshot_name(spec, source)?);
+    let rendered = destination.join(snapshot_name(spec, source)?);
     // A snapshot path that is (or contains) the source would have the source
     // deleted by `remove_existing` on the way to publishing the snapshot, and
-    // would later be deleted outright by retention pruning.
-    if is_at_or_within(&real_source, &resolve_for_containment(&target)) {
+    // would later be deleted outright by retention pruning. Judged on the
+    // rendered name, before uniquifying: a pattern that names the source is a
+    // misconfiguration to report, not something to quietly sidestep by writing
+    // `<source>-1` beside it on every run.
+    if is_at_or_within(&real_source, &resolve_for_containment(&rendered)) {
         return Err(BackupError::SnapshotCollidesWithSource {
             name: spec.name.clone(),
             source_path: source.to_path_buf(),
-            snapshot: target,
+            snapshot: rendered,
         });
     }
+    // Only ever yields a path nothing occupies, so it can never select the
+    // source either — the source exists by the time this runs.
+    let target = uniquify(&spec.name, rendered)?;
 
     let copy_failed = |e: std::io::Error| BackupError::CopyFailed {
         name: spec.name.clone(),
@@ -397,6 +507,45 @@ fn take_snapshot(
     Ok(Artifact {
         path: target,
         size_bytes,
+    })
+}
+
+/// How many `-N` suffixes [`uniquify`] will try before giving up.
+const SNAPSHOT_NAME_ATTEMPTS: u32 = 1000;
+
+/// The first free path in the `<name>`, `<name>-1`, `<name>-2`, … series.
+///
+/// `{timestamp}` renders at one-second resolution, so two runs of one unit
+/// inside the same second render the same name. Publishing both there would
+/// leave two `backup_runs` rows pointing at a single payload: the snapshot lists
+/// twice, and when the older row falls out of retention the prune deletes the
+/// payload the *newer* row still claims — the surviving row then names a
+/// snapshot that is gone. One payload per row is what makes retention and
+/// restore agree, so a collision takes a new name instead of overwriting.
+fn uniquify(name: &str, target: PathBuf) -> std::result::Result<PathBuf, BackupError> {
+    if target.symlink_metadata().is_err() {
+        return Ok(target);
+    }
+    // A path with no final component cannot be suffixed; `snapshot_name` already
+    // rejects the patterns that produce one, so this is unreachable in practice.
+    let Some(stem) = target.file_name().map(|n| n.to_owned()) else {
+        return Ok(target);
+    };
+    for attempt in 1..=SNAPSHOT_NAME_ATTEMPTS {
+        let mut candidate = stem.clone();
+        candidate.push(format!("-{attempt}"));
+        let path = target.with_file_name(&candidate);
+        if path.symlink_metadata().is_err() {
+            return Ok(path);
+        }
+    }
+    Err(BackupError::CopyFailed {
+        name: name.to_string(),
+        path: target,
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("no free snapshot name after {SNAPSHOT_NAME_ATTEMPTS} attempts"),
+        ),
     })
 }
 
@@ -625,11 +774,20 @@ fn staging_path(target: &Path) -> PathBuf {
 ///
 /// A rename over an existing entry is not portable (Windows refuses, and no
 /// platform renames a directory onto a non-empty one), so the destination is
-/// cleared first. Only reachable when two runs of one backup render the same
-/// name — same second, same pattern.
+/// cleared first. [`uniquify`] has already picked a free name, so this normally
+/// finds nothing; it still runs because the name was checked before the copy and
+/// something outside cfgd could have taken it in between.
+///
+/// The metadata is read **unfollowed**, so a symlink occupying the path is
+/// deleted itself rather than having its target truncated — the property the
+/// restore overlay depends on to never write outside its target.
 fn remove_existing(path: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        // Windows reports a directory symlink or junction as a symlink, not a
+        // directory, and `remove_file` refuses to unlink one.
+        #[cfg(windows)]
+        Ok(meta) if meta.is_symlink() && path.is_dir() => std::fs::remove_dir(path),
         Ok(_) => std::fs::remove_file(path),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
