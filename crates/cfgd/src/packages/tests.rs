@@ -7,7 +7,6 @@ use super::cargo::{cargo_available, cargo_cmd};
 use super::go::{find_go, go_available, go_cmd};
 use super::npm::{find_npm, npm_available, npm_cmd};
 use super::pipx::{find_pipx, pipx_available, pipx_cmd};
-use super::shared::any_system_manager_available;
 use super::*;
 
 struct MockPackageManager {
@@ -2938,6 +2937,8 @@ fn all_package_managers_bootstrap_consistency() {
             // this test cannot guarantee.
             #[cfg(not(target_os = "freebsd"))]
             {
+                use super::shared::any_system_manager_available;
+
                 // `go` alone bootstraps only through a *system* package manager
                 // (not curl, which the others fall back to), so a shell without
                 // one on PATH — e.g. brew not exported into a non-login macOS

@@ -3280,6 +3280,21 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
             "platforms-filtered entry should report 'skipped (platform filter)', got: {output}"
         );
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        // A host named by neither entry — FreeBSD, today. Both are filtered,
+        // which is still a rendering worth pinning: without an arm here the
+        // test builds the output and asserts nothing at all on that host,
+        // passing while proving nothing.
+        assert!(
+            output.contains("curl, platforms: linux/macos — skipped (platform filter)"),
+            "an entry naming neither host platform should be filtered with its declared list, got: {output}"
+        );
+        assert!(
+            output.contains("notepad, platforms: windows — skipped (platform filter)"),
+            "an entry naming neither host platform should be filtered with its declared list, got: {output}"
+        );
+    }
 }
 
 // ─── cmd_module_list — table with active modules ────────────────
