@@ -567,7 +567,7 @@ fn block_barred_scripts_leaves_a_permitted_filter_runnable() {
 
 #[test]
 fn validate_constraints_allows_a_structured_patch_without_a_script() {
-    // `patch.ensure` is a declarative merge, not code — `no_scripts` has no
+    // `patch.ensure` is a declarative merge, not code — `noScripts` has no
     // business rejecting it.
     let constraints = SourceConstraints {
         no_scripts: true,

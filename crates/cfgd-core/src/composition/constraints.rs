@@ -5,7 +5,7 @@ use crate::errors::{CfgdError, CompositionError, Result};
 /// Describe every element of `spec` that runs source-supplied code, in the
 /// wording an error or a plan note uses.
 ///
-/// The single enumeration of what `constraints.no_scripts` governs. The
+/// The single enumeration of what `constraints.noScripts` governs. The
 /// fail-closed check and the `allowScripts` disclosure note both read this
 /// list, so a new script surface cannot reach one without reaching the other.
 pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
@@ -98,7 +98,7 @@ pub(super) fn block_barred_scripts(
 /// both modes read the same enumeration and cannot drift apart.
 ///
 /// `allow_scripts` is the subscriber's `subscription.allowScripts` opt-in: when
-/// `true` the source's `constraints.no_scripts` no longer rejects scripts (the
+/// `true` the source's `constraints.noScripts` no longer rejects scripts (the
 /// subscriber has accepted the risk), matching the source-delivered module-body
 /// enforcement. Path/system/encryption constraints are unaffected.
 pub(super) fn collect_constraint_violations(

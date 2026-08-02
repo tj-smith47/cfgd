@@ -100,7 +100,7 @@ pub struct SourceModuleRoot {
     pub offered: Vec<String>,
     /// Whether this source is permitted to deliver lifecycle scripts and
     /// `prefer: [script]` package installs through its module bodies. Computed
-    /// as `subscription.allowScripts || !constraints.no_scripts`. When `false`,
+    /// as `subscription.allowScripts || !constraints.noScripts`. When `false`,
     /// loading a source-delivered body that carries any script is FATAL
     /// ([`ModuleError::ScriptsNotAllowed`](crate::errors::ModuleError::ScriptsNotAllowed)).
     pub scripts_permitted: bool,

@@ -34,8 +34,8 @@ pub struct SubscriptionSpec {
     pub opt_in: Vec<String>,
     /// Subscriber opt-in to run lifecycle scripts (profile-layer and
     /// source-delivered module bodies) from this source even when the source's
-    /// `constraints.no_scripts` would otherwise reject them. Default `false`:
-    /// the source's own `no_scripts` constraint governs.
+    /// `constraints.noScripts` would otherwise reject them. Default `false`:
+    /// the source's own `noScripts` constraint governs.
     #[serde(default)]
     pub allow_scripts: bool,
     #[serde(default)]

@@ -765,7 +765,7 @@
         },
         "allowScripts": {
           "default": false,
-          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.no_scripts` would otherwise reject them. Default `false`:\nthe source's own `no_scripts` constraint governs.",
+          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.noScripts` would otherwise reject them. Default `false`:\nthe source's own `noScripts` constraint governs.",
           "type": "boolean"
         },
         "optIn": {

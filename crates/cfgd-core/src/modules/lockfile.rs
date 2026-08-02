@@ -233,7 +233,7 @@ pub fn load_source_modules(
 /// Describe the first script-bearing element of a module body, or `None` if the
 /// body runs no source-supplied code: no lifecycle scripts, no `prefer: [script]`
 /// package installs, and no `strategy: Patch` filter script. Used to enforce a
-/// source's `no_scripts` constraint over delivered bodies.
+/// source's `noScripts` constraint over delivered bodies.
 fn module_script_kind(module: &LoadedModule) -> Option<String> {
     if let Some(ref scripts) = module.spec.scripts {
         let lifecycle = [

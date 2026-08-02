@@ -107,7 +107,7 @@ pub struct CompositionInput {
     pub layers: Vec<ProfileLayer>,
     pub subscription: SubscriptionConfig,
     /// Subscriber opt-in (`subscription.allowScripts`) to permit this source's
-    /// lifecycle scripts even when `constraints.no_scripts` would otherwise
+    /// lifecycle scripts even when `constraints.noScripts` would otherwise
     /// reject them. Threaded into the constraint check so the profile-layer
     /// no-scripts check honors the same opt-in as the module-delivery path.
     pub allow_scripts: bool,
