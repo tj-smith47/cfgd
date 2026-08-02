@@ -10523,8 +10523,13 @@ mod harness {
             env!("CARGO_PKG_VERSION"),
         ));
 
-        // Give the health server time to bind the socket.
-        tokio::time::sleep(StdDuration::from_millis(120)).await;
+        // Polled to a deadline rather than slept for a fixed span — a runner
+        // executing the whole suite in parallel misses a 120ms budget while
+        // being perfectly healthy.
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        while std::time::Instant::now() < deadline && !ipc_path.exists() {
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
         assert!(
             ipc_path.exists(),
             "health server should have created the IPC socket at {}",
