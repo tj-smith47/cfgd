@@ -65,7 +65,7 @@ pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
 ///
 /// Called unconditionally: in `Enforce` mode a barred source carrying a script
 /// has already aborted composition, so marking is a no-op there.
-pub fn block_barred_scripts(
+pub(super) fn block_barred_scripts(
     source_name: &str,
     constraints: &SourceConstraints,
     allow_scripts: bool,
@@ -91,16 +91,17 @@ pub fn block_barred_scripts(
 /// Every security-constraint violation `spec` commits against `constraints`,
 /// in declaration order.
 ///
-/// Collecting rather than short-circuiting is what lets `Report` mode agree
-/// with itself: a source with two barred patch filters degrades both files, so
-/// the warning has to name both. `validate_constraints` takes the first entry
-/// for the fail-closed paths, which abort on it anyway.
+/// The single constraint check. Collecting rather than short-circuiting is what
+/// lets `Report` mode agree with itself: a source with two barred patch filters
+/// degrades both files, so the warning has to name both. A fail-closed caller
+/// takes the first entry — the one it would have aborted on either way — so
+/// both modes read the same enumeration and cannot drift apart.
 ///
 /// `allow_scripts` is the subscriber's `subscription.allowScripts` opt-in: when
 /// `true` the source's `constraints.no_scripts` no longer rejects scripts (the
 /// subscriber has accepted the risk), matching the source-delivered module-body
 /// enforcement. Path/system/encryption constraints are unaffected.
-pub fn collect_constraint_violations(
+pub(super) fn collect_constraint_violations(
     source_name: &str,
     constraints: &SourceConstraints,
     spec: &ProfileSpec,
@@ -238,23 +239,6 @@ pub fn collect_constraint_violations(
     }
 
     violations
-}
-
-/// The first violation [`collect_constraint_violations`] finds, as an error —
-/// the fail-closed form used by `Enforce` mode, which aborts on it anyway.
-pub fn validate_constraints(
-    source_name: &str,
-    constraints: &SourceConstraints,
-    spec: &ProfileSpec,
-    allow_scripts: bool,
-) -> Result<()> {
-    match collect_constraint_violations(source_name, constraints, spec, allow_scripts)
-        .into_iter()
-        .next()
-    {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
 }
 
 /// Check if a path matches any of the allowed patterns.

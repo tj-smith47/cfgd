@@ -212,7 +212,7 @@ pub fn load_source_modules(
             // Fail-closed: a source not permitted to run scripts may not deliver a
             // module body carrying lifecycle scripts or `prefer: [script]` package
             // installs. This mirrors the profile-layer no_scripts enforcement in
-            // composition::validate_constraints, applied at the module-delivery
+            // the composition constraint check, applied at the module-delivery
             // boundary where the per-root `scripts_permitted` decision is known.
             if !root.scripts_permitted
                 && let Some(kind) = module_script_kind(&module)

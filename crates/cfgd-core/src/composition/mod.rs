@@ -20,10 +20,7 @@ mod record;
 #[cfg(test)]
 mod tests;
 
-pub use constraints::{
-    block_barred_scripts, check_locked_violations, collect_constraint_violations, script_surfaces,
-    validate_constraints,
-};
+pub use constraints::{check_locked_violations, script_surfaces};
 pub use engine::compose;
 pub use packages::merge_packages;
 pub use permissions::{PermissionChange, detect_permission_changes};
@@ -111,7 +108,7 @@ pub struct CompositionInput {
     pub subscription: SubscriptionConfig,
     /// Subscriber opt-in (`subscription.allowScripts`) to permit this source's
     /// lifecycle scripts even when `constraints.no_scripts` would otherwise
-    /// reject them. Threaded into [`validate_constraints`] so the profile-layer
+    /// reject them. Threaded into the constraint check so the profile-layer
     /// no-scripts check honors the same opt-in as the module-delivery path.
     pub allow_scripts: bool,
 }

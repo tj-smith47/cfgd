@@ -217,7 +217,7 @@ fn validate_constraints_scripts_blocked() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("scripts"),
@@ -265,7 +265,7 @@ fn validate_constraints_scripts_blocked_all_hooks() {
         ),
     ] {
         assert!(
-            validate_constraints("src", &constraints, &spec, false).is_err(),
+            !collect_constraint_violations("src", &constraints, &spec, false).is_empty(),
             "no_scripts should block {label} hooks"
         );
     }
@@ -283,7 +283,7 @@ fn validate_constraints_scripts_empty_allowed() {
         ..Default::default()
     };
     assert!(
-        validate_constraints("acme", &constraints, &spec, false).is_ok(),
+        collect_constraint_violations("acme", &constraints, &spec, false).is_empty(),
         "no_scripts with empty script lists should pass"
     );
 }
@@ -301,7 +301,7 @@ fn validate_constraints_scripts_allowed() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -320,9 +320,9 @@ fn validate_constraints_scripts_permitted_by_subscriber_opt_in() {
         ..Default::default()
     };
     // Blocked without opt-in, permitted with it.
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_err());
+    assert!(!collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
     assert!(
-        validate_constraints("acme", &constraints, &spec, true).is_ok(),
+        collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
         "allowScripts opt-in must permit profile-layer scripts under no_scripts"
     );
 }
@@ -391,17 +391,16 @@ fn validate_constraints_blocks_backup_hooks() {
             },
         ),
     ] {
-        let err = match validate_constraints("acme", &constraints, &spec, false) {
-            Ok(()) => panic!("no_scripts must block a {label} hook"),
-            Err(e) => e,
-        };
+        let mut found = collect_constraint_violations("acme", &constraints, &spec, false);
+        assert!(!found.is_empty(), "no_scripts must block a {label} hook");
+        let err = found.remove(0);
         let msg = err.to_string();
         assert!(
             msg.contains("acme") && msg.contains(label) && msg.contains("keys"),
             "the error must name the source, the hook, and the backup: {msg}"
         );
         assert!(
-            validate_constraints("acme", &constraints, &spec, true).is_ok(),
+            collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
             "allowScripts opt-in must permit a {label} hook"
         );
     }
@@ -426,14 +425,14 @@ fn validate_constraints_blocks_a_patch_filter_script() {
         ..Default::default()
     };
 
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("patch script") && msg.contains("~/.config/app/x.ini"),
         "the error must name the source and the patched target: {msg}"
     );
     assert!(
-        validate_constraints("acme", &constraints, &spec, true).is_ok(),
+        collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
         "allowScripts opt-in must permit a patch filter"
     );
 }
@@ -589,7 +588,7 @@ fn validate_constraints_allows_a_structured_patch_without_a_script() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -605,7 +604,7 @@ fn validate_constraints_path_containment_covers_backup_destinations() {
         }],
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("/etc/cron.d") && msg.contains("acme"),
@@ -631,7 +630,7 @@ fn validate_constraints_leaves_the_backup_source_unconstrained() {
         ..Default::default()
     };
     assert!(
-        validate_constraints("acme", &constraints, &spec, false).is_ok(),
+        collect_constraint_violations("acme", &constraints, &spec, false).is_empty(),
         "a backup's source is a read, not a write, and stays unconstrained"
     );
 }
@@ -658,7 +657,7 @@ fn validate_constraints_path_containment() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("/etc/sudoers") && msg.contains("acme"),
@@ -688,7 +687,7 @@ fn validate_constraints_path_allowed() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -701,7 +700,7 @@ fn validate_constraints_system_changes_blocked() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("system setting") && msg.contains("shell"),
@@ -720,7 +719,7 @@ fn validate_constraints_system_changes_allowed() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -1218,9 +1217,9 @@ fn make_file_spec_with_encryption(target: &str, backend: Option<&str>) -> Profil
 fn encryption_required_target_without_encryption_is_error() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(msg.contains("~/.ssh/id_rsa"), "msg: {msg}");
     assert!(msg.contains("~/.ssh/*"), "msg: {msg}");
     assert!(msg.contains("encryption"), "msg: {msg}");
@@ -1230,7 +1229,7 @@ fn encryption_required_target_without_encryption_is_error() {
 fn encryption_required_target_with_encryption_passes() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", Some("sops"));
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -1238,7 +1237,7 @@ fn encryption_non_matching_target_without_encryption_passes() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     // ~/.zshrc does not match ~/.ssh/* — no enforcement
     let spec = make_file_spec_with_encryption("~/.zshrc", None);
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -1253,7 +1252,7 @@ fn encryption_empty_required_targets_no_enforcement() {
     };
     // Even though a backend is specified, empty requiredTargets means no enforcement
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -1261,16 +1260,16 @@ fn encryption_no_constraint_field_no_enforcement() {
     let constraints = SourceConstraints::default();
     // No encryption constraint at all
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
 fn encryption_wrong_backend_is_error() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(msg.contains("~/.aws/credentials"), "msg: {msg}");
     assert!(msg.contains("age"), "msg: {msg}");
     assert!(msg.contains("sops"), "msg: {msg}");
@@ -1280,7 +1279,7 @@ fn encryption_wrong_backend_is_error() {
 fn encryption_correct_backend_passes() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("sops"));
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -1288,11 +1287,11 @@ fn encryption_constraint_matches_exact_path() {
     let constraints = make_encryption_constraint(&["~/.gnupg/secring.gpg"], None);
     // Exact path match
     let spec = make_file_spec_with_encryption("~/.gnupg/secring.gpg", None);
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
     assert!(
         result
-            .unwrap_err()
+            .remove(0)
             .to_string()
             .contains("~/.gnupg/secring.gpg")
     );
@@ -2746,9 +2745,9 @@ fn validate_constraints_encryption_mode_mismatch() {
         }),
         ..Default::default()
     };
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(
         msg.contains("mode"),
         "expected mode mismatch error, got: {msg}"
@@ -3166,9 +3165,9 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
         }),
         ..Default::default()
     };
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(msg.contains("~/.config/secrets/api-key"), "msg: {msg}");
 }
 
@@ -3315,7 +3314,7 @@ fn composition_error_variant_path_not_allowed() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3336,7 +3335,7 @@ fn composition_error_variant_scripts_not_allowed() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3354,7 +3353,7 @@ fn composition_error_variant_system_change_not_allowed() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3432,7 +3431,7 @@ fn composition_error_variant_unresolvable_conflict() {
 fn composition_error_variant_encryption_required() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("corp", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3444,7 +3443,7 @@ fn composition_error_variant_encryption_required() {
 fn composition_error_variant_encryption_backend_mismatch() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
-    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("corp", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3481,7 +3480,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("corp", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
