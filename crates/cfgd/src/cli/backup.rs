@@ -362,7 +362,7 @@ pub fn run_backup_restore(
             &BackupRestoreDeclinedOutput {
                 name: args.name.to_string(),
                 snapshot: selected.name.clone(),
-                restored_to: cfgd_core::to_posix_string(&target.resolved),
+                restored_to: target.resolved_display(),
                 restored: false,
                 declined: true,
             },
@@ -425,11 +425,11 @@ fn confirm_restore(
     let into = if target.was_redirected_by_a_link() {
         format!(
             "{} (via {})",
-            target.resolved.posix(),
-            target.requested.posix()
+            target.resolved_display(),
+            target.requested_display()
         )
     } else {
-        target.resolved.posix().to_string()
+        target.resolved_display()
     };
     let question = format!(
         "Restore '{}' from snapshot {} into {}?",

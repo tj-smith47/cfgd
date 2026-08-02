@@ -2296,6 +2296,19 @@ fn a_symlinked_source_round_trips_through_backup_and_restore() {
         crate::to_posix_string(real.canonicalize().expect("canonical real")),
         "the outcome must name where the bytes landed, not the link"
     );
+    // The prompt, the declined payload, and this field are three separate
+    // producers of one path; they must render it identically or a Windows
+    // canonicalization shows up verbatim-prefixed in some of them and not
+    // others.
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    crate::with_test_home(&h.root, || {
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        assert_eq!(
+            restore_target(&unit, None).resolved_display(),
+            outcome.restored_to
+        );
+    });
     assert!(
         link.symlink_metadata().expect("link").is_symlink(),
         "the source link itself must survive the restore"
@@ -2511,6 +2524,12 @@ fn restore_target_reports_the_link_it_followed_alongside_what_was_asked_for() {
             target.resolved,
             real.canonicalize().expect("canonical real"),
             "the resolved path is what the confirmation prompt must name"
+        );
+        assert_eq!(target.requested_display(), crate::to_posix_string(&link));
+        assert_eq!(
+            target.resolved_display(),
+            crate::to_posix_string(real.canonicalize().expect("canonical real")),
+            "every surface renders the path the same way"
         );
     });
 }

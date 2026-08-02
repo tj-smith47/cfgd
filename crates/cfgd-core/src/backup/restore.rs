@@ -103,6 +103,23 @@ impl RestoreTarget {
     pub fn was_redirected_by_a_link(&self) -> bool {
         self.resolved != self.requested
     }
+
+    /// [`RestoreTarget::resolved`] as every user-facing surface must render it.
+    ///
+    /// Not `posix()`: `resolved` comes from `canonicalize`, which on Windows
+    /// hands back a `\\?\`-prefixed path that folds to `//?/C:/…`. Every place
+    /// a restore path reaches a human — the confirmation prompt, the declined
+    /// payload, `restoredTo` — goes through here, or the same path renders two
+    /// different ways depending on which one printed it.
+    pub fn resolved_display(&self) -> String {
+        report_path(&self.resolved)
+    }
+
+    /// [`RestoreTarget::requested`] rendered the same way, for the prompt's
+    /// `(via …)` clause.
+    pub fn requested_display(&self) -> String {
+        report_path(&self.requested)
+    }
 }
 
 /// Resolve where a restore will write, without touching anything.
