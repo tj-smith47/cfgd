@@ -237,7 +237,6 @@ fn sync_bridge_one_blank_line() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/bridge.txt", &captured);
 }
 
-// ─────────────────────────────────────────────────────
 #[test]
 #[serial]
 fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() {
@@ -293,6 +292,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     );
 }
 
+// ─────────────────────────────────────────────────────
 // snapshot helpers
 // ─────────────────────────────────────────────────────
 

@@ -38,13 +38,24 @@ fn diff_module_file(
 /// unevaluable entries a consumer actually acts on.
 fn record_file_drift(
     payload: &mut DiffOutput,
+    record: cfgd_core::providers::FileDriftResult,
+) -> bool {
+    let drifted = !record.matches;
+    if drifted {
+        payload.files.push(record);
+    }
+    drifted
+}
+
+fn record_file_drifts(
+    payload: &mut DiffOutput,
     records: Vec<cfgd_core::providers::FileDriftResult>,
 ) -> bool {
-    let drifted = records.iter().any(|r| !r.matches);
-    payload
-        .files
-        .extend(records.into_iter().filter(|r| !r.matches));
-    drifted
+    // Non-short-circuiting `|`: every record has to be recorded, not just the
+    // ones up to the first drift.
+    records.into_iter().fold(false, |drift, record| {
+        record_file_drift(payload, record) | drift
+    })
 }
 
 pub fn cmd_diff(
@@ -92,13 +103,13 @@ pub fn cmd_diff(
     let has_file_drift = {
         printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let mut drift = record_file_drift(&mut diff_payload, fm.diff(&resolved.merged, printer)?);
+        let mut drift = record_file_drifts(&mut diff_payload, fm.diff(&resolved.merged, printer)?);
         // Module-deployed files render the same inline content diff as profile
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {
             for file in &module.files {
                 let record = diff_module_file(&fm, &resolved, module, file, &config_dir, printer)?;
-                if record_file_drift(&mut diff_payload, vec![record]) {
+                if record_file_drift(&mut diff_payload, record) {
                     drift = true;
                 }
             }
@@ -237,7 +248,7 @@ fn cmd_diff_module(
         for module in &resolved_modules {
             for file in &module.files {
                 let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
-                if record_file_drift(&mut diff_payload, vec![record]) {
+                if record_file_drift(&mut diff_payload, record) {
                     has_file_diff = true;
                 }
             }
