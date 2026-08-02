@@ -1,0 +1,8 @@
+{
+  "clean": true,
+  "name": "docs",
+  "restored": true,
+  "restoredTo": "<SOURCE>",
+  "safetySnapshot": "<STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>",
+  "snapshot": "notes.txt.<TIMESTAMP>"
+}

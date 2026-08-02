@@ -725,19 +725,31 @@ cfgd decide accept --all                   # accept everything
 
 ## Backup Commands
 
-Run or inspect declarative backups (`spec.backups[]`). See [backups.md](backups.md) for the full
-field reference and run semantics.
+Run, inspect, or restore declarative backups (`spec.backups[]`). See [backups.md](backups.md) for
+the full field reference and run semantics.
 
 ```sh
 cfgd backup run                # run every backup declared in the active profile
 cfgd backup run openlist-db    # run just the named backup
 cfgd backup list                # inventory + last-run status + next scheduled run; alias: ls
+cfgd backup list openlist-db    # just that unit's row
+cfgd backup list openlist-db --snapshots   # its snapshots: name, created, size
+cfgd backup restore openlist-db                          # newest snapshot, back over the source
+cfgd backup restore openlist-db --at 20260730T120000Z    # pick an older one
+cfgd backup restore openlist-db --to /tmp/inspect --yes  # somewhere else, no prompt
 cfgd --output json backup list
 ```
 
-An unknown name given to `cfgd backup run` is exit code `6` (see [Exit Codes](#exit-codes)) and
-lists every valid name. A run that recorded a failure — a bad copy, or `postBackup` erroring after
-a good one — also exits nonzero.
+An unknown name given to `cfgd backup run`, `backup list`, or `backup restore` is exit code `6`
+(see [Exit Codes](#exit-codes)) and lists every valid name; an unknown `--at` snapshot is exit `6`
+too and lists every available snapshot. A run that recorded a failure — a bad copy, or
+`postBackup` erroring after a good one — also exits nonzero.
+
+`backup restore` overlays the snapshot onto the target (files only in the target are left alone),
+takes a safety snapshot of the current contents first, and requires confirmation unless `--yes`
+(`CFGD_YES`) is given. `--to <path>` redirects the restore and skips the safety backup. Where cfgd
+cannot prompt — piped stdin, CI, or `-o json` — a restore without `--yes` is an error rather than
+a silent no-op. See [Restoring](backups.md#restoring).
 
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
 rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
@@ -750,6 +762,9 @@ Structured output (`-o json`) payload for `backup run`: an array of
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
 `{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
+where `name` is the snapshot's path relative to the backup's `destination`. For `backup restore`:
+a single `{ name, snapshot, restoredTo, restored, clean, safetySnapshot?, error? }`.
 `nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
 same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
 unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).
@@ -916,12 +931,12 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)). | Any command whose `Result` resolves to a non-config error. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), and a `cfgd backup restore` whose overlay or hooks failed. | Any command whose `Result` resolves to a non-config error. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run <missing>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | `apply` ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |

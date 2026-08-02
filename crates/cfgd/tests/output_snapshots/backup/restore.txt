@@ -1,0 +1,5 @@
+Restore Backup
+
+✓ backup 'docs' restored from notes.txt.<TIMESTAMP> — into <SOURCE>
+
+→ previous contents saved to <STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>

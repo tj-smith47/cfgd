@@ -21,11 +21,13 @@ use crate::reconciler::{
 };
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
+pub mod restore;
 pub mod schedule;
 
 #[cfg(test)]
 mod tests;
 
+pub use restore::{RestoreOutcome, SnapshotInfo, list_snapshots, restore_backup, select_snapshot};
 pub use schedule::next_run_at;
 
 /// One `spec.backups[]` entry bound to the runtime context it needs.
@@ -151,8 +153,23 @@ pub fn run_backup(
     store: &StateStore,
     printer: &Printer,
 ) -> Result<BackupRunRecord> {
-    let spec = unit.spec;
     let _lock = acquire_unit_lock(unit)?;
+    run_backup_locked(unit, store, printer)
+}
+
+/// The body of [`run_backup`], with the unit's lock **already held** by the
+/// caller.
+///
+/// Split out for [`restore::restore_backup`], whose safety backup has to run
+/// inside the lock the restore itself took: the lock is non-reentrant (one
+/// `flock` per open file description), so a nested [`run_backup`] would report
+/// the restore as the holder of the unit it is restoring.
+fn run_backup_locked(
+    unit: &BackupUnit<'_>,
+    store: &StateStore,
+    printer: &Printer,
+) -> Result<BackupRunRecord> {
+    let spec = unit.spec;
     let started_at = crate::utc_now_iso8601();
     let source = unit.source();
 

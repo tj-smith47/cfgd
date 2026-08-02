@@ -2,6 +2,23 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
+/// Render a byte count for a human, at the largest scale that keeps it under
+/// four digits.
+///
+/// The single byte-size renderer for the whole CLI: `cfgd upgrade` sizes a
+/// release asset and `cfgd backup list --snapshots` sizes a snapshot, and two
+/// commands of one binary reporting `1.5 MB` and `1.5 MiB` for the same number
+/// is exactly the consumer-facing drift the output conventions exist to stop.
+pub(in crate::cli) fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Write a freshly scaffolded manifest: prepend the editor schema modeline and
 /// write atomically.
 ///

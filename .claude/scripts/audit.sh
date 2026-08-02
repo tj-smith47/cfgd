@@ -261,6 +261,9 @@ log_section "DRY — Duplicated Function Definitions"
 # output/ is skipped: Printer/SectionGuard/Doc/StatusBuilder deliberately mirror
 # one fluent method surface (output-module.md), so a method name shared across
 # those builders is intentional API symmetry, not duplicated logic.
+# `is_clean` is on the allow-list for the same reason: every backup outcome type
+# (BackupRunRecord, RestoreOutcome) answers the exit-code question under one
+# name, and renaming either to satisfy this heuristic would split the surface.
 fn_dupes=""
 while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
@@ -314,7 +317,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
         $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
-        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
+        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" && \
+        $2 != "is_clean" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)

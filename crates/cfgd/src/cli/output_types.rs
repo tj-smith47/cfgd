@@ -360,6 +360,68 @@ pub struct BackupListEntry {
     pub next_run_at: Option<String>,
 }
 
+/// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
+///
+/// `name` is the snapshot's path relative to the unit's destination, so a
+/// nested `namePattern` renders `daily/notes.txt.20260801T031500Z` — the exact
+/// string `cfgd backup restore --at` accepts.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSnapshotEntry {
+    pub name: String,
+    /// ISO 8601 UTC time the run that wrote the snapshot finished, on the same
+    /// scale as `BackupListEntry::last_run_at`.
+    pub created: String,
+    pub size_bytes: u64,
+}
+
+impl From<&cfgd_core::backup::SnapshotInfo> for BackupSnapshotEntry {
+    fn from(info: &cfgd_core::backup::SnapshotInfo) -> Self {
+        Self {
+            name: info.name.clone(),
+            created: info.created.clone(),
+            size_bytes: info.size_bytes,
+        }
+    }
+}
+
+/// Outcome of `cfgd backup restore`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreOutput {
+    pub name: String,
+    /// The snapshot restored from, as `BackupSnapshotEntry::name` spells it.
+    pub snapshot: String,
+    /// Where the snapshot landed — the unit's source, or `--to`.
+    pub restored_to: String,
+    /// Whether the overlay actually ran and completed.
+    pub restored: bool,
+    /// The overlay completed AND every hook succeeded — the same predicate
+    /// `BackupRunOutput::clean` carries, and what the exit code gates on.
+    pub clean: bool,
+    /// Snapshot of the target's previous contents, taken immediately before
+    /// the overlay. Omitted when `--to` redirected the restore (the live
+    /// source was never touched) or the source did not exist yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_snapshot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::RestoreOutcome> for BackupRestoreOutput {
+    fn from(outcome: &cfgd_core::backup::RestoreOutcome) -> Self {
+        Self {
+            name: outcome.name.clone(),
+            snapshot: outcome.snapshot.clone(),
+            restored_to: outcome.restored_to.clone(),
+            restored: outcome.restored,
+            clean: outcome.is_clean(),
+            safety_snapshot: outcome.safety_snapshot.clone(),
+            error: outcome.error.clone(),
+        }
+    }
+}
+
 /// Outcome of one unit run by `cfgd backup run`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -40,7 +40,7 @@ See Hard Rule #1 in `hard-rules.md`.
 | Mode | Commands |
 |---|---|
 | `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin` — anything whose whole job is to describe state |
-| `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
+| `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `backup restore`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
 
 `Report` is not "skip the check": `compose` still warns per violation, and any script surface a
 read path would EXECUTE is marked unrunnable in the composed spec (`composition::block_barred_scripts`
@@ -58,7 +58,8 @@ missing from the table.
 |------------------------------|-------------------|----------------------------------------------------|
 | alias_list                   | yes               | alias inventory                                    |
 | apply                        | yes               | apply-result records consumed by CI                |
-| backup_list                  | yes               | backup inventory queried by scripts                |
+| backup_list                  | yes               | backup inventory / snapshot list queried by scripts |
+| backup_restore               | yes               | restore result records                             |
 | backup_run                   | yes               | backup-run result records                          |
 | checkin                      | yes               | machine identity exposed to gateway                |
 | clusterconfigpolicy_validate | yes               | validation result consumed by scripts/CI           |

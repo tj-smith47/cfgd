@@ -11,7 +11,7 @@ touch it" surface — distinct from the automatic pre-overwrite `file_backups` t
 | Covers | any file or directory on the machine | only files cfgd is about to write |
 | Stored | on the filesystem, under `destination` | inline in the state DB |
 | Retained | newest `retention` per backup | last 10 applies |
-| Restored by | you (`cp`, `tar`, your tooling) | `cfgd rollback` |
+| Restored by | `cfgd backup restore` | `cfgd rollback` |
 
 ## Quick Start
 
@@ -102,9 +102,45 @@ as the payload's `hint` field — and a run whose snapshot did not complete clea
 [Run Semantics](#run-semantics) for what "clean" means — also exits nonzero so a script can
 detect it without parsing output.
 
-`cfgd backup list` (alias `ls`) shows every declared backup, its last recorded run, and when the
-daemon's timer will next fire it (`nextRunAt` in `-o json`); both commands honor the global
-`-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers.
+`cfgd backup list [name]` (alias `ls`) shows every declared backup — or just the named one — its
+last recorded run, and when the daemon's timer will next fire it (`nextRunAt` in `-o json`); every
+backup command honors the global `-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template`
+consumers.
+
+`cfgd backup list <name> --snapshots` switches the view from the backup to its snapshots — what
+[`cfgd backup restore`](#restoring) can put back:
+
+```console
+$ cfgd backup list openlist-db --snapshots
+Snapshots: openlist-db
+
+Snapshot                       Created               Size
+─────────────────────────────────────────────────────────
+data.db.20260801T231502Z       2026-08-01T23:15:02Z  1.2 MB
+data.db.20260730T120000Z       2026-07-30T12:00:00Z  1.1 MB
+
+$ cfgd --output json backup list openlist-db --snapshots
+[
+  {
+    "name": "data.db.20260801T231502Z",
+    "created": "2026-08-01T23:15:02Z",
+    "sizeBytes": 1258291
+  }
+]
+```
+
+`name` is the snapshot's path **relative to the backup's `destination`**, so a nested
+`namePattern` lists `daily/data.db.20260801T231502Z` — the exact string `restore --at` accepts.
+`created` is the ISO 8601 UTC time the run that wrote it finished, on the same scale as
+`backup list`'s Last Run column.
+
+The list comes from the recorded runs, not a directory glob, so it agrees with what
+[retention](#retention) prunes. Two records never appear: one whose path is not inside the
+backup's current `destination` (the same gate pruning uses — a stale or foreign row can never be
+offered as a restore source), and one whose payload is no longer on disk. A snapshot you could
+not restore is not listed as one.
+
+`--snapshots` requires a backup name; a bare `cfgd backup list --snapshots` is a usage error.
 
 **Next Run** is computed the same way the daemon seeds its timer — from the unit's `schedule` and
 its last recorded `finished_at` (see [`schedule`](#schedule)) — so the listed time is the one the
@@ -444,8 +480,107 @@ Timer behaviour:
 
 ## Restoring
 
-cfgd does not restore declarative backups for you; the snapshot is an ordinary file or directory,
-so restoring is whatever your data needs:
+`cfgd backup restore <name>` puts a snapshot back where it came from. With no `--at` it picks the
+**newest** snapshot; the confirmation names the snapshot and the path it is about to overwrite:
+
+```console
+$ cfgd backup restore openlist-db
+Restore Backup
+
+Restore 'openlist-db' from snapshot data.db.20260801T231502Z into /var/lib/openlist/data.db? [y/N] y
+
+✓ backup 'openlist-db' restored from data.db.20260801T231502Z — into /var/lib/openlist/data.db
+
+→ previous contents saved to /home/me/.local/state/cfgd/backups/openlist-db/data.db.20260802T044026Z
+```
+
+```bash
+cfgd backup restore openlist-db                              # newest snapshot
+cfgd backup restore openlist-db --at 20260730T120000Z        # by the timestamp portion
+cfgd backup restore openlist-db --at data.db.20260730T120000Z  # or the full snapshot name
+cfgd backup restore openlist-db --to /tmp/inspect --yes      # somewhere else, no prompt
+```
+
+`--at` matches the full snapshot name first, then any snapshot name **containing** the value —
+which is what lets a bare timestamp reach `data.db.20260730T120000Z` without you knowing the
+unit's `namePattern`. A value matching more than one snapshot is refused rather than resolved to
+the newest match: a restore overwrites live data, so an ambiguous selection is never guessed at.
+An unknown value lists every available snapshot and exits `6`, the same treatment an unknown
+backup name gets.
+
+**Confirmation is required.** `--yes` (or `CFGD_YES=1`) skips the prompt. Where cfgd *cannot*
+prompt — piped stdin, a CI runner, or `-o json` — a restore without `--yes` is an **error**, not a
+silent "aborted": you asked for a restore and did not get one.
+
+### What a restore does
+
+```
+acquire the unit's lock
+      │
+      ▼
+stage the selected snapshot into a temp dir beside the target
+      │                                  (before the safety backup — see below)
+      ▼
+safety backup of the CURRENT target      (skipped with --to, or if the source is gone)
+      │
+      ▼
+preBackup hooks
+      │
+      ├──fail──►  overlay SKIPPED  ──┐
+      │ ok                           │
+      ▼                              │
+overlay the staged snapshot onto the target
+      │                              │
+      ▼                              ▼
+postBackup hooks     ← always attempted, on every path above
+      │
+      ▼
+staging removed      ← on every path, success or failure
+```
+
+- **Overlay, not mirror.** Every file the snapshot holds overwrites its counterpart; files present
+  only in the target are **left alone**. A restore therefore never deletes anything you added
+  since the snapshot was taken. Use `--to` and copy by hand if you want an exact mirror.
+- **File modes come across** on Unix, the same way the backup carried them in. Symlinks are absent
+  from every snapshot by construction (the writer skips them), so a symlink living in the target
+  has nothing to overwrite it and survives untouched.
+- **The safety backup is an ordinary run.** It writes a normal `backup_runs` row, runs the unit's
+  hooks, and **participates in normal retention** — so it counts against `retention` and can evict
+  an older snapshot. Its path is reported as `safetySnapshot` in `-o json` and as the `→` line in
+  human output. If it fails to produce a snapshot, the restore is **abandoned**: cfgd will not
+  overwrite data whose current contents were not captured.
+- **Staging comes first for a reason.** The safety backup prunes to `retention`, and the snapshot
+  being restored can be the one it evicts. Staging the payload beforehand makes the restore immune
+  to that. One visible consequence: a restore run inside the same second as the snapshot it
+  selects makes the safety backup render the *same* name (`namePattern` stamps to the second) and
+  replace it under the [newest-wins](#namepattern) rule. The restore is unaffected and cfgd warns;
+  give the unit a finer `namePattern` if you need both.
+- **The unit's `preBackup` / `postBackup` hooks run twice** on a restore-to-source — once around
+  the safety backup, once around the restore itself — because both mutate the same data and both
+  need the source quiesced. With `--to` there is no safety backup, so they run once.
+- **A `preBackup` failure skips the overlay**, exactly as it skips the snapshot during a run: the
+  hook exists to quiesce the target, and overwriting it after the hook failed is what the hook
+  existed to prevent. `postBackup` still runs.
+- **One at a time.** A restore takes the same per-unit lock a run does, so it can never interleave
+  with a scheduled fire or an apply of the same backup.
+
+### What a restore refuses
+
+| Refused | Why |
+|---|---|
+| `--to` inside the backup's `destination` | restoring there would overwrite the snapshot store |
+| a snapshot/target kind mismatch (file over directory, or the reverse) | publishing a file over a directory would delete the whole directory on the way to the rename |
+| a snapshot that vanished since it was listed | a concurrent prune, or a hand-deleted destination |
+| a failed safety backup | the current contents were not captured |
+
+**Restores are not recorded.** The `backup_runs` table is the ledger retention walks, and a
+restore produces no artifact for it to prune. The safety backup it takes *is* recorded, as an
+ordinary run. `cfgd rollback` covers cfgd's own file writes and is unrelated to this table.
+
+### Restoring by hand
+
+A snapshot is an ordinary file or directory, so nothing stops you from doing it yourself — which
+is the right call when you want mirror semantics (`rsync --delete`) rather than an overlay:
 
 ```bash
 # file snapshot
@@ -466,4 +601,6 @@ rsync -a --delete ~/.local/state/cfgd/backups/photos/Pictures.20260801T031500Z/ 
 - Symlinks inside a directory source are skipped rather than recreated.
 - Concurrent runs of one backup are refused, not queued: the second caller is told who holds the
   unit (see above).
+- `cfgd backup restore` overlays; it never deletes files the snapshot does not contain. Restore
+  with `--to` and mirror by hand when you need the target to match the snapshot exactly.
 - `spec.backups[]` is available on the YAML/TOML profile path only; CRD parity is not implemented.

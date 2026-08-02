@@ -648,7 +648,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run or inspect declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd --output json backup list"
+        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, taking a safety snapshot of the current contents first (skipped with --to).\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd backup list openlist-db --snapshots\n  cfgd backup restore openlist-db\n  cfgd backup restore openlist-db --at 20260730T120000Z\n  cfgd backup restore openlist-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -1110,9 +1110,36 @@ pub enum BackupCommand {
         name: Option<String>,
     },
 
-    /// List declared backups and their last recorded run
+    /// List declared backups and their last recorded run, or one backup's snapshots
     #[command(alias = "ls")]
-    List,
+    List {
+        /// Backup name (default: list every backup declared in the active profile)
+        name: Option<String>,
+
+        /// List the named backup's snapshots instead of the backup itself
+        #[arg(long, requires = "name")]
+        snapshots: bool,
+    },
+
+    /// Restore a snapshot back over the backup's source
+    Restore {
+        /// Backup name
+        name: String,
+
+        /// Snapshot to restore — its full name, or the timestamp portion of it
+        /// (default: the newest snapshot)
+        #[arg(long)]
+        at: Option<String>,
+
+        /// Restore into this path instead of the backup's source; the live
+        /// source is left untouched and no safety backup is taken
+        #[arg(long, value_hint = clap::ValueHint::AnyPath)]
+        to: Option<PathBuf>,
+
+        /// Skip the confirmation prompt
+        #[arg(long, short, env = "CFGD_YES")]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2165,7 +2192,19 @@ pub fn execute(
         },
         Command::Backup { command } => match command {
             BackupCommand::Run { name } => backup::cmd_backup_run(cli, printer, name.as_deref()),
-            BackupCommand::List => backup::cmd_backup_list(cli, printer),
+            BackupCommand::List { name, snapshots } => {
+                backup::cmd_backup_list(cli, printer, name.as_deref(), *snapshots)
+            }
+            BackupCommand::Restore { name, at, to, yes } => backup::cmd_backup_restore(
+                cli,
+                printer,
+                &backup::RestoreArgs {
+                    name,
+                    at: at.as_deref(),
+                    to: to.as_deref(),
+                    yes: *yes,
+                },
+            ),
         },
         Command::Explain {
             resource,

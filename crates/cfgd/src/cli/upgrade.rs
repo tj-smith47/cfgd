@@ -1,6 +1,8 @@
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
+use super::helpers::format_bytes;
+
 pub fn cmd_upgrade(
     printer: &Printer,
     config_path: &std::path::Path,
@@ -383,16 +385,6 @@ fn apply_startup_update(
             tracing::warn!(error = %e, "startup update: install failed");
             false
         }
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
     }
 }
 

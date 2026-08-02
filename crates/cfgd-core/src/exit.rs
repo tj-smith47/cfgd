@@ -85,6 +85,11 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Backup(BackupError::UnknownName { .. }) => ExitCode::NotFound,
+        // A restore that names a snapshot the unit does not have — or a unit
+        // that has none at all — is the same scriptable "you asked for a thing
+        // that is not there" condition as an unknown backup name.
+        CfgdError::Backup(BackupError::SnapshotNotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Backup(BackupError::NoSnapshots { .. }) => ExitCode::NotFound,
         // A source-delivered module carrying disallowed scripts is a policy
         // violation in the resolved config, not a missing resource — it maps to
         // ConfigInvalid (4), matching how composition constraint violations are

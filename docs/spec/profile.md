@@ -744,10 +744,10 @@ Paths are relative to the config root directory. If the path resolves to an exis
 ### spec.backups[]
 
 Declarative snapshot backups of a file or directory. See [Declarative Backups](../backups.md) for
-run semantics (hook ordering, atomicity, retention counting) and restore guidance. A schedule-less
-entry runs during `cfgd apply`; a scheduled one runs on the
+run semantics (hook ordering, atomicity, retention counting) and [restoring](../backups.md#restoring).
+A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 [daemon's timers](../backups.md#daemon-scheduling). Either can be run on demand with
-`cfgd backup run [name]`.
+`cfgd backup run [name]`, and any snapshot put back with `cfgd backup restore <name>`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|

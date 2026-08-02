@@ -1410,3 +1410,695 @@ fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whol
         "the refused run must not have recorded a row"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Restore: snapshot listing and selection
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    /// Every restorable snapshot of `spec`, newest first.
+    fn snapshots_of(&self, spec: &BackupSpec) -> Vec<SnapshotInfo> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            list_snapshots(&unit, &self.store).expect("snapshot list")
+        })
+    }
+
+    /// Select and restore in one step, the way the CLI does.
+    fn restore(
+        &self,
+        spec: &BackupSpec,
+        at: Option<&str>,
+        to: Option<&Path>,
+    ) -> Result<RestoreOutcome> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let snapshots = list_snapshots(&unit, &self.store)?;
+            let selected = select_snapshot(&spec.name, &snapshots, at)?;
+            restore_backup(&unit, &self.store, &self.printer, selected, to)
+        })
+    }
+}
+
+/// Write a snapshot payload and the run record that owns it.
+///
+/// Hand-seeded rather than taken with [`run_backup`] because the engine stamps
+/// names to the second: two real runs inside one test render the same name, and
+/// the ordering these tests are about would depend on how long the suite took.
+fn seed_snapshot(
+    h: &Harness,
+    name: &str,
+    snapshot: &str,
+    finished_at: &str,
+    body: &str,
+) -> PathBuf {
+    let path = snapshot_dir(h, name).join(snapshot);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("snapshot parent");
+    }
+    std::fs::write(&path, body).expect("snapshot payload");
+    h.store
+        .record_backup_run(&BackupRunDraft {
+            name: name.to_string(),
+            source: "/src".to_string(),
+            destination_path: Some(crate::to_posix_string(&path)),
+            size_bytes: Some(body.len() as u64),
+            status: BackupRunStatus::Success,
+            error: None,
+            started_at: finished_at.to_string(),
+            finished_at: finished_at.to_string(),
+        })
+        .expect("seed run record");
+    path
+}
+
+/// Names of any restore-staging directories left under `dir`.
+fn staging_leftovers(dir: &Path) -> Vec<String> {
+    snapshots(dir)
+        .into_iter()
+        .filter(|n| n.starts_with(".cfgd-restore-"))
+        .collect()
+}
+
+#[test]
+fn list_snapshots_reports_newest_first_with_destination_relative_names() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260730T120000Z",
+        "2026-07-30T12:00:00Z",
+        "old",
+    );
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260801T231502Z",
+        "2026-08-01T23:15:02Z",
+        "newer",
+    );
+
+    let listed = h.snapshots_of(&s);
+    assert_eq!(
+        listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["db.20260801T231502Z", "db.20260730T120000Z"],
+        "newest first, named relative to the destination"
+    );
+    assert_eq!(listed[0].created, "2026-08-01T23:15:02Z");
+    assert_eq!(listed[0].size_bytes, 5);
+}
+
+#[test]
+fn list_snapshots_names_a_nested_pattern_relative_to_the_destination() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(
+        &h,
+        "db",
+        "daily/db.20260801T000000Z",
+        "2026-08-01T00:00:00Z",
+        "x",
+    );
+
+    let listed = h.snapshots_of(&s);
+    assert_eq!(listed[0].name, "daily/db.20260801T000000Z");
+}
+
+#[test]
+fn list_snapshots_ignores_a_record_pointing_outside_the_destination() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    let stray = h.root.join("elsewhere.snap");
+    std::fs::write(&stray, "foreign").expect("stray file");
+    h.store
+        .record_backup_run(&BackupRunDraft {
+            name: "db".to_string(),
+            source: "/src".to_string(),
+            destination_path: Some(crate::to_posix_string(&stray)),
+            size_bytes: Some(7),
+            status: BackupRunStatus::Success,
+            error: None,
+            started_at: "2026-08-01T00:00:00Z".to_string(),
+            finished_at: "2026-08-01T00:00:00Z".to_string(),
+        })
+        .expect("stray record");
+
+    assert!(
+        h.snapshots_of(&s).is_empty(),
+        "a row outside this unit's destination must never be offered as a restore source"
+    );
+    assert!(stray.exists(), "listing must not touch the stray path");
+}
+
+#[test]
+fn list_snapshots_ignores_a_record_whose_payload_is_gone() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    let path = seed_snapshot(&h, "db", "db.20260801T000000Z", "2026-08-01T00:00:00Z", "x");
+    std::fs::remove_file(&path).expect("remove payload");
+
+    assert!(
+        h.snapshots_of(&s).is_empty(),
+        "a snapshot that cannot be restored is not one"
+    );
+}
+
+#[test]
+fn list_snapshots_ignores_a_failed_run_with_no_artifact() {
+    let h = Harness::new();
+    let s = spec("db", &h.root.join("never-created"));
+    h.run(&s);
+
+    assert!(
+        h.snapshots_of(&s).is_empty(),
+        "a failed run records no artifact, so it lists no snapshot"
+    );
+}
+
+#[test]
+fn select_snapshot_defaults_to_the_newest() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260730T120000Z",
+        "2026-07-30T12:00:00Z",
+        "old",
+    );
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260801T231502Z",
+        "2026-08-01T23:15:02Z",
+        "new",
+    );
+
+    let listed = h.snapshots_of(&s);
+    let chosen = select_snapshot("db", &listed, None).expect("newest");
+    assert_eq!(chosen.name, "db.20260801T231502Z");
+}
+
+#[test]
+fn select_snapshot_accepts_a_full_name_and_a_timestamp_fragment() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260730T120000Z",
+        "2026-07-30T12:00:00Z",
+        "old",
+    );
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260801T231502Z",
+        "2026-08-01T23:15:02Z",
+        "new",
+    );
+    let listed = h.snapshots_of(&s);
+
+    let by_name = select_snapshot("db", &listed, Some("db.20260730T120000Z")).expect("by name");
+    assert_eq!(by_name.name, "db.20260730T120000Z");
+
+    let by_stamp = select_snapshot("db", &listed, Some("20260730T120000Z")).expect("by timestamp");
+    assert_eq!(
+        by_stamp.name, "db.20260730T120000Z",
+        "the timestamp portion alone must reach the same snapshot"
+    );
+}
+
+#[test]
+fn select_snapshot_rejects_an_unknown_name_and_lists_the_alternatives() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(
+        &h,
+        "db",
+        "db.20260801T231502Z",
+        "2026-08-01T23:15:02Z",
+        "new",
+    );
+    let listed = h.snapshots_of(&s);
+
+    let err = select_snapshot("db", &listed, Some("20991231T000000Z"))
+        .expect_err("an unknown snapshot must not silently fall back to the newest");
+    match err {
+        BackupError::SnapshotNotFound {
+            requested,
+            available,
+            ..
+        } => {
+            assert_eq!(requested, "20991231T000000Z");
+            assert_eq!(available, vec!["db.20260801T231502Z".to_string()]);
+        }
+        other => panic!("expected SnapshotNotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn select_snapshot_refuses_an_ambiguous_fragment() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(&h, "db", "db.20260801T000000Z", "2026-08-01T00:00:00Z", "a");
+    seed_snapshot(&h, "db", "db.20260802T000000Z", "2026-08-02T00:00:00Z", "b");
+    let listed = h.snapshots_of(&s);
+
+    let err = select_snapshot("db", &listed, Some("db."))
+        .expect_err("a fragment matching two snapshots must never be guessed at");
+    match err {
+        BackupError::AmbiguousSnapshot { matches, .. } => assert_eq!(matches.len(), 2),
+        other => panic!("expected AmbiguousSnapshot, got {other:?}"),
+    }
+}
+
+#[test]
+fn select_snapshot_rejects_an_empty_at_rather_than_calling_it_ambiguous() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_snapshot(&h, "db", "db.20260801T000000Z", "2026-08-01T00:00:00Z", "a");
+    seed_snapshot(&h, "db", "db.20260802T000000Z", "2026-08-02T00:00:00Z", "b");
+    let listed = h.snapshots_of(&s);
+
+    let err = select_snapshot("db", &listed, Some("  ")).expect_err("an empty --at is unusable");
+    assert!(
+        matches!(err, BackupError::SnapshotNotFound { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn select_snapshot_on_a_unit_that_has_never_run() {
+    let err = select_snapshot("db", &[], None).expect_err("nothing to restore");
+    assert!(
+        matches!(err, BackupError::NoSnapshots { .. }),
+        "got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Restore: the overlay
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restore_overlays_the_snapshot_and_leaves_extras_alone() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(source.join("nested")).expect("tree");
+    std::fs::write(source.join("kept.txt"), "v1").expect("kept");
+    std::fs::write(source.join("nested/deep.txt"), "d1").expect("deep");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    std::fs::write(source.join("kept.txt"), "clobbered").expect("clobber");
+    std::fs::write(source.join("nested/deep.txt"), "clobbered").expect("clobber deep");
+    std::fs::write(source.join("extra.txt"), "mine").expect("extra");
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert_eq!(
+        std::fs::read_to_string(source.join("kept.txt")).expect("kept"),
+        "v1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("nested/deep.txt")).expect("deep"),
+        "d1",
+        "the overlay reaches nested files"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("extra.txt")).expect("extra"),
+        "mine",
+        "a file the snapshot never held must survive the overlay"
+    );
+}
+
+#[test]
+fn restore_of_a_file_source_replaces_the_file() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(&source, "v2").expect("clobber");
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    assert!(outcome.restored);
+    assert_eq!(std::fs::read_to_string(&source).expect("restored"), "v1");
+}
+
+#[test]
+fn restore_to_redirects_the_target_and_skips_the_safety_backup() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(source.join("a.txt"), "live").expect("live edit");
+    let before = h.store.backup_runs("db").expect("history").len();
+
+    let elsewhere = h.root.join("inspect");
+    let outcome = h.restore(&s, None, Some(&elsewhere)).expect("restore --to");
+
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert!(
+        outcome.safety_snapshot.is_none(),
+        "--to leaves the live source untouched, so there is nothing to protect"
+    );
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("a.txt")).expect("redirected copy"),
+        "v1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("a.txt")).expect("live source"),
+        "live",
+        "--to must not touch the unit's source"
+    );
+    assert_eq!(
+        h.store.backup_runs("db").expect("history").len(),
+        before,
+        "no safety backup means no extra run record"
+    );
+}
+
+#[test]
+fn restore_to_source_takes_a_safety_backup_first() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(&source, "live").expect("live edit");
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    let safety = outcome
+        .safety_snapshot
+        .as_deref()
+        .expect("restoring over the live source must capture it first");
+    assert_eq!(
+        std::fs::read_to_string(Path::new(safety)).expect("safety snapshot"),
+        "live",
+        "the safety backup holds what the restore overwrote"
+    );
+    assert_eq!(std::fs::read_to_string(&source).expect("source"), "v1");
+}
+
+#[test]
+fn restore_records_no_run_of_its_own_beyond_the_safety_backup() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    h.restore(&s, None, None).expect("restore");
+    let runs = h.store.backup_runs("db").expect("history");
+    assert_eq!(
+        runs.len(),
+        2,
+        "one row for the original run, one for the safety backup — a restore records nothing"
+    );
+}
+
+#[test]
+fn restore_survives_the_safety_backup_replacing_the_selected_snapshot() {
+    // A `namePattern` with no `{timestamp}` makes EVERY run render one name, so
+    // the safety backup deterministically overwrites the snapshot being
+    // restored. Staging the payload before the safety backup is what keeps the
+    // restore correct anyway; without it this test reads back "live".
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let mut s = spec("db", &source);
+    s.name_pattern = "latest".to_string();
+    h.run(&s);
+    std::fs::write(&source, "live").expect("live edit");
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    assert!(outcome.restored, "outcome: {outcome:?}");
+    assert_eq!(
+        std::fs::read_to_string(&source).expect("source"),
+        "v1",
+        "the staged payload must survive the safety backup replacing its snapshot"
+    );
+    assert_eq!(
+        std::fs::read_to_string(snapshot_dir(&h, "db").join("latest")).expect("snapshot"),
+        "live",
+        "the snapshot store now holds the safety backup, which is what the warning is about"
+    );
+}
+
+#[test]
+fn restore_aborts_when_the_safety_backup_produces_nothing() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let mut s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(&source, "live").expect("live edit");
+
+    // A failing `preBackup` skips the snapshot, so the safety backup writes no
+    // artifact — and a restore that cannot capture what it is about to destroy
+    // must not run.
+    s.pre_backup = vec![hook("exit 3")];
+    let err = h
+        .restore(&s, None, None)
+        .expect_err("an uncaptured source must not be overwritten");
+    assert!(
+        format!("{err}").contains("safety backup"),
+        "expected the safety-backup refusal, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&source).expect("source"),
+        "live",
+        "the source must be exactly as the caller left it"
+    );
+    assert!(
+        staging_leftovers(&h.root).is_empty(),
+        "staging must be cleaned up on the abort path too"
+    );
+}
+
+#[test]
+fn restore_of_a_missing_source_skips_the_safety_backup() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+    std::fs::remove_dir_all(&source).expect("wipe the source");
+
+    let outcome = h.restore(&s, None, None).expect("bare-metal restore");
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert!(
+        outcome.safety_snapshot.is_none(),
+        "there is nothing to protect when the source is gone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("a.txt")).expect("restored"),
+        "v1"
+    );
+}
+
+#[test]
+fn restore_refuses_a_target_inside_the_snapshot_destination() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    let inside = snapshot_dir(&h, "db").join("victim");
+    let err = h
+        .restore(&s, None, Some(&inside))
+        .expect_err("restoring into the snapshot store must be refused");
+    assert!(
+        format!("{err}").contains("snapshot destination"),
+        "got: {err}"
+    );
+    assert!(
+        !inside.exists(),
+        "nothing may be written before the refusal"
+    );
+}
+
+#[test]
+fn restore_refuses_a_kind_mismatch_before_touching_the_target() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    // A directory snapshot published over a FILE target would delete the file
+    // on the way to the rename — well past overlay semantics.
+    let file_target = h.root.join("occupied");
+    std::fs::write(&file_target, "do not delete me").expect("occupied");
+    let err = h
+        .restore(&s, None, Some(&file_target))
+        .expect_err("a directory snapshot must not be forced onto a file");
+    assert!(format!("{err}").contains("directory"), "got: {err}");
+    assert_eq!(
+        std::fs::read_to_string(&file_target).expect("target"),
+        "do not delete me"
+    );
+    assert!(staging_leftovers(&h.root).is_empty());
+}
+
+#[test]
+fn restore_runs_the_units_hooks_around_the_mutation() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let mut s = spec("db", &source);
+    h.run(&s);
+
+    let pre = h.root.join("pre.marker");
+    let post = h.root.join("post.marker");
+    s.pre_backup = vec![touch_hook(&pre)];
+    s.post_backup = vec![touch_hook(&post)];
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    assert!(outcome.is_clean(), "outcome: {outcome:?}");
+    assert!(pre.exists(), "preBackup must run before the restore");
+    assert!(post.exists(), "postBackup must run after it");
+}
+
+#[test]
+fn restore_skips_the_overlay_when_prebackup_fails_but_still_runs_postbackup() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(source.join("a.txt"), "live").expect("live edit");
+
+    // `--to` keeps the safety backup out of the way, so this exercises the
+    // RESTORE's own hook envelope rather than the safety backup's.
+    let mut hooked = spec("db", &source);
+    let post = h.root.join("post.marker");
+    hooked.pre_backup = vec![hook("exit 4")];
+    hooked.post_backup = vec![touch_hook(&post)];
+
+    let elsewhere = h.root.join("inspect");
+    let outcome = h
+        .restore(&hooked, None, Some(&elsewhere))
+        .expect("a hook failure is reported through the outcome, not as Err");
+    assert!(
+        !outcome.restored,
+        "a failed preBackup must skip the overlay"
+    );
+    assert!(!outcome.is_clean());
+    assert!(
+        outcome.error.unwrap_or_default().contains("preBackup"),
+        "the hook failure must reach the outcome"
+    );
+    assert!(
+        !elsewhere.exists(),
+        "nothing may be written when the overlay is skipped"
+    );
+    assert!(post.exists(), "postBackup runs on every path");
+    assert!(staging_leftovers(&h.root).is_empty());
+}
+
+#[test]
+fn restore_leaves_no_staging_directory_behind_on_success() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    h.restore(&s, None, None).expect("restore");
+    assert!(
+        staging_leftovers(&h.root).is_empty(),
+        "staging must not survive a successful restore"
+    );
+    assert!(
+        staging_leftovers(&source).is_empty(),
+        "and it must never land inside the restored tree"
+    );
+}
+
+#[test]
+fn restore_refuses_while_the_unit_is_locked_elsewhere() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    let state_dir = h.state_dir();
+    let _held = crate::acquire_backup_lock(&state_dir, "db").expect("hold the unit lock");
+    let err = h
+        .restore(&s, None, None)
+        .expect_err("a restore must not interleave with a run of the same unit");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Backup(BackupError::Busy { .. })
+        ),
+        "got: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_carries_the_snapshots_file_mode_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    let key = source.join("key");
+    std::fs::write(&key, "secret").expect("key");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).expect("chmod 644");
+    std::fs::write(&key, "leaked").expect("clobber");
+
+    h.restore(&s, None, None).expect("restore");
+    let mode = std::fs::metadata(&key)
+        .expect("key metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "a restore that widened a 0600 file to 0644 would leak what the mode protected"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_leaves_a_symlink_in_the_source_untouched() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    // The writer skips symlinks, so no snapshot holds one; a link that appears
+    // in the source afterwards has no counterpart to overwrite it.
+    let link = source.join("link");
+    std::os::unix::fs::symlink("/etc/hostname", &link).expect("symlink");
+
+    h.restore(&s, None, None).expect("restore");
+    assert!(
+        link.symlink_metadata().expect("link metadata").is_symlink(),
+        "the restore must not resolve or replace a symlink it never captured"
+    );
+}

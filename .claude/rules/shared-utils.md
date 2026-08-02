@@ -70,6 +70,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `escape_double_quoted(s)` — escape inside bash/zsh double quotes
 - `xml_escape(s)` — escape `&<>"'` for safe XML/plist inclusion
 - `sanitize_k8s_name(name)` — RFC 1123 DNS label sanitization
+- `format_bytes(bytes)` in `crates/cfgd/src/cli/helpers.rs` (`pub(in crate::cli)`) — the CLI's ONE human byte-size renderer (`512 B` / `1.5 KB` / `50.0 MB`). Used by `upgrade` (release asset size) and `backup list --snapshots` (snapshot size); never hand-roll a second scale in a command
 
 ## Filesystem
 

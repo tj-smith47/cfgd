@@ -337,6 +337,108 @@ pub enum BackupError {
         "backup '{name}' is already running ({holder}); wait for it to finish or stop the other run"
     )]
     Busy { name: String, holder: String },
+
+    /// `cfgd backup restore <name>` on a unit that has never produced a
+    /// snapshot. Distinct from [`BackupError::SnapshotNotFound`]: there is no
+    /// list of alternatives to offer, only a run to take first.
+    #[error("backup '{name}': no snapshots to restore — run `cfgd backup run {name}` first")]
+    NoSnapshots { name: String },
+
+    /// `--at` named a snapshot this unit has no record of. `available` lists
+    /// every restorable snapshot, newest first, so the caller can render the
+    /// alternatives without a second lookup — the same shape
+    /// [`BackupError::UnknownName`] uses for backup names.
+    #[error(
+        "backup '{name}': no snapshot matches '{requested}'{}",
+        if .available.is_empty() {
+            String::new()
+        } else {
+            format!(" — available snapshots: {}", .available.join(", "))
+        }
+    )]
+    SnapshotNotFound {
+        name: String,
+        requested: String,
+        available: Vec<String>,
+    },
+
+    /// `--at` was given a timestamp fragment that more than one snapshot name
+    /// contains. Refused rather than resolved to the newest match: a restore
+    /// overwrites live data, and guessing which snapshot the operator meant is
+    /// the one place that must not be guessed.
+    #[error(
+        "backup '{name}': '{requested}' matches {} snapshots ({}); pass the full snapshot name",
+        .matches.len(), .matches.join(", ")
+    )]
+    AmbiguousSnapshot {
+        name: String,
+        requested: String,
+        matches: Vec<String>,
+    },
+
+    /// The selected snapshot vanished between being listed and being staged —
+    /// a concurrent prune, or a hand-deleted destination.
+    #[error(
+        "backup '{name}': snapshot {} is no longer on disk; it may have been pruned since it was listed",
+        .path.posix()
+    )]
+    SnapshotMissing { name: String, path: PathBuf },
+
+    #[error("backup '{name}': cannot stage snapshot {} for restore: {source}", .path.posix())]
+    StagingFailed {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("backup '{name}': cannot restore into {}: {source}", .path.posix())]
+    RestoreFailed {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The snapshot and the restore target disagree about what they are. A
+    /// file snapshot published over a directory target would delete the whole
+    /// directory on the way to the rename, which is well past overlay
+    /// semantics, so both directions are refused before anything is touched.
+    #[error(
+        "backup '{name}': the snapshot is a {snapshot_kind} but the restore target {} is a {target_kind}; \
+         remove or rename the target, or restore elsewhere with --to",
+        .target.posix()
+    )]
+    RestoreKindMismatch {
+        name: String,
+        target: PathBuf,
+        snapshot_kind: &'static str,
+        target_kind: &'static str,
+    },
+
+    /// The safety backup taken immediately before a restore-to-source did not
+    /// produce a snapshot. The restore is abandoned: overwriting live data
+    /// whose current contents were NOT captured is the failure mode the safety
+    /// backup exists to prevent.
+    #[error(
+        "backup '{name}': the safety backup of the current source failed ({message}); \
+         refusing to overwrite data that is not backed up — fix the failure, or pass --to to restore elsewhere"
+    )]
+    SafetyBackupFailed { name: String, message: String },
+
+    /// A `--to` that points at (or into) the unit's own snapshot destination.
+    /// Restoring there would overwrite the snapshot store with one of its own
+    /// snapshots and desynchronize it from the run records retention walks.
+    #[error(
+        "backup '{name}': restore target {} is inside the snapshot destination {}; \
+         restoring there would overwrite the snapshot store",
+        .target.posix(), .destination.posix()
+    )]
+    RestoreTargetInsideDestination {
+        name: String,
+        target: PathBuf,
+        destination: PathBuf,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

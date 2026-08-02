@@ -1,8 +1,9 @@
-//! `cfgd backup` — run or inspect declarative backups (`spec.backups[]`).
+//! `cfgd backup` — run, inspect, or restore declarative backups
+//! (`spec.backups[]`).
 
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::backup::{BackupUnit, run_backup};
+use cfgd_core::backup::{BackupUnit, SnapshotInfo, run_backup};
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
 
@@ -68,9 +69,59 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
     doc.with_data(entries)
 }
 
-pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+/// Build the `cfgd backup list <name> --snapshots` Doc. Pure; the caller
+/// assembles the entries from the unit's recorded runs.
+///
+/// Columns and payload keys are the snapshot analogue of
+/// [`build_backup_list_doc`]: `Created` is the ISO 8601 UTC stamp
+/// `BackupListEntry::last_run_at` uses, and `Size` goes through the CLI's one
+/// byte renderer so it reads the same as `cfgd upgrade`'s asset size.
+pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry]) -> Doc {
+    let mut doc = Doc::new().heading(format!("Snapshots: {name}"));
+
+    if entries.is_empty() {
+        doc = doc.status(Role::Info, format!("Backup '{name}' has no snapshots"));
+        return doc.with_data(entries);
+    }
+
+    let mut t = Table::new(["Snapshot", "Created", "Size"]);
+    for e in entries {
+        t = t.row([
+            e.name.clone(),
+            e.created.clone(),
+            format_bytes(e.size_bytes),
+        ]);
+    }
+    doc = doc.table(t);
+    doc.with_data(entries)
+}
+
+pub fn cmd_backup_list(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+    snapshots: bool,
+) -> anyhow::Result<()> {
+    // Clap's `requires = "name"` already rejects a bare `--snapshots`; this
+    // covers the in-process callers (tests, MCP dispatch) that bypass it.
+    if snapshots && name.is_none() {
+        return Err(cli_error_with_hints(
+            "--snapshots",
+            "missing_argument",
+            "--snapshots needs a backup name",
+            serde_json::json!({ "flag": "--snapshots" }),
+            vec!["cfgd backup list <name> --snapshots".to_string()],
+        ));
+    }
+
     let config_path = cli.config.clone();
     if !config_path.exists() {
+        // A named lookup cannot be answered without a config, so it stays a
+        // not-found error rather than degrading to "no backups" — the caller
+        // asked about one unit, not for an inventory.
+        if let Some(name) = name {
+            return Err(backup_not_found_error(name, Vec::new()));
+        }
         let empty: Vec<BackupListEntry> = Vec::new();
         if printer.is_structured() {
             printer.emit(Doc::new().with_data(&empty));
@@ -85,7 +136,7 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
@@ -100,7 +151,31 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     )?;
     let backups = composition.resolved.merged.backups;
 
-    if backups.is_empty() {
+    // A named lookup resolves before the inventory is assembled so an unknown
+    // name is the same typed, name-listing error `backup run` returns rather
+    // than an empty table the caller has to interpret.
+    let selected: Vec<&config::BackupSpec> = match name {
+        Some(n) => match backups.iter().find(|b| b.name == n) {
+            Some(b) => vec![b],
+            None => {
+                let valid: Vec<String> = backups.iter().map(|b| b.name.clone()).collect();
+                return Err(backup_not_found_error(n, valid));
+            }
+        },
+        None => backups.iter().collect(),
+    };
+
+    if snapshots {
+        let spec = selected
+            .first()
+            .copied()
+            // Unreachable: `snapshots` implies a name, and a name that resolves
+            // to nothing returned above.
+            .ok_or_else(|| backup_not_found_error(name.unwrap_or_default(), Vec::new()))?;
+        return list_unit_snapshots(cli, printer, spec, &profile_name);
+    }
+
+    if selected.is_empty() {
         printer.emit(build_backup_list_doc(&[]));
         return Ok(());
     }
@@ -119,7 +194,7 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             None
         }
     };
-    let entries: Vec<BackupListEntry> = backups
+    let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
             let last = state
@@ -151,6 +226,220 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     printer.emit(build_backup_list_doc(&entries));
     Ok(())
+}
+
+/// Emit the `--snapshots` view for one already-resolved unit.
+///
+/// Unlike the inventory, this cannot degrade when the state store is
+/// unreadable: the run records ARE the snapshot list — there is no config half
+/// left to render — so a store failure is the command's failure.
+fn list_unit_snapshots(
+    cli: &Cli,
+    printer: &Printer,
+    spec: &config::BackupSpec,
+    profile_name: &str,
+) -> anyhow::Result<()> {
+    let config_dir = config_dir(cli);
+    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+
+    let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, &state)?
+        .iter()
+        .map(BackupSnapshotEntry::from)
+        .collect();
+
+    printer.emit(build_backup_snapshot_list_doc(&spec.name, &entries));
+    Ok(())
+}
+
+/// Everything `cfgd backup restore` was asked for, so the flag set travels as
+/// one value instead of four positional booleans and options.
+pub struct RestoreArgs<'a> {
+    pub name: &'a str,
+    pub at: Option<&'a str>,
+    pub to: Option<&'a Path>,
+    pub yes: bool,
+}
+
+/// Turn a snapshot-selection failure into the CLI's structured error shape,
+/// with the alternatives rendered in human mode as well as in the payload —
+/// the same treatment [`backup_not_found_error`] gives an unknown backup name.
+fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> anyhow::Error {
+    let (kind, hint) = match &e {
+        cfgd_core::errors::BackupError::NoSnapshots { .. } => (
+            "no_snapshots",
+            format!("take one with `cfgd backup run {name}`"),
+        ),
+        cfgd_core::errors::BackupError::AmbiguousSnapshot { matches, .. } => (
+            "ambiguous_snapshot",
+            format!("matching snapshots: {}", matches.join(", ")),
+        ),
+        cfgd_core::errors::BackupError::SnapshotNotFound { available, .. } => (
+            "snapshot_not_found",
+            if available.is_empty() {
+                format!("take one with `cfgd backup run {name}`")
+            } else {
+                format!("available snapshots: {}", available.join(", "))
+            },
+        ),
+        _ => ("restore_failed", format!("see `cfgd backup list {name}`")),
+    };
+    let message = cfgd_core::output::collapse_to_subject_line(&e);
+    cli_error_ctx_with_hints(
+        cfgd_core::errors::CfgdError::Backup(e).into(),
+        name,
+        kind,
+        message,
+        serde_json::json!({ "hint": hint }),
+        vec![hint],
+    )
+}
+
+pub fn cmd_backup_restore(
+    cli: &Cli,
+    printer: &Printer,
+    args: &RestoreArgs<'_>,
+) -> anyhow::Result<()> {
+    // Same split `cmd_backup_run` uses: the payload Doc has already been
+    // emitted by the time the exit code is decided, so exiting here keeps a
+    // failed restore from being rendered as a SECOND top-level document that
+    // no single-document `-o json` reader could parse.
+    match run_backup_restore(cli, printer, args)? {
+        Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
+        _ => Ok(()),
+    }
+}
+
+/// Core of `backup restore`. `Ok(None)` means the operator declined at the
+/// confirmation prompt — nothing ran, and that is a success, not a failure.
+///
+/// Kept out of [`cmd_backup_restore`] so the body stays in-process testable
+/// (`process::exit` would abort the test binary).
+pub fn run_backup_restore(
+    cli: &Cli,
+    printer: &Printer,
+    args: &RestoreArgs<'_>,
+) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
+    printer.heading("Restore Backup");
+
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    // Enforce, like `backup run`: a restore executes the unit's hooks and
+    // overwrites live data, so a source constraint violation must abort rather
+    // than be recorded and stepped over.
+    let composition = compose_with_sources(
+        cli,
+        &cfg,
+        &local_resolved,
+        printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )?;
+    let backups = composition.resolved.merged.backups;
+
+    let spec = match backups.iter().find(|b| b.name == args.name) {
+        Some(spec) => spec,
+        None => {
+            let valid: Vec<String> = backups.iter().map(|b| b.name.clone()).collect();
+            return Err(backup_not_found_error(args.name, valid));
+        }
+    };
+
+    let config_dir = config_dir(cli);
+    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let unit = BackupUnit::new(spec, &config_dir, &profile_name, &state_dir);
+
+    let snapshots = cfgd_core::backup::list_snapshots(&unit, &state)?;
+    let selected: &SnapshotInfo =
+        cfgd_core::backup::select_snapshot(args.name, &snapshots, args.at)
+            .map_err(|e| snapshot_selection_error(args.name, e))?;
+
+    let target = match args.to {
+        Some(path) => cfgd_core::expand_tilde(path),
+        None => unit.source(),
+    };
+
+    if !args.yes && !confirm_restore(printer, args.name, selected, &target)? {
+        printer.emit(
+            Doc::new()
+                .status(Role::Info, "Aborted")
+                .with_data(&BackupRestoreOutput {
+                    name: args.name.to_string(),
+                    snapshot: selected.name.clone(),
+                    restored_to: cfgd_core::to_posix_string(&target),
+                    restored: false,
+                    clean: false,
+                    safety_snapshot: None,
+                    error: Some("declined at the confirmation prompt".to_string()),
+                }),
+        );
+        return Ok(None);
+    }
+
+    let outcome = cfgd_core::backup::restore_backup(&unit, &state, printer, selected, args.to)?;
+
+    // The same three-way split `backup run` renders: a clean restore is Ok, a
+    // completed restore whose hooks failed is Warn (the data is back, but
+    // something needs attention), and a restore that did not happen is Fail.
+    let role = if outcome.is_clean() {
+        Role::Ok
+    } else if outcome.restored {
+        Role::Warn
+    } else {
+        Role::Fail
+    };
+    let subject = format!(
+        "backup '{}' restored from {}",
+        outcome.name, outcome.snapshot
+    );
+    let detail = match &outcome.error {
+        Some(e) => format!(
+            "into {} — {}",
+            target.posix(),
+            cfgd_core::output::collapse_to_subject_line(e)
+        ),
+        None => format!("into {}", target.posix()),
+    };
+    printer.status(role, subject).detail(detail);
+    // `hint`, not `note`: where the overwritten data went is the one thing an
+    // operator needs after a restore they regret, and `note` is Verbose-only.
+    if let Some(safety) = &outcome.safety_snapshot {
+        printer.hint(format!("previous contents saved to {safety}"));
+    }
+
+    printer.emit(Doc::new().with_data(BackupRestoreOutput::from(&outcome)));
+    Ok(Some(outcome))
+}
+
+/// Ask before overwriting live data.
+///
+/// A refusal to prompt (piped stdin, structured output) is an ERROR, not a
+/// silent decline: the caller asked for a restore, and quietly reporting
+/// "aborted" for a run that could never have been confirmed would read as the
+/// operator's choice. The remedy — `--yes` / `CFGD_YES` — rides along.
+fn confirm_restore(
+    printer: &Printer,
+    name: &str,
+    snapshot: &SnapshotInfo,
+    target: &Path,
+) -> anyhow::Result<bool> {
+    let question = format!(
+        "Restore '{}' from snapshot {} into {}?",
+        name,
+        snapshot.name,
+        target.posix()
+    );
+    printer.prompt_confirm(&question).map_err(|e| {
+        let hint = "pass --yes (or set CFGD_YES=1) to restore without a prompt".to_string();
+        cli_error_with_hints(
+            name,
+            "confirmation_required",
+            format!("Restore of '{name}' needs confirmation: {e}"),
+            serde_json::json!({ "hint": hint, "snapshot": snapshot.name }),
+            vec![hint],
+        )
+    })
 }
 
 pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
