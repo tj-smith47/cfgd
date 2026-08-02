@@ -530,11 +530,17 @@ mod tests {
             let Ok(mut client) = UnixStream::connect(&sock).await else {
                 continue;
             };
-            client
+            if client
                 .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 .await
-                .unwrap();
-            client.shutdown().await.unwrap();
+                .is_err()
+            {
+                continue;
+            }
+            // FreeBSD reports ENOTCONN here when the server has already
+            // answered and closed the connection; the response is still
+            // buffered, so let the read decide instead of unwrapping.
+            let _ = client.shutdown().await;
             let mut raw = String::new();
             if client.read_to_string(&mut raw).await.is_ok() && !raw.is_empty() {
                 got_response = Some(raw);

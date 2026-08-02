@@ -7485,6 +7485,7 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
 
 /// Deploy one `Patch` module file (`ensure: telemetry: false`) against
 /// `target` through the module dispatch site.
+#[cfg(unix)]
 fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Path) {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
