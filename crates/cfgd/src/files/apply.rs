@@ -172,8 +172,15 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     // Ensure parent directory exists and is writable
                     ensure_target_writable(target)?;
 
-                    // Remove existing target (symlink, file, etc.) before deploying
-                    if target.exists() || target.symlink_metadata().is_ok() {
+                    // Remove existing target (symlink, file, etc.) before deploying.
+                    // `Patch` is exempt: the removal exists to clear a stale
+                    // link before `create_symlink`/`hard_link`, and `Patch`
+                    // instead writes through `atomic_write_merged`, which
+                    // replaces by rename and so carries the target's own mode
+                    // and follows its symlink. Deleting first would strip both.
+                    if !matches!(strategy, FileStrategy::Patch)
+                        && (target.exists() || target.symlink_metadata().is_ok())
+                    {
                         fs::remove_file(target).map_err(|e| FileError::Io {
                             path: target.clone(),
                             source: e,
@@ -196,7 +203,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                             })?;
                         }
                         FileStrategy::Patch => {
-                            cfgd_core::atomic_write_str(
+                            cfgd_core::atomic_write_merged(
                                 target,
                                 patched.as_deref().unwrap_or_default(),
                             )

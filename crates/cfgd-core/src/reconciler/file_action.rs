@@ -45,8 +45,11 @@ pub(super) fn apply_file_action_direct(
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            // Remove existing target before deploying
-            if target.symlink_metadata().is_ok() {
+            // Remove existing target before deploying. `Patch` is exempt: the
+            // removal clears a stale link ahead of `create_symlink`/`hard_link`,
+            // while `Patch` writes through `atomic_write_merged`, which replaces
+            // by rename and so keeps the target's mode and follows its symlink.
+            if *strategy != FileStrategy::Patch && target.symlink_metadata().is_ok() {
                 std::fs::remove_file(target)?;
             }
             match strategy {
@@ -60,7 +63,7 @@ pub(super) fn apply_file_action_direct(
                     std::fs::copy(source, target)?;
                 }
                 FileStrategy::Patch => {
-                    crate::atomic_write_str(target, patched.as_deref().unwrap_or_default())?;
+                    crate::atomic_write_merged(target, patched.as_deref().unwrap_or_default())?;
                 }
             }
             Ok(())

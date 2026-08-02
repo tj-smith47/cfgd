@@ -3500,6 +3500,94 @@ fn apply_update_patch_preserves_unmentioned_keys() {
     assert_eq!(written["tabSize"], 4);
 }
 
+#[cfg(unix)]
+#[test]
+fn apply_update_patch_preserves_the_targets_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // `Patch` is the strategy for files cfgd does NOT own, so the target's
+    // metadata is part of what must survive the merge — an `/etc/hosts` that
+    // came back 0600 takes name resolution down for every other process.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("settings.json");
+    fs::write(&target, "{\n  \"keep\": 1\n}\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        diff: String::new(),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
+            script: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o644,
+        "the target's mode must survive the merge"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(written["tabSize"], 4);
+}
+
+#[test]
+fn apply_update_patch_writes_through_a_symlinked_target() {
+    // `~/.gitconfig -> ~/dotfiles/gitconfig` is the layout this strategy
+    // exists for: the link must survive and the repo file must receive the
+    // merge, or the dotfiles repo silently stops being the source of truth.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let real = dir.path().join("repo").join("settings.json");
+    fs::create_dir_all(real.parent().unwrap()).unwrap();
+    fs::write(&real, "{\n  \"keep\": 1\n}\n").unwrap();
+    let target = dir.path().join("settings.json");
+    cfgd_core::create_symlink(&real, &target).unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        diff: String::new(),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
+            script: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert!(
+        target.is_symlink(),
+        "the symlink must survive the merge, not be replaced by a regular file"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&real).unwrap()).unwrap();
+    assert_eq!(written["keep"], 1, "unmentioned keys must survive");
+    assert_eq!(
+        written["tabSize"], 4,
+        "the merge must land in the file the link points at"
+    );
+}
+
 #[test]
 fn apply_patch_without_a_patch_block_leaves_the_target_untouched() {
     let dir = tempfile::tempdir().unwrap();

@@ -304,6 +304,20 @@ A missing target is treated as empty content: `ensure` writes a minimal document
 silently ignored: `encryption` and `private` are both validation errors on a
 `Patch` entry, and `source` itself is optional (and unused).
 
+#### What survives besides the unnamed keys
+
+The target keeps its identity, not just its content — the other strategies
+replace the path, `Patch` rewrites the file in place:
+
+| Property of the target | After a `Patch` apply |
+|---|---|
+| Permission bits | unchanged — a `0644 /etc/hosts` stays `0644`. A new target created by `Patch` gets the default `0600` until you declare `permissions:` |
+| Symlink | followed, not replaced. `~/.gitconfig -> ~/dotfiles/gitconfig` keeps the link and the merge lands in `~/dotfiles/gitconfig`, so a dotfiles repo stays the source of truth. A dangling link is written at the link path itself, matching how a missing target is treated as empty content |
+| Content the spec does not name | byte-for-byte, where the format allows it |
+
+Declaring `permissions:` on a `Patch` entry still applies — it is the way to
+*change* the mode deliberately, on top of a merge that otherwise leaves it alone.
+
 #### `ensure` — structured merge
 
 `ensure` is deep-merged into the target. Nested mappings merge recursively; a

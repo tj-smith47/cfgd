@@ -232,8 +232,12 @@ impl<'a> super::Reconciler<'a> {
                         tracing::warn!("failed to backup module file {}: {}", target.posix(), e);
                     }
 
-                    // Remove existing target before deploying
-                    if target.symlink_metadata().is_ok() {
+                    // Remove existing target before deploying. A `Patch` file is
+                    // exempt: the removal clears a stale link ahead of
+                    // `create_symlink`/`hard_link`, while `Patch` writes through
+                    // `atomic_write_merged`, which replaces by rename and so
+                    // keeps the target's mode and follows its symlink.
+                    if patched.is_none() && target.symlink_metadata().is_ok() {
                         if target.is_dir() && !target.is_symlink() {
                             std::fs::remove_dir_all(&target)?;
                         } else {
@@ -242,7 +246,7 @@ impl<'a> super::Reconciler<'a> {
                     }
 
                     if let Some(content) = patched {
-                        crate::atomic_write_str(&target, &content)?;
+                        crate::atomic_write_merged(&target, &content)?;
                     } else if file.source.is_dir() {
                         match strategy {
                             crate::config::FileStrategy::Symlink => {

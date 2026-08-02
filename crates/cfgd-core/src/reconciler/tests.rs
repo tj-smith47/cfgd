@@ -7482,6 +7482,127 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
     assert_eq!(written["telemetry"], false);
 }
 
+/// Deploy one `Patch` module file (`ensure: telemetry: false`) against
+/// `target` through the module dispatch site.
+fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Path) {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let file = ResolvedFile {
+        source: PathBuf::new(),
+        target: target.to_path_buf(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Patch),
+        encryption: None,
+        permissions: None,
+        patch: Some(crate::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+        }),
+    };
+
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![file.clone()],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: module_dir.to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                origin: None,
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            module_dir,
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_module_deploy_files_patch_preserves_the_targets_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target_file = dir.path().join("subdir/settings.json");
+    std::fs::create_dir_all(target_file.parent().unwrap()).unwrap();
+    std::fs::write(&target_file, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
+    std::fs::set_permissions(&target_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    deploy_patch_module_file(dir.path(), &target_file);
+
+    assert_eq!(
+        std::fs::metadata(&target_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644,
+        "the target's mode must survive the merge"
+    );
+}
+
+#[test]
+fn apply_module_deploy_files_patch_writes_through_a_symlinked_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("repo").join("settings.json");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
+    let target_file = dir.path().join("settings.json");
+    crate::create_symlink(&real, &target_file).unwrap();
+
+    deploy_patch_module_file(dir.path(), &target_file);
+
+    assert!(
+        target_file.is_symlink(),
+        "the symlink must survive the merge"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&real).unwrap()).unwrap();
+    assert_eq!(written["runtimeToken"], "keep-me");
+    assert_eq!(
+        written["telemetry"], false,
+        "the merge must land in the file the link points at"
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn apply_module_deploy_files_symlink_strategy() {
@@ -10648,6 +10769,72 @@ fn apply_file_action_direct_patch_merges_into_existing_target() {
         serde_json::from_str(&std::fs::read_to_string(&dst).unwrap()).unwrap();
     assert_eq!(written["keep"], 1, "unmentioned keys must survive");
     assert_eq!(written["added"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_file_action_direct_patch_preserves_the_targets_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dst = dir.path().join("settings.json");
+    std::fs::write(&dst, "{\n  \"keep\": 1\n}\n").unwrap();
+    std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let action = FileAction::Update {
+        source: PathBuf::new(),
+        target: dst.clone(),
+        diff: String::new(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Patch,
+        source_hash: None,
+        patch: Some(crate::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("added: true").unwrap()),
+            script: None,
+        }),
+    };
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777,
+        0o644,
+        "the target's mode must survive the merge"
+    );
+}
+
+#[test]
+fn apply_file_action_direct_patch_writes_through_a_symlinked_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("repo").join("settings.json");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "{\n  \"keep\": 1\n}\n").unwrap();
+    let dst = dir.path().join("settings.json");
+    crate::create_symlink(&real, &dst).unwrap();
+
+    let action = FileAction::Update {
+        source: PathBuf::new(),
+        target: dst.clone(),
+        diff: String::new(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Patch,
+        source_hash: None,
+        patch: Some(crate::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("added: true").unwrap()),
+            script: None,
+        }),
+    };
+    super::file_action::apply_file_action_direct(&action, dir.path(), "test").unwrap();
+
+    assert!(dst.is_symlink(), "the symlink must survive the merge");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&real).unwrap()).unwrap();
+    assert_eq!(written["keep"], 1);
+    assert_eq!(
+        written["added"], true,
+        "the merge must land in the file the link points at"
+    );
 }
 
 #[test]
