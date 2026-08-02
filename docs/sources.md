@@ -340,7 +340,7 @@ How the block shows up depends on whether the command changes the machine:
 - **Read-only commands** (`status`, `diff`, `verify`, `compliance`, `backup list`, `checkin`) still have to describe the machine, so they keep composing and report every violation as a warning instead. The source's contribution stays visible — but a patch filter it is barred from running is marked unrunnable at composition time, so evaluating the file reports a per-file failure naming the source rather than executing the filter:
 
   ```
-  ⚠ source 'acme' violates its constraints — composition error: source 'acme' carries a patch script for ~/.config/acme/app.ini, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)
+  ⚠ source 'acme' violates its constraints — composition error: source 'acme' carries a patch script for ~/.config/acme/app.ini, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.noScripts)
 
   Files
 
@@ -351,7 +351,7 @@ How the block shows up depends on whether the command changes the machine:
 
   Lifecycle scripts and backup hooks need no such marking: no read-only command executes one.
 
-  **Carve-out — module bodies.** The read-only path above applies to what the source's *profiles* declare. A source-delivered **module** carrying a script is rejected at module-load time, which is fail-closed in every mode: a read-only command aborts with exit code 4 rather than degrading, e.g. `module error: module 'mymod' delivered by source 'acme' carries a patch script for ~/.config/acme/app.ini, but the source is not allowed to run scripts`. Module delivery is all-or-nothing — there is no partial module to describe.
+  **Carve-out — module bodies.** The read-only path above applies to what the source's *profiles* declare. A source-delivered **module** carrying a script is rejected at module-load time, which is fail-closed in every mode: a read-only command aborts with exit code 4 rather than degrading, e.g. `module error: module 'mymod' delivered by source 'acme' carries a patch script for ~/.config/acme/app.ini, but that source is not allowed to run scripts`. Module delivery is all-or-nothing — there is no partial module to describe.
 
 A `patch.ensure` block is a declarative merge, not code, and is never rejected by `noScripts`.
 
@@ -369,7 +369,7 @@ spec:
 With `allowScripts: true`, the source's scripts are permitted and every command that composes sources warns, naming each surface it found, so the execution is visible before any apply. It is a warning rather than a note deliberately: a note renders only under `-v`, which is not where the line announcing that third-party code will run belongs.
 
 ```
-⚠ source 'acme' scripts will run because allowScripts is set — constraints.no_scripts is overridden by your subscription; it carries a preApply script, a preBackup hook on backup 'db', a patch script for ~/.config/acme/app.ini
+⚠ source 'acme' scripts will run because allowScripts is set — constraints.noScripts is overridden by your subscription; it carries a preApply script, a preBackup hook on backup 'db', a patch script for ~/.config/acme/app.ini
 ```
 
 A source that ships no script surface at all prints nothing — there is no risk to disclose.

@@ -837,7 +837,7 @@ pub(in crate::cli) fn compose_with_sources(
                     ),
                 )
                 .detail(format!(
-                    "constraints.no_scripts is overridden by your subscription; it carries {}",
+                    "constraints.noScripts is overridden by your subscription; it carries {}",
                     surfaces.join(", ")
                 ));
         }

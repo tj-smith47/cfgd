@@ -449,7 +449,7 @@ pub enum CompositionError {
     InvalidReject { source_name: String, key: String },
 
     #[error(
-        "source '{source_name}' carries {kind}, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)"
+        "source '{source_name}' carries {kind}, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.noScripts)"
     )]
     ScriptsNotAllowed { source_name: String, kind: String },
 
@@ -590,7 +590,7 @@ pub enum ModuleError {
     InvalidSpec { name: String, message: String },
 
     #[error(
-        "module '{module}' delivered by source '{source_name}' carries {kind}, but that source is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)"
+        "module '{module}' delivered by source '{source_name}' carries {kind}, but that source is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.noScripts)"
     )]
     ScriptsNotAllowed {
         source_name: String,
