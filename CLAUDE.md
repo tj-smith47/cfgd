@@ -15,6 +15,7 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 - `.claude/rules/hard-rules.md` — 6 non-negotiable rules (output routing, no unwrap in lib, provider traits, error typing, config location, process boundaries)
 - `.claude/rules/output-module.md` — Printer is the sole terminal interface
 - `.claude/rules/module-boundaries.md` — `std::process::Command` allow-list
+- `.claude/rules/path-handling.md` — fold paths to `/` at every cross-OS string boundary (`posix()` / `to_posix_string`; native only for logs and human-facing errors)
 - `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
 - `.claude/rules/database.md` — SQLite conventions (WAL, foreign_keys, versioned migrations)
 - `.claude/rules/style.md` — formatting, linting, naming, serde
