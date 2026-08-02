@@ -396,7 +396,7 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
     let blocked = files
         .iter()
         .find(|f| {
-            f["target"]
+            f["resourceId"]
                 .as_str()
                 .is_some_and(|t| t.ends_with("settings.json"))
         })

@@ -767,7 +767,8 @@ mod tests {
         let json = serde_json::to_value(&v).unwrap();
         let files = json["files"].as_array().expect("files is array");
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0]["target"], json!("~/.config/app/x.ini"));
+        assert_eq!(files[0]["resourceType"], json!("file"));
+        assert_eq!(files[0]["resourceId"], json!("~/.config/app/x.ini"));
         assert_eq!(files[0]["matches"], json!(false));
         assert_eq!(
             files[0]["actual"],

@@ -174,7 +174,8 @@ The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files
 {
   "files": [
     {
-      "target": "~/.config/acme/app.ini",
+      "resourceType": "file",
+      "resourceId": "~/.config/acme/app.ini",
       "matches": false,
       "expected": "content satisfies patch spec",
       "actual": "cannot evaluate patch spec: file error: patch script for ~/.config/acme/app.ini is blocked: source 'acme' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"

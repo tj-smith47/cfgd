@@ -210,13 +210,35 @@ pub enum FileAction {
 /// when the target exists and its bytes equal the rendered source; a missing
 /// source or missing target yields `matches: false` with `actual` describing the
 /// reason rather than an error.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct FileDriftResult {
     pub target: String,
     pub matches: bool,
     pub expected: String,
     pub actual: String,
+}
+
+/// Serialized in the same shape as a `VerifyResult`: `resourceType` is the
+/// constant `"file"` and the target path is the `resourceId`.
+///
+/// Hand-written rather than derived because `resourceType` is not a field —
+/// making it one would let a construction site set it to something other than
+/// `"file"`, and the whole point is that a structured consumer can read a
+/// drifted file and a failed verify check through one code path.
+impl serde::Serialize for FileDriftResult {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("FileDriftResult", 5)?;
+        state.serialize_field("resourceType", "file")?;
+        state.serialize_field("resourceId", &self.target)?;
+        state.serialize_field("matches", &self.matches)?;
+        state.serialize_field("expected", &self.expected)?;
+        state.serialize_field("actual", &self.actual)?;
+        state.end()
+    }
 }
 
 pub trait FileManager: Send + Sync {
