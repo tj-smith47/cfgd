@@ -30,7 +30,7 @@ FIELDS (under spec)
       patch
         ensure <object> — Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.
         format <string> — File format to parse the target as. Inferred from the target's extension when omitted.
-        script <string> — A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.
+        script <string> — A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.
       encryption <object>        — Encryption settings for this file.
       patch <object>             — Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).
       permissions <string>       — Unix permission bits (e.g. "600", "644") to apply after deployment.

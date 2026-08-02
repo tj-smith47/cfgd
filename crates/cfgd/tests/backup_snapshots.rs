@@ -409,6 +409,37 @@ fn backup_run_aborts_on_a_source_constraint_violation_but_list_still_reports() {
 }
 
 #[test]
+fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
+    // The declared units come from config, which loaded fine; only the run
+    // history is lost. A permissions problem on `state.db` must not hide the
+    // half of the command that still works.
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    // A directory where `state.db` belongs makes the open fail without needing
+    // to depend on the test process's privileges (root ignores mode bits).
+    std::fs::create_dir_all(state_dir.path().join("state.db")).unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_backup_list(&cli, &printer).expect("an unreadable state store must not fail the listing");
+    drop(printer);
+
+    let human = strip_ansi(&cap.human());
+    assert!(
+        human.contains("backup history unavailable"),
+        "the degradation must be visible: {human}"
+    );
+    assert!(
+        human.contains("docs") && human.contains("weekly"),
+        "the declared inventory must still render: {human}"
+    );
+    assert!(
+        human.contains("never"),
+        "every unit degrades to a 'never' last run: {human}"
+    );
+}
+
+#[test]
 fn build_backup_list_doc_json_matches_serde_roundtrip() {
     // Pure data-roundtrip test on `BackupListEntry`/`build_backup_list_doc` —
     // pins the `-o json` shape without standing up config/state fixtures.

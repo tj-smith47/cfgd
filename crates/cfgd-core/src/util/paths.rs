@@ -845,6 +845,19 @@ pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), 
     Ok(())
 }
 
+/// True when `path` is non-empty but built only from `.` segments (`.`, `./`,
+/// `./.`), so joining it onto a directory names that directory itself.
+///
+/// [`validate_no_traversal`] rejects that shape, correctly, for a value that is
+/// supposed to name something *inside* a root. A few call sites mean it
+/// literally — a module file whose `source: .` deploys the module's own tree, a
+/// git `subdir: "."` that is the repository root — and check this first.
+pub fn is_self_reference(path: &std::path::Path) -> bool {
+    let mut components = path.components().peekable();
+    components.peek().is_some()
+        && components.all(|component| matches!(component, std::path::Component::CurDir))
+}
+
 /// Validate that `raw` is a plain relative name: at least one segment, every
 /// segment an ordinary name.
 ///

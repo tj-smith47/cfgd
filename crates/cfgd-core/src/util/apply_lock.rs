@@ -178,10 +178,17 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLoc
 /// [`crate::errors::StateError::ApplyLockHeld`] with the holding PID rather
 /// than waited on, so a scheduled fire that collides with a hand-run is skipped
 /// instead of queued behind it.
+///
+/// `name` is interpolated into the lock filename, so it is re-validated here
+/// rather than trusted. Every in-tree caller passes a name
+/// `config::validate_backup_specs` already accepted, but this is a `pub`
+/// cfgd-core API and a `..`, `/`, or `.` slipping through would aim the lock
+/// outside `locks/`.
 pub fn acquire_backup_lock(
     state_dir: &std::path::Path,
     name: &str,
 ) -> errors::Result<FileLockGuard> {
+    crate::config::validate_backup_name(name)?;
     let dir = state_dir.join(LOCKS_SUBDIR);
     std::fs::create_dir_all(&dir)?;
     acquire_lock_at(&dir.join(format!("backup-{name}.lock")))

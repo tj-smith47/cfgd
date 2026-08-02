@@ -690,9 +690,12 @@ pub struct PatchSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<serde_json::Value>")]
     pub ensure: Option<serde_yaml::Value>,
-    /// A script path (relative to the module directory) or an inline command
-    /// that receives the target's current content on stdin and writes the new
-    /// content to stdout. Mutually exclusive with `ensure`.
+    /// A script path or an inline command that receives the target's current
+    /// content on stdin and writes the new content to stdout. A relative path
+    /// resolves against the module directory for a module file
+    /// (`spec.files[]`) and against the config directory for a profile file
+    /// (`spec.files.managed[]`); a value that resolves to no file is run as an
+    /// inline command. Mutually exclusive with `ensure`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 }
@@ -1077,7 +1080,7 @@ fn validate_backup_name_pattern(subject: &str, pattern: &str) -> Result<()> {
 /// goes through [`crate::validate_plain_name`], the shared gate for exactly that
 /// class. Only the single-component rule is checked here on top: `validate_plain_name`
 /// accepts a nested `daily/2026`, which a backup name must not be.
-fn validate_backup_name(name: &str) -> Result<()> {
+pub(crate) fn validate_backup_name(name: &str) -> Result<()> {
     if name.trim().is_empty() {
         return Err(ConfigError::Invalid {
             message: "backup name must not be empty or whitespace-only".to_string(),

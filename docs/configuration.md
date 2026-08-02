@@ -481,6 +481,13 @@ is computed from the target's *current* bytes:
 | A profile's `files.managed` | plan time — the failure is visible before any action runs |
 | A module's `spec.files` | deploy time — the module's file-deployment action fails; the rest of the plan follows the usual apply semantics |
 
+### Snapshot backups (`spec.backups[]`)
+
+Declarative file/directory snapshots, including the `schedule` grammar (interval
+or cron) and the hook, retention and destination semantics, live in
+[Declarative Backups](backups.md); the field table is in the
+[Profile spec](spec/profile.md#specbackups).
+
 ## File locations
 
 cfgd stores four kinds of data, each resolved independently. Every root can be
@@ -493,11 +500,6 @@ below), and `cfgd paths` prints the resolved values on any host.
 | **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential, backups) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
 | **Cache** (source cache, module cache) | platform-native cache dir — Linux `$XDG_CACHE_HOME/cfgd` or `~/.cache/cfgd`, macOS `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`. Sources live under `<cache>/sources`, modules under `<cache>/modules`. |
 | **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
-
-`spec.backups[].schedule` (see [spec.backups[]](spec/profile.md#specbackups)) accepts a
-`parse_duration_str` interval (e.g. `6h`) or a cron expression — 5-field
-(`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field
-(`second minute hour day month weekday`, e.g. `30 0 3 * * *`).
 
 The **config** platform default per OS (used only when `XDG_CONFIG_HOME` is
 unset):

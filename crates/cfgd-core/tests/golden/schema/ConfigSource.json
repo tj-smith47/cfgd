@@ -674,7 +674,7 @@
           "description": "File format to parse the target as. Inferred from the target's extension when omitted."
         },
         "script": {
-          "description": "A script path (relative to the module directory) or an inline command that receives the target's current content on stdin and writes the new content to stdout. Mutually exclusive with `ensure`.",
+          "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
           "type": [
             "string",
             "null"

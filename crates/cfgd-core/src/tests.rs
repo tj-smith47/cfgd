@@ -413,6 +413,22 @@ fn validate_no_traversal_rejects_a_path_that_names_nothing_of_its_own() {
 }
 
 #[test]
+fn is_self_reference_recognizes_only_a_pure_dot_path() {
+    for candidate in [".", "./", "./."] {
+        assert!(
+            is_self_reference(std::path::Path::new(candidate)),
+            "'{candidate}' resolves to the directory it is joined onto"
+        );
+    }
+    for candidate in ["", "./configs", "configs", "..", "/"] {
+        assert!(
+            !is_self_reference(std::path::Path::new(candidate)),
+            "'{candidate}' is not a pure self-reference"
+        );
+    }
+}
+
+#[test]
 fn validate_plain_name_accepts_ordinary_names() {
     for candidate in ["snapshot", "daily/2026", "a.b.c", "..hidden", "x..y"] {
         assert!(
@@ -566,6 +582,27 @@ fn backup_locks_are_per_unit_and_live_under_the_locks_dir() {
     assert!(dir.path().join("locks").join("backup-db.lock").exists());
     assert!(dir.path().join("locks").join("backup-home.lock").exists());
     assert!(acquire_backup_lock(dir.path(), "db").is_err());
+}
+
+#[test]
+fn backup_lock_rejects_a_name_that_would_escape_the_locks_dir() {
+    // The name is interpolated into the lock filename, and this is a `pub`
+    // cfgd-core API — a caller that skipped `validate_backup_specs` must be
+    // stopped rather than obeyed.
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["..", ".", "a/b", "a\\b", "C:db", "", "   "] {
+        let err = acquire_backup_lock(dir.path(), name)
+            .expect_err("an unvalidated name must be refused")
+            .to_string();
+        assert!(
+            err.contains("backup name"),
+            "'{name}' must be refused with the same wording the config parser uses, got: {err}"
+        );
+    }
+    assert!(
+        !dir.path().join("locks").exists(),
+        "a refused name must not even create the locks dir"
+    );
 }
 
 #[test]

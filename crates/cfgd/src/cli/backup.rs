@@ -105,11 +105,26 @@ pub fn cmd_backup_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    // A state-store failure costs the run HISTORY, not the inventory: the
+    // declared units come from config, which loaded fine. Degrading to
+    // "never" with a warning keeps the config half of the command useful when
+    // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
+    // same failure.
+    let state = match open_state_store(cli.state_dir.as_deref()) {
+        Ok(state) => Some(state),
+        Err(e) => {
+            printer
+                .status(Role::Warn, "backup history unavailable")
+                .detail(cfgd_core::output::collapse_to_subject_line(&e));
+            None
+        }
+    };
     let entries: Vec<BackupListEntry> = backups
         .iter()
         .map(|spec| {
-            let last = state.latest_backup_run(&spec.name).ok().flatten();
+            let last = state
+                .as_ref()
+                .and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
             BackupListEntry {
                 name: spec.name.clone(),
                 source: spec.source.posix().to_string(),

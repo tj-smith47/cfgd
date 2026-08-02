@@ -51,7 +51,6 @@ pub use parse::{
     scan_profiles, scan_profiles_tolerant,
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
-pub(crate) use profile_spec::profile_spec_from_value;
 pub use profile_spec::{
     AptSpec, BackupSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint,
     EncryptionMode, EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec,
@@ -59,6 +58,7 @@ pub use profile_spec::{
     ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec, render_backup_name_pattern,
     validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
 };
+pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{
     ALL_MANAGER_NAMES, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer, ResolvedProfile,
     desired_packages_for, desired_packages_for_spec, resolve_profile,

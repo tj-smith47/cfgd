@@ -2427,12 +2427,6 @@ fn resolve_subdir_traversal_rejected() {
     assert!(result.unwrap_err().to_string().contains("traversal"));
 }
 
-#[test]
-fn resolve_subdir_dot_only_rejected() {
-    let base = PathBuf::from("/cache/abc123");
-    assert!(resolve_subdir(base, &Some(".".to_string()), "test", "url").is_err());
-}
-
 // -----------------------------------------------------------------------
 // load_module
 // -----------------------------------------------------------------------
@@ -2647,15 +2641,17 @@ fn resolve_module_files_local_relative() {
 }
 
 #[test]
-fn resolve_module_files_rejects_a_source_that_names_the_module_dir() {
+fn resolve_module_files_accepts_a_source_that_names_the_module_dir() {
     let dir = tempfile::tempdir().unwrap();
-    let mod_dir = dir.path().join("modules").join("greedy");
+    let mod_dir = dir.path().join("modules").join("wholetree");
     std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(mod_dir.join("vimrc"), "set nocompat").unwrap();
 
-    // `.` resolves to the module directory itself, which every downstream
-    // `source.is_dir()` branch would then deploy wholesale.
+    // `source: .` is the module's own directory — the documented way to deploy
+    // a module's whole tree, so it must resolve rather than trip the
+    // names-nothing-of-its-own guard that `..` shares.
     let module = LoadedModule {
-        name: "greedy".into(),
+        name: "wholetree".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
                 patch: None,
@@ -2668,16 +2664,22 @@ fn resolve_module_files_rejects_a_source_that_names_the_module_dir() {
             }],
             ..Default::default()
         },
-        dir: mod_dir,
+        dir: mod_dir.clone(),
         origin: None,
     };
 
     let printer = test_printer();
     let cache_base = dir.path().join("cache");
-    let err = resolve_module_files(&module, &cache_base, &printer)
-        .expect_err("a source of '.' must not resolve to the whole module directory")
-        .to_string();
-    assert!(err.contains("names no file or directory"), "got: {err}");
+    let resolved = resolve_module_files(&module, &cache_base, &printer)
+        .expect("a source of '.' names the module directory and must resolve");
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].source.components().collect::<Vec<_>>(),
+        mod_dir.components().collect::<Vec<_>>(),
+        "'.' must resolve to the module directory itself"
+    );
+    assert_eq!(resolved[0].target, PathBuf::from("/tmp/everything"));
 }
 
 #[test]
