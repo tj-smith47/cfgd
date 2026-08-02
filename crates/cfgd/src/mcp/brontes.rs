@@ -228,12 +228,13 @@ pub fn config() -> Config {
     // carries the destructive hint a client should prompt on.
     cfg = cfg.annotation("apply", write(true, true, true));
 
-    // `backup run` is destructive and NOT idempotent: retention pruning deletes
-    // superseded snapshots and their emptied parents, `preBackup`/`postBackup`
-    // hooks stop and start services the same way `apply` does, and a second
+    // `backup run` is destructive, NOT idempotent, and open-world: retention
+    // pruning deletes superseded snapshots and their emptied parents, a second
     // identical call takes another snapshot and prunes again rather than being
-    // a no-op. A client must prompt before calling it.
-    cfg = cfg.annotation("backup run", write(true, false, false));
+    // a no-op, and `preBackup`/`postBackup` hooks run arbitrary commands that
+    // reach outside cfgd's own state exactly as `apply`'s lifecycle scripts do.
+    // A client must prompt before calling it.
+    cfg = cfg.annotation("backup run", write(true, false, true));
 
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);

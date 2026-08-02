@@ -148,9 +148,9 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     };
 
                     // `Patch` rewrites the target's own content, so the merge
-                    // runs against the live file here — before the removal
-                    // below deletes the bytes it reads, and against whatever
-                    // the target holds now rather than what planning saw.
+                    // runs against the live file here — against whatever the
+                    // target holds now rather than what planning saw, so an
+                    // out-of-band edit between plan and apply is folded in.
                     let patched = match strategy {
                         FileStrategy::Patch => {
                             let spec =

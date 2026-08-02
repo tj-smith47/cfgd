@@ -318,6 +318,13 @@ replace the path, `Patch` rewrites the file in place:
 Declaring `permissions:` on a `Patch` entry still applies — it is the way to
 *change* the mode deliberately, on top of a merge that otherwise leaves it alone.
 
+Following the link has one consequence worth stating: the bytes are written at
+the link's *destination*. When the entry comes from a source constrained by
+[`allowedTargetPaths`](sources.md#allowedtargetpaths), the allow-list is matched
+against the declared `target`, so a target you have symlinked out of an allowed
+directory receives the merge at the real path — outside the allow-list. Point
+`target` at the real file if you need the constraint to bind where the bytes land.
+
 #### `ensure` — structured merge
 
 `ensure` is deep-merged into the target. Nested mappings merge recursively; a
