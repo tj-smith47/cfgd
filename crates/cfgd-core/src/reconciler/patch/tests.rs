@@ -120,15 +120,6 @@ fn explicit_format_overrides_the_extension() {
     assert_eq!(out, "[core]\nvalue = 2\n");
 }
 
-#[test]
-fn resolve_format_prefers_the_explicit_field() {
-    let s = spec(Some(PatchFormat::Toml), "a: 1");
-    assert_eq!(
-        resolve_format(&s, Path::new("x.ini")).expect("explicit format wins"),
-        PatchFormat::Toml
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Spec shape guards
 // ---------------------------------------------------------------------------
@@ -201,11 +192,7 @@ fn non_mapping_ensure_is_rejected_for_every_format() {
     ] {
         let s = spec(Some(format), "- just\n- a list\n");
         let err = apply_err("", &s, target);
-        assert_file_err(
-            &err,
-            |e| matches!(e, FileError::PatchEnsureShape { .. }),
-            "PatchEnsureShape",
-        );
+        assert_ensure_shape(&err);
     }
 }
 
@@ -424,9 +411,7 @@ fn ini_replaces_inline_comment_on_an_updated_line() {
 #[test]
 fn ini_merge_is_idempotent() {
     let s = spec(None, "user:\n  name: Ada\n  email: ada@example.com\n");
-    let once = apply("[core]\neditor = vim\n", &s, "/tmp/app.ini");
-    let twice = apply(&once, &s, "/tmp/app.ini");
-    assert_eq!(once, twice);
+    assert_converges("[core]\neditor = vim\n", &s, "/tmp/app.ini");
 }
 
 #[test]
@@ -436,11 +421,7 @@ fn ini_rejects_nested_mappings() {
         &spec(None, "user:\n  name:\n    first: Ada\n"),
         "/tmp/app.ini",
     );
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::PatchEnsureShape { .. }),
-        "PatchEnsureShape",
-    );
+    assert_ensure_shape(&err);
     assert!(
         err.to_string().contains("user.name"),
         "names the key: {err}"
@@ -450,41 +431,25 @@ fn ini_rejects_nested_mappings() {
 #[test]
 fn ini_rejects_list_values() {
     let err = apply_err("", &spec(None, "core:\n  paths: [a, b]\n"), "/tmp/app.ini");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::PatchEnsureShape { .. }),
-        "PatchEnsureShape",
-    );
+    assert_ensure_shape(&err);
 }
 
 #[test]
 fn ini_rejects_null_values() {
     let err = apply_err("", &spec(None, "core:\n  editor:\n"), "/tmp/app.ini");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::PatchEnsureShape { .. }),
-        "PatchEnsureShape",
-    );
+    assert_ensure_shape(&err);
 }
 
 #[test]
 fn ini_rejects_non_string_section_names() {
     let err = apply_err("", &spec(None, "42:\n  a: b\n"), "/tmp/app.ini");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::PatchEnsureShape { .. }),
-        "PatchEnsureShape",
-    );
+    assert_ensure_shape(&err);
 }
 
 #[test]
 fn ini_rejects_non_string_key_names() {
     let err = apply_err("", &spec(None, "core:\n  42: b\n"), "/tmp/app.ini");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::PatchEnsureShape { .. }),
-        "PatchEnsureShape",
-    );
+    assert_ensure_shape(&err);
 }
 
 #[test]
@@ -828,9 +793,7 @@ fn toml_writes_floats_and_bools() {
 #[test]
 fn toml_merge_is_idempotent() {
     let s = spec(None, "build:\n  jobs: 8\n  target: host\n");
-    let once = apply("# top\n[net]\nretry = 2\n", &s, "/tmp/a.toml");
-    let twice = apply(&once, &s, "/tmp/a.toml");
-    assert_eq!(once, twice);
+    assert_converges("# top\n[net]\nretry = 2\n", &s, "/tmp/a.toml");
 }
 
 #[test]
@@ -847,11 +810,7 @@ fn toml_invalid_current_content_is_a_typed_error() {
 #[test]
 fn toml_rejects_null_values() {
     let err = apply_err("", &spec(None, "build:\n  jobs:\n"), "/tmp/a.toml");
-    assert_file_err(
-        &err,
-        |e| matches!(e, FileError::PatchEnsureShape { .. }),
-        "PatchEnsureShape",
-    );
+    assert_ensure_shape(&err);
     assert!(err.to_string().contains("no null"), "{err}");
 }
 
@@ -951,9 +910,7 @@ fn json_writes_lists_nulls_and_floats() {
 #[test]
 fn json_merge_is_idempotent() {
     let s = spec(None, "editor:\n  tabSize: 4\n");
-    let once = apply(r#"{"telemetry": false}"#, &s, "/tmp/a.json");
-    let twice = apply(&once, &s, "/tmp/a.json");
-    assert_eq!(once, twice);
+    assert_converges(r#"{"telemetry": false}"#, &s, "/tmp/a.json");
 }
 
 #[test]
@@ -1203,9 +1160,7 @@ fn yaml_comments_are_not_preserved() {
 #[test]
 fn yaml_merge_is_idempotent() {
     let s = spec(None, "server:\n  port: 9090\n");
-    let once = apply("logging:\n  level: info\n", &s, "/tmp/a.yaml");
-    let twice = apply(&once, &s, "/tmp/a.yaml");
-    assert_eq!(once, twice);
+    assert_converges("logging:\n  level: info\n", &s, "/tmp/a.yaml");
 }
 
 #[test]

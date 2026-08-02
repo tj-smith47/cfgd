@@ -114,6 +114,14 @@ impl Harness {
         self.root.join("state")
     }
 
+    /// A file under the harness root with `bytes` in it — the source most
+    /// backup tests point a unit at.
+    fn seed_file(&self, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = self.root.join(name);
+        std::fs::write(&path, bytes).expect("write source");
+        path
+    }
+
     /// Run `spec` with the harness's real config/state dirs under an isolated
     /// `$HOME`, so hook working directories and `~` expansion never touch the
     /// developer's home.
@@ -123,6 +131,33 @@ impl Harness {
         crate::with_test_home(&self.root, || {
             let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
             run_backup(&unit, &self.store, &self.printer).expect("run must be recorded")
+        })
+    }
+
+    /// Every restorable snapshot of `spec`, newest first.
+    fn snapshots_of(&self, spec: &BackupSpec) -> Vec<SnapshotInfo> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            list_snapshots(&unit, &self.store).expect("snapshot list")
+        })
+    }
+
+    /// Select and restore in one step, the way the CLI does.
+    fn restore(
+        &self,
+        spec: &BackupSpec,
+        at: Option<&str>,
+        to: Option<&Path>,
+    ) -> Result<RestoreOutcome> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let snapshots = list_snapshots(&unit, &self.store)?;
+            let selected = select_snapshot(&spec.name, &snapshots, at)?;
+            restore_backup(&unit, &self.store, &self.printer, selected, to)
         })
     }
 }
@@ -179,17 +214,6 @@ fn tilde_in_source_and_destination_expands_to_the_home_dir() {
     });
 }
 
-#[test]
-fn context_selects_the_cfgd_context_hooks_observe() {
-    let s = spec("db", Path::new("/nonexistent"));
-    let base = BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state"));
-    assert_eq!(base.context, ReconcileContext::Apply);
-    assert_eq!(
-        base.with_context(ReconcileContext::Reconcile).context,
-        ReconcileContext::Reconcile
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Copy: file sources
 // ---------------------------------------------------------------------------
@@ -197,8 +221,7 @@ fn context_selects_the_cfgd_context_hooks_observe() {
 #[test]
 fn file_source_is_snapshotted_and_recorded() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload-bytes").expect("write source");
+    let source = h.seed_file("data.db", b"payload-bytes");
 
     let record = h.run(&spec("db", &source));
 
@@ -233,8 +256,7 @@ fn file_source_is_snapshotted_and_recorded() {
 #[test]
 fn name_pattern_variables_are_substituted() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"x").expect("write source");
+    let source = h.seed_file("data.db", b"x");
     let mut s = spec("nightly", &source);
     s.name_pattern = "{name}-{filename}-{timestamp}.snap".to_string();
 
@@ -254,8 +276,7 @@ fn name_pattern_variables_are_substituted() {
 #[test]
 fn explicit_destination_receives_the_snapshot() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"x").expect("write source");
+    let source = h.seed_file("data.db", b"x");
     let mut s = spec("db", &source);
     let dest = h.root.join("elsewhere").join("nested");
     s.destination = Some(dest.clone());
@@ -270,8 +291,7 @@ fn explicit_destination_receives_the_snapshot() {
 #[test]
 fn a_same_second_rerun_keeps_both_colliding_snapshots() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"first").expect("write source");
+    let source = h.seed_file("data.db", b"first");
     let mut s = spec("db", &source);
     // Drop {timestamp} so both runs render the identical name — the same
     // collision `{timestamp}`'s one-second resolution produces for real.
@@ -414,8 +434,7 @@ fn a_failed_copy_still_writes_a_run_row() {
 #[test]
 fn pre_hook_failure_skips_the_snapshot_but_still_runs_post_hooks() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let marker = h.root.join("post-ran");
     let mut s = spec("db", &source);
     s.pre_backup = vec![hook("exit 7")];
@@ -442,8 +461,7 @@ fn pre_hook_failure_skips_the_snapshot_but_still_runs_post_hooks() {
 #[test]
 fn a_failed_pre_hook_and_a_failed_post_hook_are_both_recorded() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.pre_backup = vec![hook("exit 7")];
     s.post_backup = vec![hook("exit 9")];
@@ -459,8 +477,7 @@ fn a_failed_pre_hook_and_a_failed_post_hook_are_both_recorded() {
 #[test]
 fn pre_hook_success_lets_the_snapshot_proceed() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let marker = h.root.join("pre-ran");
     let mut s = spec("db", &source);
     s.pre_backup = vec![touch_hook(&marker)];
@@ -510,8 +527,7 @@ fn a_failed_copy_and_a_failed_post_hook_are_both_reported() {
 #[test]
 fn post_hook_failure_after_a_good_copy_keeps_the_run_successful() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.post_backup = vec![hook("exit 3")];
 
@@ -534,8 +550,7 @@ fn post_hook_failure_after_a_good_copy_keeps_the_run_successful() {
 #[test]
 fn hooks_see_the_backup_phase_in_the_environment() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let pre = h.root.join("pre-phase");
     let post = h.root.join("post-phase");
     let mut s = spec("db", &source);
@@ -551,8 +566,7 @@ fn hooks_see_the_backup_phase_in_the_environment() {
 #[test]
 fn a_continue_on_error_pre_hook_still_skips_the_snapshot() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let marker = h.root.join("second-ran");
     let mut s = spec("db", &source);
     s.pre_backup = vec![
@@ -579,8 +593,7 @@ fn a_continue_on_error_pre_hook_still_skips_the_snapshot() {
 #[test]
 fn retention_prunes_the_oldest_snapshots_from_disk_and_the_database() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.retention = 2;
     // Sequence the names so the runs are distinguishable within one second.
@@ -608,8 +621,7 @@ fn retention_prunes_the_oldest_snapshots_from_disk_and_the_database() {
 #[test]
 fn retention_of_one_keeps_only_the_newest_snapshot() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.retention = 1;
 
@@ -644,8 +656,7 @@ fn retention_prunes_directory_snapshots_too() {
 #[test]
 fn failed_runs_do_not_evict_good_snapshots() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut good = spec("db", &source);
     good.retention = 2;
     good.name_pattern = "snapshot-0".to_string();
@@ -684,8 +695,7 @@ fn failed_run_history_is_bounded_by_retention() {
 #[test]
 fn retention_is_scoped_to_one_backup_name() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut a = spec("alpha", &source);
     a.retention = 1;
     let mut b = spec("beta", &source);
@@ -703,8 +713,7 @@ fn retention_is_scoped_to_one_backup_name() {
 #[test]
 fn a_manually_deleted_snapshot_still_has_its_row_pruned() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.retention = 1;
     s.name_pattern = "snapshot-0".to_string();
@@ -749,8 +758,7 @@ fn prune_with_planted_row(h: &Harness, victim: &Path) -> BackupRunRecord {
         })
         .expect("plant the row");
 
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.retention = 1;
     s.name_pattern = "snapshot-0".to_string();
@@ -842,8 +850,7 @@ fn pruning_ignores_a_row_that_walks_out_through_a_relative_segment() {
 #[test]
 fn pruning_removes_an_empty_directory_a_nested_pattern_left_behind() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.retention = 1;
 
@@ -1091,8 +1098,7 @@ fn the_default_destination_is_owner_only() {
     use std::os::unix::fs::PermissionsExt;
 
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
 
     h.run(&spec("db", &source));
 
@@ -1113,8 +1119,7 @@ fn an_explicit_destination_keeps_the_users_own_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let dest = h.root.join("shared");
     std::fs::create_dir_all(&dest).expect("dest");
     std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).expect("chmod dest");
@@ -1165,8 +1170,7 @@ fn snapshot_name_rejects_every_directory_reference_pattern() {
 #[test]
 fn a_dot_name_pattern_leaves_every_retained_snapshot_intact() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.name_pattern = "keeper".to_string();
     h.run(&s);
@@ -1263,8 +1267,7 @@ fn snapshot_name_falls_back_to_the_backup_name_when_the_source_has_no_filename()
 #[test]
 fn a_nested_pattern_creates_the_intermediate_directories() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
     s.name_pattern = "daily/{filename}".to_string();
 
@@ -1319,8 +1322,7 @@ fn busy_holder(err: &crate::errors::CfgdError) -> String {
 #[test]
 fn a_run_is_refused_while_the_unit_lock_is_held() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let s = spec("db", &source);
 
     let _held = crate::acquire_backup_lock(&h.state_dir(), "db").expect("take the unit lock");
@@ -1349,8 +1351,7 @@ fn a_run_is_refused_while_the_unit_lock_is_held() {
 #[test]
 fn the_unit_lock_is_released_when_the_run_finishes() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
     let s = spec("db", &source);
 
     let first = h.run(&s);
@@ -1364,8 +1365,7 @@ fn the_unit_lock_is_released_when_the_run_finishes() {
 #[test]
 fn two_different_units_do_not_block_each_other() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, b"payload").expect("write source");
+    let source = h.seed_file("data.db", b"payload");
 
     let _held =
         crate::acquire_backup_lock(&h.state_dir(), "other").expect("take another unit lock");
@@ -1455,35 +1455,6 @@ fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whol
 // ---------------------------------------------------------------------------
 // Restore: snapshot listing and selection
 // ---------------------------------------------------------------------------
-
-impl Harness {
-    /// Every restorable snapshot of `spec`, newest first.
-    fn snapshots_of(&self, spec: &BackupSpec) -> Vec<SnapshotInfo> {
-        let config_dir = self.config_dir();
-        let state_dir = self.state_dir();
-        crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
-            list_snapshots(&unit, &self.store).expect("snapshot list")
-        })
-    }
-
-    /// Select and restore in one step, the way the CLI does.
-    fn restore(
-        &self,
-        spec: &BackupSpec,
-        at: Option<&str>,
-        to: Option<&Path>,
-    ) -> Result<RestoreOutcome> {
-        let config_dir = self.config_dir();
-        let state_dir = self.state_dir();
-        crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
-            let snapshots = list_snapshots(&unit, &self.store)?;
-            let selected = select_snapshot(&spec.name, &snapshots, at)?;
-            restore_backup(&unit, &self.store, &self.printer, selected, to)
-        })
-    }
-}
 
 /// Write a snapshot payload and the run record that owns it.
 ///
@@ -1621,24 +1592,29 @@ fn list_snapshots_ignores_a_failed_run_with_no_artifact() {
     );
 }
 
-#[test]
-fn select_snapshot_defaults_to_the_newest() {
-    let h = Harness::new();
-    let s = spec("db", Path::new("/src"));
+/// The two-snapshot fixture the selection tests share: one older, one newer.
+fn seed_old_and_new(h: &Harness) {
     seed_snapshot(
-        &h,
+        h,
         "db",
         "db.20260730T120000Z",
         "2026-07-30T12:00:00Z",
         "old",
     );
     seed_snapshot(
-        &h,
+        h,
         "db",
         "db.20260801T231502Z",
         "2026-08-01T23:15:02Z",
         "new",
     );
+}
+
+#[test]
+fn select_snapshot_defaults_to_the_newest() {
+    let h = Harness::new();
+    let s = spec("db", Path::new("/src"));
+    seed_old_and_new(&h);
 
     let listed = h.snapshots_of(&s);
     let chosen = select_snapshot("db", &listed, None).expect("newest");
@@ -1649,20 +1625,7 @@ fn select_snapshot_defaults_to_the_newest() {
 fn select_snapshot_accepts_a_full_name_and_a_timestamp_fragment() {
     let h = Harness::new();
     let s = spec("db", Path::new("/src"));
-    seed_snapshot(
-        &h,
-        "db",
-        "db.20260730T120000Z",
-        "2026-07-30T12:00:00Z",
-        "old",
-    );
-    seed_snapshot(
-        &h,
-        "db",
-        "db.20260801T231502Z",
-        "2026-08-01T23:15:02Z",
-        "new",
-    );
+    seed_old_and_new(&h);
     let listed = h.snapshots_of(&s);
 
     let by_name = select_snapshot("db", &listed, Some("db.20260730T120000Z")).expect("by name");

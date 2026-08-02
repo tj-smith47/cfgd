@@ -4485,6 +4485,78 @@ fn compute_config_hash_ignores_non_package_fields() {
     );
 }
 
+// --- service generators/installers under the default (no-override) dir set ---
+//
+// The dir-overrides parameter is threaded through every generator and
+// installer, but only the override-specific tests care what is in it; these
+// wrappers keep the rest reading as the one-line calls they are about.
+
+#[cfg(unix)]
+fn launchd_plist_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    home: &Path,
+    scope: crate::Scope,
+) -> String {
+    generate_launchd_plist(
+        binary,
+        config_path,
+        profile,
+        home,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
+#[cfg(unix)]
+fn systemd_unit_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> String {
+    generate_systemd_unit(
+        binary,
+        config_path,
+        profile,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
+#[cfg(unix)]
+fn install_launchd_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> Result<()> {
+    install_launchd_service(
+        binary,
+        config_path,
+        profile,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
+#[cfg(unix)]
+fn install_systemd_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> Result<()> {
+    install_systemd_service(
+        binary,
+        config_path,
+        profile,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
 // --- generate_launchd_plist tests ---
 
 #[cfg(unix)]
@@ -4494,14 +4566,7 @@ fn generate_launchd_plist_contains_correct_structure() {
     let config = Path::new("/Users/testuser/.config/cfgd/config.yaml");
     let home = Path::new("/Users/testuser");
 
-    let plist = generate_launchd_plist(
-        binary,
-        config,
-        None,
-        home,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let plist = launchd_plist_default_dirs(binary, config, None, home, crate::Scope::User);
 
     assert!(
         plist.contains("<?xml version=\"1.0\""),
@@ -4566,14 +4631,7 @@ fn generate_launchd_plist_with_profile() {
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(
-        binary,
-        config,
-        Some("work"),
-        home,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let plist = launchd_plist_default_dirs(binary, config, Some("work"), home, crate::Scope::User);
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -4610,13 +4668,7 @@ fn generate_systemd_unit_contains_correct_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(
-        binary,
-        config,
-        None,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let unit = systemd_unit_default_dirs(binary, config, None, crate::Scope::User);
 
     assert!(
         unit.contains("[Unit]"),
@@ -4673,13 +4725,7 @@ fn generate_systemd_unit_with_profile() {
     let binary = Path::new("/opt/bin/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(
-        binary,
-        config,
-        Some("server"),
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let unit = systemd_unit_default_dirs(binary, config, Some("server"), crate::Scope::User);
 
     assert!(
         unit.contains(
@@ -4704,14 +4750,8 @@ fn install_then_uninstall_launchd_service_round_trips_plist() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_launchd_service(
-        &binary,
-        &config,
-        Some("work"),
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    )
-    .expect("install ok");
+    install_launchd_default_dirs(&binary, &config, Some("work"), crate::Scope::User)
+        .expect("install ok");
 
     let plist = tmp
         .path()
@@ -4747,14 +4787,7 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_systemd_service(
-        &binary,
-        &config,
-        None,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    )
-    .expect("install ok");
+    install_systemd_default_dirs(&binary, &config, None, crate::Scope::User).expect("install ok");
 
     let unit_path = tmp.path().join(".config/systemd/user/cfgd.service");
     assert!(unit_path.exists(), "unit should be installed");
@@ -6872,14 +6905,7 @@ fn generate_launchd_plist_xml_structure_complete() {
     let config = Path::new("/Users/alice/.config/cfgd/config.yaml");
     let home = Path::new("/Users/alice");
 
-    let plist = generate_launchd_plist(
-        binary,
-        config,
-        None,
-        home,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let plist = launchd_plist_default_dirs(binary, config, None, home, crate::Scope::User);
 
     // Verify required XML structure
     assert!(
@@ -6944,14 +6970,7 @@ fn generate_launchd_plist_includes_profile_flag() {
     let config = Path::new("/home/user/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(
-        binary,
-        config,
-        Some("work"),
-        home,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let plist = launchd_plist_default_dirs(binary, config, Some("work"), home, crate::Scope::User);
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -6992,13 +7011,7 @@ fn generate_systemd_unit_complete_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(
-        binary,
-        config,
-        None,
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let unit = systemd_unit_default_dirs(binary, config, None, crate::Scope::User);
 
     assert!(unit.contains("[Unit]"), "should contain [Unit] section");
     assert!(
@@ -7054,13 +7067,7 @@ fn generate_systemd_unit_includes_profile() {
     let binary = Path::new("/opt/cfgd/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(
-        binary,
-        config,
-        Some("server"),
-        crate::Scope::User,
-        &crate::daemon::DaemonDirOverrides::default(),
-    );
+    let unit = systemd_unit_default_dirs(binary, config, Some("server"), crate::Scope::User);
 
     let expected_exec = format!(
         "ExecStart={} --config {} --profile {} --quiet daemon",
@@ -7768,25 +7775,36 @@ mod harness {
         (ctx, buf)
     }
 
+    /// One SIGHUP reload against `config_path`, returning the captured output
+    /// and the reconcile/sync intervals it left behind (both start at 300s).
+    fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> (String, u64, u64) {
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+        let (ctx, buf) = sighup_ctx(tmp, config_path);
+        let mut backup_timers = crate::daemon::BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
+        let captured = buf.lock().unwrap().clone();
+        (
+            captured,
+            reconcile_secs.load(Ordering::Relaxed),
+            sync_secs.load(Ordering::Relaxed),
+        )
+    }
+
     #[test]
     fn apply_sighup_reload_warns_on_unparseable_config() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("bad.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_timers = crate::daemon::BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("Config reload failed"),
             "expected reload-failed warning in: {}",
             captured
         );
         // Atomics untouched on failure
-        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 300);
-        assert_eq!(sync_secs.load(Ordering::Relaxed), 300);
+        assert_eq!(reconcile_secs, 300);
+        assert_eq!(sync_secs, 300);
     }
 
     #[test]
@@ -7798,19 +7816,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n    sync:\n      interval: 2m\n",
         )
         .unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_timers = crate::daemon::BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("Timer intervals reloaded"),
             "expected reload success in: {}",
             captured
         );
-        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 90);
-        assert_eq!(sync_secs.load(Ordering::Relaxed), 120);
+        assert_eq!(reconcile_secs, 90);
+        assert_eq!(sync_secs, 120);
     }
 
     #[test]
@@ -7822,12 +7835,7 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n",
         )
         .unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_timers = crate::daemon::BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, _, _) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("timer intervals and backup schedules only"),
             "SIGHUP start message must state scope: {}",
@@ -7849,19 +7857,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
         )
         .unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
-        let mut backup_timers = crate::daemon::BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("no timer changes detected"),
             "expected no-changes message in: {}",
             captured
         );
-        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 300);
-        assert_eq!(sync_secs.load(Ordering::Relaxed), 300);
+        assert_eq!(reconcile_secs, 300);
+        assert_eq!(sync_secs, 300);
     }
 
     // ----- build_initial_source_status tests -----
@@ -9269,22 +9272,29 @@ mod harness {
 
     // ----- build_pre_loop_setup: SETUP-arm coverage -----
 
+    /// `build_pre_loop_setup` under the arguments every SETUP-arm test shares:
+    /// no-op hooks, user scope, a test printer, and no state-dir override.
+    pub(super) fn pre_loop(
+        config_path: &std::path::Path,
+        profile: Option<&str>,
+    ) -> Result<PreLoopSetup> {
+        build_pre_loop_setup(
+            config_path,
+            profile,
+            &NoopHooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+            None,
+        )
+    }
+
     #[test]
     fn build_pre_loop_setup_happy_path_yields_defaulted_intervals() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("happy setup");
+        let setup = pre_loop(&config_path, None).expect("happy setup");
 
         // Default reconcile + sync interval = 300s (5m)
         assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
@@ -9332,17 +9342,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         assert!(setup.compliance_config.is_some());
         assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
@@ -9364,17 +9365,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         // Compliance config present but interval None because enabled=false short-circuits filter.
         assert!(setup.compliance_config.is_some());
@@ -9387,16 +9379,8 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
-        let hooks = NoopHooks;
 
-        let result = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        );
+        let result = pre_loop(&config_path, None);
 
         match result {
             Ok(_) => panic!("invalid yaml must error"),
@@ -9430,17 +9414,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: override-profile\nspec:\n  files:\n    managed:\n      - source: example.txt\n        target: /tmp/example-override.txt\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            Some("override-profile"),
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, Some("override-profile")).expect("setup");
 
         // override-profile has a managed file → discover_managed_paths populates it.
         assert_eq!(setup.managed_paths.len(), 1);
@@ -9464,17 +9439,8 @@ mod harness {
         )
         .unwrap();
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         // No profile resolution → no managed paths, reconcile_tasks contains just __default__
         assert!(setup.managed_paths.is_empty());
@@ -9498,17 +9464,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         assert!(setup.parsed.auto_pull);
         assert!(setup.parsed.auto_push);
@@ -9534,17 +9491,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         assert_eq!(
             setup.server_checkin_url.as_deref(),
@@ -9573,6 +9521,7 @@ mod harness {
         )
         .unwrap();
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9581,7 +9530,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9610,6 +9558,7 @@ mod harness {
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9618,7 +9567,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9653,6 +9601,7 @@ mod harness {
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         // Intentionally no ghost.yaml → resolve_profile fails.
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9661,7 +9610,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9696,6 +9644,7 @@ mod harness {
         .unwrap();
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9704,7 +9653,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -13217,11 +13165,11 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{NoopHooks, make_test_ctx, make_triggers, sighup_ctx};
+    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
-        BackupTask, BackupTimers, ResolvedBackupTasks, build_backup_tasks, reload_backup_tasks,
-        resolve_backup_tasks,
+        BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
+        reload_backup_tasks, resolve_backup_tasks,
     };
     use crate::state::StateStore;
     use std::sync::atomic::AtomicU64;
@@ -13252,7 +13200,7 @@ mod backup_timers {
         BackupTimers::new(
             ResolvedBackupTasks {
                 tasks,
-                degraded: false,
+                degraded: None,
             },
             Instant::now(),
         )
@@ -13849,7 +13797,7 @@ mod backup_timers {
         .expect("a valid profile resolves");
 
         assert_eq!(resolved.tasks.len(), 1);
-        assert!(!resolved.degraded);
+        assert!(resolved.degraded.is_none());
         assert_fires_near(
             resolved.tasks[0].next_fire(),
             now + StdDuration::from_secs(1800),
@@ -13900,7 +13848,7 @@ mod backup_timers {
         let summary = set.apply_resolved(
             ResolvedBackupTasks {
                 tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
-                degraded: true,
+                degraded: Some(DegradedReason::SourcesUnavailable),
             },
             now,
         );
@@ -13925,7 +13873,7 @@ mod backup_timers {
         let mut set = BackupTimers::new(
             ResolvedBackupTasks {
                 tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
-                degraded: true,
+                degraded: Some(DegradedReason::SourcesUnavailable),
             },
             now,
         );
@@ -13938,7 +13886,7 @@ mod backup_timers {
                         task("db", Path::new("/tmp/a"), "1h", now),
                         task("home", Path::new("/tmp/b"), "1h", now),
                     ],
-                    degraded: false,
+                    degraded: None,
                 },
                 now,
             )
@@ -13954,7 +13902,7 @@ mod backup_timers {
         let set = BackupTimers::new(
             ResolvedBackupTasks {
                 tasks: vec![task("db", Path::new("/tmp/a"), "1s", now)],
-                degraded: true,
+                degraded: Some(DegradedReason::SourcesUnavailable),
             },
             now,
         );
@@ -14041,7 +13989,7 @@ mod backup_timers {
         let mut set = BackupTimers::new(
             ResolvedBackupTasks {
                 tasks: Vec::new(),
-                degraded: true,
+                degraded: Some(DegradedReason::SourcesUnavailable),
             },
             Instant::now() - StdDuration::from_secs(3600),
         );
@@ -14075,7 +14023,7 @@ mod backup_timers {
         let mut set = BackupTimers::new(
             ResolvedBackupTasks {
                 tasks: Vec::new(),
-                degraded: true,
+                degraded: Some(DegradedReason::SourcesUnavailable),
             },
             Instant::now() - StdDuration::from_secs(3600),
         );
@@ -14312,16 +14260,8 @@ mod backup_timers {
         )
         .unwrap();
 
-        let hooks = NoopHooks;
-        let setup = build_pre_loop_setup(
-            &config_path,
-            None,
-            &hooks,
-            crate::Scope::User,
-            &Printer::for_test().0,
-            None,
-        )
-        .expect("a broken profile must not stop the daemon from starting");
+        let setup = pre_loop(&config_path, None)
+            .expect("a broken profile must not stop the daemon from starting");
 
         assert_eq!(setup.backup_timers.len(), 0);
         assert_eq!(
@@ -14349,7 +14289,7 @@ mod backup_timers {
             .apply_resolved(
                 ResolvedBackupTasks {
                     tasks: vec![task("db", Path::new("/tmp/a"), "1s", now)],
-                    degraded: true,
+                    degraded: Some(DegradedReason::SourcesUnavailable),
                 },
                 now,
             )
@@ -14375,7 +14315,7 @@ mod backup_timers {
                     task("db", Path::new("/tmp/a"), "1h", now),
                     task("home", Path::new("/tmp/b"), "6h", now),
                 ],
-                degraded: false,
+                degraded: None,
             },
             now,
         );
@@ -14384,7 +14324,7 @@ mod backup_timers {
             set.apply_resolved(
                 ResolvedBackupTasks {
                     tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
-                    degraded: true,
+                    degraded: Some(DegradedReason::SourcesUnavailable),
                 },
                 now,
             )
