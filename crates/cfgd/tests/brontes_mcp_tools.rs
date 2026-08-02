@@ -101,6 +101,35 @@ fn plan_and_apply_are_distinguishable() {
 }
 
 #[test]
+fn backup_run_is_annotated_destructive_and_non_idempotent() {
+    // Retention pruning deletes superseded snapshots, the hooks stop and start
+    // services, and a second identical call snapshots and prunes again — the
+    // ADDITIVE table's "creates or updates without removing anything, safe to
+    // repeat" contract is false for it, and a client trusting that would call
+    // it without prompting.
+    let tools = all_tools();
+    let annotations = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "cfgd_backup_run")
+        .expect("expected tool cfgd_backup_run")
+        .annotations
+        .clone()
+        .expect("cfgd_backup_run must carry annotations");
+
+    assert_eq!(annotations.read_only_hint, Some(false));
+    assert_eq!(
+        annotations.destructive_hint,
+        Some(true),
+        "retention pruning removes snapshots and the hooks restart services"
+    );
+    assert_eq!(
+        annotations.idempotent_hint,
+        Some(false),
+        "a second call takes another snapshot and prunes again"
+    );
+}
+
+#[test]
 fn hangs_and_nested_servers_are_not_tools() {
     let names = tool_names();
     for hidden in [

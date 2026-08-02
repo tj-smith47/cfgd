@@ -62,7 +62,6 @@ const INTERACTIVE: &[&str] = &[
 /// Commands that create or update local state without removing anything.
 const ADDITIVE: &[&str] = &[
     "alias set",
-    "backup run",
     "compliance export",
     "config set",
     "daemon install",
@@ -228,6 +227,13 @@ pub fn config() -> Config {
     // than stacking, but it can replace files and restart services, so it
     // carries the destructive hint a client should prompt on.
     cfg = cfg.annotation("apply", write(true, true, true));
+
+    // `backup run` is destructive and NOT idempotent: retention pruning deletes
+    // superseded snapshots and their emptied parents, `preBackup`/`postBackup`
+    // hooks stop and start services the same way `apply` does, and a second
+    // identical call takes another snapshot and prunes again rather than being
+    // a no-op. A client must prompt before calling it.
+    cfg = cfg.annotation("backup run", write(true, false, false));
 
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);
