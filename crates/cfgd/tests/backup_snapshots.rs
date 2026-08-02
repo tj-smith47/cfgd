@@ -1140,9 +1140,10 @@ fn backup_restore_at_selects_an_older_snapshot_by_timestamp() {
     let (p1, _c1) = Printer::for_test_doc();
     cmd_backup_run(&cli, &p1, Some("docs")).unwrap();
     drop(p1);
-    // `namePattern` stamps to the second; without the wait the second run
-    // renders the same name and replaces the first snapshot rather than
-    // joining it.
+    // `namePattern` stamps to the second. Both snapshots survive either way —
+    // the engine suffixes a collision — but two snapshots sharing one stamp make
+    // this test's `--at <stamp>` fragment match both, which is an ambiguity
+    // error rather than the selection being asserted below.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     std::fs::write(&source, "second generation").unwrap();
     let (p2, _c2) = Printer::for_test_doc();

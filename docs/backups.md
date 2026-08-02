@@ -572,8 +572,15 @@ staging removed      ← on every path, success or failure
 ```
 
 - **Overlay, not mirror.** Every file the snapshot holds overwrites its counterpart; files present
-  only in the target are **left alone**. A restore therefore never deletes anything you added
-  since the snapshot was taken. Use `--to` and copy by hand if you want an exact mirror.
+  only in the target are **left alone**, so a restore never deletes a *name* the snapshot does not
+  contain. Use `--to` and copy by hand if you want an exact mirror.
+- **A name the snapshot owns is taken back, whatever occupies it.** If the snapshot holds a file at
+  a name the target now holds as a directory (or a symlink), that directory is **removed** — with
+  everything under it — and replaced by the snapshot's file. It is inside the restore target, so
+  the safety backup captured it and the [safety snapshot](#what-a-restore-does) is the recovery.
+  The kind check in [What a restore refuses](#what-a-restore-refuses) guards the **top-level**
+  target only; nested kind swaps are resolved in the snapshot's favour rather than refused, because
+  a restore that stops halfway through a tree is worse than one that completes.
 - **File modes come across** on Unix, the same way the backup carried them in. Snapshots hold no
   symlinks by construction (the writer skips them), so a link living in the target at a name the
   snapshot does **not** own survives untouched. A link sitting at a name the snapshot **does** own
@@ -612,7 +619,7 @@ staging removed      ← on every path, success or failure
 | Refused | Why |
 |---|---|
 | a target inside the backup's `destination` | restoring there would overwrite the snapshot store |
-| a snapshot/target kind mismatch (file over directory, or the reverse) | publishing a file over a directory would delete the whole directory on the way to the rename |
+| a **top-level** snapshot/target kind mismatch (file over directory, or the reverse) | publishing a file over a directory would delete the whole directory on the way to the rename. Nested names inside a directory overlay are replaced instead of refused — see above |
 | a snapshot that vanished since it was listed | a concurrent prune, or a hand-deleted destination — re-checked *after* the lock is taken, so the window a confirmation prompt opens is covered |
 | a failed safety backup | the current contents were not captured |
 
@@ -646,6 +653,7 @@ rsync -a --delete ~/.local/state/cfgd/backups/photos/Pictures.20260801T031500Z/ 
 - A directory restore is not atomic as a whole — see [What a restore does](#what-a-restore-does).
 - Concurrent runs of one backup are refused, not queued: the second caller is told who holds the
   unit (see above).
-- `cfgd backup restore` overlays; it never deletes files the snapshot does not contain. Restore
+- `cfgd backup restore` overlays; it never deletes a name the snapshot does not contain — but it
+  does replace one it *does* contain, even when the target now holds a directory there. Restore
   with `--to` and mirror by hand when you need the target to match the snapshot exactly.
 - `spec.backups[]` is available on the YAML/TOML profile path only; CRD parity is not implemented.

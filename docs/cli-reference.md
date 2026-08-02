@@ -745,9 +745,9 @@ An unknown name given to `cfgd backup run`, `backup list`, or `backup restore` i
 too and lists every available snapshot. A run that recorded a failure — a bad copy, or
 `postBackup` erroring after a good one — also exits nonzero.
 
-`backup restore` overlays the snapshot onto the target (files only in the target are left alone;
-a target entry whose kind differs from the snapshot's — including a symlink — is replaced, never
-written through), takes a safety snapshot of the current contents first, and requires confirmation
+`backup restore` overlays the snapshot onto the target (names only in the target are left alone;
+a target entry whose kind differs from the snapshot's — a symlink, or a directory where the
+snapshot holds a file — is removed and replaced, never written through), takes a safety snapshot of the current contents first, and requires confirmation
 unless `--yes` (`CFGD_YES`) is given. `--to <path>` redirects the restore; a path outside the
 backup's source also skips the safety snapshot, while a path at or inside the source still takes
 one. The unit's `preBackup` / `postBackup` hooks wrap the whole restore exactly once and see

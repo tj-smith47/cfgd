@@ -362,7 +362,7 @@ pub fn run_backup_restore(
             &BackupRestoreDeclinedOutput {
                 name: args.name.to_string(),
                 snapshot: selected.name.clone(),
-                restored_to: cfgd_core::to_posix_string(&target),
+                restored_to: cfgd_core::to_posix_string(&target.resolved),
                 restored: false,
                 declined: true,
             },
@@ -417,13 +417,23 @@ fn confirm_restore(
     printer: &Printer,
     name: &str,
     snapshot: &SnapshotInfo,
-    target: &Path,
+    target: &cfgd_core::backup::RestoreTarget,
 ) -> anyhow::Result<bool> {
+    // The RESOLVED path is what gets overwritten, so it is what the operator
+    // agrees to. A symlinked source is named both ways — agreeing to a path you
+    // did not type is its own kind of surprise.
+    let into = if target.was_redirected_by_a_link() {
+        format!(
+            "{} (via {})",
+            target.resolved.posix(),
+            target.requested.posix()
+        )
+    } else {
+        target.resolved.posix().to_string()
+    };
     let question = format!(
         "Restore '{}' from snapshot {} into {}?",
-        name,
-        snapshot.name,
-        target.posix()
+        name, snapshot.name, into
     );
     printer.prompt_confirm(&question).map_err(|e| {
         let hint = "pass --yes (or set CFGD_YES=1) to restore without a prompt".to_string();

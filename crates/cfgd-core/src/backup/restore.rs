@@ -81,15 +81,44 @@ impl RestoreOutcome {
     }
 }
 
-/// The path a restore will write: `to` when given, otherwise the unit's source.
-/// A leading `~` is expanded either way.
+/// Where a restore will write.
+///
+/// Two paths rather than one because they can differ, and a caller needs both:
+/// the confirmation prompt has to name what is actually about to be
+/// overwritten, while an operator who typed `~/dotfiles` needs to recognise
+/// their own words in it.
+#[derive(Debug, Clone)]
+pub struct RestoreTarget {
+    /// The path as the caller named it: `--to`, or the unit's `source`, with a
+    /// leading `~` expanded.
+    pub requested: PathBuf,
+    /// Where the bytes actually land — [`RestoreTarget::requested`] with a
+    /// top-level symlink followed, matching how the writer stats the source.
+    /// Equal to `requested` whenever the target is not a link.
+    pub resolved: PathBuf,
+}
+
+impl RestoreTarget {
+    /// Whether following the link changed where the restore writes.
+    pub fn was_redirected_by_a_link(&self) -> bool {
+        self.resolved != self.requested
+    }
+}
+
+/// Resolve where a restore will write, without touching anything.
 ///
 /// Exported so the caller that renders the confirmation prompt names the same
-/// path [`restore_backup`] will overwrite, rather than re-deriving it.
-pub fn restore_target(unit: &BackupUnit<'_>, to: Option<&Path>) -> PathBuf {
-    match to {
+/// path [`restore_backup`] will overwrite, rather than re-deriving it and
+/// prompting about a path that is not the one written.
+pub fn restore_target(unit: &BackupUnit<'_>, to: Option<&Path>) -> RestoreTarget {
+    let requested = match to {
         Some(path) => crate::expand_tilde(path),
         None => unit.source(),
+    };
+    let resolved = resolve_target_link(&requested);
+    RestoreTarget {
+        requested,
+        resolved,
     }
 }
 
@@ -247,25 +276,24 @@ pub fn restore_backup(
     let _lock = super::acquire_unit_lock(unit)?;
     let snapshot = reresolve_snapshot(unit, store, snapshot)?;
 
-    let requested = restore_target(unit, to);
+    // The writer stats the source *through* symlinks, so a unit whose `source:`
+    // is a link to a directory holds a directory snapshot. Restoring it has to
+    // follow the same link, or the snapshot would replace the link itself with
+    // the tree it points at.
+    let target = restore_target(unit, to).resolved;
     let destination = unit.destination_dir();
     if super::is_at_or_within(
-        &super::resolve_for_containment(&requested),
+        &super::resolve_for_containment(&target),
         &super::resolve_for_containment(&destination),
     ) {
         return Err(BackupError::RestoreTargetInsideDestination {
             name,
-            target: requested,
+            target,
             destination,
         }
         .into());
     }
 
-    // The writer stats the source *through* symlinks, so a unit whose `source:`
-    // is a link to a directory holds a directory snapshot. Restoring it has to
-    // follow the same link, or the snapshot would replace the link itself with
-    // the tree it points at.
-    let target = resolve_target_link(&requested);
     let snapshot_kind = payload_kind(&name, &snapshot.path)?;
     check_target_kind(&name, &target, snapshot_kind)?;
     let staged = stage_snapshot(&name, &snapshot, &target)?;
@@ -332,7 +360,7 @@ pub fn restore_backup(
     Ok(RestoreOutcome {
         name,
         snapshot: snapshot.name.clone(),
-        restored_to: crate::to_posix_string(&target),
+        restored_to: report_path(&target),
         restored,
         size_bytes: snapshot.size_bytes,
         safety_snapshot: safety,
@@ -372,14 +400,26 @@ fn reresolve_snapshot(
 /// directory overlay are replaced, not followed — those are incidental entries
 /// the snapshot never captured, and writing through one escapes the target.
 /// A broken link is left as-is for the overlay to replace.
+///
+/// `canonicalize`'s own [`PathBuf`] is returned untouched, verbatim prefix and
+/// all. This value is a WRITE destination, and posix-folding it would turn a
+/// Windows UNC canonicalization (`\\?\UNC\server\share\x`) into the relative
+/// path `UNC/server/share/x` — the overlay would then build that tree under the
+/// working directory. Folding happens once, in [`report_path`], on the way out.
 fn resolve_target_link(target: &Path) -> PathBuf {
     match std::fs::symlink_metadata(target) {
-        Ok(meta) if meta.is_symlink() => match target.canonicalize() {
-            Ok(real) => PathBuf::from(crate::strip_windows_verbatim(&crate::to_posix_string(real))),
-            Err(_) => target.to_path_buf(),
-        },
+        Ok(meta) if meta.is_symlink() => target
+            .canonicalize()
+            .unwrap_or_else(|_| target.to_path_buf()),
         _ => target.to_path_buf(),
     }
+}
+
+/// A path as the restore reports it: posix-folded, with the Windows verbatim
+/// prefix `canonicalize` adds dropped so `restoredTo` reads as the path the
+/// operator knows rather than `//?/C:/...`.
+fn report_path(path: &Path) -> String {
+    crate::strip_windows_verbatim(&crate::to_posix_string(path)).to_string()
 }
 
 /// Snapshot the target's current contents before it is overwritten, returning

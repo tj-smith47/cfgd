@@ -28,7 +28,8 @@ pub mod schedule;
 mod tests;
 
 pub use restore::{
-    RestoreOutcome, SnapshotInfo, list_snapshots, restore_backup, restore_target, select_snapshot,
+    RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots, restore_backup, restore_target,
+    select_snapshot,
 };
 pub use schedule::next_run_at;
 
@@ -241,7 +242,7 @@ struct RunOutcome {
 /// description, so the nested acquire would report the restore as the holder of
 /// the unit it is restoring, and the unit's hooks would run a second time around
 /// a source the restore has already quiesced.
-pub(super) fn snapshot_and_record(
+fn snapshot_and_record(
     unit: &BackupUnit<'_>,
     store: &StateStore,
     printer: &Printer,

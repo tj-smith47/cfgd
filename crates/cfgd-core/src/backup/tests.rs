@@ -1911,9 +1911,16 @@ fn restore_aborts_when_the_safety_backup_produces_nothing() {
     // must not run. The already-recorded snapshot is still selectable, because
     // selection reads rows rather than re-rendering the pattern.
     s.name_pattern = "../escape".to_string();
+    let post_tally = h.root.join("post-tally");
+    s.post_backup = vec![append_hook(&post_tally)];
     let err = h
         .restore(&s, None, None)
         .expect_err("an uncaptured source must not be overwritten");
+    assert_eq!(
+        hook_runs(&post_tally),
+        1,
+        "the abort still has to restart whatever preBackup stopped"
+    );
     assert!(
         format!("{err}").contains("safety backup"),
         "expected the safety-backup refusal, got: {err}"
@@ -2284,6 +2291,11 @@ fn a_symlinked_source_round_trips_through_backup_and_restore() {
         std::fs::read_to_string(real.join("bashrc")).expect("bashrc"),
         "v1"
     );
+    assert_eq!(
+        outcome.restored_to,
+        crate::to_posix_string(real.canonicalize().expect("canonical real")),
+        "the outcome must name where the bytes landed, not the link"
+    );
     assert!(
         link.symlink_metadata().expect("link").is_symlink(),
         "the source link itself must survive the restore"
@@ -2331,8 +2343,10 @@ fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
     let mut s = spec("db", &source);
     h.run(&s);
 
-    let tally = h.root.join("pre-tally");
-    s.pre_backup = vec![append_hook(&tally)];
+    let pre_tally = h.root.join("pre-tally");
+    let post_tally = h.root.join("post-tally");
+    s.pre_backup = vec![append_hook(&pre_tally)];
+    s.post_backup = vec![append_hook(&post_tally)];
 
     let outcome = h.restore(&s, None, None).expect("restore");
     assert!(
@@ -2340,8 +2354,8 @@ fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
         "this restore must take a safety backup for the count to mean anything"
     );
     assert_eq!(
-        hook_runs(&tally),
-        1,
+        (hook_runs(&pre_tally), hook_runs(&post_tally)),
+        (1, 1),
         "the safety snapshot must run inside the restore's hook envelope, not open its own"
     );
 }
@@ -2433,4 +2447,70 @@ fn an_aborted_restore_creates_none_of_the_targets_missing_parents() {
         !deep.exists(),
         "staging must not create the target's parents before the restore commits to writing"
     );
+}
+
+#[test]
+fn restore_replaces_a_directory_sitting_at_a_name_the_snapshot_holds_a_file_at() {
+    let h = Harness::new();
+    let source = h.root.join("tree");
+    std::fs::create_dir_all(&source).expect("tree");
+    std::fs::write(source.join("a.txt"), "v1").expect("a");
+    let s = spec("db", &source);
+    h.run(&s);
+
+    // The kind guard only covers the top-level target; a NESTED name whose kind
+    // was swapped since the snapshot has to resolve one way or the other, and
+    // the snapshot's kind is the one that wins.
+    std::fs::remove_file(source.join("a.txt")).expect("clear a.txt");
+    std::fs::create_dir_all(source.join("a.txt").join("inner")).expect("directory in its place");
+    std::fs::write(source.join("a.txt/inner/x"), "swapped").expect("inner file");
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    assert!(outcome.restored, "outcome: {outcome:?}");
+    assert_eq!(
+        std::fs::read_to_string(source.join("a.txt")).expect("a.txt"),
+        "v1",
+        "the snapshot's file must take the name back"
+    );
+
+    // The subtree it displaced is inside the target, so the safety snapshot
+    // holds it — which is what makes the delete recoverable rather than lossy.
+    let safety = PathBuf::from(outcome.safety_snapshot.expect("safety snapshot"));
+    assert_eq!(
+        std::fs::read_to_string(safety.join("a.txt/inner/x")).expect("safety payload"),
+        "swapped"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_target_reports_the_link_it_followed_alongside_what_was_asked_for() {
+    let h = Harness::new();
+    let real = h.root.join("real");
+    std::fs::create_dir_all(&real).expect("real");
+    let link = h.root.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    crate::with_test_home(&h.root, || {
+        let plain = spec("db", &real);
+        let unit = BackupUnit::new(&plain, &config_dir, "workstation", &state_dir);
+        let target = restore_target(&unit, None);
+        assert!(
+            !target.was_redirected_by_a_link(),
+            "an ordinary source resolves to itself: {target:?}"
+        );
+
+        let linked = spec("db", &link);
+        let unit = BackupUnit::new(&linked, &config_dir, "workstation", &state_dir);
+        let target = restore_target(&unit, None);
+        assert!(target.was_redirected_by_a_link(), "{target:?}");
+        assert_eq!(target.requested, link);
+        assert_eq!(
+            target.resolved,
+            real.canonicalize().expect("canonical real"),
+            "the resolved path is what the confirmation prompt must name"
+        );
+    });
 }
