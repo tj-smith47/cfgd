@@ -494,11 +494,16 @@ fn all_package_managers_default_trait_contracts() {
         );
 
         // path_dirs: PATH additions applied after bootstrap; every entry is a
-        // non-empty path fragment.
-        assert!(
-            m.path_dirs().iter().all(|d| !d.is_empty()),
-            "{name}: path_dirs entries must be non-empty",
-        );
+        // non-empty path fragment. npm is intentionally excluded: its
+        // override shells out to `npm config get prefix` and write-probes
+        // the result, neither of which is hermetic against a real npm on CI
+        // (and could create a real `$HOME/.npm-global`).
+        if name != "npm" {
+            assert!(
+                m.path_dirs().iter().all(|d| !d.is_empty()),
+                "{name}: path_dirs entries must be non-empty",
+            );
+        }
 
         // version_meets_minimum: the default is a loose-semver >= comparison.
         // pkg overrides it to defer to FreeBSD `pkg version -t`, which

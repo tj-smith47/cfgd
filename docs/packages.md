@@ -27,6 +27,30 @@ cfgd manages packages across 18 package managers (Homebrew manages taps, formula
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
+## npm global-install prefix
+
+Global npm installs (`npm install -g`) write into npm's configured `prefix` —
+on a system where Node came from a package manager (apt, dnf, an msi), that
+prefix is root-owned (e.g. `/usr/local`), so an unelevated `npm install -g`
+fails with `EACCES`. cfgd resolves a writable prefix once per operation and
+applies the same one to `install`, `uninstall`, `update`, and both listing
+calls, so state never drifts between what got installed and what cfgd sees
+as installed:
+
+1. If `npm_config_prefix` / `NPM_CONFIG_PREFIX` is already set in the
+   environment, cfgd leaves it alone.
+2. If cfgd is running elevated, cfgd leaves npm's prefix alone.
+3. Otherwise cfgd asks npm for its configured prefix and write-probes it
+   (create-and-remove a temp entry — never a mode-bit read, which lies under
+   ACLs and is meaningless on Windows). A writable answer is used as-is.
+4. If the probe fails, cfgd falls back to `$HOME/.npm-global`, creating it if
+   absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
+
+The first time the fallback is used, `cfgd apply` prints a one-time notice
+naming the fallback prefix and that its `bin` directory needs to be added to
+`PATH` — cfgd bootstraps installs into `$HOME/.npm-global` but does not
+silently rewrite your shell's `PATH` for you.
+
 ## Profile Usage
 
 ```yaml

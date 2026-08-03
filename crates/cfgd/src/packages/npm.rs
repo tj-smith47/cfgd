@@ -1,12 +1,12 @@
 //! npm-based package manager (global packages).
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -14,6 +14,168 @@ use super::shared::{
 };
 
 pub struct NpmManager;
+
+/// Where a global npm operation should point, resolved once per operation so
+/// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NpmPrefixDecision {
+    /// `None` means "let npm resolve on its own" — either the environment
+    /// already pins a prefix (`npm_config_prefix`/`NPM_CONFIG_PREFIX`) or
+    /// cfgd is running elevated. `Some(dir)` is the prefix cfgd itself
+    /// determined, used for `path_dirs()` and for the idempotency guarantee
+    /// across every global operation.
+    pub(super) prefix: Option<PathBuf>,
+    /// True only when npm's own configured prefix failed the write-probe and
+    /// `prefix` is the `$HOME/.npm-global` fallback. This is the ONLY case
+    /// that gets a `--prefix` flag on argv and the one-time install() notice
+    /// — a writable configured prefix needs no argv change at all.
+    pub(super) is_fallback: bool,
+}
+
+/// Resolve the global-install prefix for the current process (real
+/// `is_root()`). See [`resolve_npm_prefix_for`] for the decision logic;
+/// split out so tests can drive the elevated/unelevated branches directly
+/// without needing real root privileges.
+pub(super) fn resolve_npm_prefix() -> Result<NpmPrefixDecision> {
+    resolve_npm_prefix_for(cfgd_core::is_root())
+}
+
+/// Decide whether cfgd should point npm at a prefix of its own choosing.
+///
+/// 1. An environment-set prefix (`npm_config_prefix`/`NPM_CONFIG_PREFIX`)
+///    means npm is already being pointed somewhere deliberately — never
+///    override it.
+/// 2. An elevated process can write npm's system prefix; overriding it would
+///    install into cfgd's (root's) home instead, so leave it alone too.
+/// 3. Otherwise, ask npm for its configured prefix and write-probe it. A
+///    writable answer is used as-is (no argv change — the working case stays
+///    untouched). An unwritable or undeterminable answer falls back to
+///    `$HOME/.npm-global`, created if absent.
+pub(super) fn resolve_npm_prefix_for(elevated: bool) -> Result<NpmPrefixDecision> {
+    if npm_env_prefix_set() || elevated {
+        return Ok(NpmPrefixDecision {
+            prefix: None,
+            is_fallback: false,
+        });
+    }
+
+    match npm_configured_prefix()? {
+        Some(prefix) if npm_prefix_is_writable(&prefix) => Ok(NpmPrefixDecision {
+            prefix: Some(prefix),
+            is_fallback: false,
+        }),
+        _ => Ok(NpmPrefixDecision {
+            prefix: Some(npm_fallback_prefix()?),
+            is_fallback: true,
+        }),
+    }
+}
+
+/// True when the user (or a parent process) already pinned npm's global
+/// prefix via the environment — cfgd must not second-guess that choice.
+pub(super) fn npm_env_prefix_set() -> bool {
+    std::env::var_os("npm_config_prefix").is_some()
+        || std::env::var_os("NPM_CONFIG_PREFIX").is_some()
+}
+
+/// Ask npm for its configured global prefix (`npm config get prefix`).
+/// Returns `Ok(None)` when npm exits non-zero or answers with empty output —
+/// both mean "couldn't determine a prefix", handled the same as a failed
+/// write-probe by the caller. A hard spawn failure (ENOENT) propagates as
+/// `PackageError::CommandFailed`, matching every other npm call in this file,
+/// so it is never silently absorbed into the fallback path.
+pub(super) fn npm_configured_prefix() -> Result<Option<PathBuf>> {
+    let output = npm_cmd()
+        .args(["config", "get", "prefix"])
+        .output()
+        .map_err(|e| PackageError::CommandFailed {
+            manager: "npm".into(),
+            source: e,
+        })?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = cfgd_core::stdout_lossy_trimmed(&output);
+    if stdout.is_empty() || stdout == "undefined" {
+        Ok(None)
+    } else {
+        Ok(Some(PathBuf::from(stdout)))
+    }
+}
+
+/// `<prefix>/lib/node_modules` on Unix, `<prefix>/node_modules` on Windows —
+/// the directory npm actually writes global packages into.
+#[cfg(windows)]
+pub(super) fn npm_global_modules_dir(prefix: &Path) -> PathBuf {
+    prefix.join("node_modules")
+}
+
+#[cfg(not(windows))]
+pub(super) fn npm_global_modules_dir(prefix: &Path) -> PathBuf {
+    prefix.join("lib").join("node_modules")
+}
+
+/// `<prefix>/bin` on Unix, `<prefix>` itself on Windows — where npm puts the
+/// shims/symlinks for globally installed executables.
+#[cfg(windows)]
+pub(super) fn npm_bin_dir(prefix: &Path) -> PathBuf {
+    prefix.to_path_buf()
+}
+
+#[cfg(not(windows))]
+pub(super) fn npm_bin_dir(prefix: &Path) -> PathBuf {
+    prefix.join("bin")
+}
+
+/// Walk up from `path` until an existing ancestor is found. `npm`'s global
+/// modules directory is usually not created yet (npm creates it lazily on
+/// first install), so the write-probe target is whichever existing directory
+/// is closest to it.
+pub(super) fn deepest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// Write-probe `prefix`: create and remove a uniquely-named temp entry in the
+/// deepest existing ancestor of its global-modules directory. Deliberately
+/// does not read mode bits — those lie under ACLs and are meaningless on
+/// Windows.
+pub(super) fn npm_prefix_is_writable(prefix: &Path) -> bool {
+    let modules_dir = npm_global_modules_dir(prefix);
+    let Some(ancestor) = deepest_existing_ancestor(&modules_dir) else {
+        return false;
+    };
+    let nonce = format!(
+        ".cfgd-npm-write-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let probe = ancestor.join(nonce);
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The fallback prefix used when npm's own configured prefix isn't
+/// user-writable: `$HOME/.npm-global`, created if absent.
+pub(super) fn npm_fallback_prefix() -> Result<PathBuf> {
+    let dir = cfgd_core::expand_tilde(Path::new("~/.npm-global"));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
 
 /// Find npm binary, checking PATH and common nvm install locations.
 ///
@@ -60,6 +222,17 @@ pub(super) fn npm_cmd() -> Command {
     tool_cmd_with_resolver("npm", find_npm)
 }
 
+/// Append `--prefix <dir>` to `cmd` only when the resolver chose the
+/// fallback prefix — a writable configured prefix needs no argv change at
+/// all, keeping the working case identical to before this resolver existed.
+pub(super) fn apply_prefix_flag(cmd: &mut Command, decision: &NpmPrefixDecision) {
+    if decision.is_fallback
+        && let Some(ref prefix) = decision.prefix
+    {
+        cmd.arg("--prefix").arg(prefix);
+    }
+}
+
 impl PackageManager for NpmManager {
     fn name(&self) -> &str {
         "npm"
@@ -67,6 +240,16 @@ impl PackageManager for NpmManager {
 
     fn is_available(&self) -> bool {
         npm_available()
+    }
+
+    fn path_dirs(&self) -> Vec<String> {
+        match resolve_npm_prefix() {
+            Ok(NpmPrefixDecision {
+                prefix: Some(prefix),
+                ..
+            }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
+            _ => Vec::new(),
+        }
     }
 
     fn can_bootstrap(&self) -> bool {
@@ -112,13 +295,14 @@ impl PackageManager for NpmManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        let output = npm_cmd()
-            .args(["list", "-g", "--depth=0", "--json"])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "npm".into(),
-                source: e,
-            })?;
+        let decision = resolve_npm_prefix()?;
+        let mut cmd = npm_cmd();
+        cmd.args(["list", "-g", "--depth=0", "--json"]);
+        apply_prefix_flag(&mut cmd, &decision);
+        let output = cmd.output().map_err(|e| PackageError::CommandFailed {
+            manager: "npm".into(),
+            source: e,
+        })?;
         // npm list exits non-zero if there are peer dep issues, but still produces valid JSON
         parse_npm_list_packages(&String::from_utf8_lossy(&output.stdout))
     }
@@ -127,14 +311,24 @@ impl PackageManager for NpmManager {
         if packages.is_empty() {
             return Ok(());
         }
+        let decision = resolve_npm_prefix()?;
+        if decision.is_fallback
+            && let Some(ref prefix) = decision.prefix
+        {
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "npm has no writable global prefix; installing into {} — add {} to PATH",
+                    prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
+                    npm_bin_dir(prefix).display(), // native-ok: human-facing terminal notice, not a persisted key
+                ),
+            );
+        }
         let label = format!("npm install -g {}", packages.join(" "));
-        run_pkg_cmd_live(
-            printer,
-            "npm",
-            npm_cmd().arg("install").arg("-g").args(packages),
-            &label,
-            "install",
-        )?;
+        let mut cmd = npm_cmd();
+        cmd.arg("install").arg("-g").args(packages);
+        apply_prefix_flag(&mut cmd, &decision);
+        run_pkg_cmd_live(printer, "npm", &mut cmd, &label, "install")?;
         Ok(())
     }
 
@@ -142,25 +336,21 @@ impl PackageManager for NpmManager {
         if packages.is_empty() {
             return Ok(());
         }
+        let decision = resolve_npm_prefix()?;
         let label = format!("npm uninstall -g {}", packages.join(" "));
-        run_pkg_cmd_live(
-            printer,
-            "npm",
-            npm_cmd().arg("uninstall").arg("-g").args(packages),
-            &label,
-            "uninstall",
-        )?;
+        let mut cmd = npm_cmd();
+        cmd.arg("uninstall").arg("-g").args(packages);
+        apply_prefix_flag(&mut cmd, &decision);
+        run_pkg_cmd_live(printer, "npm", &mut cmd, &label, "uninstall")?;
         Ok(())
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        run_pkg_cmd_live(
-            printer,
-            "npm",
-            npm_cmd().args(["update", "-g"]),
-            "npm update -g",
-            "update",
-        )?;
+        let decision = resolve_npm_prefix()?;
+        let mut cmd = npm_cmd();
+        cmd.args(["update", "-g"]);
+        apply_prefix_flag(&mut cmd, &decision);
+        run_pkg_cmd_live(printer, "npm", &mut cmd, "npm update -g", "update")?;
         Ok(())
     }
 
@@ -185,13 +375,14 @@ impl PackageManager for NpmManager {
     }
 
     fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
-        let output = npm_cmd()
-            .args(["list", "-g", "--depth=0", "--json"])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "npm".into(),
-                source: e,
-            })?;
+        let decision = resolve_npm_prefix()?;
+        let mut cmd = npm_cmd();
+        cmd.args(["list", "-g", "--depth=0", "--json"]);
+        apply_prefix_flag(&mut cmd, &decision);
+        let output = cmd.output().map_err(|e| PackageError::CommandFailed {
+            manager: "npm".into(),
+            source: e,
+        })?;
         // npm list exits non-zero on peer dep issues but still produces valid JSON
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parsed: serde_json::Value =
@@ -553,10 +744,102 @@ mod tests {
 
         const SHIM_ENV: &str = "CFGD_NPM_BIN";
 
+        /// Argv-branching CFGD_NPM_BIN shim: answers `npm config get prefix`
+        /// with a caller-chosen directory, and every other invocation with a
+        /// canned exit/stdout/stderr. `ToolShim`'s single fixed response is
+        /// unusable here because the prefix resolver and the actual npm
+        /// operation share this seam but must answer differently.
+        struct NpmShim {
+            _tmp: tempfile::TempDir,
+            log_path: PathBuf,
+        }
+
+        impl NpmShim {
+            fn install(
+                configured_prefix: &Path,
+                exit_code: i32,
+                stdout: &str,
+                stderr: &str,
+            ) -> Self {
+                use std::os::unix::fs::PermissionsExt;
+                let tmp = tempfile::TempDir::new().expect("tempdir");
+                let bin_path = tmp.path().join("shim-npm");
+                let log_path = tmp.path().join("argv.log");
+
+                let stdout_lit = stdout.replace('\'', "'\\''");
+                let stderr_lit = stderr.replace('\'', "'\\''");
+                let log_lit = log_path.display().to_string().replace('\'', "'\\''");
+                let prefix_lit = configured_prefix
+                    .display()
+                    .to_string()
+                    .replace('\'', "'\\''");
+
+                let script = format!(
+                    "#!/bin/sh\n\
+                     printf '%s\\n' \"$*\" >> '{log_lit}'\n\
+                     case \"$*\" in\n\
+                     'config get prefix') printf '%s' '{prefix_lit}' ;;\n\
+                     *) printf '%s' '{stdout_lit}'; printf '%s' '{stderr_lit}' 1>&2; exit {exit_code} ;;\n\
+                     esac\n",
+                );
+                std::fs::write(&bin_path, script).expect("write shim");
+                let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&bin_path, perms).expect("chmod");
+
+                // SAFETY: callers wrap with `serial_test::serial`.
+                unsafe {
+                    std::env::set_var(SHIM_ENV, &bin_path);
+                }
+
+                Self {
+                    _tmp: tmp,
+                    log_path,
+                }
+            }
+
+            /// Answers `config get prefix` with a fresh writable tempdir —
+            /// the common "working case" — returning it alongside the shim
+            /// so callers can assert against it.
+            fn with_writable_prefix(
+                exit_code: i32,
+                stdout: &str,
+                stderr: &str,
+            ) -> (Self, tempfile::TempDir) {
+                let prefix_dir = tempfile::tempdir().expect("tempdir");
+                let shim = Self::install(prefix_dir.path(), exit_code, stdout, stderr);
+                (shim, prefix_dir)
+            }
+
+            fn argv_log(&self) -> String {
+                std::fs::read_to_string(&self.log_path).unwrap_or_default()
+            }
+        }
+
+        impl Drop for NpmShim {
+            fn drop(&mut self) {
+                unsafe {
+                    std::env::remove_var(SHIM_ENV);
+                }
+            }
+        }
+
+        /// Unset both npm prefix env-vars for the test body so a real
+        /// `npm_config_prefix`/`NPM_CONFIG_PREFIX` set in the ambient
+        /// environment can never short-circuit the resolver ahead of the
+        /// shim-driven scenario under test.
+        fn clear_npm_env_prefix() -> (EnvVarGuard, EnvVarGuard) {
+            (
+                EnvVarGuard::unset("npm_config_prefix"),
+                EnvVarGuard::unset("NPM_CONFIG_PREFIX"),
+            )
+        }
+
         #[test]
         #[serial]
         fn npm_install_passes_install_g_with_packages() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let _clear = clear_npm_env_prefix();
+            let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             NpmManager
                 .install(&["typescript".into(), "eslint".into()], &p)
@@ -565,6 +848,11 @@ mod tests {
             assert!(
                 argv.contains("install -g typescript eslint"),
                 "argv must include install -g + packages: {argv}"
+            );
+            assert!(
+                !argv.contains("--prefix"),
+                "a writable configured prefix must not add --prefix (no gratuitous \
+                 change to the working case): {argv}"
             );
         }
 
@@ -580,21 +868,27 @@ mod tests {
         #[test]
         #[serial]
         fn npm_uninstall_passes_uninstall_g_with_packages() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let _clear = clear_npm_env_prefix();
+            let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             NpmManager
                 .uninstall(&["typescript".into()], &p)
                 .expect("Ok");
-            assert!(s.argv_log().contains("uninstall -g typescript"));
+            let argv = s.argv_log();
+            assert!(argv.contains("uninstall -g typescript"));
+            assert!(!argv.contains("--prefix"), "got: {argv}");
         }
 
         #[test]
         #[serial]
         fn npm_update_runs_update_g() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let _clear = clear_npm_env_prefix();
+            let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             NpmManager.update(&p).expect("Ok");
-            assert!(s.argv_log().contains("update -g"));
+            let argv = s.argv_log();
+            assert!(argv.contains("update -g"));
+            assert!(!argv.contains("--prefix"), "got: {argv}");
         }
 
         #[test]
@@ -640,9 +934,10 @@ mod tests {
         #[test]
         #[serial]
         fn npm_installed_packages_parses_npm_list_json() {
+            let _clear = clear_npm_env_prefix();
             let json = r#"{"dependencies":{"typescript":{"version":"5.3.3"},"eslint":{"version":"8.0.0"}}}"#;
             // npm list exits non-zero on peer dep issues; stdout still valid JSON.
-            let _s = ToolShim::install(SHIM_ENV, 1, json, "peer dep issues");
+            let (_s, _prefix_dir) = NpmShim::with_writable_prefix(1, json, "peer dep issues");
             let pkgs = NpmManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("typescript"));
@@ -652,14 +947,31 @@ mod tests {
         #[test]
         #[serial]
         fn npm_installed_packages_with_versions_includes_versions() {
+            let _clear = clear_npm_env_prefix();
             let json = r#"{"dependencies":{"typescript":{"version":"5.3.3"}}}"#;
-            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let (_s, _prefix_dir) = NpmShim::with_writable_prefix(0, json, "");
             let pkgs = NpmManager.installed_packages_with_versions().expect("Ok");
             let ts = pkgs
                 .iter()
                 .find(|p| p.name == "typescript")
                 .expect("typescript present");
             assert_eq!(ts.version, "5.3.3");
+        }
+
+        /// A writable configured prefix must not add `--prefix` to a listing
+        /// call either — the argv-omission guarantee applies uniformly, not
+        /// just to `install`.
+        #[test]
+        #[serial]
+        fn npm_installed_packages_uses_configured_prefix_without_prefix_flag() {
+            let _clear = clear_npm_env_prefix();
+            let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "{}", "");
+            NpmManager.installed_packages().expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                !argv.contains("--prefix"),
+                "a writable configured prefix must not add --prefix: {argv}"
+            );
         }
 
         // bootstrap: brew-first cascade. A successful brew shim exercises the
@@ -729,9 +1041,10 @@ mod tests {
         #[test]
         #[serial]
         fn npm_installed_packages_with_versions_invalid_json_maps_to_list_failed() {
+            let _clear = clear_npm_env_prefix();
             // npm list exits 0 here but emits non-JSON; the version path must
             // surface ListFailed with the parse-error context, not panic.
-            let _s = ToolShim::install(SHIM_ENV, 0, "this is not json", "");
+            let (_s, _prefix_dir) = NpmShim::with_writable_prefix(0, "this is not json", "");
             let err = NpmManager
                 .installed_packages_with_versions()
                 .expect_err("invalid JSON must surface as ListFailed");
@@ -739,6 +1052,133 @@ mod tests {
             assert!(
                 msg.contains("npm") && msg.contains("failed to parse npm list output"),
                 "error must name npm + parse-failure context, got: {msg}"
+            );
+        }
+
+        // -------------------------------------------------------------
+        // Prefix-resolution behaviour (the actual defect this file fixes).
+        // -------------------------------------------------------------
+
+        /// Toggle write permission on `path`. Restores to a normal writable
+        /// mode before the tempdir's own `Drop` removes it, since an empty
+        /// directory only needs write on its PARENT to be rmdir'd, but
+        /// leaving a 0o555 directory around outlives the guarantee this test
+        /// relies on to clean up after itself.
+        fn set_writable(path: &Path, writable: bool) {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if writable { 0o755 } else { 0o555 };
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+                .expect("chmod probe dir");
+        }
+
+        /// Pull the single token immediately following `--prefix` out of a
+        /// space-joined argv line.
+        fn prefix_value(argv_line: &str) -> String {
+            let tokens: Vec<&str> = argv_line.split_whitespace().collect();
+            let idx = tokens
+                .iter()
+                .position(|&t| t == "--prefix")
+                .expect("--prefix token present");
+            tokens[idx + 1].to_string()
+        }
+
+        #[test]
+        #[serial]
+        fn npm_install_uses_fallback_prefix_on_argv_when_configured_prefix_unwritable() {
+            // Root bypasses the DAC write-probe entirely (root can always
+            // create the probe file), so the unwritable scenario this test
+            // constructs cannot exist under root — matches the guard used
+            // throughout this codebase's other permission-probe tests.
+            if cfgd_core::is_root() {
+                return;
+            }
+            let _clear = clear_npm_env_prefix();
+            let unwritable = tempfile::tempdir().expect("tempdir");
+            set_writable(unwritable.path(), false);
+            let home = tempfile::tempdir().expect("tempdir");
+            let s = NpmShim::install(unwritable.path(), 0, "", "");
+            let p = test_printer();
+            cfgd_core::with_test_home(home.path(), || {
+                NpmManager.install(&["typescript".into()], &p).expect("Ok");
+            });
+            set_writable(unwritable.path(), true);
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("--prefix"),
+                "an unwritable configured prefix must fall back onto argv: {argv}"
+            );
+            assert!(
+                !argv.contains(unwritable.path().to_str().expect("utf8 tempdir path")),
+                "the rejected unwritable prefix must never itself land on argv: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_install_and_installed_packages_resolve_to_same_fallback_prefix() {
+            if cfgd_core::is_root() {
+                return;
+            }
+            let _clear = clear_npm_env_prefix();
+            let unwritable = tempfile::tempdir().expect("tempdir");
+            set_writable(unwritable.path(), false);
+            let home = tempfile::tempdir().expect("tempdir");
+            let s = NpmShim::install(unwritable.path(), 0, "{}", "");
+            let p = test_printer();
+            cfgd_core::with_test_home(home.path(), || {
+                NpmManager
+                    .install(&["typescript".into()], &p)
+                    .expect("install Ok");
+                NpmManager.installed_packages().expect("list Ok");
+            });
+            set_writable(unwritable.path(), true);
+            let argv = s.argv_log();
+            let prefix_lines: Vec<&str> = argv.lines().filter(|l| l.contains("--prefix")).collect();
+            assert_eq!(
+                prefix_lines.len(),
+                2,
+                "both install and installed_packages must carry --prefix: {argv}"
+            );
+            assert_eq!(
+                prefix_value(prefix_lines[0]),
+                prefix_value(prefix_lines[1]),
+                "install and installed_packages must resolve to the identical \
+                 fallback prefix — divergence here means state never converges: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_config_prefix_env_var_is_left_alone() {
+            let _g = EnvVarGuard::set("npm_config_prefix", "/wherever/the/user/pinned/it");
+            let _unset_upper = EnvVarGuard::unset("NPM_CONFIG_PREFIX");
+            let decision = resolve_npm_prefix_for(false).expect("Ok");
+            assert_eq!(
+                decision,
+                NpmPrefixDecision {
+                    prefix: None,
+                    is_fallback: false,
+                },
+                "a pre-set npm_config_prefix must leave the resolver's decision \
+                 as a no-op, never a fallback"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_elevated_run_is_not_overridden() {
+            // Drive the decision function directly with elevated=true rather
+            // than requiring real root, per the brief: this is what keeps
+            // the test honest regardless of which user runs the suite.
+            let _clear = clear_npm_env_prefix();
+            let decision = resolve_npm_prefix_for(true).expect("Ok");
+            assert_eq!(
+                decision,
+                NpmPrefixDecision {
+                    prefix: None,
+                    is_fallback: false,
+                },
+                "an elevated process must never have its prefix overridden"
             );
         }
     }
