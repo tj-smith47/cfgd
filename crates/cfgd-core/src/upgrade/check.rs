@@ -102,7 +102,7 @@ fn is_optout_value_set(var: &str) -> bool {
     }
 }
 
-/// Pure interval/`Manual` gate: should a fresh network check run *now*?
+/// The opt-out/interval/`Manual` gate: should a fresh network check run *now*?
 ///
 /// * an opt-out env var is set (see [`update_optout_var`]) → never (`false`),
 ///   ahead of every other condition — this is the single choke point every
@@ -279,9 +279,28 @@ pub fn run_update_check(
 mod tests {
     use super::*;
     use crate::config::SkillUpdateConfig;
+    use crate::test_helpers::EnvVarGuard;
     use semver::Version;
+    use serial_test::serial;
 
     const HOUR: u64 = 3600;
+
+    const CFGD_VAR: &str = "CFGD_NO_UPDATE_CHECK";
+    const NPM_VAR: &str = "NO_UPDATE_NOTIFIER";
+    const DNT_VAR: &str = "DO_NOT_TRACK";
+
+    /// Guard all three opt-out vars unset. Every test that reaches
+    /// [`should_check`] needs this: the gate reads the process environment, so a
+    /// `DO_NOT_TRACK` exported in the developer's shell profile — or on a CI
+    /// runner, which is exactly this feature's audience — would otherwise
+    /// suppress the check a test expects to happen and fail it spuriously.
+    fn all_unset() -> (EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        (
+            EnvVarGuard::unset(CFGD_VAR),
+            EnvVarGuard::unset(NPM_VAR),
+            EnvVarGuard::unset(DNT_VAR),
+        )
+    }
 
     fn config(policy: UpdatePolicy) -> UpdateConfig {
         UpdateConfig {
@@ -365,10 +384,12 @@ mod tests {
         }
     }
 
-    // ----- pure gate -----
+    // ----- the check gate -----
 
     #[test]
+    #[serial]
     fn manual_policy_never_checks() {
+        let _env = all_unset();
         assert!(!should_check(
             UpdatePolicy::Manual,
             Duration::from_secs(0),
@@ -378,7 +399,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn no_last_checked_always_checks() {
+        let _env = all_unset();
         assert!(should_check(
             UpdatePolicy::Prompt,
             Duration::from_secs(HOUR),
@@ -388,7 +411,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn within_interval_does_not_check() {
+        let _env = all_unset();
         // last check 1h ago, interval 24h → suppressed.
         assert!(!should_check(
             UpdatePolicy::Notify,
@@ -399,7 +424,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn past_interval_checks() {
+        let _env = all_unset();
         assert!(should_check(
             UpdatePolicy::Notify,
             Duration::from_secs(HOUR),
@@ -409,7 +436,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn backwards_clock_suppresses_rather_than_forces() {
+        let _env = all_unset();
         // now < last_checked: saturating_sub → 0 < interval → no check.
         assert!(!should_check(
             UpdatePolicy::Auto,
@@ -474,7 +503,9 @@ mod tests {
     // ----- orchestration -----
 
     #[test]
+    #[serial]
     fn manual_policy_skips_check_entirely() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Manual), 100, None, &mut effects);
@@ -493,7 +524,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn notify_records_available_without_applying() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Notify), 100, None, &mut effects);
@@ -507,7 +540,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn auto_applies_without_prompting() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -517,7 +552,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn prompt_interactive_confirms_then_applies() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -527,7 +564,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn prompt_declined_degrades_to_surface() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -538,7 +577,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn prompt_non_interactive_degrades_to_notify() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(false, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -548,7 +589,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn no_update_available_records_but_does_not_surface() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(false), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -558,7 +601,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn within_interval_short_circuits_before_fetch() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         // last check 1h ago vs default 24h interval.
@@ -573,7 +618,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn fetch_error_is_non_fatal_and_records_check() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), false, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -588,7 +635,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn channel_is_threaded_to_fetch() {
+        let _env = all_unset();
         let spy = Spy::new();
         let mut cfg = config(UpdatePolicy::Notify);
         cfg.channel = Some("beta".to_string());
@@ -602,7 +651,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn apply_failure_degrades_to_surface() {
+        let _env = all_unset();
         let spy = Spy::new();
         // Auto policy, apply returns false (install failed).
         let mut effects = spy.effects(true, false, check(true), true, false, false);
@@ -619,22 +670,6 @@ mod tests {
 
     mod optout {
         use super::*;
-        use crate::test_helpers::EnvVarGuard;
-        use serial_test::serial;
-
-        const CFGD_VAR: &str = "CFGD_NO_UPDATE_CHECK";
-        const NPM_VAR: &str = "NO_UPDATE_NOTIFIER";
-        const DNT_VAR: &str = "DO_NOT_TRACK";
-
-        /// Guard all three opt-out vars unset, so a value in the developer's
-        /// real environment cannot make a test that expects "none set" lie.
-        fn all_unset() -> (EnvVarGuard, EnvVarGuard, EnvVarGuard) {
-            (
-                EnvVarGuard::unset(CFGD_VAR),
-                EnvVarGuard::unset(NPM_VAR),
-                EnvVarGuard::unset(DNT_VAR),
-            )
-        }
 
         #[test]
         #[serial]
