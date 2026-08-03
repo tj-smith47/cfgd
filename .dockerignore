@@ -28,5 +28,12 @@
 # Allow README for labels
 !README.md
 
+# Allow the demo container's assets: demo/Dockerfile is read directly by
+# `docker build -f` and never needs this file, but demo/bin/cfgd (a host-built
+# binary staged there before `docker build` — see demo/Dockerfile for why it
+# isn't copied straight out of target/) does.
+!demo/
+!demo/**
+
 # Re-ignore build artifacts inside allowed dirs
 target/

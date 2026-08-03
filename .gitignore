@@ -29,6 +29,10 @@
 !manifests/
 !manifests/**
 
+# Demo container for the README VHS recording (see demo/Dockerfile)
+!demo/
+!demo/**
+
 # Crossplane function
 !function-cfgd/
 !function-cfgd/**
@@ -100,6 +104,9 @@
 # Re-ignore build artifacts inside allowed dirs
 target/
 **/*.rs.bk
+# Host-built cfgd binary staged for `docker build -f demo/Dockerfile`; never
+# a source artifact, always regenerated from `task build`.
+demo/bin/
 
 # Re-ignore OS/IDE junk inside allowed dirs
 .DS_Store
