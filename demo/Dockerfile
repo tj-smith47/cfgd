@@ -20,8 +20,16 @@ RUN echo "linuxbrew ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/linuxbrew
 
 # cfgd enters as a prebuilt host binary, never built in-container: building
 # Rust here would add a toolchain and minutes of compile time the demo has no
-# use for. Staged at demo/bin/cfgd by `task build` before `docker build` runs
-# (see .dockerignore — target/ itself never enters the build context).
+# use for. Staged at demo/bin/cfgd before `docker build` runs (see
+# .dockerignore — target/ itself never enters the build context).
+#
+# Built for x86_64-unknown-linux-musl, not the default gnu target: a
+# dynamically-linked gnu binary requires the base image's glibc to be new
+# enough, and homebrew/brew:latest (Ubuntu 22.04, glibc 2.35) is older than
+# a build host can be. The musl build is statically linked with no glibc
+# dependency at all — the same artifact cfgd's own release pipeline already
+# ships in every deb/rpm/apk package (.anodizer.yaml build id `cfgd-musl`)
+# for exactly this reason.
 COPY --chmod=0755 demo/bin/cfgd /usr/local/bin/cfgd
 
 WORKDIR /home/linuxbrew/cfgd
