@@ -111,6 +111,9 @@ target/
 # Host-built cfgd binary staged for `docker build -f demo/Dockerfile`; never
 # a source artifact, always regenerated from `task build`.
 demo/bin/
+# Scratch space for `demo/init.tape`: thousands of raw VHS frames plus the
+# uncompressed capture, all regenerated on every recording.
+demo/.out/
 
 # Re-ignore OS/IDE junk inside allowed dirs
 .DS_Store
