@@ -41,6 +41,14 @@ impl<'a> super::Reconciler<'a> {
                 )?;
 
                 let phase_name = phase.display_name();
+                // Resource-id / state-matching key, NOT a display string: this
+                // return value becomes `ActionResult.description`, which
+                // `parse_resource_from_description` parses back into a
+                // managed-resource id. Condensing `run_str()` here would
+                // reshape the id and break drift matching against every
+                // already-recorded state row for a module with a multi-line
+                // inline script — leave it byte-identical (mirrors
+                // `format_action_description` in `format.rs`).
                 Ok((
                     format!("script:{}:{}", phase_name, entry.run_str()),
                     changed,

@@ -47,41 +47,46 @@ pub(crate) fn update_script_list(
     field: fn(&mut config::ScriptSpec) -> &mut Vec<config::ScriptEntry>,
     printer: &cfgd_core::output::Printer,
 ) -> u32 {
-    use cfgd_core::output::Role;
+    use cfgd_core::output::{Role, condense_script_label};
     let mut changes = 0u32;
     for script in add {
         let scripts = scripts_opt.get_or_insert_with(Default::default);
         let list = field(scripts);
         let entry = config::ScriptEntry::Simple(script.clone());
+        // `--add-*-script` / `--remove-*-script` take the same free-form body
+        // a YAML `run:` field would; condense before any status subject below
+        // so a multi-line value passed on the CLI never lands raw.
+        let label_text = condense_script_label(script);
         if list.contains(&entry) {
             printer.status_simple(
                 Role::Warn,
-                format!("{} script '{}' already exists", label, script),
+                format!("{} script '{}' already exists", label, label_text),
             );
             continue;
         }
         list.push(entry);
-        printer.status_simple(Role::Ok, format!("Added {}: {}", label, script));
+        printer.status_simple(Role::Ok, format!("Added {}: {}", label, label_text));
         changes += 1;
     }
     for script in remove {
+        let label_text = condense_script_label(script);
         if let Some(scripts) = scripts_opt.as_mut() {
             let list = field(scripts);
             let before = list.len();
             list.retain(|e| e.run_str() != script.as_str());
             if list.len() < before {
-                printer.status_simple(Role::Ok, format!("Removed {}: {}", label, script));
+                printer.status_simple(Role::Ok, format!("Removed {}: {}", label, label_text));
                 changes += 1;
             } else {
                 printer.status_simple(
                     Role::Warn,
-                    format!("{} script '{}' not found", label, script),
+                    format!("{} script '{}' not found", label, label_text),
                 );
             }
         } else {
             printer.status_simple(
                 Role::Warn,
-                format!("{} script '{}' not found", label, script),
+                format!("{} script '{}' not found", label, label_text),
             );
         }
     }

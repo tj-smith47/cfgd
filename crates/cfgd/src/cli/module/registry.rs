@@ -510,7 +510,18 @@ pub(super) fn print_module_review_summary(
         );
         let scripts_sec = mod_sec.section("Post-apply");
         for script in &scripts.post_apply {
-            scripts_sec.bullet(format!("$ {}", script));
+            let body = script.run_str();
+            if body.lines().filter(|l| !l.trim().is_empty()).count() > 1 {
+                // `.bullet()` cannot carry a body containing `\n` (the
+                // `write_line` debug_assert). This is the pre-install
+                // security review of a remote module's scripts — condensing
+                // to the first line would hide the rest of the script from
+                // the user right before they approve running it on their
+                // machine, so show it verbatim via `code_block` instead.
+                scripts_sec.code_block(body.lines().map(|l| format!("$ {l}")));
+            } else {
+                scripts_sec.bullet(format!("$ {}", script));
+            }
         }
     }
 

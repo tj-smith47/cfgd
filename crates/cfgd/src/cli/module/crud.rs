@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, condense_script_label};
 
 pub fn cmd_module_create(
     cli: &Cli,
@@ -563,7 +563,9 @@ pub fn cmd_module_update_local(
         }
     }
 
-    // Add post-apply scripts
+    // Add post-apply scripts. `--add-post-apply-script` takes the same
+    // free-form body a YAML `run:` field would, so condense before it lands
+    // in a status subject below — a multi-line value must never go raw.
     for script in &add_post_apply {
         let scripts = doc
             .spec
@@ -572,7 +574,10 @@ pub fn cmd_module_update_local(
         let entry = config::ScriptEntry::Simple(script.clone());
         if !scripts.post_apply.contains(&entry) {
             scripts.post_apply.push(entry);
-            printer.status_simple(Role::Ok, format!("Added post-apply script: {}", script));
+            printer.status_simple(
+                Role::Ok,
+                format!("Added post-apply script: {}", condense_script_label(script)),
+            );
             changes += 1;
         }
     }
@@ -591,11 +596,15 @@ pub fn cmd_module_update_local(
                 scripts.post_apply.len() < before
             })
             .unwrap_or(false);
+        let label_text = condense_script_label(script);
         if removed {
-            printer.status_simple(Role::Ok, format!("Removed post-apply script: {}", script));
+            printer.status_simple(
+                Role::Ok,
+                format!("Removed post-apply script: {}", label_text),
+            );
             changes += 1;
         } else {
-            printer.status_simple(Role::Warn, format!("Script '{}' not found", script));
+            printer.status_simple(Role::Warn, format!("Script '{}' not found", label_text));
         }
     }
 

@@ -338,10 +338,19 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
     let old_script_set: HashSet<&str> = old_scripts.into_iter().collect();
     let new_script_set: HashSet<&str> = new_scripts.into_iter().collect();
     for script in new_script_set.difference(&old_script_set) {
-        changes.push(format!("+ postApply script: {script}"));
+        // Diff on the raw body (above) so two scripts differing only past
+        // their first line still register as a change; condense only for
+        // this display line, which a `bullet()` call renders as one row.
+        changes.push(format!(
+            "+ postApply script: {}",
+            crate::output::condense_script_label(script)
+        ));
     }
     for script in old_script_set.difference(&new_script_set) {
-        changes.push(format!("- postApply script: {script}"));
+        changes.push(format!(
+            "- postApply script: {}",
+            crate::output::condense_script_label(script)
+        ));
     }
 
     if changes.is_empty() {

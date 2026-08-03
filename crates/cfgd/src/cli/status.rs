@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,10 +70,19 @@ pub fn build_fleet_status_doc(
     } else {
         doc.section("Drift", |s| {
             output.drift.iter().fold(s, |s, event| {
+                // A "script" resource_id is the raw run_str body (preserved
+                // byte-identical for UPSERT matching against prior drift
+                // rows) — condense only here, at the point it enters a status
+                // subject, so a multi-line inline script never lands raw.
+                let display_id = if event.resource_type == "script" {
+                    condense_script_label(&event.resource_id)
+                } else {
+                    event.resource_id.clone()
+                };
                 let subject = format!(
                     "{} {} — want: {}, have: {}",
                     event.resource_type,
-                    event.resource_id,
+                    display_id,
                     event.expected.as_deref().unwrap_or("?"),
                     event.actual.as_deref().unwrap_or("?"),
                 );
@@ -167,11 +176,15 @@ pub fn build_fleet_status_doc(
         |s, items| {
             let mut t = Table::new(["Type", "Resource", "Source"]);
             for r in items {
-                t = t.row([
-                    r.resource_type.clone(),
-                    r.resource_id.clone(),
-                    r.source.clone(),
-                ]);
+                // Same rationale as the Drift section above: condense a
+                // "script" resource_id only for this table cell, never the
+                // stored id itself.
+                let display_id = if r.resource_type == "script" {
+                    condense_script_label(&r.resource_id)
+                } else {
+                    r.resource_id.clone()
+                };
+                t = t.row([r.resource_type.clone(), display_id, r.source.clone()]);
             }
             s.table(t)
         },

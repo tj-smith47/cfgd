@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -394,7 +394,9 @@ pub(crate) fn cmd_module_show(
         .map(|s| {
             s.post_apply
                 .iter()
-                .map(|e| e.run_str().to_string())
+                // Each entry renders as its own `.status()` subject below,
+                // which must never carry a multi-line inline script body raw.
+                .map(|e| condense_script_label(e.run_str()))
                 .collect()
         })
         .unwrap_or_default();

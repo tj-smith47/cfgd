@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
-use crate::output::{Printer, Role};
+use crate::output::{Printer, Role, condense_script_label};
 
 use super::types::{ReconcileContext, ScriptPhase};
 
@@ -161,6 +161,10 @@ pub(crate) fn execute_script(
     abort: Option<&crate::AbortFlag>,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
+    // Single-line, width-bounded stand-in for `run_str` in every status
+    // subject / error message below — `run_str` itself may be a multi-line
+    // inline script body, which a status subject must never carry.
+    let run_label = condense_script_label(run_str);
 
     // Hold the PATH read-lock across interpreter resolution + spawn: a
     // concurrent test emptying `PATH` (command-not-found paths) is a data race
@@ -196,7 +200,7 @@ pub(crate) fn execute_script(
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' cannot run: working directory is not a directory ({}): {}",
-                    run_str,
+                    run_label,
                     kind,
                     working_dir.posix()
                 ),
@@ -206,7 +210,7 @@ pub(crate) fn execute_script(
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' cannot run: working directory does not exist: {}",
-                    run_str,
+                    run_label,
                     working_dir.posix()
                 ),
             }));
@@ -215,7 +219,7 @@ pub(crate) fn execute_script(
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' cannot run: working directory inaccessible ({}): {}",
-                    run_str,
+                    run_label,
                     e,
                     working_dir.posix()
                 ),
@@ -223,7 +227,7 @@ pub(crate) fn execute_script(
         }
     }
 
-    let label = format!("Running script: {}", run_str);
+    let label = format!("Running script: {}", run_label);
 
     // Idempotency guards run BEFORE the body: `creates` (path existence),
     // then `onlyIf` (run only on zero exit), then `unless` (run only on
@@ -245,7 +249,7 @@ pub(crate) fn execute_script(
                 printer.status_simple(
                     Role::Skipped,
                     format!(
-                        "{run_str} — creates path already exists: {}",
+                        "{run_label} — creates path already exists: {}",
                         resolved_creates.posix()
                     ),
                 );
@@ -259,7 +263,7 @@ pub(crate) fn execute_script(
             if !success {
                 printer.status_simple(
                     Role::Skipped,
-                    format!("{run_str} — onlyIf condition not met: {cmd}"),
+                    format!("{run_label} — onlyIf condition not met: {cmd}"),
                 );
                 return Ok((label, false, None));
             }
@@ -271,7 +275,7 @@ pub(crate) fn execute_script(
             if success {
                 printer.status_simple(
                     Role::Skipped,
-                    format!("{run_str} — unless condition already holds: {cmd}"),
+                    format!("{run_label} — unless condition already holds: {cmd}"),
                 );
                 return Ok((label, false, None));
             }
@@ -389,7 +393,7 @@ pub(crate) fn execute_script(
             if !status.success() {
                 let exit_code = status.code().unwrap_or(-1);
                 return Err(CfgdError::Config(ConfigError::Invalid {
-                    message: format!("script '{}' failed (exit {})", run_str, exit_code),
+                    message: format!("script '{}' failed (exit {})", run_label, exit_code),
                 }));
             }
             return Ok((label, true, None));
@@ -399,7 +403,7 @@ pub(crate) fn execute_script(
             // hang on instant EOF. changed=false records this as a clean no-op.
             printer.status_simple(
                 Role::Warn,
-                format!("{run_str} — interactive script skipped: no TTY available"),
+                format!("{run_label} — interactive script skipped: no TTY available"),
             );
             return Ok((label, false, None));
         }
@@ -498,8 +502,8 @@ pub(crate) fn execute_script(
 
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
-                    pb.finish_fail(format!("{} (exit {})", run_str, exit_code));
-                    let base = format!("script '{}' failed (exit {})", run_str, exit_code);
+                    pb.finish_fail(format!("{} (exit {})", run_label, exit_code));
+                    let base = format!("script '{}' failed (exit {})", run_label, exit_code);
                     let message = match captured.as_deref().filter(|s| !s.is_empty()) {
                         Some(c) => format!("{base}\n{c}"),
                         None => base,
@@ -508,7 +512,7 @@ pub(crate) fn execute_script(
                 }
 
                 let elapsed = start.elapsed();
-                pb.finish_ok(format!("{} ({}s)", run_str, elapsed.as_secs()));
+                pb.finish_ok(format!("{} ({}s)", run_label, elapsed.as_secs()));
                 return Ok((label, true, captured));
             }
             None => {
@@ -533,18 +537,18 @@ pub(crate) fn execute_script(
                     && let Some(a) = abort
                     && a.aborted().is_some()
                 {
-                    pb.finish_fail(format!("{} interrupted", run_str));
+                    pb.finish_fail(format!("{} interrupted", run_label));
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
                     return Err(CfgdError::Config(ConfigError::Invalid {
-                        message: format!("script '{}' interrupted by signal", run_str),
+                        message: format!("script '{}' interrupted by signal", run_label),
                     }));
                 }
                 if let Some((reason, duration)) = kill_reason {
                     pb.finish_fail(format!(
                         "{} {} after {}s",
-                        run_str,
+                        run_label,
                         reason,
                         duration.as_secs()
                     ));
@@ -563,7 +567,7 @@ pub(crate) fn execute_script(
                     let captured = combine_script_output(&stdout_str, &stderr_str);
                     let base = format!(
                         "script '{}' {} after {}s",
-                        run_str,
+                        run_label,
                         reason,
                         duration.as_secs()
                     );

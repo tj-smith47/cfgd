@@ -1346,3 +1346,58 @@ fn build_script_env_reconcile_context_and_module_dir() {
         "module name must be omitted when None"
     );
 }
+
+// Regression: a `run:` script whose body spans multiple lines must never
+// hand a status subject the raw body, since `Renderer::write_line`
+// debug_asserts `!body.contains('\n')` — a release build would otherwise
+// print the whole script down the terminal as if it were one status line.
+// The `creates` guard triggers a `status_simple(Role::Skipped, ...)` call
+// built directly from `run_label` without ever spawning a shell, so this
+// exercises the real reconciler render path on every OS.
+#[test]
+fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let tmp = tempfile::tempdir().unwrap();
+    let entry = ScriptEntry::Full {
+        workdir: None,
+        run: "echo one\necho two\necho three".into(),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        // "." always exists relative to `working_dir`, so the guard fires
+        // unconditionally without ever spawning the (never-executed) body.
+        creates: Some(".".to_string()),
+        interactive: false,
+    };
+
+    let (label, changed, _captured) = execute_script(
+        &entry,
+        tmp.path(),
+        tmp.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+    )
+    .expect("creates guard must skip cleanly, not error");
+
+    assert!(!changed, "the creates guard must report a clean skip");
+    assert!(
+        !label.contains('\n'),
+        "execute_script's returned label must never carry the raw multi-line body: {label:?}"
+    );
+
+    let rendered = buf.lock().unwrap().clone();
+    assert!(
+        rendered.contains("echo one"),
+        "the first line must still reach the rendered skip subject: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("echo two") && !rendered.contains("echo three"),
+        "only the first line of a multi-line inline script may reach a status subject: {rendered:?}"
+    );
+}

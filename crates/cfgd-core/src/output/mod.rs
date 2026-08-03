@@ -95,6 +95,50 @@ pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {
     out
 }
 
+/// Rendered width cap for [`condense_script_label`], in `char`s.
+///
+/// Eighty columns is the terminal width a status subject can assume without
+/// wrapping on a standard, unresized terminal; `render_status_immediate`
+/// still appends a role glyph and an optional `(Ns)` duration suffix after
+/// the subject, so the cap leaves that trailing room rather than filling the
+/// full width with script text alone.
+const SCRIPT_LABEL_MAX_CHARS: usize = 80;
+
+/// Condense a `ScriptEntry::run_str()` body into a single-line, width-bounded
+/// label for status subjects and error messages.
+///
+/// An inline multi-line `run:` script handed straight to a status subject
+/// (spinner label, `status_simple`, `finish_ok`/`finish_fail`) trips
+/// `Renderer::write_line`'s `!body.contains('\n')` debug_assert; a release
+/// build instead prints the whole body down the terminal as if it were one
+/// status line. Takes the first non-empty, trimmed line and appends an
+/// ellipsis marker when either that line was truncated to fit
+/// `SCRIPT_LABEL_MAX_CHARS`, or further non-empty content follows it.
+///
+/// `str::lines()` only recognizes `\n` and `\r\n` as terminators, so a lone
+/// `\r` (a classic-Mac line ending, or any other stray carriage return) would
+/// otherwise ride along inside the "first line" untouched; it is scrubbed
+/// explicitly so the result can never carry a `\r` forward.
+pub fn condense_script_label(body: &str) -> String {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first_raw) = lines.next() else {
+        return String::new();
+    };
+    let first: String = first_raw.chars().filter(|&c| c != '\r').collect();
+    let more_lines = lines.next().is_some();
+
+    if first.chars().count() <= SCRIPT_LABEL_MAX_CHARS {
+        if more_lines {
+            format!("{first} …")
+        } else {
+            first
+        }
+    } else {
+        let truncated: String = first.chars().take(SCRIPT_LABEL_MAX_CHARS).collect();
+        format!("{truncated}…")
+    }
+}
+
 /// Build a stable-shaped error Doc for `bail!`-on-emit-then-fail sites.
 /// Carries an `error` category key + `name` so structured consumers
 /// (`-o json`) see a consistent payload on failure. Any extra fields in
@@ -189,6 +233,79 @@ mod collapse_tests {
             "first line — second line",
             "any Display value (e.g. io::Error) must work"
         );
+    }
+}
+
+#[cfg(test)]
+mod condense_script_label_tests {
+    use super::condense_script_label;
+
+    #[test]
+    fn multi_line_keeps_only_first_line_plus_ellipsis() {
+        let script = "echo start\napt-get update\napt-get install -y neovim\necho done";
+        assert_eq!(condense_script_label(script), "echo start …");
+    }
+
+    #[test]
+    fn leading_blank_lines_skipped() {
+        let script = "\n\n   \necho hello\necho world";
+        assert_eq!(condense_script_label(script), "echo hello …");
+    }
+
+    #[test]
+    fn single_line_no_trailing_ellipsis() {
+        assert_eq!(condense_script_label("echo hello"), "echo hello");
+    }
+
+    #[test]
+    fn whitespace_only_input_returns_empty() {
+        assert_eq!(condense_script_label("   \n\t\n   "), "");
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(condense_script_label(""), "");
+    }
+
+    #[test]
+    fn long_single_line_truncated_at_cap() {
+        let long = "x".repeat(200);
+        let label = condense_script_label(&long);
+        assert_eq!(label.chars().count(), super::SCRIPT_LABEL_MAX_CHARS + 1); // +1 for the appended `…`
+        assert!(label.ends_with('…'));
+        assert!(!label.contains('\n') && !label.contains('\r'));
+    }
+
+    #[test]
+    fn multibyte_utf8_truncated_without_panic() {
+        // Every char is 3 bytes in UTF-8 (☃ U+2603); a byte-index truncation
+        // at SCRIPT_LABEL_MAX_CHARS would land mid-character and panic.
+        let long = "☃".repeat(200);
+        let label = condense_script_label(&long);
+        assert_eq!(label.chars().count(), super::SCRIPT_LABEL_MAX_CHARS + 1);
+        assert!(label.ends_with('…'));
+    }
+
+    #[test]
+    fn lone_carriage_return_never_survives() {
+        // A bare `\r` (no following `\n`) is not a line terminator to
+        // `str::lines()`, so it stays embedded in the "first line" unless
+        // scrubbed explicitly.
+        let script = "echo hi\rthere\nnext line";
+        let label = condense_script_label(script);
+        assert!(!label.contains('\r'));
+        assert!(!label.contains('\n'));
+    }
+
+    #[test]
+    fn never_contains_newline_or_carriage_return() {
+        for input in ["a\nb\nc", "\r\n\r\n", "line\r\n", "\r", "a", ""] {
+            let label = condense_script_label(input);
+            assert!(
+                !label.contains('\n') && !label.contains('\r'),
+                "condense_script_label({input:?}) = {label:?} carried a line terminator"
+            );
+        }
     }
 }
 

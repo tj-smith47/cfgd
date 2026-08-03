@@ -86,6 +86,12 @@ pub fn format_action_description(action: &Action) -> String {
             }
         },
         Action::Script(sa) => match sa {
+            // Resource-id / state-matching key, NOT a display string: this
+            // return value is the SQLite `managed_resource` id and the
+            // `ActionResult.description` JSON field. Condensing `run_str()`
+            // here would reshape the id and break drift matching against
+            // every already-recorded state row for a module with a
+            // multi-line inline script — leave it byte-identical.
             ScriptAction::Run { entry, phase, .. } => {
                 format!("script:{}:{}", phase.display_name(), entry.run_str())
             }
@@ -286,7 +292,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     format!(
                         "run {} script: {}{}",
                         phase.display_name(),
-                        entry.run_str(),
+                        crate::output::condense_script_label(entry.run_str()),
                         provenance_suffix(origin)
                     )
                 }
@@ -364,7 +370,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
                 "[{}] {}: {}",
                 action.module_name,
                 phase.display_name(),
-                script.run_str()
+                crate::output::condense_script_label(script.run_str())
             )
         }
         ModuleActionKind::Skip { reason } => {

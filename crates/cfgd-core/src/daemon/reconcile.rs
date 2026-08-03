@@ -808,6 +808,14 @@ pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (Strin
         Action::Script(sa) => {
             use crate::reconciler::ScriptAction;
             match sa {
+                // Resource-id / state-matching key, NOT a display string:
+                // stored as `resource_id` in `drift_events` and matched by
+                // exact string on every tick (`UPDATE ... WHERE
+                // resource_id = ?`). Condensing `run_str()` here would
+                // reshape the id and re-open every already-recorded drift row
+                // for a module with a multi-line inline script. Display-side
+                // condensing for "script" rows happens where a status
+                // subject or table cell is actually built (`cli/status.rs`).
                 ScriptAction::Run { entry, .. } => {
                     ("script".to_string(), entry.run_str().to_string())
                 }
