@@ -1550,6 +1550,13 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
                 last_applied INTEGER, uninstall_cmd TEXT,
                 UNIQUE(resource_type, resource_id),
                 FOREIGN KEY (last_applied) REFERENCES applies(id));
+             CREATE TABLE module_file_manifest (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                module_name TEXT NOT NULL, file_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL, strategy TEXT NOT NULL,
+                last_applied INTEGER,
+                UNIQUE(module_name, file_path),
+                FOREIGN KEY (last_applied) REFERENCES applies(id));
              CREATE TABLE schema_version (version INTEGER NOT NULL);
              INSERT INTO schema_version (version) VALUES (5);
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
@@ -1621,17 +1628,26 @@ fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         store
             .upsert_managed_resource("secret", r"C:\Users\me\.env", "local", None, None)
             .unwrap();
-        // A package row must NOT be swept — it is the one type carrying an
+        // Every manager's bootstrap/skip collapsed onto the bare verb, losing
+        // the manager name. These go through upsert_managed_resource, so they
+        // carry no uninstall_cmd.
+        store
+            .upsert_managed_resource("package", "skip", "local", None, None)
+            .unwrap();
+        store
+            .upsert_managed_resource("package", "bootstrap", "local", None, None)
+            .unwrap();
+        // A real package row must NOT be swept — it is the one shape carrying an
         // uninstall_cmd that cannot be re-derived once its manager leaves config.
         store
             .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
             .unwrap();
+        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
+        // id-shape sweep", so appending migration 11 must not silently re-point
+        // it at the new tail.
         store
             .conn
-            .execute(
-                "UPDATE schema_version SET version = ?1",
-                params![(super::MIGRATIONS.len() - 1) as i64],
-            )
+            .execute("UPDATE schema_version SET version = 9", [])
             .unwrap();
     }
 
@@ -1645,9 +1661,21 @@ fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
                 .contains(&r.resource_type.as_str())),
         "migration 10 must remove every row whose id shape changed: {swept:?}"
     );
+    assert!(
+        !swept
+            .iter()
+            .any(|r| r.resource_type == "package"
+                && ["bootstrap", "skip"].contains(&&*r.resource_id)),
+        "the collapsed package bootstrap/skip ids must be swept: {swept:?}"
+    );
     let known = std::collections::HashSet::new();
     let orphans = state.orphaned_package_resources(&known).unwrap();
-    assert_eq!(orphans.len(), 1, "package rows must survive the sweep");
+    assert_eq!(
+        orphans.len(),
+        1,
+        "the sweep must spare real package rows: {orphans:?}"
+    );
+    assert_eq!(orphans[0].package, "widget");
     assert_eq!(orphans[0].uninstall_cmd.as_deref(), Some("widgetmgr rm"));
 
     // A fresh apply re-derives the rows under the corrected id — and two
@@ -1700,6 +1728,102 @@ fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         module_ids,
         vec!["nvim:skip".to_string(), "zsh:skip".to_string()],
         "each module must re-appear under its own name-qualified id"
+    );
+}
+
+#[test]
+fn migration_11_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let backup = |content: &[u8]| crate::FileState {
+        content: content.to_vec(),
+        content_hash: crate::sha256_hex(content),
+        permissions: None,
+        is_symlink: false,
+        symlink_target: None,
+        oversized: false,
+    };
+
+    {
+        let store = StateStore::open(&path).unwrap();
+        let apply_id = store
+            .record_apply("default", "h", ApplyStatus::Success, None)
+            .unwrap();
+        // Keys as a pre-fold Windows host wrote them.
+        store
+            .store_file_backup(apply_id, r"C:\Users\me\.gitconfig", &backup(b"win"))
+            .unwrap();
+        store
+            .store_file_backup(apply_id, r"\\srv\share\hosts", &backup(b"unc"))
+            .unwrap();
+        // A legal unix filename that merely contains a backslash: folding it
+        // would re-point the row at a different file, so it must survive exact.
+        store
+            .store_file_backup(apply_id, r"/home/me/od\d.conf", &backup(b"nix"))
+            .unwrap();
+        store
+            .upsert_module_file("nvim", r"C:\Users\me\init.lua", "h1", "Copy", apply_id)
+            .unwrap();
+        store
+            .upsert_module_file("nvim", "C:/Users/me/init.lua", "h2", "Copy", apply_id)
+            .unwrap();
+        store
+            .upsert_module_file("zsh", r"/home/me/od\d.zshrc", "h3", "Copy", apply_id)
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE schema_version SET version = 10", [])
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+
+    assert!(
+        state
+            .latest_backup_for_path("C:/Users/me/.gitconfig")
+            .unwrap()
+            .is_some(),
+        "a native-separator backup key must be reachable under its folded form"
+    );
+    assert!(
+        state
+            .latest_backup_for_path(r"C:\Users\me\.gitconfig")
+            .unwrap()
+            .is_none(),
+        "the native-separator key must not survive alongside the folded one"
+    );
+    assert!(
+        state
+            .latest_backup_for_path("//srv/share/hosts")
+            .unwrap()
+            .is_some(),
+        "a UNC key must fold too"
+    );
+    assert!(
+        state
+            .latest_backup_for_path(r"/home/me/od\d.conf")
+            .unwrap()
+            .is_some(),
+        "a unix filename containing a backslash must be left exact"
+    );
+
+    let nvim = state.module_deployed_files("nvim").unwrap();
+    assert_eq!(
+        nvim.len(),
+        1,
+        "folding must collapse the two shapes onto one manifest row: {nvim:?}"
+    );
+    assert_eq!(nvim[0].file_path, "C:/Users/me/init.lua");
+    assert_eq!(
+        nvim[0].content_hash, "h1",
+        "OR REPLACE keeps the row being folded and drops the twin it collides with"
+    );
+
+    let zsh = state.module_deployed_files("zsh").unwrap();
+    assert_eq!(zsh.len(), 1);
+    assert_eq!(
+        zsh[0].file_path, r"/home/me/od\d.zshrc",
+        "a unix manifest key containing a backslash must be left exact"
     );
 }
 

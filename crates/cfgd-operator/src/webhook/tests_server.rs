@@ -246,9 +246,8 @@ async fn run_webhook_server_handles_admission_post_over_tls() {
 
 // ---------------------------------------------------------------------------
 // Sad path — empty cert file yields the explicit "no certificates found"
-// branch. This exercises L42-47 in mod.rs which the cert-loader unit
-// tests don't cover (they exercise load_certs but not the empty-vec
-// guard inside run_webhook_server).
+// branch. The cert-loader unit tests exercise load_certs but not the
+// empty-vec guard inside run_webhook_server, which is what this reaches.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

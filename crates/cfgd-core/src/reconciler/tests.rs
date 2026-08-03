@@ -5286,6 +5286,32 @@ fn parse_resource_from_description_keeps_module_name_in_the_id() {
 }
 
 #[test]
+fn parse_resource_from_description_keeps_manager_name_in_the_package_id() {
+    // `package:{manager}:{verb}` has the same shape hazard as `module`. Only
+    // bootstrap/skip reach this parser — install/uninstall are split
+    // per-package by `parse_package_description` first — and both of those
+    // collapsed onto the bare verb, so every manager shared one row.
+    let (ty_brew, id_brew) = super::parse_resource_from_description("package:brew:skip");
+    let (ty_apt, id_apt) = super::parse_resource_from_description("package:apt:skip");
+    assert_eq!(ty_brew, "package");
+    assert_eq!(ty_apt, "package");
+    assert_eq!(id_brew, "brew:skip");
+    assert_eq!(id_apt, "apt:skip");
+    assert_ne!(
+        id_brew, id_apt,
+        "two managers skipping must not share one resource id"
+    );
+    assert_eq!(
+        super::parse_resource_from_description("package:brew:bootstrap").1,
+        "brew:bootstrap"
+    );
+    assert_ne!(
+        super::parse_resource_from_description("package:apt:bootstrap").1,
+        "brew:bootstrap"
+    );
+}
+
+#[test]
 fn provenance_suffix_local_is_empty() {
     assert_eq!(super::provenance_suffix("local"), "");
     assert_eq!(super::provenance_suffix(""), "");
@@ -11956,8 +11982,8 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
 }
 
 // ---------------------------------------------------------------------------
-// update_module_state: covers apply.rs L62-78 (git_sources_json branch) by
-// applying a plan that includes a module with `is_git_source=true` files.
+// update_module_state: covers the git_sources_json branch by applying a plan
+// that includes a module with `is_git_source=true` files.
 // ---------------------------------------------------------------------------
 
 #[test]

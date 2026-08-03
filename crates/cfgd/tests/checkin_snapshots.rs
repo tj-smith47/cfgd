@@ -92,8 +92,8 @@ fn checkin_drift_reported_human() {
     );
 }
 
-/// Drift count zero — the no-drift branch emits `Role::Info`, not `Role::Ok`
-/// (T6 Info-on-zero pattern).
+/// Drift count zero — the no-drift branch emits `Role::Info`, not `Role::Ok`:
+/// nothing was reconciled, so nothing succeeded.
 #[test]
 fn checkin_no_drift_human() {
     let (printer, cap) = Printer::for_test_doc();

@@ -8,10 +8,9 @@
 //!   - `profile_update/add_remove_mixed.txt` — add module + remove env +
 //!     remove missing module (warning); final Doc summarizes.
 //!   - `profile_update/add_module_remote_hybrid.txt` — adding a `file://`
-//!     remote module URL exercises the T1→T3 hybrid pass-through to
-//!     `module::cmd_module_add_remote`. Will refresh in T3 once registry
-//!     migrates; pinning the current shape catches accidental drift in the
-//!     hybrid bridge.
+//!     remote module URL exercises the hybrid pass-through to
+//!     `module::cmd_module_add_remote`; pinning the current shape catches
+//!     accidental drift in the hybrid bridge.
 //!
 //! Goldens live under `tests/output_snapshots/profile_update/`. Regenerate
 //! with:
@@ -143,7 +142,7 @@ fn profile_update_add_remove_mixed_human() {
 #[test]
 #[serial]
 fn profile_update_add_module_remote_hybrid_human() {
-    // T1→T3 closed: `cmd_profile_update --module <file://...>` delegates to
+    // `cmd_profile_update --module <file://...>` delegates to
     // `module::cmd_module_add_remote(cli, printer, ...)`.
     // The prompt queue drives the "Add this remote module?" / signature
     // confirmations through the unified Printer surface.

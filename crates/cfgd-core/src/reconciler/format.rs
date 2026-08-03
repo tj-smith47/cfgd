@@ -422,14 +422,19 @@ fn format_module_action_body(action: &ModuleAction) -> String {
 /// structural-colon count fixed at TWO (`type:subtype:body`) for every variant
 /// of that action kind. Only for those is the second segment safely droppable:
 /// it names the verb/phase that produced the row (`create`/`update`/`delete`
-/// for `file`, `pre`/`post` for `script`, …), and drift/state matching keys on
-/// `(type, body)` so two verbs touching the same target share one id.
+/// for `file`, `pre`/`post` for `script`), never an identity, and drift/state
+/// matching keys on `(type, body)` so two verbs touching the same target share
+/// one id.
 ///
-/// Excluded prefixes vary their structural-colon count, so no fixed split is
-/// correct for them:
+/// Excluded prefixes either vary their structural-colon count or carry an
+/// identity in the second segment, so no fixed split is correct for them:
 /// - `module` names the MODULE in its second segment (`module:{name}:{verb}`),
 ///   not a verb — dropping it would collapse every module onto one
 ///   `UNIQUE(resource_type, resource_id)` row.
+/// - `package` names the MANAGER (`package:{manager}:{verb}`) — same collapse:
+///   `package:brew:skip` and `package:apt:skip` would share one row. Only
+///   `bootstrap` and `skip` reach here; `install`/`uninstall` are handled
+///   ahead of this parser, per-package, by `parse_package_description`.
 /// - `system` stamps `system:{configurator}.{key}` (one colon) but
 ///   `system:{configurator}:skip` (two).
 /// - `execute_script`'s `"Running script: {body}"` has one.
@@ -439,7 +444,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
 /// and yield 3 pieces. Dispatching on the known prefix (rather than counting
 /// colons) keeps the body intact either way: a `run:` script or `-o json` value
 /// containing its own `:` no longer gets silently truncated mid-body.
-const TWO_COLON_PREFIXES: &[&str] = &["file", "package", "secret", "script", "env"];
+const TWO_COLON_PREFIXES: &[&str] = &["file", "secret", "script", "env"];
 
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
     let Some((prefix, rest)) = desc.split_once(':') else {

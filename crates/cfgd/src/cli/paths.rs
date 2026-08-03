@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(output.runtime.socket, "/custom/cfgd.sock");
     }
 
-    // B1 regression: under `--config <dir>/cfgd.yaml` the reported config.dir
+    // Under `--config <dir>/cfgd.yaml` the reported config.dir
     // must be the directory that actually holds the file (its parent), and the
     // config source reflects the override (flag), not a re-resolved root.
     #[test]
@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(output.config.source, DirSource::Flag);
     }
 
-    // B2/S2 regression: with no home and no override, the socket must be the
+    // With no home and no override, the socket must be the
     // daemon's `/tmp/cfgd.sock` last-ditch fallback — matching what the daemon
     // actually binds — never null or a phantom `<runtime>/cfgd.sock`.
     #[cfg(unix)]

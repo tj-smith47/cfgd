@@ -4281,7 +4281,7 @@ fn cmd_doctor_without_config() {
 
     let result = super::doctor::run_doctor(&cli, &printer);
     // Missing at the DEFAULT path is the fresh-machine state: the verdict
-    // must pass (exit 0) — pinned by S18.4-doctor in acceptance.
+    // must pass (exit 0), or `cfgd doctor` fails before a config can exist.
     assert!(
         result.as_ref().is_ok_and(|passed| *passed),
         "fresh-machine doctor verdict should pass, got: {result:?}"

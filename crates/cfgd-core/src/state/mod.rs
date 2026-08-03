@@ -237,17 +237,49 @@ const MIGRATIONS: &[&str] = &[
     //   - `Running script: {body}` and `system:{cfg}.{key} ({cur} → {des})`
     //     were split by a blind `splitn(3, ':')`, which truncated any body or
     //     value holding its own colon (URLs, `sed`/`awk` programs, PATH values).
-    //   - `module:{name}:{verb}` dropped the module NAME, so every module
-    //     collapsed onto one UNIQUE(resource_type, resource_id) row.
+    //   - `module:{name}:{verb}` dropped the module NAME, and
+    //     `package:{manager}:{verb}` the MANAGER, so every module — and every
+    //     manager's bootstrap/skip — collapsed onto one
+    //     UNIQUE(resource_type, resource_id) row.
     //   - `secret:{decrypt,resolve}:…` keys were built with the native path
     //     separator, so a Windows-written key never matched its POSIX form.
     // Nothing sweeps managed_resources on observation (the only DELETE is
     // package-scoped), so a row written under an old id would linger in
     // `cfgd status` forever. These rows are pure bookkeeping — the next apply
-    // re-derives them — and carry no uninstall_cmd, which is package-only, so
-    // deleting them loses nothing.
+    // re-derives them — and carry no uninstall_cmd, which only
+    // `upsert_package_resource` ever writes, so deleting them loses nothing.
+    // The package clause is scoped to the two collapsed ids rather than the
+    // type: real package rows are keyed `{manager}/{package}` and DO carry an
+    // uninstall_cmd that cannot be re-derived once its manager leaves config.
     "DELETE FROM managed_resources
-        WHERE resource_type IN ('Running script', 'system', 'module', 'secret');",
+        WHERE resource_type IN ('Running script', 'system', 'module', 'secret')
+           OR (resource_type = 'package' AND resource_id IN ('bootstrap', 'skip'));",
+    // Migration 11: fold the persisted file-path keys to `/`. Every writer of
+    // `file_backups.file_path` and `module_file_manifest.file_path` now uses
+    // `to_posix_string`, so a Windows row written with the native separator
+    // would no longer join: the manifest drives `latest_backup_for_path`, and a
+    // mismatch there makes module removal DELETE a file it should have
+    // RESTORED. These rows are normalized rather than dropped — unlike the
+    // managed_resources bookkeeping above, `file_backups` holds the only copy
+    // of pre-overwrite content and the manifest is the only record of what a
+    // module deployed, so a DELETE would forfeit rollback.
+    // The manifest's UNIQUE(module_name, file_path) cannot actually collide
+    // here — a folded twin can only be written by an apply that runs after this
+    // migration — but `UPDATE OR REPLACE` keeps the statement total rather than
+    // aborting the whole upgrade on a row nobody can explain: the row being
+    // folded survives and the twin it collides with is dropped, since both name
+    // the same file.
+    // Scoped to Windows-rooted paths on purpose. A backslash is a legal
+    // filename character on unix, so folding `/home/u/od\d.conf` would re-point
+    // the row at a different file; leaving such a row alone keeps its rollback
+    // exact, and a later apply writes the folded key alongside it.
+    r"UPDATE file_backups
+         SET file_path = REPLACE(file_path, '\', '/')
+       WHERE file_path LIKE '_:\%' OR file_path LIKE '\\%';
+
+      UPDATE OR REPLACE module_file_manifest
+         SET file_path = REPLACE(file_path, '\', '/')
+       WHERE file_path LIKE '_:\%' OR file_path LIKE '\\%';",
 ];
 
 /// SQLite-backed state store for cfgd.

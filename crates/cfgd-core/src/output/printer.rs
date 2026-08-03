@@ -335,7 +335,7 @@ impl Printer {
     }
 
     /// Force human render of a Doc to stderr, regardless of `output_format`.
-    /// Used by tests; production code should call `emit` (T24) which routes by
+    /// Used by tests; production code should call `emit`, which routes by
     /// `OutputFormat` and falls back to this for human formats.
     pub fn render(&self, doc: super::doc::Doc) {
         super::render_doc::render_doc(&self.renderer, self.sink_stderr.as_ref(), &doc);

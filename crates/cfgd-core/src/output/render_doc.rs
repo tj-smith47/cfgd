@@ -1,8 +1,8 @@
 //! Walk a `Doc` tree and dispatch each `Component` to the matching `Renderer`
 //! method. Pure dispatcher — no layout, theming, or verbosity logic lives here.
 //!
-//! `Printer::render` is the force-human-render entry; `Printer::emit` (T24)
-//! will route by `OutputFormat` and fall back to `render` for human formats.
+//! `Printer::render` is the force-human-render entry; `Printer::emit` routes
+//! by `OutputFormat` and falls back to `render` for human formats.
 
 use std::path::PathBuf;
 use std::time::Duration;

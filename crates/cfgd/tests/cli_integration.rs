@@ -1527,7 +1527,7 @@ fn exit_code_source_show_missing_is_6() {
 
 /// `cfgd source update <missing>` against a ZERO-source config must NOT report a
 /// false success (exit 0, `{"sources":[]}`) — a named-but-absent source is a
-/// NotFound: exit 6 + `not_found` payload. Regression guard for S15-D.
+/// NotFound: exit 6 + `not_found` payload.
 #[test]
 fn source_update_missing_name_zero_sources_is_6_not_found() {
     let dir = tempfile::tempdir().unwrap();
@@ -1627,7 +1627,7 @@ fn exit_code_profile_delete_missing_is_6() {
 
 /// GUARD must NOT move: `cfgd profile delete <ACTIVE>` is a precondition failure
 /// (`active_profile`), not a not-found — it stays ExitCode::Error (1). `base` is
-/// the active profile in `create_valid_config`. Regression guard for S8.
+/// the active profile in `create_valid_config`.
 #[test]
 fn exit_code_profile_delete_active_stays_1() {
     let dir = tempfile::tempdir().unwrap();

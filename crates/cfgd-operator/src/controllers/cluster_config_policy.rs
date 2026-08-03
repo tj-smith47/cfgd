@@ -62,7 +62,8 @@ pub(super) async fn reconcile_cluster_config_policy(
             ))
         })?;
 
-        // List ALL namespace-scoped ConfigPolicies for merging (C5 fix)
+        // ALL namespace-scoped ConfigPolicies take part in the merge — a
+        // label-filtered list would silently drop policies from the result.
         let ns_policies_api: Api<ConfigPolicy> = Api::namespaced(ctx.client.clone(), ns_name);
         let cp_list = ns_policies_api
             .list(&ListParams::default())

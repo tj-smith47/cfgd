@@ -148,7 +148,8 @@ pub(super) async fn reconcile_machine_config(
         )
     };
 
-    // Preserve existing package_versions from status (C1 fix)
+    // Preserve existing package_versions from status: a reconcile that cannot
+    // observe them must not blank the field it did not measure.
     let existing_package_versions = existing_status
         .map(|s| s.package_versions.clone())
         .unwrap_or_default();

@@ -99,7 +99,10 @@ impl<'a> super::Reconciler<'a> {
                     }
                 };
                 if existing == *content {
-                    return Ok(format!("env:write:{}:skipped", path.posix()));
+                    return Ok(format!(
+                        "env:write:{}:skipped",
+                        crate::to_posix_string(path)
+                    ));
                 }
                 if let Some(parent) = path.parent()
                     && !parent.exists()
@@ -108,7 +111,10 @@ impl<'a> super::Reconciler<'a> {
                 }
                 crate::atomic_write_str(path, content)?;
                 printer.status_simple(Role::Ok, format!("Wrote {}", path.posix()));
-                Ok(format!("env:write:{}", path.posix()))
+                // Resource-id key, not display: `to_posix_string` folds on every
+                // host (unlike `posix()`, a no-op on unix), so this matches the
+                // id `format_action_description` derives for the same path.
+                Ok(format!("env:write:{}", crate::to_posix_string(path)))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
                 let existing = match std::fs::read_to_string(rc_path) {
@@ -121,7 +127,10 @@ impl<'a> super::Reconciler<'a> {
                 };
                 let Some(content) = super::env_files::merge_source_line(&existing, line) else {
                     // Already present as the exact desired line — nothing to write.
-                    return Ok(format!("env:inject:{}:skipped", rc_path.posix()));
+                    return Ok(format!(
+                        "env:inject:{}:skipped",
+                        crate::to_posix_string(rc_path)
+                    ));
                 };
                 crate::ensure_parent_dir(rc_path)?;
                 crate::atomic_write_str(rc_path, &content)?;
@@ -129,7 +138,7 @@ impl<'a> super::Reconciler<'a> {
                     Role::Ok,
                     format!("Injected source line into {}", rc_path.posix()),
                 );
-                Ok(format!("env:inject:{}", rc_path.posix()))
+                Ok(format!("env:inject:{}", crate::to_posix_string(rc_path)))
             }
             EnvAction::RefreshLiveSession { vars } => {
                 let changed = crate::refresh_session_env(vars, printer);

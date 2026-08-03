@@ -194,7 +194,7 @@ impl<'a> super::Reconciler<'a> {
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
                         && let Err(e) = self.state.store_file_backup(
                             apply_id,
-                            &target.display().to_string(),
+                            &crate::to_posix_string(&target),
                             &file_state,
                         )
                     {
@@ -252,9 +252,13 @@ impl<'a> super::Reconciler<'a> {
                     } else {
                         String::new()
                     };
+                    // Persisted keys, not display: `to_posix_string` folds on every
+                    // host (unlike `posix()`, a no-op on unix), so the
+                    // UNIQUE(module_name, file_path) row a Windows apply writes
+                    // is the same row every other host derives.
                     self.state.upsert_module_file(
                         &action.module_name,
-                        &target.display().to_string(),
+                        &crate::to_posix_string(&target),
                         &hash,
                         &format!("{:?}", strategy),
                         apply_id,

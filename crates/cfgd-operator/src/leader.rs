@@ -26,8 +26,7 @@ fn rfc3339_micros(ts: Timestamp) -> Result<String, OperatorError> {
 /// fallback. The caller-specific `default` per lease timing variable
 /// (LEASE_DURATION / RENEW_DEADLINE / RETRY_PERIOD) is the reason this doesn't
 /// collapse into `cfgd_core::parse_duration_str`: those defaults are an
-/// operator leader-election concern, not a core-library one. Kept local and
-/// documented per dedup-audit S1 (decision: keep + document).
+/// operator leader-election concern, not a core-library one.
 fn parse_duration_secs(env_var: &str, default: u64) -> u64 {
     std::env::var(env_var)
         .ok()
@@ -536,10 +535,10 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // try_acquire — additional branch coverage. Drives:
-    //  * existing lease with NO renew_time (lines 79-82: `expired = true`)
+    //  * existing lease with NO renew_time (`expired = true`)
     //  * existing lease held by us, NOT-yet-expired (self-renew, no force)
-    //  * existing lease with no spec at all (defensive null guard at L65)
-    //  * lease_transitions absent (L103/L105: unwrap_or(0))
+    //  * existing lease with no spec at all (the defensive null guard)
+    //  * lease_transitions absent (the `unwrap_or(0)` default)
     // -----------------------------------------------------------------------
 
     /// Build a Lease JSON whose spec omits `renewTime` so the `expired = true`
