@@ -4,9 +4,9 @@
 # release that regresses either and silently reintroduce the bug this rebase
 # fixes. The old base was pinned to `latest` for the opposite reason: it
 # tracked Homebrew's own evolving formula index, which a pinned digest would
-# go stale against immediately. This image needs only Ubuntu's packages and
-# glibc to stay put; Homebrew itself is installed fresh below and refreshed
-# explicitly (see the `brew update` line) rather than baked into the base.
+# go stale against immediately. This image ships none of Homebrew at all —
+# cfgd bootstraps it live during the recorded apply — so only Ubuntu's
+# packages and glibc need to stay put.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -52,26 +52,16 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash --user-group linuxbrew \
 USER linuxbrew
 WORKDIR /home/linuxbrew
 
-# NONINTERACTIVE=1 skips the installer's confirmation prompt and its final
-# "Next steps" printout, neither of which a build log needs. Homebrew always
-# installs to /home/linuxbrew/.linuxbrew on Linux, independent of $HOME, so
-# the ENV block below is a fixed path, not something derived at build time.
-RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
 # Baked into the image config rather than a shell rc file so every process
-# the container starts inherits it — including the tape's `bash -l`, which
-# must resolve `nvim` from brew after the apply, and the `brew update` RUN
-# below, which needs `brew` on PATH in a non-interactive, non-login shell
-# that never reads a profile at all.
+# the container starts inherits it — including the tape's `bash -l` login
+# shell, which must resolve `nvim` after the apply. No brew exists at build
+# time to have written this itself, and cfgd's own bootstrap never writes
+# `brew shellenv` into any rc file either — this baked PATH is the only
+# thing that makes `nvim` resolve once the apply installs it.
 ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}" \
     HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
     HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
     HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
-
-# Pre-warms the formula index at build time. Without this, the demo's first
-# `brew install` spends its opening minute fetching it, and that minute lands
-# inside the recorded window.
-RUN brew update --force --quiet
 
 # cfgd enters as a prebuilt host binary, never built in-container: building
 # Rust here would add a toolchain and minutes of compile time the demo has no
@@ -99,7 +89,6 @@ WORKDIR /home/linuxbrew/cfgd
 # Real source tree for `nvim .` to open on both sides of the demo — this
 # repo, filtered by the existing .dockerignore (crates/, examples/, tests/,
 # Cargo.*, README.md). Never target/, which is gigabytes of build output the
-# demo has no use for. Last layer before switching users, so editing the
-# repo never invalidates the apt and Homebrew layers above it, which take
-# minutes to rebuild.
+# demo has no use for. Last layer in the file, so editing the repo never
+# invalidates the apt and user-setup layers above it.
 COPY --chown=linuxbrew:linuxbrew . .
