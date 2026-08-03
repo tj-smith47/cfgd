@@ -120,6 +120,9 @@ pub fn build_module_show_doc(
 ) -> Doc {
     let mut doc = Doc::new().heading(format!("Module: {}", output.name));
 
+    if let Some(version) = &output.metadata.version {
+        doc = doc.kv("Version", version);
+    }
     if !output.depends.is_empty() {
         doc = doc.kv("Dependencies", output.depends.join(", "));
     }
@@ -303,6 +306,10 @@ pub(crate) fn cmd_module_show(
 
     let output = ModuleShowOutput {
         name: name.to_string(),
+        metadata: ModuleShowMetadata {
+            name: name.to_string(),
+            version: module.version.clone(),
+        },
         directory: module.dir.display().to_string(),
         source: source_type.to_string(),
         depends: module.spec.depends.clone(),

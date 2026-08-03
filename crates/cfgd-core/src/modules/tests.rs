@@ -563,6 +563,7 @@ fn resolve_local_files() {
     std::fs::write(config_dir.join("init.lua"), "-- test").unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "nvim".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -1229,6 +1230,7 @@ fn resolve_module_packages_skips_filtered() {
     let platform = macos_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             packages: vec![
@@ -1472,6 +1474,7 @@ fn verify_lockfile_integrity_mismatch() {
 #[test]
 fn diff_module_specs_no_changes() {
     let module = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1503,6 +1506,7 @@ fn diff_module_specs_no_changes() {
 #[test]
 fn diff_module_specs_detects_changes() {
     let old = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1547,6 +1551,7 @@ fn diff_module_specs_detects_changes() {
     };
 
     let new = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1921,6 +1926,7 @@ fn hash_module_contents_skips_symlinks() {
 #[test]
 fn diff_module_specs_scripts_changed() {
     let old = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1939,6 +1945,7 @@ fn diff_module_specs_scripts_changed() {
         origin: None,
     };
     let new = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -2064,6 +2071,7 @@ fn extract_registry_name_empty_returns_none() {
 
 fn make_loaded_module(name: &str, spec: crate::config::ModuleSpec) -> LoadedModule {
     LoadedModule {
+        version: None,
         name: name.to_string(),
         spec,
         dir: PathBuf::from("/fake"),
@@ -2607,6 +2615,7 @@ fn resolve_module_files_local_relative() {
     std::fs::write(mod_dir.join("vimrc"), "set nocompat").unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -2642,6 +2651,7 @@ fn resolve_module_files_path_traversal_rejected() {
     std::fs::create_dir_all(&mod_dir).unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "evil".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -2679,6 +2689,7 @@ fn resolve_module_files_multiple_files() {
     std::fs::write(mod_dir.join("zshrc"), "# zshrc").unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "multi".into(),
         spec: ModuleSpec {
             files: vec![
@@ -2729,6 +2740,7 @@ fn resolve_module_files_empty_spec() {
     std::fs::create_dir_all(&mod_dir).unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "empty".into(),
         spec: ModuleSpec::default(),
         dir: mod_dir,
@@ -2759,6 +2771,7 @@ fn resolve_module_files_symlink_escape_rejected() {
     std::os::windows::fs::symlink_file(&outside_file, mod_dir.join("escape.txt")).unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "tricky".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -2845,6 +2858,7 @@ fn dependency_order_deep_chain_within_limit() {
         modules.insert(
             name.clone(),
             LoadedModule {
+                version: None,
                 name: name.clone(),
                 spec: ModuleSpec {
                     depends: deps,
@@ -2875,6 +2889,7 @@ fn dependency_order_exceeds_depth_limit() {
         modules.insert(
             name.clone(),
             LoadedModule {
+                version: None,
                 name: name.clone(),
                 spec: ModuleSpec {
                     depends: deps,
@@ -3407,6 +3422,7 @@ fn load_source_modules_script_gating_does_not_touch_local_modules() {
     modules.insert(
         "shared".to_string(),
         LoadedModule {
+            version: None,
             name: "shared".into(),
             spec: crate::config::ModuleSpec::default(),
             dir: source.path().to_path_buf(),
@@ -3678,6 +3694,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
 #[test]
 fn diff_module_specs_file_changes() {
     let old = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![
@@ -3704,6 +3721,7 @@ fn diff_module_specs_file_changes() {
         origin: None,
     };
     let new = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![
@@ -3752,6 +3770,7 @@ fn diff_module_specs_env_changes_not_tracked() {
     // diff_module_specs currently only tracks deps, packages, files, and scripts.
     // Env changes should result in "(no spec changes)" since env isn't diffed.
     let old = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             env: vec![crate::config::EnvVar {
@@ -3764,6 +3783,7 @@ fn diff_module_specs_env_changes_not_tracked() {
         origin: None,
     };
     let new = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             env: vec![crate::config::EnvVar {
@@ -3961,6 +3981,7 @@ fn resolve_module_packages_multiple_packages() {
     let platform = macos_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "tools".into(),
         spec: ModuleSpec {
             packages: vec![
@@ -4000,6 +4021,7 @@ fn resolve_module_packages_empty_packages() {
     let platform = macos_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "empty".into(),
         spec: ModuleSpec::default(),
         dir: PathBuf::from("/fake/empty"),
@@ -4022,6 +4044,7 @@ fn resolve_module_packages_mixed_platforms() {
     let platform = linux_ubuntu_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "mixed".into(),
         spec: ModuleSpec {
             packages: vec![
@@ -4580,6 +4603,7 @@ fn dependency_order_exceeds_module_count_limit() {
         modules.insert(
             name.clone(),
             LoadedModule {
+                version: None,
                 name: name.clone(),
                 spec: ModuleSpec::default(),
                 dir: PathBuf::from(format!("/fake/{name}")),

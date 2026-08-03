@@ -1496,6 +1496,7 @@ fn apply_module_sets_rejects_invalid_format() {
         metadata: config::ModuleMetadata {
             name: "test".to_string(),
             description: None,
+            version: None,
         },
         spec: config::ModuleSpec::default(),
     };
@@ -3533,6 +3534,83 @@ fn generate_release_workflow_with_profiles() {
         super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
     assert!(yaml.contains("profiles/work.yaml"));
     assert!(yaml.contains("tag-profiles:"));
+}
+
+/// Slice one job out of the generated workflow: from `  <job>:` up to the blank
+/// line that precedes the next job (or end of document). Assertions about a job
+/// must not accidentally read another job's steps.
+fn workflow_job_block(yaml: &str, job: &str) -> String {
+    let header = format!("  {job}:\n");
+    let start = yaml
+        .find(&header)
+        .unwrap_or_else(|| panic!("workflow must contain job '{job}', got:\n{yaml}"));
+    let rest = &yaml[start..];
+    match rest[header.len()..].find("\n\n  ") {
+        Some(end) => rest[..header.len() + end].to_string(),
+        None => rest.to_string(),
+    }
+}
+
+#[test]
+fn generate_release_workflow_module_tag_steps_never_guess_or_force() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-modules");
+    for banned in ["grep -oP", "|| echo", "tag -f", "--force"] {
+        assert!(
+            !job.contains(banned),
+            "tag-modules must not contain '{banned}', got:\n{job}"
+        );
+    }
+    assert!(
+        job.contains("git tag \"$TAG\"") && job.contains("git push origin \"$TAG\"\n"),
+        "tag-modules must tag and push without force, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_module_tag_reads_version_through_cfgd() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-modules");
+    assert!(
+        job.contains("cfgd module show \"${{ matrix.name }}\""),
+        "version must come from cfgd, not a YAML grep, got:\n{job}"
+    );
+    assert!(
+        job.contains("-o jsonpath='{.metadata.version}'"),
+        "version must be read from the metadata.version payload field, got:\n{job}"
+    );
+    assert!(
+        job.contains("Install cfgd"),
+        "the job must obtain the cfgd binary before invoking it, got:\n{job}"
+    );
+    assert!(
+        job.contains("if [ -z \"$VERSION\" ]; then") && job.contains("exit 1"),
+        "an absent version must fail the job, got:\n{job}"
+    );
+    assert!(
+        job.contains("add 'version: <semver>' under metadata"),
+        "the failure must tell the author what to add, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_profile_tag_steps_never_force() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-profiles");
+    for banned in ["tag -f", "--force"] {
+        assert!(
+            !job.contains(banned),
+            "tag-profiles must not contain '{banned}', got:\n{job}"
+        );
+    }
+    assert!(
+        job.contains("git ls-remote --exit-code --tags origin \"refs/tags/$TAG\"")
+            && job.contains("exit 1"),
+        "a same-day retag must fail rather than overwrite, got:\n{job}"
+    );
 }
 
 #[test]

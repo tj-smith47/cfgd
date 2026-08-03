@@ -1165,6 +1165,7 @@ pub fn make_test_modules(
         modules.insert(
             name.to_string(),
             crate::modules::LoadedModule {
+                version: None,
                 name: name.to_string(),
                 spec: crate::config::ModuleSpec {
                     depends: deps.iter().map(|s| s.to_string()).collect(),

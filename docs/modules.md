@@ -21,6 +21,7 @@ apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: nvim
+  version: 1.4.0        # optional; strict semver, the module's own release version
 spec:
   depends: [node, python]
 
@@ -64,6 +65,22 @@ spec:
       - nvim --headless "+Lazy! sync" +qa
       - nvim --headless -c "MasonInstallAll" -c "qa"
 ```
+
+### Module Version
+
+`metadata.version` is the module's own release version — strict semver (`1.4.0`, `2.0.0-rc.1`),
+never a `v` prefix and never a two-part `0.10`. It is optional; modules without it load unchanged.
+
+Declare it on any module you release: the workflow written by `cfgd workflow generate` cuts the tag
+`<name>/v<version>` when the module changes, fails the job when the version is missing rather than
+guessing one, and fails it again if that tag already exists (bump the version — published tags are
+never rewritten). Read it back with:
+
+```sh
+cfgd module show nvim -o jsonpath='{.metadata.version}'
+```
+
+New modules from `cfgd module create` start at `0.1.0`.
 
 ### Module-Level Platform Filter
 

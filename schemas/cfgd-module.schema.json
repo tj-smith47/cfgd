@@ -134,6 +134,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "version": {
+          "description": "The module's own release version, as `MAJOR.MINOR.PATCH` with optional\npre-release and build metadata (`1.2.0`, `2.0.0-rc.1`). It names the\nrelease tag cut for the module and is the value `cfgd module upgrade`\ncompares a newer copy against. Absent on modules that are not released\nindependently.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

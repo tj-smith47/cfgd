@@ -7,6 +7,7 @@ fn make_module_doc(packages: Vec<config::ModulePackageEntry>) -> config::ModuleD
         metadata: config::ModuleMetadata {
             name: "test".to_string(),
             description: None,
+            version: None,
         },
         spec: config::ModuleSpec {
             packages,
@@ -3834,6 +3835,10 @@ fn module_list_entry_json_fields() {
 fn module_show_output_json_fields() {
     let output = ModuleShowOutput {
         name: "test-mod".to_string(),
+        metadata: ModuleShowMetadata {
+            name: "test-mod".to_string(),
+            version: Some("1.2.3".to_string()),
+        },
         directory: "/home/user/.config/cfgd/modules/test-mod".to_string(),
         source: "remote".to_string(),
         depends: vec!["base".to_string()],
@@ -3842,6 +3847,8 @@ fn module_show_output_json_fields() {
     };
     let json = serde_json::to_value(&output).unwrap();
     assert_eq!(json["name"], "test-mod");
+    assert_eq!(json["metadata"]["name"], "test-mod");
+    assert_eq!(json["metadata"]["version"], "1.2.3");
     assert_eq!(json["source"], "remote");
     assert_eq!(json["depends"][0], "base");
     assert!(json["state"].is_null());
@@ -4024,6 +4031,7 @@ fn module_doc_with(
         metadata: config::ModuleMetadata {
             name: name.to_string(),
             description: None,
+            version: None,
         },
         spec: config::ModuleSpec {
             packages,
@@ -4527,6 +4535,7 @@ fn filter_and_build_search_results_preserves_registry_name_in_output() {
 
 fn make_loaded_module(name: &str, spec: config::ModuleSpec) -> modules::LoadedModule {
     modules::LoadedModule {
+        version: None,
         name: name.to_string(),
         spec,
         dir: std::path::PathBuf::from("/tmp/test-module"),

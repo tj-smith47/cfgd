@@ -1,4 +1,5 @@
 Module: dev-tools
+  Version        1.4.0
   Dependencies   base
   Directory      /etc/cfgd/modules/dev-tools
   Source         remote (locked)

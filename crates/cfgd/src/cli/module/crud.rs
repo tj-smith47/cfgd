@@ -188,6 +188,9 @@ pub fn cmd_module_create(
         metadata: config::ModuleMetadata {
             name: name.to_string(),
             description: desc,
+            // Scaffolded with a version so the module is taggable by the
+            // generated release workflow without a follow-up edit.
+            version: Some("0.1.0".to_string()),
         },
         spec: config::ModuleSpec {
             depends: dep_list,

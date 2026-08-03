@@ -275,6 +275,25 @@ my-config/
     └── post-setup.sh
 ```
 
+Each `modules/<name>/module.yaml` may declare its own release version under
+`metadata.version` (strict semver, optional) — the value `cfgd workflow generate`'s
+release job tags and `cfgd module show <name> -o jsonpath='{.metadata.version}'` reports:
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  version: 1.4.0
+
+spec:
+  packages:
+    - name: neovim
+```
+
+`1.4.0`, `2.0.0-rc.1`, and `1.0.0+build.5` are accepted; `0.10`, `v1.2.3`, and `latest`
+are rejected at parse time. See the [Module spec reference](spec/module.md#metadataversion).
+
 Each profile is a self-contained bundle: a fixed-name `profiles/<name>/profile.yaml`
 manifest alongside its own `files/` payload directory (mirroring the
 `modules/<name>/module.yaml` shape). The legacy flat form `profiles/<name>.yaml`

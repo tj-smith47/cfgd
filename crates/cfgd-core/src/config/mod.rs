@@ -40,6 +40,7 @@ pub use modeline::{SchemaDocKind, schema_modeline, with_schema_modeline};
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,
+    validate_module_version,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub(crate) use parse::validate_api_version;

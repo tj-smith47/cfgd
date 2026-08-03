@@ -304,18 +304,35 @@ pub(super) fn generate_release_workflow_yaml(
              \x20       if: matrix.changed == 'true'\n\
              \x20       with:\n\
              \x20         fetch-depth: 0\n\
+             \x20     - name: Install cfgd\n\
+             \x20       if: matrix.changed == 'true'\n\
+             \x20       run: |\n\
+             \x20         mkdir -p \"$RUNNER_TEMP/bin\"\n\
+             \x20         curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh \\\n\
+             \x20           | CFGD_INSTALL_DIR=\"$RUNNER_TEMP/bin\" sh\n\
+             \x20         echo \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n\
              \x20     - name: Read module version\n\
              \x20       if: matrix.changed == 'true'\n\
              \x20       id: version\n\
              \x20       run: |\n\
-             \x20         VERSION=$(grep -oP 'version:\\s*\"?\\K[^\"\\s]+' \"modules/${{ matrix.name }}/module.yaml\" || echo \"0.1.0\")\n\
-             \x20         echo \"version=$VERSION\" >> $GITHUB_OUTPUT\n\
+             \x20         VERSION=$(cfgd module show \"${{ matrix.name }}\" \\\n\
+             \x20           --config-dir \"$GITHUB_WORKSPACE\" \\\n\
+             \x20           -o jsonpath='{.metadata.version}')\n\
+             \x20         if [ -z \"$VERSION\" ]; then\n\
+             \x20           echo \"::error::module '${{ matrix.name }}' declares no metadata.version — add 'version: <semver>' under metadata in modules/${{ matrix.name }}/module.yaml\"\n\
+             \x20           exit 1\n\
+             \x20         fi\n\
+             \x20         echo \"version=$VERSION\" >> \"$GITHUB_OUTPUT\"\n\
              \x20     - name: Tag module release\n\
              \x20       if: matrix.changed == 'true'\n\
              \x20       run: |\n\
              \x20         TAG=\"${{ matrix.name }}/v${{ steps.version.outputs.version }}\"\n\
-             \x20         git tag -f \"$TAG\"\n\
-             \x20         git push origin \"$TAG\" --force\n",
+             \x20         if git ls-remote --exit-code --tags origin \"refs/tags/$TAG\" >/dev/null 2>&1; then\n\
+             \x20           echo \"::error::tag '$TAG' already exists — bump metadata.version in modules/${{ matrix.name }}/module.yaml; published tags are never rewritten\"\n\
+             \x20           exit 1\n\
+             \x20         fi\n\
+             \x20         git tag \"$TAG\"\n\
+             \x20         git push origin \"$TAG\"\n",
         );
     }
 
@@ -347,10 +364,14 @@ pub(super) fn generate_release_workflow_yaml(
              \x20     - name: Tag profile release\n\
              \x20       if: matrix.changed == 'true'\n\
              \x20       run: |\n\
-             \x20         DATE=$(date +%Y%m%d)\n\
+             \x20         DATE=$(date -u +%Y%m%d)\n\
              \x20         TAG=\"profile/${{ matrix.name }}/${DATE}\"\n\
-             \x20         git tag -f \"$TAG\"\n\
-             \x20         git push origin \"$TAG\" --force\n",
+             \x20         if git ls-remote --exit-code --tags origin \"refs/tags/$TAG\" >/dev/null 2>&1; then\n\
+             \x20           echo \"::error::tag '$TAG' already exists — profile '${{ matrix.name }}' was already released today; published tags are never rewritten, so land this change in tomorrow's release or delete the tag deliberately first\"\n\
+             \x20           exit 1\n\
+             \x20         fi\n\
+             \x20         git tag \"$TAG\"\n\
+             \x20         git push origin \"$TAG\"\n",
         );
     }
 
