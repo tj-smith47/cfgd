@@ -109,7 +109,7 @@ fn checkin_no_drift_human() {
 }
 
 /// Server pushed a desired config — `Role::Warn` status precedes the nested
-/// "Server config" section so the urgency carries (T6 manual-review pattern).
+/// "Server config" section so the urgency carries.
 #[test]
 fn checkin_server_pushed_config_human() {
     let (printer, cap) = Printer::for_test_doc();

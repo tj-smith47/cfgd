@@ -218,8 +218,8 @@ mod tests {
 
     #[test]
     fn reconcile_config_rejects_drift_policy_typo() {
-        // Exactly the example called out in the v0.4 finding: `dirft_policy`
-        // typo silently became a no-op; with deny_unknown_fields it must fail
+        // A `dirftPolicy` typo silently became a no-op before
+        // deny_unknown_fields; it must now fail
         // loudly so the operator notices.
         let yaml = "interval: 5m\ndirftPolicy: Auto\n";
         let err = serde_yaml::from_str::<ReconcileConfig>(yaml)

@@ -1997,7 +1997,7 @@ fn load_source_profile_no_profiles_directory() {
 fn verify_head_signature_with_no_git_on_path_returns_clear_error() {
     use crate::test_helpers::EnvVarGuard;
     // Empty PATH → command_available("git") returns false → verify_head_signature
-    // short-circuits with the L565-570 "git CLI is required" error. Marked
+    // short-circuits with the "git CLI is required" error. Marked
     // #[serial] to avoid racing with parallel tests that shell out to git.
     // Declared before the PATH override so it drops last, bracketing the whole
     // empty-PATH window against concurrent script-interpreter spawns.
@@ -3406,8 +3406,8 @@ mod bare_repo_load {
     fn load_source_fetch_errors_when_remote_disappears() {
         // After a successful clone, drop the bare repo on disk and call
         // load_source again — fetch_source's CLI + libgit2 fallback both
-        // fail, surfacing the FetchFailed error path (sources/mod.rs
-        // L195-205 spinner + return Err arm).
+        // fail, surfacing the FetchFailed error path (sources/mod.rs's
+        // spinner + return Err arm).
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let bare = make_bare_with_manifest("missing1", None);
             let branch = bare.head_branch().to_string();

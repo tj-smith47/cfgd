@@ -215,8 +215,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn restore_with_perm_request_applies_them_and_marks_restored() {
-        // Regression guard for MEDIUM #2: rollback used to fall through to
-        // `Restored` even on perm-set failure. The happy path proves perms
+        // Rollback used to fall through to `Restored` even when setting
+        // permissions failed. The happy path proves perms
         // ARE applied — the failure-path equivalent is enforced by the
         // logic in `restore_file_from_backup` returning Failed when
         // `set_file_permissions` errs (covered by error-path tests in the

@@ -109,7 +109,7 @@ fn module_env_values_expand_leading_tilde() {
 
 // script_default_workdir: the home directory is the default CWD for every
 // lifecycle script — NOT the config source tree — so a relative write can't
-// pollute the user's GitOps repo (finding E).
+// pollute the user's GitOps repo.
 #[test]
 #[serial_test::serial]
 fn script_default_workdir_is_home_not_config() {

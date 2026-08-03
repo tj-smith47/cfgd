@@ -1551,7 +1551,7 @@ fn conflict_detection_different_content() {
 
 #[test]
 fn conflict_detection_two_profile_actions_same_target_different_content_errs() {
-    // Covers plan.rs L122-129: two profile FileActions hitting the same
+    // Covers plan.rs's file-conflict detection: two profile FileActions hitting the same
     // target with different content must surface as Conflict.
     let dir = tempfile::tempdir().unwrap();
     let file_a = dir.path().join("a.txt");
@@ -1585,7 +1585,7 @@ fn conflict_detection_two_profile_actions_same_target_different_content_errs() {
 
 #[test]
 fn conflict_detection_two_profile_actions_same_target_identical_content_ok() {
-    // The dedup branch of L121: same target, same content hash → no error.
+    // The dedup branch: same target, same content hash → no error.
     let dir = tempfile::tempdir().unwrap();
     let file_a = dir.path().join("a.txt");
     let file_b = dir.path().join("b.txt");
@@ -6734,7 +6734,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
     // `apply_secret_action`. The full `Reconciler::apply` path calls
     // `plan_env()` which resolves `~` to the real `$HOME` and writes
     // `~/.cfgd.env` + injects a source line into `~/.bashrc` — tests must
-    // never touch the user's home. See task #37 for the broader audit.
+    // never touch the user's home.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.secret_providers.push(Box::new(
@@ -7360,7 +7360,7 @@ fn apply_system_action_unavailable_renders_non_warn() {
 
 #[test]
 fn plan_system_emits_set_value_actions_per_drift() {
-    // Covers plan.rs L180-189: when a configurator returns drift entries,
+    // Covers plan.rs's system-drift branch: when a configurator returns drift entries,
     // each one becomes a SystemAction::SetValue with the drift fields.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
@@ -8124,7 +8124,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
 fn plan_modules_encryption_check_err_skips_with_error_reason() {
     // is_file_encrypted returns Err for unknown backends (gpg, pgp, etc.) —
     // the planner records a Skip with the wrapped error reason rather than
-    // crashing. Covers plan.rs L474-486.
+    // crashing. Covers the planner's skip-on-error arm.
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("data.bin");
     std::fs::write(&source, "anything").unwrap();
@@ -11580,7 +11580,7 @@ fn script_install_no_guards_still_runs() {
 }
 
 // -----------------------------------------------------------------------
-// apply: module-level onChange scripts (L384-400 in apply.rs)
+// apply: module-level onChange scripts
 // -----------------------------------------------------------------------
 
 #[test]
@@ -11801,7 +11801,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
 
 // ---------------------------------------------------------------------------
 // secret_env_collector: ResolveEnv action with a registered provider drives
-// the secret-env injection branch of apply.rs (lines L256-292). After every
+// the secret-env injection branch of apply.rs. After every
 // per-action loop pass with a non-empty collector, `Self::plan_env` re-runs
 // to produce env actions that include the resolved secret values.
 // ---------------------------------------------------------------------------
@@ -11887,8 +11887,8 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
 }
 
 // ---------------------------------------------------------------------------
-// plan_modules: manager-priority sort exercises the can_bootstrap arm
-// (plan.rs L416-417) when a manager is registered but not currently available.
+// plan_modules: manager-priority sort exercises plan.rs's can_bootstrap arm
+// when a manager is registered but not currently available.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -12077,7 +12077,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Module on_change error handling (apply.rs L384-400): script failure with
+// Module on_change error handling (apply.rs): script failure with
 // default continueOnError=true records an error result but lets apply succeed.
 // ---------------------------------------------------------------------------
 
@@ -12244,7 +12244,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
 }
 
 // ---------------------------------------------------------------------------
-// Profile on_change error handling (apply.rs L327-339): identical pattern but
+// Profile on_change error handling (apply.rs): identical pattern but
 // driven from resolved.merged.scripts.on_change instead of module scripts.
 // ---------------------------------------------------------------------------
 

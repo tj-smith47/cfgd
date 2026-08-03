@@ -9722,8 +9722,8 @@ mod harness {
     #[test]
     #[serial_test::serial]
     fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
-        // Regression guard for MEDIUM #10: the daemon used to only emit a
-        // `tracing::warn!` when state-dir resolution failed, leaving the
+        // The daemon used to only emit a `tracing::warn!` when state-dir
+        // resolution failed, leaving the
         // /drift endpoint silently disabled. The variant exposes a banner
         // message so the startup banner can surface it.
         //

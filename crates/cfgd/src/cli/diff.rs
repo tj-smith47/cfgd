@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn print_package_drift_skip_only_is_ignored_when_mixed_with_other_actions() {
-        // Covers PackageAction::Skip arm at L276 — a Skip mixed in with real
+        // Covers the `PackageAction::Skip` arm — a Skip mixed in with real
         // drift actions must not produce a payload entry of its own.
         let (printer, _cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();

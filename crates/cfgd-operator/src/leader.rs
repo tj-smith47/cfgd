@@ -607,7 +607,7 @@ mod tests {
     #[tokio::test]
     async fn try_acquire_self_renew_with_missing_transitions_defaults_to_zero() {
         // We hold the lease; the existing spec doesn't carry leaseTransitions.
-        // The `unwrap_or(0)` arm at L105 must produce 0 in the renewed patch.
+        // The `leaseTransitions` `unwrap_or(0)` arm must produce 0 in the patch.
         let existing = lease_json_no_transitions(TEST_ID, 15, 3);
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_json(&existing),
