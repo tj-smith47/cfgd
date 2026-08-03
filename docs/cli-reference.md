@@ -788,6 +788,8 @@ cfgd workflow generate --force   # overwrite existing
 
 Profiles whose YAML fails to parse are skipped with a warning naming the file and the parse error; the remaining valid profiles still generate.
 
+Tags are immutable. A changed module is tagged `<name>/v<version>` from its [`metadata.version`](spec/module.md#metadataversion) — read through `cfgd module show`, never guessed — and the job fails if the module declares no version or if that tag already exists (bump `metadata.version`). A changed profile is tagged `profile/<name>/<UTC timestamp>` in `%Y%m%dT%H%M%SZ` form, so a second release on the same day gets its own tag. Nothing is force-pushed. The job installs the same cfgd version that generated the workflow, pinned in the job's `CFGD_VERSION` environment variable; re-run `cfgd workflow generate --force` after upgrading cfgd to move the pin.
+
 The generated workflow's change detection covers both profile manifest forms — the flat file (`profiles/<name>.yaml`) and the bundle directory (`profiles/<name>/**`) — so a push touching either layout tags a release. Names containing regex metacharacters (e.g. `web.app`) are matched literally, and matching is exact — a change to a sibling profile whose name extends another (`profiles/work.app.yaml`) does not flag `work`. Generation fails if two names would fold to the same job-output key (`web.app` and `web-app` both fold to `profile_web_app`); rename one so they stay distinct.
 
 ### `cfgd checkin`

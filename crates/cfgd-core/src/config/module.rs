@@ -27,16 +27,24 @@ pub struct ModuleMetadata {
     pub description: Option<String>,
     /// The module's own release version, as `MAJOR.MINOR.PATCH` with optional
     /// pre-release and build metadata (`1.2.0`, `2.0.0-rc.1`). It names the
-    /// release tag cut for the module and is the value `cfgd module upgrade`
-    /// compares a newer copy against. Absent on modules that are not released
+    /// `<module>/v<version>` release tag that the workflow from
+    /// `cfgd workflow generate` cuts when the module changes, so bumping it is
+    /// what publishes a new release. Absent on modules that are not released
     /// independently.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_module_version"
     )]
+    // The published editor schema is a second enforcement point: without the
+    // pattern an editor green-lights a value the parser then rejects.
+    #[schemars(pattern(SEMVER_PATTERN))]
     pub version: Option<String>,
 }
+
+/// JSON Schema `pattern` for `metadata.version`, the semver.org reference regexp.
+/// Kept in step with what [`module_version_error`] accepts.
+const SEMVER_PATTERN: &str = r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$";
 
 /// Reject a `metadata.version` that is not strict semver, at every parse path:
 /// wiring the check into the field's `Deserialize` means `parse_module`, the
@@ -60,6 +68,11 @@ where
 
 /// The rejection message for a `metadata.version` that is not strict semver, or
 /// `None` when the value is acceptable.
+///
+/// Strict on purpose: a loose `0.10` and a `v`-prefixed `v1.2.3` both produce
+/// release tags that no consumer can resolve back to a version, so they are
+/// rejected rather than coerced — which also rules out the crate's deliberately
+/// lenient `parse_loose_version`.
 fn module_version_error(value: &str) -> Option<String> {
     if semver::Version::parse(value).is_ok() {
         return None;
@@ -67,18 +80,6 @@ fn module_version_error(value: &str) -> Option<String> {
     Some(format!(
         "metadata.version '{value}' is not a valid semantic version: expected MAJOR.MINOR.PATCH with optional pre-release and build metadata (for example 1.2.0 or 2.0.0-rc.1)"
     ))
-}
-
-/// Validate a module's `metadata.version` value as strict semver.
-///
-/// Strict on purpose: a loose `0.10` and a `v`-prefixed `v1.2.3` both produce
-/// release tags that no consumer can resolve back to a version, so they are
-/// rejected rather than coerced.
-pub fn validate_module_version(value: &str) -> Result<()> {
-    match module_version_error(value) {
-        None => Ok(()),
-        Some(message) => Err(ConfigError::Invalid { message }.into()),
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]

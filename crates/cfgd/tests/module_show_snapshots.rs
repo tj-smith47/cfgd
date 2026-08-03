@@ -61,7 +61,6 @@ fn happy_show_output() -> ModuleShowOutput {
     ModuleShowOutput {
         name: "dev-tools".into(),
         metadata: ModuleShowMetadata {
-            name: "dev-tools".into(),
             version: Some("1.4.0".into()),
         },
         directory: "/etc/cfgd/modules/dev-tools".into(),

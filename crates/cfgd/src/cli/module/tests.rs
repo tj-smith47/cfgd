@@ -531,6 +531,64 @@ fn cmd_module_show_displays_details() {
     );
 }
 
+/// Write a lockfile naming a remote module whose URL is rejected before any
+/// network call, so a code path that loads locked modules fails loudly and
+/// offline.
+fn write_unloadable_lockfile(config_dir: &Path) {
+    std::fs::write(
+        config_dir.join("modules.lock"),
+        "modules:\n  - name: private-mod\n    url: \"not-a-git-url\"\n    pinnedRef: \"v1.0.0\"\n    commit: \"abc123\"\n    integrity: \"sha256:deadbeef\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn cmd_module_show_local_does_not_load_locked_remotes() {
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "local-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: local-mod\nspec:\n  packages: []\n",
+    );
+    write_unloadable_lockfile(dir.path());
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    cmd_module_show(&cli, &printer, "local-mod", false).unwrap();
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Module: local-mod"),
+        "a local module must be readable without fetching unrelated remotes, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_module_show_falls_through_to_locked_modules() {
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "local-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: local-mod\nspec:\n  packages: []\n",
+    );
+    write_unloadable_lockfile(dir.path());
+
+    let cli = test_cli(dir.path());
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // A name that is not local must still consult the full loader — proven by
+    // the locked entry's own failure surfacing instead of "not found".
+    let err = cmd_module_show(&cli, &printer, "private-mod", false).unwrap_err();
+    assert!(
+        err.to_string().contains("not a git URL"),
+        "a non-local name must reach the locked-module loader, got: {err}"
+    );
+}
+
 #[test]
 fn cmd_module_show_with_available_hint() {
     let dir = setup_config_dir();
@@ -3836,7 +3894,6 @@ fn module_show_output_json_fields() {
     let output = ModuleShowOutput {
         name: "test-mod".to_string(),
         metadata: ModuleShowMetadata {
-            name: "test-mod".to_string(),
             version: Some("1.2.3".to_string()),
         },
         directory: "/home/user/.config/cfgd/modules/test-mod".to_string(),
@@ -3847,8 +3904,11 @@ fn module_show_output_json_fields() {
     };
     let json = serde_json::to_value(&output).unwrap();
     assert_eq!(json["name"], "test-mod");
-    assert_eq!(json["metadata"]["name"], "test-mod");
     assert_eq!(json["metadata"]["version"], "1.2.3");
+    assert!(
+        json["metadata"]["name"].is_null(),
+        "the module name has one selector, the top-level `name`"
+    );
     assert_eq!(json["source"], "remote");
     assert_eq!(json["depends"][0], "base");
     assert!(json["state"].is_null());

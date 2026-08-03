@@ -3574,7 +3574,7 @@ fn generate_release_workflow_module_tag_reads_version_through_cfgd() {
         super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
     let job = workflow_job_block(&yaml, "tag-modules");
     assert!(
-        job.contains("cfgd module show \"${{ matrix.name }}\""),
+        job.contains("cfgd module show \"$MODULE\""),
         "version must come from cfgd, not a YAML grep, got:\n{job}"
     );
     assert!(
@@ -3596,6 +3596,64 @@ fn generate_release_workflow_module_tag_reads_version_through_cfgd() {
 }
 
 #[test]
+fn generate_release_workflow_pins_the_cfgd_it_installs() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-modules");
+    let expected = format!("CFGD_VERSION: v{}\n", env!("CARGO_PKG_VERSION"));
+    assert!(
+        job.contains(&expected),
+        "the job must pin the generating cfgd version, got:\n{job}"
+    );
+    assert!(
+        !job.contains("releases/latest/download"),
+        "the install must not float to latest, got:\n{job}"
+    );
+    assert!(
+        job.contains(
+            "curl -fsSL \"https://github.com/tj-smith47/cfgd/releases/download/$CFGD_VERSION/install.sh\""
+        ),
+        "the installer URL must use the pin, got:\n{job}"
+    );
+    assert!(
+        job.contains("set -o pipefail"),
+        "a failed download must not be swallowed by the pipe, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_never_interpolates_expressions_into_shell() {
+    let yaml = super::workflow::generate_release_workflow_yaml(
+        &["nvim".into()],
+        &["work".into()],
+        "master",
+    )
+    .unwrap();
+    // Every GitHub expression must land in an `env:` binding or a workflow key,
+    // never inside a `run:` script where it is substituted as raw text before
+    // the shell ever sees it.
+    let mut script_indent: Option<usize> = None;
+    for line in yaml.lines() {
+        let indent = line.len() - line.trim_start().len();
+        match script_indent {
+            Some(open) if !line.trim().is_empty() && indent <= open => script_indent = None,
+            Some(_) => {
+                assert!(
+                    !line.contains("${{"),
+                    "expression interpolated into a run script: '{}' in:\n{yaml}",
+                    line.trim()
+                );
+                continue;
+            }
+            None => {}
+        }
+        if line.trim_end().ends_with("run: |") {
+            script_indent = Some(indent);
+        }
+    }
+}
+
+#[test]
 fn generate_release_workflow_profile_tag_steps_never_force() {
     let yaml =
         super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
@@ -3609,7 +3667,22 @@ fn generate_release_workflow_profile_tag_steps_never_force() {
     assert!(
         job.contains("git ls-remote --exit-code --tags origin \"refs/tags/$TAG\"")
             && job.contains("exit 1"),
-        "a same-day retag must fail rather than overwrite, got:\n{job}"
+        "a retag must fail rather than overwrite, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_profile_tag_stamps_to_the_second() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-profiles");
+    assert!(
+        job.contains("STAMP=$(date -u +%Y%m%dT%H%M%SZ)"),
+        "a day-granular stamp makes a second same-day release unshippable, got:\n{job}"
+    );
+    assert!(
+        job.contains("TAG=\"profile/$PROFILE/$STAMP\""),
+        "the tag must be built from the stamp and the env-bound profile, got:\n{job}"
     );
 }
 

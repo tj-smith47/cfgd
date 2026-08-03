@@ -4,7 +4,6 @@
   ],
   "directory": "/etc/cfgd/modules/dev-tools",
   "metadata": {
-    "name": "dev-tools",
     "version": "1.4.0"
   },
   "name": "dev-tools",

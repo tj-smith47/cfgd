@@ -281,8 +281,19 @@ pub(crate) fn cmd_module_show(
     show_values: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let cache_base = module_cache_dir(cli)?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
+
+    // Showing a LOCAL module must not drag every locked remote module through a
+    // git fetch: `load_all_modules` clones each lockfile entry, so one private
+    // module without a usable credential would fail a read of an unrelated
+    // local one. Local modules win the merge either way, so a local hit here is
+    // the same module the full load would have returned.
+    let local_modules = modules::load_modules(&config_dir)?;
+    let all_modules = if local_modules.contains_key(name) {
+        local_modules
+    } else {
+        let cache_base = module_cache_dir(cli)?;
+        modules::load_all_modules(&config_dir, &cache_base, &[], printer)?
+    };
 
     let module = match all_modules.get(name) {
         Some(m) => m,
@@ -307,7 +318,6 @@ pub(crate) fn cmd_module_show(
     let output = ModuleShowOutput {
         name: name.to_string(),
         metadata: ModuleShowMetadata {
-            name: name.to_string(),
             version: module.version.clone(),
         },
         directory: module.dir.display().to_string(),
