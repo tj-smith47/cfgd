@@ -335,12 +335,15 @@ pub fn run_apply(
         let preview = printer.section("Plan preview");
         for phase_item in &plan.phases {
             let items = reconciler::format_plan_items(phase_item);
-            let displayed: Vec<(&reconciler::Action, &String)> = if let Some(ref pf) = phase_filter {
+            let displayed: Vec<(&reconciler::Action, &String)> = if let Some(ref pf) = phase_filter
+            {
                 phase_item
                     .actions
                     .iter()
                     .zip(items.iter())
-                    .filter(|(a, _)| reconciler::action_matches_phase_filter(&phase_item.name, a, pf))
+                    .filter(|(a, _)| {
+                        reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
+                    })
                     .collect()
             } else {
                 phase_item.actions.iter().zip(items.iter()).collect()
@@ -350,7 +353,7 @@ pub fn run_apply(
             }
             let phase_sec = preview.section(phase_item.name.display_name());
             for (action, item) in displayed {
-                phase_sec.bullet(condense_plan_item_for_display(action, item));
+                phase_sec.bullet(reconciler::condense_action_desc_for_display(action, item));
             }
         }
         for w in &plan.warnings {

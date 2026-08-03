@@ -80,13 +80,12 @@ pub fn build_fleet_status_doc(
                 // `format_action_description`) stamps "script"; `execute_script`
                 // (onChange / module-onChange scripts, reconciler/scripts.rs)
                 // stamps "Running script: {body}" — both must condense here.
-                let display_id = if event.resource_type == "script" {
-                    condense_script_label(&event.resource_id)
-                } else if event.resource_type == "Running script" {
-                    condense_script_label(event.resource_id.trim_start())
-                } else {
-                    event.resource_id.clone()
-                };
+                let display_id =
+                    if event.resource_type == "script" || event.resource_type == "Running script" {
+                        condense_script_label(&event.resource_id)
+                    } else {
+                        event.resource_id.clone()
+                    };
                 let subject = format!(
                     "{} {} — want: {}, have: {}",
                     event.resource_type,
@@ -187,13 +186,12 @@ pub fn build_fleet_status_doc(
                 // Same rationale as the Drift section above: condense a
                 // "script" / "Running script" resource_id only for this
                 // table cell, never the stored id itself.
-                let display_id = if r.resource_type == "script" {
-                    condense_script_label(&r.resource_id)
-                } else if r.resource_type == "Running script" {
-                    condense_script_label(r.resource_id.trim_start())
-                } else {
-                    r.resource_id.clone()
-                };
+                let display_id =
+                    if r.resource_type == "script" || r.resource_type == "Running script" {
+                        condense_script_label(&r.resource_id)
+                    } else {
+                        r.resource_id.clone()
+                    };
                 t = t.row([r.resource_type.clone(), display_id, r.source.clone()]);
             }
             s.table(t)

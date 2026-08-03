@@ -818,12 +818,37 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None);
 
     let desc = &output.phases[0].actions[0].description;
     assert!(
         desc.contains(raw_body),
         "PlanActionOutput.description must preserve the raw multi-line body byte-identical, got: {desc}"
+    );
+}
+
+// Mirrors the phase-script case above but for a MODULE script:
+// `format_module_action_body`'s `ModuleActionKind::RunScript` arm used to
+// condense the body inline, truncating it in the `-o json` plan payload too
+// (it shares the same `format_plan_items` -> `build_plan_output` zip).
+#[test]
+fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
+    let raw_body = "echo module-line-one\necho module-line-two\necho module-line-three";
+    let action = Action::Module(ModuleAction {
+        module_name: "dev-tools".to_string(),
+        kind: ModuleActionKind::RunScript {
+            script: ScriptEntry::Simple(raw_body.to_string()),
+            phase: ScriptPhase::PostApply,
+        },
+        origin: None,
+    });
+    let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    let desc = &output.phases[0].actions[0].description;
+    assert!(
+        desc.contains(raw_body),
+        "PlanActionOutput.description must preserve a MODULE script's raw multi-line body byte-identical, got: {desc}"
     );
 }
 

@@ -206,12 +206,12 @@ fn update_script_list_remove_nonexistent() {
     assert_eq!(changes, 0);
 }
 
-// the "not found" message must echo the user's raw
-// `--remove-*-script` argument, not a condensed/truncated view — condensing
-// would hide the exact text that failed to match. Uses a multi-line raw
-// argument to prove the raw string wins over `condense_script_label`'s
-// first-line-only output, while still not tripping `Renderer::write_line`'s
-// no-embedded-newline assert (via `collapse_to_subject_line`).
+// The "not found" message must echo the user's raw `--remove-*-script`
+// argument, not a condensed/truncated view — condensing would hide the exact
+// text that failed to match. Uses a multi-line raw argument to prove the raw
+// string wins over `condense_script_label`'s first-line-only output, while
+// still not tripping `Renderer::write_line`'s no-embedded-newline assert (via
+// `collapse_to_subject_line`).
 #[test]
 fn update_script_list_remove_nonexistent_reports_raw_argument_not_condensed() {
     let (printer, buf) =

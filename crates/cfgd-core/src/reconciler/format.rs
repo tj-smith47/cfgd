@@ -123,6 +123,31 @@ pub fn format_action_description(action: &Action) -> String {
     }
 }
 
+/// Condense `desc` for a status-subject/error-message/bullet display only
+/// when `action` can embed a raw, potentially multi-line script body:
+/// `format_action_description`'s `Action::Script` arm and
+/// `format_module_action_body`'s `ModuleActionKind::RunScript` arm both embed
+/// `entry.run_str()`/`script.run_str()` verbatim so `-o json` payloads and
+/// `ActionResult.description` stay byte-identical to the source body. Every
+/// other action kind's description is already condensed/newline-free.
+/// Callers must keep the raw `desc` for `ActionResult.description` / journal
+/// persistence / the `-o json` plan payload — this helper is display-only.
+pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
+    let embeds_raw_script = matches!(action, Action::Script(_))
+        || matches!(
+            action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::RunScript { .. },
+                ..
+            })
+        );
+    if embeds_raw_script {
+        crate::output::condense_script_label(desc)
+    } else {
+        desc.to_string()
+    }
+}
+
 /// Format plan phase items for display.
 pub fn format_plan_items(phase: &Phase) -> Vec<String> {
     phase
@@ -295,7 +320,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     // `PlanActionOutput.description` (the `-o json` plan
                     // payload). Condensing here would truncate the JSON
                     // payload too — display sites condense for themselves via
-                    // `condense_plan_item_for_display`.
+                    // `condense_action_desc_for_display`.
                     format!(
                         "run {} script: {}{}",
                         phase.display_name(),
@@ -373,11 +398,18 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             }
         }
         ModuleActionKind::RunScript { script, phase } => {
+            // Raw body: this same string feeds both
+            // `display_plan_table`/`cli/apply.rs`'s dry-run preview (human
+            // bullets) AND `build_plan_output`'s `PlanActionOutput.description`
+            // (the `-o json` plan payload) via `format_plan_items` ->
+            // `format_module_action_item`. Condensing here would truncate the
+            // JSON payload too — display sites condense for themselves via
+            // `condense_action_desc_for_display`.
             format!(
                 "[{}] {}: {}",
                 action.module_name,
                 phase.display_name(),
-                crate::output::condense_script_label(script.run_str())
+                script.run_str()
             )
         }
         ModuleActionKind::Skip { reason } => {
@@ -386,14 +418,29 @@ fn format_module_action_body(action: &ModuleAction) -> String {
     }
 }
 
+/// Types whose `format_action_description`/`execute_script` output stamps
+/// TWO structural colons (`type:subtype:body`) before any user-controlled
+/// content begins — the subtype is dropped from the returned id on purpose
+/// (drift/state matching keys on `(type, body)`, not on which phase/verb
+/// produced it). Every other prefix (`system:configurator.key`,
+/// `system:configurator:skip`, `execute_script`'s `"Running script: {body}"`)
+/// has exactly ONE structural colon, so a blind `splitn(3, ':')` cannot tell
+/// "2 structural colons" apart from "1 structural colon + a colon embedded in
+/// the body" — both consume 2 colons and yield 3 pieces. Dispatching on the
+/// known prefix (rather than counting colons) keeps the body intact either
+/// way: a `run:` script or `-o json` value containing its own `:` no longer
+/// gets silently truncated mid-body.
+const TWO_COLON_PREFIXES: &[&str] = &["file", "package", "secret", "script", "module", "env"];
+
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
-    let parts: Vec<&str> = desc.splitn(3, ':').collect();
-    if parts.len() >= 3 {
-        (parts[0].to_string(), parts[2..].join(":"))
-    } else if parts.len() == 2 {
-        (parts[0].to_string(), parts[1].to_string())
+    let Some((prefix, rest)) = desc.split_once(':') else {
+        return ("unknown".to_string(), desc.to_string());
+    };
+    if TWO_COLON_PREFIXES.contains(&prefix) {
+        let id = rest.split_once(':').map_or(rest, |(_, id)| id);
+        (prefix.to_string(), id.to_string())
     } else {
-        ("unknown".to_string(), desc.to_string())
+        (prefix.to_string(), rest.to_string())
     }
 }
 

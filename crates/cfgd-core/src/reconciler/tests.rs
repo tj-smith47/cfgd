@@ -4496,11 +4496,11 @@ fn apply_continue_on_error_post_script_continues() {
     );
 }
 
-// a multi-line failing script's `format_action_description`
-// output must stay raw in the persisted `ActionResult.description` (the
-// SQLite managed-resource / drift-matching key) while the `continueOnError`
-// warning status subject condenses it — the `Renderer::write_line` debug
-// assert forbids embedded newlines in a rendered subject.
+// A multi-line failing script's `format_action_description` output must stay
+// raw in the persisted `ActionResult.description` (the SQLite managed-resource
+// / drift-matching key) while the `continueOnError` warning status subject
+// condenses it — the `Renderer::write_line` debug assert forbids embedded
+// newlines in a rendered subject.
 #[test]
 #[cfg(unix)]
 fn apply_continue_on_error_multiline_script_condenses_display_keeps_raw_description() {
@@ -4628,11 +4628,11 @@ fn apply_continue_on_error_false_pre_script_aborts() {
     );
 }
 
-// the "pre-script failed, aborting apply: {desc}" error
-// message must condense a multi-line script's `format_action_description`
-// output, not interpolate it raw — a raw multi-line `desc` here would trip
-// `Renderer::write_line`'s no-embedded-newline assert wherever this error
-// string is later rendered as a status subject (e.g. `cli/apply.rs`).
+// The "pre-script failed, aborting apply: {desc}" error message must condense
+// a multi-line script's `format_action_description` output, not interpolate
+// it raw — a raw multi-line `desc` here would trip `Renderer::write_line`'s
+// no-embedded-newline assert wherever this error string is later rendered as
+// a status subject (e.g. `cli/apply.rs`).
 #[test]
 #[cfg(unix)]
 fn apply_continue_on_error_false_pre_script_abort_message_condenses_multiline_desc() {
@@ -5227,6 +5227,24 @@ fn parse_resource_from_description_cases() {
             "secret",
             "vault:path/to/secret",
         ),
+        // Two structural colons (`type:subtype:body`): the subtype is
+        // dropped by design, and a colon embedded in the body must survive
+        // intact rather than being swallowed by the subtype split.
+        ("script:post:echo \"a: b\"", "script", "echo \"a: b\""),
+        // One structural colon (`execute_script`'s `"Running script: {body}"`):
+        // a colon embedded in the body used to be misread as a second
+        // structural separator, dropping everything between it and the
+        // (wrongly assumed) third field.
+        (
+            "Running script: echo \"a: b\"",
+            "Running script",
+            " echo \"a: b\"",
+        ),
+        // One structural colon on an unrecognized prefix (`system:configurator:skip`):
+        // previously landed in the two-colon branch by accident (2 colons in
+        // the string) and dropped the configurator name; now the whole
+        // remainder after the first colon is preserved.
+        ("system:brew:skip", "system", "brew:skip"),
     ];
     for (input, expected_type, expected_id) in cases {
         let (rtype, rid) = super::parse_resource_from_description(input);

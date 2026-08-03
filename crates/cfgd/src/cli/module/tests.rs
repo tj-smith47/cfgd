@@ -4734,6 +4734,55 @@ fn print_module_review_summary_omits_empty_sections() {
     assert!(!out.contains("Post-apply"), "no scripts section: {out}");
 }
 
+#[test]
+fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
+    // `print_module_review_summary`'s post-apply-script rendering and the
+    // upgrade-diff "Changes" section both gate bullet-vs-code_block on this
+    // one function now — pin the exact cases that used to disagree under
+    // the old `contains('\n')` gate (a `run: |` block scalar's trailing
+    // newline survives into a single logical line) and the true
+    // multi-line case that must still render as a code block.
+    assert!(
+        !super::registry::has_second_non_empty_line("echo hello"),
+        "single line, no trailing newline"
+    );
+    assert!(
+        !super::registry::has_second_non_empty_line("echo hello\n"),
+        "single logical line with a trailing newline (`run: |` shape) must not need a code block"
+    );
+    assert!(
+        !super::registry::has_second_non_empty_line("\necho hello"),
+        "a leading blank line is not a second non-empty line"
+    );
+    assert!(
+        super::registry::has_second_non_empty_line("echo one\necho two"),
+        "two non-empty lines must need a code block"
+    );
+    assert!(!super::registry::has_second_non_empty_line(""));
+}
+
+#[test]
+fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code_block() {
+    // Mirrors `print_module_review_summary_trailing_newline_script_renders_as_single_bullet`
+    // but for the sibling upgrade-diff surface (`cmd_module_upgrade`'s
+    // "Changes" section) — before R5 this surface gated on raw
+    // `change.contains('\n')`, so a `run: |` single-logical-line
+    // `postApply script` diff (whose `run_str()` carries a trailing `\n`)
+    // rendered as a code block here while the pre-approval review rendered
+    // the identical body as a bullet.
+    let old = make_loaded_module("m", config::ModuleSpec::default());
+    let new = module_with_post_apply_script("echo hello\n");
+    let changes = modules::diff_module_specs(&old, &new);
+    let change = changes
+        .iter()
+        .find(|c| c.contains("postApply script"))
+        .expect("expected a postApply script diff entry");
+    assert!(
+        !super::registry::has_second_non_empty_line(change),
+        "a single logical line with a trailing newline must not be routed to a code block: {change:?}"
+    );
+}
+
 fn module_with_post_apply_script(run: &str) -> modules::LoadedModule {
     make_loaded_module(
         "m",
@@ -6620,10 +6669,10 @@ fn cmd_module_update_remove_nonexistent_script_warns_not_found() {
     );
 }
 
-// the "not found" message must echo the raw removal
-// argument (flattened via `collapse_to_subject_line`, all lines preserved),
-// not `condense_script_label`'s truncated first-line-only view — a
-// condensed echo would hide the exact text that failed to match.
+// The "not found" message must echo the raw removal argument (flattened via
+// `collapse_to_subject_line`, all lines preserved), not
+// `condense_script_label`'s truncated first-line-only view — a condensed
+// echo would hide the exact text that failed to match.
 #[test]
 fn cmd_module_update_remove_nonexistent_multiline_script_reports_raw_not_condensed() {
     let dir = tempfile::tempdir().unwrap();

@@ -397,7 +397,7 @@ pub fn cmd_module_upgrade(
     {
         let changes_sec = printer.section("Changes");
         for change in &changes {
-            if change.contains('\n') {
+            if has_second_non_empty_line(change) {
                 // A raw `postApply script` diff line embeds the script's
                 // unmodified multi-line body (see `diff_module_specs`) —
                 // `bullet()` cannot carry embedded `\n` (write_line's
@@ -406,8 +406,10 @@ pub fn cmd_module_upgrade(
                 // truncating it away right before the user approves running
                 // it on their machine.
                 changes_sec.code_block(change.lines().map(|l| l.to_string()));
+            } else if let Some(line) = change.lines().find(|l| !l.trim().is_empty()) {
+                changes_sec.bullet(line.trim());
             } else {
-                changes_sec.bullet(change);
+                changes_sec.bullet(change.as_str());
             }
         }
     }
@@ -472,6 +474,20 @@ pub fn cmd_module_upgrade(
     Ok(())
 }
 
+/// True when `body` has a second non-empty logical line — the shared gate
+/// for rendering a review-surface entry (an upgrade diff line, a post-apply
+/// script) as a multi-line `code_block()` instead of a single `bullet()`.
+/// Deciding on LINE COUNT alone (rather than raw `contains('\n')`) is
+/// necessary because a `run: |` YAML block-scalar's trailing newline
+/// survives `run_str()` even for a single logical line of script — a raw
+/// `contains('\n')` check would flip that single line into a code block in
+/// one review surface while `bullet()`-rendering it in the other.
+pub(super) fn has_second_non_empty_line(body: &str) -> bool {
+    let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
+    non_empty.next();
+    non_empty.next().is_some()
+}
+
 /// Print the module-review summary shown before the user confirms an
 /// `add` or `upgrade`: dependencies, packages, files, post-apply script
 /// warnings, then commit + integrity. Split out so the side-effect-free
@@ -522,27 +538,22 @@ pub(super) fn print_module_review_summary(
         let scripts_sec = mod_sec.section("Post-apply");
         for script in &scripts.post_apply {
             let body = script.run_str();
-            let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
-            let first = non_empty.next();
-            if non_empty.next().is_some() {
+            if has_second_non_empty_line(body) {
                 // `.bullet()` cannot carry a body containing `\n` (the
                 // `write_line` debug_assert). This is the pre-install
                 // security review of a remote module's scripts — condensing
                 // to the first line would hide the rest of the script from
                 // the user right before they approve running it on their
                 // machine, so show it verbatim via `code_block` instead.
-                // Deciding on line COUNT alone (rather than presence of a
-                // second non-empty line) misses the common `run: |` YAML
-                // block-scalar shape, whose trailing `\n` survives `run_str()`
-                // even for a single logical line of script.
                 scripts_sec.code_block(body.lines().map(|l| format!("$ {l}")));
-            } else if let Some(line) = first {
+            } else if let Some(line) = body.lines().find(|l| !l.trim().is_empty()) {
                 scripts_sec.bullet(format!("$ {}", line.trim()));
             } else {
-                // `body` is empty or whitespace-only: `first` is `None`, so
-                // neither branch above fires. The "Post-apply scripts (N)"
-                // header above already counted this entry, so silently
-                // rendering nothing would leave the count unaccounted for.
+                // `body` is empty or whitespace-only: no non-empty line
+                // exists, so neither branch above fires. The "Post-apply
+                // scripts (N)" header above already counted this entry, so
+                // silently rendering nothing would leave the count
+                // unaccounted for.
                 scripts_sec.bullet("(empty script)");
             }
         }
