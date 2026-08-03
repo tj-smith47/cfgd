@@ -3,7 +3,7 @@ use crate::PathDisplayExt;
 use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::{Printer, Role};
+use crate::output::{Printer, Role, collapse_to_subject_line, condense_script_label};
 use crate::state::ApplyStatus;
 
 use super::format::{
@@ -22,6 +22,22 @@ use super::types::{
 fn hash_sorted_parts(mut parts: Vec<String>) -> String {
     parts.sort();
     crate::sha256_hex(parts.join("|").as_bytes())
+}
+
+/// Condense `desc` for a status-subject/error-message display only when
+/// `action` is a raw `Action::Script` — `format_action_description`'s
+/// `Action::Script` arm embeds `entry.run_str()` verbatim (unlike
+/// `ModuleActionKind::RunScript`, which stays body-free as
+/// `module:{name}:script`), so only that arm can contain embedded newlines
+/// that would trip `Renderer::write_line`'s `!body.contains('\n')` assert.
+/// Callers must keep the raw `desc` for `ActionResult.description` /
+/// journal persistence — this helper is display-only.
+fn condense_desc_for_display(action: &Action, desc: &str) -> String {
+    if matches!(action, Action::Script(_)) {
+        condense_script_label(desc)
+    } else {
+        desc.to_string()
+    }
 }
 
 /// Whether `action` (residing in `phase_name`) should execute under `filter`.
@@ -327,6 +343,8 @@ impl<'a> super::Reconciler<'a> {
                             false
                         };
 
+                        let display_desc = condense_desc_for_display(action, &desc);
+                        let display_err = collapse_to_subject_line(&e);
                         if continue_on_err {
                             printer.status_simple(
                                 Role::Warn,
@@ -334,14 +352,20 @@ impl<'a> super::Reconciler<'a> {
                                     "[{}/{}] Script failed (continueOnError): {} — {}",
                                     action_idx + 1,
                                     total,
-                                    desc,
-                                    e
+                                    display_desc,
+                                    display_err
                                 ),
                             );
                         } else {
                             printer.status_simple(
                                 Role::Fail,
-                                format!("[{}/{}] Failed: {} — {}", action_idx + 1, total, desc, e),
+                                format!(
+                                    "[{}/{}] Failed: {} — {}",
+                                    action_idx + 1,
+                                    total,
+                                    display_desc,
+                                    display_err
+                                ),
                             );
                         }
                         if let Some(jid) = journal_id
@@ -385,8 +409,9 @@ impl<'a> super::Reconciler<'a> {
                     }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
                 );
                 if should_abort && is_pre_script {
+                    let display_desc = condense_desc_for_display(action, &desc);
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message: format!("pre-script failed, aborting apply: {}", desc),
+                        message: format!("pre-script failed, aborting apply: {}", display_desc),
                     }));
                 }
             }

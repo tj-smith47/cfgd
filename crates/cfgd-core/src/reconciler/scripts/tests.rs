@@ -356,6 +356,42 @@ fn execute_script_runs_with_valid_working_dir() {
     );
 }
 
+// F2 regression: `execute_script`'s return value is the persisted
+// `ActionResult.description` for onChange callers, which
+// `parse_resource_from_description` parses back into a managed-resource
+// id — it must be byte-identical to the raw run_str, never condensed via
+// `condense_script_label`, or a multi-line inline script's id reshapes
+// and orphans every already-recorded state row.
+#[test]
+fn execute_script_return_value_preserves_raw_multiline_body() {
+    let printer = crate::test_helpers::test_printer();
+    let tmp = tempfile::tempdir().unwrap();
+    let entry = ScriptEntry::Simple("true\ntrue".into());
+
+    let (desc, changed, _captured) = execute_script(
+        &entry,
+        tmp.path(),
+        tmp.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+    )
+    .expect("multi-line inline script must succeed");
+
+    assert!(changed);
+    assert_eq!(
+        desc,
+        format!("Running script: {}", entry.run_str()),
+        "returned description must be the raw run_str, not the condensed label"
+    );
+    assert!(
+        desc.contains('\n'),
+        "raw multi-line body must be preserved byte-identical: {desc:?}"
+    );
+}
+
 // build_module_script_env: empty module env produces the same output as
 // build_script_env (no regressions for modules without spec.env).
 #[test]
@@ -1348,12 +1384,19 @@ fn build_script_env_reconcile_context_and_module_dir() {
 }
 
 // Regression: a `run:` script whose body spans multiple lines must never
-// hand a status subject the raw body, since `Renderer::write_line`
+// hand a *rendered* status subject the raw body, since `Renderer::write_line`
 // debug_asserts `!body.contains('\n')` — a release build would otherwise
 // print the whole script down the terminal as if it were one status line.
 // The `creates` guard triggers a `status_simple(Role::Skipped, ...)` call
-// built directly from `run_label` without ever spawning a shell, so this
-// exercises the real reconciler render path on every OS.
+// built from the condensed `run_label`, without ever spawning a shell, so
+// this exercises the real reconciler render path on every OS.
+//
+// The function's RETURN value is a different string on purpose: it is
+// `resource_desc`, the raw body, because callers push it straight into
+// `ActionResult.description` for state-matching (see the comment above the
+// `creates` guard in `scripts.rs`, and the analogous split in
+// `format_action_description` / `apply_script_action`). It must keep the
+// newline, not lose it.
 #[test]
 fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
     let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
@@ -1373,7 +1416,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
         interactive: false,
     };
 
-    let (label, changed, _captured) = execute_script(
+    let (desc, changed, _captured) = execute_script(
         &entry,
         tmp.path(),
         tmp.path(),
@@ -1387,8 +1430,8 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
 
     assert!(!changed, "the creates guard must report a clean skip");
     assert!(
-        !label.contains('\n'),
-        "execute_script's returned label must never carry the raw multi-line body: {label:?}"
+        desc.contains('\n') && desc.contains("echo two") && desc.contains("echo three"),
+        "the persisted description must stay the raw multi-line body for state-matching: {desc:?}"
     );
 
     let rendered = buf.lock().unwrap().clone();

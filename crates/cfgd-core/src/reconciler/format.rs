@@ -289,10 +289,17 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     origin,
                     ..
                 } => {
+                    // Raw body: this same `Vec<String>` feeds both
+                    // `display_plan_table`/`cli/apply.rs`'s dry-run preview
+                    // (human bullets) AND `build_plan_output`'s
+                    // `PlanActionOutput.description` (the `-o json` plan
+                    // payload). Condensing here would truncate the JSON
+                    // payload too — display sites condense for themselves via
+                    // `condense_plan_item_for_display`.
                     format!(
                         "run {} script: {}{}",
                         phase.display_name(),
-                        crate::output::condense_script_label(entry.run_str()),
+                        entry.run_str(),
                         provenance_suffix(origin)
                     )
                 }

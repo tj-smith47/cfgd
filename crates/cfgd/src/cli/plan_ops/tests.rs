@@ -805,6 +805,28 @@ fn build_plan_output_empty_plan_has_zero_actions() {
     assert!(output.phases.is_empty());
 }
 
+// F6 regression: `build_plan_output`'s `PlanActionOutput.description` is the
+// `-o json` plan payload — it must preserve a multi-line inline script's
+// run_str body byte-identical, never condensed. Condensing belongs solely to
+// human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
+#[test]
+fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let action = Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple(raw_body.to_string()),
+        phase: ScriptPhase::PreApply,
+        origin: "test".to_string(),
+    });
+    let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
+
+    let desc = &output.phases[0].actions[0].description;
+    assert!(
+        desc.contains(raw_body),
+        "PlanActionOutput.description must preserve the raw multi-line body byte-identical, got: {desc}"
+    );
+}
+
 #[test]
 fn print_apply_result_success_emits_ok_role() {
     let result = apply_result(ApplyStatus::Success, 5, 0);
@@ -974,6 +996,33 @@ fn display_plan_table_phase_filter_omits_other_phases() {
     assert!(
         !out.contains("Packages"),
         "Packages phase should be filtered out, got: {out}"
+    );
+}
+
+// F6 regression: `display_plan_table` must condense a multi-line inline
+// script's `format_plan_items` line before handing it to `bullet()` — the
+// raw string returned by `format_plan_items` embeds `\n`, which would trip
+// `Renderer::write_line`'s no-embedded-newline assert.
+#[test]
+fn display_plan_table_condenses_multiline_script_bullet() {
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let action = Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple(raw_body.to_string()),
+        phase: ScriptPhase::PreApply,
+        origin: "test".to_string(),
+    });
+    let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    display_plan_table(&plan, &printer, None);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        !out.contains("line-three"),
+        "human bullet must condense away subsequent lines, got: {out}"
+    );
+    assert!(
+        out.contains("line-one"),
+        "condensed bullet should reference the first line, got: {out}"
     );
 }
 

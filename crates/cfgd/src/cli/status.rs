@@ -70,12 +70,20 @@ pub fn build_fleet_status_doc(
     } else {
         doc.section("Drift", |s| {
             output.drift.iter().fold(s, |s, event| {
-                // A "script" resource_id is the raw run_str body (preserved
-                // byte-identical for UPSERT matching against prior drift
-                // rows) — condense only here, at the point it enters a status
-                // subject, so a multi-line inline script never lands raw.
+                // A "script" / "Running script" resource_id is the raw
+                // run_str body (preserved byte-identical for UPSERT matching
+                // against prior drift rows) — condense only here, at the
+                // point it enters a status subject, so a multi-line inline
+                // script never lands raw. Two type strings exist because two
+                // producers persist script actions: `apply_script_action`
+                // (main pre/post-apply phase scripts, format.rs's
+                // `format_action_description`) stamps "script"; `execute_script`
+                // (onChange / module-onChange scripts, reconciler/scripts.rs)
+                // stamps "Running script: {body}" — both must condense here.
                 let display_id = if event.resource_type == "script" {
                     condense_script_label(&event.resource_id)
+                } else if event.resource_type == "Running script" {
+                    condense_script_label(event.resource_id.trim_start())
                 } else {
                     event.resource_id.clone()
                 };
@@ -177,10 +185,12 @@ pub fn build_fleet_status_doc(
             let mut t = Table::new(["Type", "Resource", "Source"]);
             for r in items {
                 // Same rationale as the Drift section above: condense a
-                // "script" resource_id only for this table cell, never the
-                // stored id itself.
+                // "script" / "Running script" resource_id only for this
+                // table cell, never the stored id itself.
                 let display_id = if r.resource_type == "script" {
                     condense_script_label(&r.resource_id)
+                } else if r.resource_type == "Running script" {
+                    condense_script_label(r.resource_id.trim_start())
                 } else {
                     r.resource_id.clone()
                 };
@@ -696,6 +706,61 @@ mod tests {
         assert!(
             output.contains("/etc/managed.conf"),
             "managed resource row should be present, got: {output}"
+        );
+    }
+
+    // F2 corollary regression: onChange scripts persist under resource_type
+    // "Running script" (execute_script's own return value), distinct from
+    // the main pre/post-apply phase scripts' "script" type
+    // (apply_script_action's return value). Both must condense for human
+    // display; the stored/JSON id must stay the raw multi-line body.
+    #[test]
+    fn cmd_status_running_script_managed_resource_condenses_for_human_display() {
+        let (_cfg_dir, state_dir, config_path) = setup_env();
+        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let raw_body = " echo one\necho two\necho three";
+        store
+            .upsert_managed_resource("Running script", raw_body, "local", None, None)
+            .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+
+        cmd_status(&cli, &printer, None, false).unwrap();
+        drop(printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            !output.contains("echo two"),
+            "human table cell must not leak the raw multi-line body: {output}"
+        );
+        assert!(
+            output.contains("echo one"),
+            "condensed label should reference the first line: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_status_running_script_json_preserves_raw_resource_id() {
+        let (_cfg_dir, state_dir, config_path) = setup_env();
+        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let raw_body = " echo one\necho two\necho three";
+        store
+            .upsert_managed_resource("Running script", raw_body, "local", None, None)
+            .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers_json();
+
+        cmd_status(&cli, &printer, None, false).unwrap();
+        drop(printer);
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let resources = parsed["managedResources"].as_array().unwrap();
+        assert_eq!(
+            resources[0]["resourceId"], raw_body,
+            "JSON payload must preserve the raw multi-line resource_id byte-identical, got: {output}"
         );
     }
 

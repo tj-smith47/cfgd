@@ -293,8 +293,12 @@ pub struct ApplyResult {
 pub struct RollbackResult {
     pub files_restored: usize,
     pub files_removed: usize,
-    /// Non-file actions that were not rolled back (require manual review).
-    pub non_file_actions: Vec<String>,
+    /// Non-file actions that were not rolled back (require manual review),
+    /// as (action_type, resource_id) pairs. `resource_id` for a "script"
+    /// entry is the raw journal-recorded run_str body — kept alongside its
+    /// type so a display site (`cli/rollback.rs`) can condense it without
+    /// mistaking an unrelated resource_id (e.g. a package name) for one.
+    pub non_file_actions: Vec<(String, String)>,
 }
 
 impl ApplyResult {

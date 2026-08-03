@@ -4234,7 +4234,7 @@ fn rollback_lists_non_file_actions() {
     assert_eq!(rollback_result.files_restored, 0);
     assert_eq!(rollback_result.files_removed, 0);
     assert_eq!(rollback_result.non_file_actions.len(), 1);
-    assert!(rollback_result.non_file_actions[0].contains("ripgrep"));
+    assert!(rollback_result.non_file_actions[0].1.contains("ripgrep"));
 }
 
 #[test]
@@ -4496,6 +4496,83 @@ fn apply_continue_on_error_post_script_continues() {
     );
 }
 
+// F1 regression: a multi-line failing script's `format_action_description`
+// output must stay raw in the persisted `ActionResult.description` (the
+// SQLite managed-resource / drift-matching key) while the `continueOnError`
+// warning status subject condenses it — the `Renderer::write_line` debug
+// assert forbids embedded newlines in a rendered subject.
+#[test]
+#[cfg(unix)]
+fn apply_continue_on_error_multiline_script_condenses_display_keeps_raw_description() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+
+    // The second/third lines are a no-output comment and a bare `exit` — never
+    // `echo`, whose printed argument would land in the script's own captured
+    // stdout and then legitimately reappear in the (content-preserving)
+    // collapsed error text, making a naive "not in output" assertion below a
+    // false positive regardless of whether the display subject condenses.
+    resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+        workdir: None,
+        run: "true\n# raw-body-second-line-marker\nexit 42".to_string(),
+        timeout: Some("5s".to_string()),
+        idle_timeout: None,
+        continue_on_error: Some(true),
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    drop(printer);
+
+    let failed = result.action_results.iter().find(|r| !r.success).unwrap();
+    assert!(
+        failed.description.contains("raw-body-second-line-marker"),
+        "persisted ActionResult.description must stay the raw multi-line body: {:?}",
+        failed.description
+    );
+    assert!(
+        failed.description.contains('\n'),
+        "persisted description must not be condensed: {:?}",
+        failed.description
+    );
+
+    let output = buf.lock().unwrap();
+    assert!(
+        !output.contains("raw-body-second-line-marker"),
+        "display status subject must condense away subsequent lines, got: {output}"
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn apply_continue_on_error_false_pre_script_aborts() {
@@ -4548,6 +4625,72 @@ fn apply_continue_on_error_false_pre_script_aborts() {
     assert!(
         err.contains("pre-script failed"),
         "should mention pre-script failure: {err}"
+    );
+}
+
+// F1 regression: the "pre-script failed, aborting apply: {desc}" error
+// message must condense a multi-line script's `format_action_description`
+// output, not interpolate it raw — a raw multi-line `desc` here would trip
+// `Renderer::write_line`'s no-embedded-newline assert wherever this error
+// string is later rendered as a status subject (e.g. `cli/apply.rs`).
+#[test]
+#[cfg(unix)]
+fn apply_continue_on_error_false_pre_script_abort_message_condenses_multiline_desc() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+        workdir: None,
+        run: "echo line-one\necho line-two\nexit 1".to_string(),
+        timeout: Some("5s".to_string()),
+        idle_timeout: None,
+        continue_on_error: Some(false),
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    let result = reconciler.apply(
+        &plan,
+        &resolved,
+        Path::new("."),
+        &printer,
+        None,
+        &[],
+        ReconcileContext::Apply,
+        false,
+        None,
+        &crate::AbortFlag::new(),
+    );
+
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("pre-script failed"),
+        "should mention pre-script failure: {err}"
+    );
+    assert!(
+        !err.contains('\n'),
+        "abort error message must not embed a raw newline: {err:?}"
+    );
+    assert!(
+        !err.contains("line-two"),
+        "abort error message must condense away subsequent lines: {err:?}"
     );
 }
 
@@ -5738,6 +5881,31 @@ fn format_plan_items_script_action_with_provenance() {
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("run preApply script: setup.sh"));
     assert!(items[0].contains("<- corp-source"));
+}
+
+// F6 regression: `format_plan_items`'s Script arm feeds BOTH the human
+// `display_plan_table` preview AND `build_plan_output`'s
+// `PlanActionOutput.description` JSON payload — it must return the raw,
+// uncondensed `run_str()` body; condensing is the exclusive job of the
+// human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
+#[test]
+fn format_plan_items_script_action_preserves_raw_multiline_body() {
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let phase = Phase {
+        name: PhaseName::PreScripts,
+        actions: vec![Action::Script(ScriptAction::Run {
+            entry: ScriptEntry::Simple(raw_body.into()),
+            phase: ScriptPhase::PreApply,
+            origin: "test".into(),
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(
+        items[0].contains(raw_body),
+        "format_plan_items must preserve the raw multi-line body byte-identical, got: {:?}",
+        items[0]
+    );
 }
 
 #[test]
@@ -9698,14 +9866,14 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
     assert!(
         result
             .non_file_actions
-            .contains(&"brew:ripgrep".to_string()),
+            .contains(&("install".to_string(), "brew:ripgrep".to_string())),
         "should list package action for manual review: {:?}",
         result.non_file_actions
     );
     assert!(
         result
             .non_file_actions
-            .contains(&"script:post:setup.sh".to_string()),
+            .contains(&("script".to_string(), "script:post:setup.sh".to_string())),
         "should list script action for manual review: {:?}",
         result.non_file_actions
     );

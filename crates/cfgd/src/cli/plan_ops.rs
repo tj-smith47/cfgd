@@ -251,6 +251,24 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     }
 }
 
+/// Condense a `format_plan_items` display string for SCRIPT actions only.
+/// `format_plan_items` embeds the raw, uncondensed `run_str()` body so
+/// `build_plan_output`'s zipped `PlanActionOutput.description` (the `-o json`
+/// plan payload) keeps the raw body byte-identical; human render sites call
+/// this to truncate a multi-line inline script before handing it to
+/// `bullet()`/`status_simple()`, which would otherwise trip
+/// `Renderer::write_line`'s no-embedded-newline assert.
+pub(in crate::cli) fn condense_plan_item_for_display(
+    action: &reconciler::Action,
+    item: &str,
+) -> String {
+    if matches!(action, reconciler::Action::Script(_)) {
+        cfgd_core::output::condense_script_label(item)
+    } else {
+        item.to_string()
+    }
+}
+
 pub(in crate::cli) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
@@ -278,7 +296,7 @@ pub(in crate::cli) fn display_plan_table(
                 {
                     phase.status_simple(Role::Warn, item);
                 } else {
-                    phase.bullet(item);
+                    phase.bullet(condense_plan_item_for_display(action, item));
                 }
             }
         }

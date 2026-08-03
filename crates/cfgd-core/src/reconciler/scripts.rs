@@ -228,6 +228,17 @@ pub(crate) fn execute_script(
     }
 
     let label = format!("Running script: {}", run_label);
+    // Resource-id / state-matching key, NOT a display string: the onChange /
+    // module-onChange callers in `apply.rs` push this return value straight
+    // into `ActionResult.description`, which `parse_resource_from_description`
+    // parses back into a `managed_resource` id. `label` (built from the
+    // condensed `run_label`) is correct for the spinner text below but must
+    // never be returned — that would reshape the id and orphan every
+    // already-recorded state row for a module with a multi-line inline
+    // script. Mirrors `format_action_description` in `format.rs` and
+    // `apply_script_action` in `scripts_apply.rs`, which already return the
+    // raw body for this same reason.
+    let resource_desc = format!("Running script: {}", run_str);
 
     // Idempotency guards run BEFORE the body: `creates` (path existence),
     // then `onlyIf` (run only on zero exit), then `unless` (run only on
@@ -253,7 +264,7 @@ pub(crate) fn execute_script(
                         resolved_creates.posix()
                     ),
                 );
-                return Ok((label, false, None));
+                return Ok((resource_desc, false, None));
             }
         }
 
@@ -265,7 +276,7 @@ pub(crate) fn execute_script(
                     Role::Skipped,
                     format!("{run_label} — onlyIf condition not met: {cmd}"),
                 );
-                return Ok((label, false, None));
+                return Ok((resource_desc, false, None));
             }
         }
 
@@ -277,7 +288,7 @@ pub(crate) fn execute_script(
                     Role::Skipped,
                     format!("{run_label} — unless condition already holds: {cmd}"),
                 );
-                return Ok((label, false, None));
+                return Ok((resource_desc, false, None));
             }
         }
     }
@@ -396,7 +407,7 @@ pub(crate) fn execute_script(
                     message: format!("script '{}' failed (exit {})", run_label, exit_code),
                 }));
             }
-            return Ok((label, true, None));
+            return Ok((resource_desc, true, None));
         }
         InteractiveDisposition::SkipNoTty => {
             // No TTY (CI, piped stdin, or any daemon-run phase): skip rather than
@@ -405,7 +416,7 @@ pub(crate) fn execute_script(
                 Role::Warn,
                 format!("{run_label} — interactive script skipped: no TTY available"),
             );
-            return Ok((label, false, None));
+            return Ok((resource_desc, false, None));
         }
         InteractiveDisposition::NotInteractive => {}
     }
@@ -513,7 +524,7 @@ pub(crate) fn execute_script(
 
                 let elapsed = start.elapsed();
                 pb.finish_ok(format!("{} ({}s)", run_label, elapsed.as_secs()));
-                return Ok((label, true, captured));
+                return Ok((resource_desc, true, captured));
             }
             None => {
                 let elapsed = start.elapsed();

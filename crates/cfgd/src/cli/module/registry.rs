@@ -397,7 +397,18 @@ pub fn cmd_module_upgrade(
     {
         let changes_sec = printer.section("Changes");
         for change in &changes {
-            changes_sec.bullet(change);
+            if change.contains('\n') {
+                // A raw `postApply script` diff line embeds the script's
+                // unmodified multi-line body (see `diff_module_specs`) —
+                // `bullet()` cannot carry embedded `\n` (write_line's
+                // debug_assert). This is the pre-approval security review for
+                // an upgrade, so show it verbatim via `code_block` rather than
+                // truncating it away right before the user approves running
+                // it on their machine.
+                changes_sec.code_block(change.lines().map(|l| l.to_string()));
+            } else {
+                changes_sec.bullet(change);
+            }
         }
     }
 
@@ -527,6 +538,12 @@ pub(super) fn print_module_review_summary(
                 scripts_sec.code_block(body.lines().map(|l| format!("$ {l}")));
             } else if let Some(line) = first {
                 scripts_sec.bullet(format!("$ {}", line.trim()));
+            } else {
+                // `body` is empty or whitespace-only: `first` is `None`, so
+                // neither branch above fires. The "Post-apply scripts (N)"
+                // header above already counted this entry, so silently
+                // rendering nothing would leave the count unaccounted for.
+                scripts_sec.bullet("(empty script)");
             }
         }
     }

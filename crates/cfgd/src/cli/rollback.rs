@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, condense_script_label};
 
 pub fn cmd_rollback(
     printer: &Printer,
@@ -123,8 +123,14 @@ pub fn cmd_rollback(
             ),
         );
         let nf_sec = printer.section("Actions");
-        for action in &result.non_file_actions {
-            nf_sec.bullet(action);
+        for (action_type, resource_id) in &result.non_file_actions {
+            // A "script" resource_id is the raw journal-recorded run_str
+            // body — condense only for this bullet, never the payload below.
+            if action_type == "script" {
+                nf_sec.bullet(condense_script_label(resource_id));
+            } else {
+                nf_sec.bullet(resource_id);
+            }
         }
     }
 
@@ -132,7 +138,11 @@ pub fn cmd_rollback(
         apply_id,
         files_restored: result.files_restored,
         files_removed: result.files_removed,
-        non_file_actions: result.non_file_actions.clone(),
+        non_file_actions: result
+            .non_file_actions
+            .iter()
+            .map(|(_, rid)| rid.clone())
+            .collect(),
     }));
 
     Ok(())

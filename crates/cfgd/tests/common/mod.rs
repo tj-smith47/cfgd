@@ -953,6 +953,39 @@ pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) 
     (state_dir, apply_id_1)
 }
 
+/// Seed a state DB with a target apply followed by a multi-line inline
+/// script action recorded under journal action_type "script" — exercises
+/// the "Non-file actions (manual review)" bullet's condensing of a raw,
+/// multi-line `resource_id` (the run_str body) rather than pinning a
+/// snapshot the fix would otherwise need to regenerate on every wording
+/// tweak.
+pub fn rollback_state_with_multiline_script_action_setup() -> (tempfile::TempDir, i64) {
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
+
+    let apply_id_1 = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+
+    let apply_id_2 = state
+        .record_apply("test", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+    let jid = state
+        .journal_begin(
+            apply_id_2,
+            0,
+            "PostScripts",
+            "script",
+            "echo line-one\necho line-two",
+            None,
+        )
+        .unwrap();
+    state.journal_complete(jid, None, None).unwrap();
+
+    (state_dir, apply_id_1)
+}
+
 /// Pre-stage a minimal `cfgd.yaml` so `cmd_config_*` finds a parseable
 /// config + a `spec` section. The default profile field lets get/set/unset
 /// exercise existing-key paths.

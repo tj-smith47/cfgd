@@ -338,19 +338,15 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
     let old_script_set: HashSet<&str> = old_scripts.into_iter().collect();
     let new_script_set: HashSet<&str> = new_scripts.into_iter().collect();
     for script in new_script_set.difference(&old_script_set) {
-        // Diff on the raw body (above) so two scripts differing only past
-        // their first line still register as a change; condense only for
-        // this display line, which a `bullet()` call renders as one row.
-        changes.push(format!(
-            "+ postApply script: {}",
-            crate::output::condense_script_label(script)
-        ));
+        // This is the pre-approval security review of a module upgrade — the
+        // user must see the FULL script body before approving it running on
+        // their machine, so push the raw body untouched. Never condense here;
+        // the caller (`cmd_module_upgrade` in `cli/module/registry.rs`)
+        // decides bullet-vs-code_block rendering based on embedded `\n`.
+        changes.push(format!("+ postApply script: {script}"));
     }
     for script in old_script_set.difference(&new_script_set) {
-        changes.push(format!(
-            "- postApply script: {}",
-            crate::output::condense_script_label(script)
-        ));
+        changes.push(format!("- postApply script: {script}"));
     }
 
     if changes.is_empty() {

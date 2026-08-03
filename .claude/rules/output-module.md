@@ -24,6 +24,11 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
 
 **Status subjects must not contain `\n`.** When formatting a captured error (`io::Error`, `CfgdError`, command stderr) into a `status[_simple]` subject or detail, route through `cfgd_core::output::collapse_to_subject_line(err)` to flatten multi-line errors safely — the `Renderer::write_line` `debug_assert` will panic in debug builds otherwise.
 
+For a user-authored script body (a `run:` entry, an `--add-*-script`/`--remove-*-script` CLI value) landing in a status subject, route through `cfgd_core::output::condense_script_label(body)` instead: it trims each line, drops empties, and truncates the first line to 80 chars with `…` (or appends ` …` if more lines follow) — a lossy, DISPLAY-only summary appropriate for "Added script: …" / "Removed script: …" confirmations. Never use it for:
+- **persisted / machine-matched strings** (a resource-id, journal `resource_id`, `ActionResult.description`, a `-o json` payload field) — these must stay byte-identical to the raw body so state-matching and `-o json` consumers never see a reshaped id
+- **pre-approval security-review contexts** (a module `add`/`upgrade` diff, `print_module_review_summary`) — the user must see the FULL script before approving it runs on their machine; render via `bullet()` for a single logical line or `code_block()` for a multi-line body instead of truncating
+- **"not found" echoes of a user-typed search argument** — prefer `collapse_to_subject_line` there too, since hiding the tail of the exact string that failed to match defeats the point of the error
+
 Forbidden outside the `output/` module itself:
 - `println!`, `eprintln!`, `print!`, `eprint!`
 - `console::*` direct use

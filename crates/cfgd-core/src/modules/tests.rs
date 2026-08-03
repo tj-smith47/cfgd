@@ -1968,6 +1968,67 @@ fn diff_module_specs_scripts_changed() {
     assert!(changes.iter().any(|c| c.contains("- postApply script")));
 }
 
+// F5 regression: `diff_module_specs` is the pre-approval security review of
+// a module upgrade — it must never condense/truncate a multi-line script
+// body, or the user approves running code they never saw. The rendering
+// decision (bullet vs code_block) belongs to the caller.
+#[test]
+fn diff_module_specs_multiline_script_change_preserves_raw_body() {
+    let old = LoadedModule {
+        version: None,
+        name: "test".into(),
+        spec: ModuleSpec {
+            platforms: vec![],
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            scripts: Some(crate::config::ScriptSpec {
+                post_apply: vec![],
+                ..Default::default()
+            }),
+            system: HashMap::new(),
+        },
+        dir: PathBuf::from("/tmp"),
+        origin: None,
+    };
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let new = LoadedModule {
+        version: None,
+        name: "test".into(),
+        spec: ModuleSpec {
+            platforms: vec![],
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            scripts: Some(crate::config::ScriptSpec {
+                post_apply: vec![crate::config::ScriptEntry::Simple(raw_body.to_string())],
+                ..Default::default()
+            }),
+            system: HashMap::new(),
+        },
+        dir: PathBuf::from("/tmp"),
+        origin: None,
+    };
+    let changes = diff_module_specs(&old, &new);
+    let script_change = changes
+        .iter()
+        .find(|c| c.contains("+ postApply script"))
+        .expect("script addition should be reported");
+    assert!(
+        script_change.contains("echo line-three"),
+        "diff must preserve the FULL raw body for pre-approval review, got: {script_change}"
+    );
+    assert_eq!(
+        script_change,
+        &format!("+ postApply script: {raw_body}"),
+        "diff must push the raw body byte-identical, not condensed"
+    );
+}
+
 #[test]
 fn dependency_order_self_dependency_detected() {
     let modules = make_test_modules(&[("a", &["a"])]);

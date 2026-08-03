@@ -6620,6 +6620,43 @@ fn cmd_module_update_remove_nonexistent_script_warns_not_found() {
     );
 }
 
+// F9 regression: the "not found" message must echo the raw removal
+// argument (flattened via `collapse_to_subject_line`, all lines preserved),
+// not `condense_script_label`'s truncated first-line-only view — a
+// condensed echo would hide the exact text that failed to match.
+#[test]
+fn cmd_module_update_remove_nonexistent_multiline_script_reports_raw_not_condensed() {
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "noscript-multiline",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: noscript-multiline\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let args = super::ModuleUpdateArgs {
+        post_apply: vec!["-line-one\nline-two".to_string()],
+        ..make_module_update_args("noscript-multiline")
+    };
+    cmd_module_update_local(&cli, &printer, &args)
+        .expect("removing an absent multi-line script must warn, not error");
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("line-two"),
+        "not-found message must echo the full raw argument, got: {output}"
+    );
+    assert!(
+        output.contains("line-one — line-two"),
+        "raw argument must be joined via collapse_to_subject_line, not truncated to \
+         just the first line, got: {output}"
+    );
+}
+
 #[test]
 fn cmd_module_update_preserves_leading_comment_block() {
     let dir = setup_config_dir();

@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label};
+use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line, condense_script_label};
 
 pub fn cmd_module_create(
     cli: &Cli,
@@ -604,7 +604,15 @@ pub fn cmd_module_update_local(
             );
             changes += 1;
         } else {
-            printer.status_simple(Role::Warn, format!("Script '{}' not found", label_text));
+            // Echo back the exact raw argument the user searched for — a
+            // condensed/truncated view would hide a copy-paste-whitespace
+            // mismatch that's exactly the thing worth debugging here.
+            // `collapse_to_subject_line` flattens any embedded newlines
+            // safely without truncating content.
+            printer.status_simple(
+                Role::Warn,
+                format!("Script '{}' not found", collapse_to_subject_line(script)),
+            );
         }
     }
 
