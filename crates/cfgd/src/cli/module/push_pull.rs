@@ -69,8 +69,9 @@ pub fn cmd_module_push(
         let module_doc = cfgd_core::config::parse_module(&module_yaml)
             .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
 
+        let signature = build_module_signature(printer, signed, key);
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(apply_module_crd(printer, &module_doc, artifact))?;
+        rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
         applied_name = Some(module_doc.metadata.name.clone());
     }
 
@@ -87,36 +88,194 @@ pub fn cmd_module_push(
     Ok(())
 }
 
+/// Derive the CRD-facing signature configuration threaded from `--sign`.
+///
+/// Keyless signing (`--sign` without `--key`) maps directly to
+/// `cosign.keyless = true`. Key-based signing carries no in-memory signature
+/// payload to thread — `sign_and_attest` only echoes whether signing was
+/// requested, since the actual cosign signature lives in the OCI
+/// registry/Rekor, not in process memory — so the verification-facing public
+/// key is read from the `cosign.pub` sibling file next to the private key
+/// path, the convention `cfgd module keys generate`/`keys rotate` establish.
+/// When no sibling public key exists, the caller is warned that the applied
+/// CRD will fail the operator's `disallowUnsigned` admission check.
+fn build_module_signature(
+    printer: &Printer,
+    signed: bool,
+    key: Option<&str>,
+) -> Option<cfgd_crd::ModuleSignature> {
+    if !signed {
+        return None;
+    }
+
+    let cosign = match key {
+        None => cfgd_crd::CosignSignature {
+            public_key: None,
+            keyless: true,
+            certificate_identity: None,
+            certificate_oidc_issuer: None,
+        },
+        Some(key_path) => {
+            let pub_key_path = Path::new(key_path).with_file_name("cosign.pub");
+            match std::fs::read_to_string(&pub_key_path) {
+                Ok(public_key) => cfgd_crd::CosignSignature {
+                    public_key: Some(public_key),
+                    keyless: false,
+                    certificate_identity: None,
+                    certificate_oidc_issuer: None,
+                },
+                Err(_) => {
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "No sibling public key found at '{}'; the applied CRD will fail the disallowUnsigned admission check",
+                            pub_key_path.display() // native-ok: human-facing warning, not a stored/compared key
+                        ),
+                    );
+                    cfgd_crd::CosignSignature {
+                        public_key: None,
+                        keyless: false,
+                        certificate_identity: None,
+                        certificate_oidc_issuer: None,
+                    }
+                }
+            }
+        }
+    };
+
+    Some(cfgd_crd::ModuleSignature {
+        cosign: Some(cosign),
+    })
+}
+
 pub(super) fn build_module_crd_json(
     module_doc: &cfgd_core::config::ModuleDocument,
     artifact: &str,
-) -> serde_json::Value {
-    serde_json::json!({
+    signature: Option<cfgd_crd::ModuleSignature>,
+) -> anyhow::Result<serde_json::Value> {
+    let cfgd_core::config::ModuleSpec {
+        depends,
+        platforms: _platform_gates, // module-level platform gating: no CRD counterpart today
+        packages,
+        files,
+        env,
+        aliases: _shell_aliases, // shell aliases: no CRD counterpart today
+        scripts,
+        system: _system_config, // system configurator settings: no CRD counterpart today
+    } = &module_doc.spec;
+
+    let packages: Vec<cfgd_crd::PackageEntry> = packages
+        .iter()
+        .map(|entry| {
+            let cfgd_core::config::ModulePackageEntry {
+                name,
+                min_version: _min_version, // no CRD counterpart today
+                prefer: _prefer,           // no CRD counterpart today
+                aliases,
+                script: _script,   // no CRD counterpart today
+                only_if: _only_if, // no CRD counterpart today
+                unless: _unless,   // no CRD counterpart today
+                creates: _creates, // no CRD counterpart today
+                deny: _deny,       // no CRD counterpart today
+                platforms: _platform_tags, // gating tags: the CRD's `platforms` field is a
+                                   // per-manager name-override map (see PackageEntry::platforms), not gating
+                                   // tags, so package-level gating has no CRD counterpart today
+            } = entry;
+            cfgd_crd::PackageEntry {
+                name: name.clone(),
+                platforms: aliases
+                    .iter()
+                    .map(|(manager, override_name)| (manager.clone(), override_name.clone()))
+                    .collect(),
+            }
+        })
+        .collect();
+
+    let files: Vec<cfgd_crd::ModuleFileSpec> = files
+        .iter()
+        .map(|entry| {
+            let cfgd_core::config::ModuleFileEntry {
+                source,
+                target,
+                strategy: _strategy,       // no CRD counterpart today
+                private: _private,         // no CRD counterpart today
+                encryption: _encryption,   // no CRD counterpart today
+                permissions: _permissions, // no CRD counterpart today
+                patch: _patch,             // no CRD counterpart today
+            } = entry;
+            cfgd_crd::ModuleFileSpec {
+                source: source.clone(),
+                target: target.clone(),
+            }
+        })
+        .collect();
+
+    let env: Vec<cfgd_crd::ModuleEnvVar> = env
+        .iter()
+        .map(|entry| {
+            let cfgd_core::config::EnvVar { name, value } = entry;
+            cfgd_crd::ModuleEnvVar {
+                name: name.clone(),
+                value: value.clone(),
+                append: false, // local EnvVar has no append concept today
+            }
+        })
+        .collect();
+
+    let scripts = match scripts {
+        Some(spec) => {
+            let cfgd_core::config::ScriptSpec {
+                pre_apply: _pre_apply, // no CRD counterpart today
+                post_apply,
+                pre_reconcile: _pre_reconcile, // no CRD counterpart today
+                post_reconcile: _post_reconcile, // no CRD counterpart today
+                on_drift: _on_drift,           // no CRD counterpart today
+                on_change: _on_change,         // no CRD counterpart today
+            } = spec;
+            cfgd_crd::ModuleScripts {
+                post_apply: if post_apply.is_empty() {
+                    None
+                } else {
+                    Some(
+                        post_apply
+                            .iter()
+                            .map(cfgd_core::config::ScriptEntry::run_str)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                },
+            }
+        }
+        None => cfgd_crd::ModuleScripts { post_apply: None },
+    };
+
+    let spec = cfgd_crd::ModuleSpec {
+        packages,
+        files,
+        scripts,
+        env,
+        depends: depends.clone(),
+        oci_artifact: Some(artifact.to_string()),
+        signature,
+        mount_policy: cfgd_crd::MountPolicy::default(),
+    };
+
+    let spec_json = serde_json::to_value(&spec)?;
+    Ok(serde_json::json!({
         "apiVersion": cfgd_core::API_VERSION,
         "kind": "Module",
         "metadata": {
             "name": &module_doc.metadata.name,
         },
-        "spec": {
-            "ociArtifact": artifact,
-            "packages": module_doc.spec.packages.iter().map(|p| {
-                serde_json::json!({ "name": p.name })
-            }).collect::<Vec<_>>(),
-            "files": module_doc.spec.files.iter().map(|f| {
-                serde_json::json!({
-                    "source": f.source,
-                    "target": f.target,
-                })
-            }).collect::<Vec<_>>(),
-            "depends": module_doc.spec.depends,
-        }
-    })
+        "spec": spec_json,
+    }))
 }
 
 async fn apply_module_crd(
     printer: &Printer,
     module_doc: &cfgd_core::config::ModuleDocument,
     artifact: &str,
+    signature: Option<cfgd_crd::ModuleSignature>,
 ) -> anyhow::Result<()> {
     use kube::Client;
     use kube::api::{Api, Patch, PatchParams};
@@ -134,7 +293,7 @@ async fn apply_module_crd(
         )
     })?;
 
-    let module_json = build_module_crd_json(module_doc, artifact);
+    let module_json = build_module_crd_json(module_doc, artifact, signature)?;
 
     let modules: Api<kube::core::DynamicObject> = Api::all_with(
         client,
@@ -760,6 +919,178 @@ mod tests {
                 meta.extras["step"], "attestation",
                 "step must be 'attestation': {:?}",
                 meta.extras
+            );
+        }
+    }
+
+    mod typed_crd_construction {
+        use cfgd_core::config::parse_module;
+        use cfgd_core::output::{Printer, Verbosity};
+        use cfgd_operator::webhook::check_unsigned_policy;
+
+        use super::super::{build_module_crd_json, build_module_signature};
+
+        const MINIMAL_MODULE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n";
+
+        const FULL_MODULE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: full-mod
+spec:
+  packages:
+    - name: sed
+      aliases:
+        brew: gnu-sed
+        apt: sed
+      platforms:
+        - linux
+  env:
+    - name: FOO
+      value: bar
+  aliases:
+    - name: ll
+      command: ls -la
+  scripts:
+    preApply:
+      - echo pre-should-be-dropped
+    postApply:
+      - echo one
+      - echo two
+  system:
+    shell:
+      defaultShell: zsh
+  platforms:
+    - linux
+"#;
+
+        fn crd_spec(crd_json: &serde_json::Value) -> cfgd_crd::ModuleSpec {
+            serde_json::from_value(crd_json["spec"].clone())
+                .expect("crd spec must deserialize into cfgd_crd::ModuleSpec")
+        }
+
+        #[test]
+        fn unsigned_crd_is_rejected_by_disallow_unsigned_admission() {
+            let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
+            let crd_json = build_module_crd_json(&module_doc, "localhost:5000/test/mod:v1", None)
+                .expect("build crd json");
+            let spec = crd_spec(&crd_json);
+
+            let result = check_unsigned_policy(&spec, true);
+
+            assert!(
+                result.is_err(),
+                "an unsigned module must fail the real disallowUnsigned admission rule"
+            );
+        }
+
+        #[test]
+        fn sign_apply_keyless_crd_satisfies_disallow_unsigned_admission() {
+            let printer = Printer::new(Verbosity::Quiet);
+            let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
+            let signature = build_module_signature(&printer, true, None);
+            let crd_json =
+                build_module_crd_json(&module_doc, "localhost:5000/test/mod:v1", signature)
+                    .expect("build crd json");
+            let spec = crd_spec(&crd_json);
+
+            let result = check_unsigned_policy(&spec, true);
+
+            assert!(
+                result.is_ok(),
+                "keyless --sign must satisfy the real disallowUnsigned admission rule: {result:?}"
+            );
+        }
+
+        #[test]
+        fn sign_apply_with_key_and_sibling_pub_satisfies_disallow_unsigned_admission() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let key_path = dir.path().join("cosign.key");
+            std::fs::write(&key_path, "fake-private-key").expect("write key");
+            std::fs::write(dir.path().join("cosign.pub"), "fake-public-key-pem")
+                .expect("write pub");
+
+            let printer = Printer::new(Verbosity::Quiet);
+            let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
+            let signature =
+                build_module_signature(&printer, true, Some(key_path.to_str().expect("utf8 path")));
+            let crd_json =
+                build_module_crd_json(&module_doc, "localhost:5000/test/mod:v1", signature)
+                    .expect("build crd json");
+            let spec = crd_spec(&crd_json);
+
+            let result = check_unsigned_policy(&spec, true);
+
+            assert!(
+                result.is_ok(),
+                "key-based --sign with a sibling cosign.pub must satisfy the real disallowUnsigned admission rule: {result:?}"
+            );
+        }
+
+        #[test]
+        fn sign_with_key_and_no_sibling_pub_still_fails_disallow_unsigned_admission() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let key_path = dir.path().join("cosign.key");
+            std::fs::write(&key_path, "fake-private-key").expect("write key");
+
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
+            let signature =
+                build_module_signature(&printer, true, Some(key_path.to_str().expect("utf8 path")));
+            let crd_json =
+                build_module_crd_json(&module_doc, "localhost:5000/test/mod:v1", signature)
+                    .expect("build crd json");
+            let spec = crd_spec(&crd_json);
+
+            let result = check_unsigned_policy(&spec, true);
+
+            assert!(
+                result.is_err(),
+                "key-based --sign with no sibling cosign.pub must still fail the real disallowUnsigned admission rule"
+            );
+            let warning = buf.lock().unwrap().clone();
+            assert!(
+                warning.contains("No sibling public key found"),
+                "missing sibling key must be surfaced to the user: {warning:?}"
+            );
+        }
+
+        #[test]
+        fn env_and_post_apply_scripts_round_trip_while_unsupported_fields_stay_dropped() {
+            let module_doc = parse_module(FULL_MODULE_YAML).expect("parse module.yaml");
+            let crd_json = build_module_crd_json(&module_doc, "localhost:5000/test/full:v1", None)
+                .expect("build crd json");
+            let spec = &crd_json["spec"];
+
+            assert_eq!(
+                spec["env"],
+                serde_json::json!([{ "name": "FOO", "value": "bar", "append": false }]),
+                "env vars must round-trip into the CRD's env field: {spec:?}"
+            );
+            assert_eq!(
+                spec["scripts"]["postApply"],
+                serde_json::json!("echo one\necho two"),
+                "postApply script entries must join into the CRD's single postApply field: {spec:?}"
+            );
+            assert!(
+                spec["scripts"].get("preApply").is_none(),
+                "the CRD's ModuleScripts has no preApply field today; a leaked key would mean the schema grew without this call site being updated: {spec:?}"
+            );
+            assert_eq!(
+                spec["packages"][0]["platforms"],
+                serde_json::json!({ "brew": "gnu-sed", "apt": "sed" }),
+                "package-level aliases map to the CRD's per-manager platforms override: {spec:?}"
+            );
+            assert!(
+                spec.get("aliases").is_none(),
+                "module-level shell aliases have no CRD counterpart today: {spec:?}"
+            );
+            assert!(
+                spec.get("system").is_none(),
+                "system configurator settings have no CRD counterpart today: {spec:?}"
+            );
+            assert!(
+                spec.get("platforms").is_none(),
+                "module-level platform gating has no CRD counterpart today: {spec:?}"
             );
         }
     }

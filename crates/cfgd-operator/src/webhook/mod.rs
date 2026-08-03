@@ -309,7 +309,7 @@ fn check_trusted_registries(spec: &ModuleSpec, registries: &[String]) -> Result<
 }
 
 /// Reject unsigned modules when any ClusterConfigPolicy disallows unsigned.
-fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
+pub fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
     if disallow_unsigned && spec.oci_artifact.is_some() {
         let has_signing = spec
             .signature

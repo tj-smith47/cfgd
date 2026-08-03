@@ -4040,7 +4040,8 @@ fn build_module_crd_json_emits_canonical_crd_envelope() {
     // Drifting any of these literal strings silently breaks `module push --apply`
     // for every existing operator-deployed cluster, so pin them here.
     let doc = module_doc_with("my-mod", vec![], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1");
+    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1", None)
+        .expect("build crd json");
 
     assert_eq!(v["apiVersion"], cfgd_core::API_VERSION);
     assert_eq!(v["kind"], "Module");
@@ -4054,7 +4055,12 @@ fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
     // ref. The CRD names live in k8s; the artifact ref lives in OCI. Conflating
     // them would make every artifact-renamed module push create a NEW CRD.
     let doc = module_doc_with("module-canonical", vec![], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/whatever/totally-different:v9");
+    let v = super::push_pull::build_module_crd_json(
+        &doc,
+        "ghcr.io/whatever/totally-different:v9",
+        None,
+    )
+    .expect("build crd json");
 
     assert_eq!(v["metadata"]["name"], "module-canonical");
     assert_ne!(v["metadata"]["name"], "totally-different");
@@ -4074,7 +4080,7 @@ fn build_module_crd_json_packages_emit_only_name_field() {
     pkg.platforms = vec!["darwin".into()];
 
     let doc = module_doc_with("m", vec![pkg], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let pkgs = v["spec"]["packages"].as_array().expect("packages array");
     assert_eq!(pkgs.len(), 1);
@@ -4100,7 +4106,7 @@ fn build_module_crd_json_files_emit_only_source_and_target() {
         permissions: None,
     };
     let doc = module_doc_with("m", vec![], vec![f], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let files = v["spec"]["files"].as_array().expect("files array");
     assert_eq!(files.len(), 1);
@@ -4120,7 +4126,7 @@ fn build_module_crd_json_depends_passes_through_verbatim() {
         vec![],
         vec!["base".into(), "shell".into(), "git".into()],
     );
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let depends = v["spec"]["depends"].as_array().expect("depends array");
     let names: Vec<&str> = depends.iter().filter_map(|d| d.as_str()).collect();
@@ -4134,7 +4140,7 @@ fn build_module_crd_json_empty_collections_emit_as_empty_arrays_not_null() {
     // means "set to empty"). The patch must always emit `[]` so that
     // an apply removes any stale entries from a previous module version.
     let doc = module_doc_with("m", vec![], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     assert!(v["spec"]["packages"].is_array());
     assert!(v["spec"]["files"].is_array());
