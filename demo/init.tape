@@ -1,5 +1,8 @@
-Output demo/.out/frames/
-Output demo/.out/raw.mp4
+# `Output <dir>/` is a no-op on the installed vhs (v0.11.0) — it exits 0 and
+# writes nothing, with the real frames landing in a /tmp scratch dir that vhs
+# deletes on cleanup. The mp4 is therefore the only artifact this tape
+# actually produces, and it is what the GIF ramp reads.
+Output "demo/.out/raw.mp4"
 
 Require docker
 
@@ -49,6 +52,10 @@ Sleep 3s
 
 Type "nvim ."
 Enter
+# The tree's first scan loses its race about half the time and paints an
+# empty pane; waiting on real tree content turns a bad take into a hard
+# failure instead of a silently-wrong GIF.
+Wait+Screen@20s /Cargo\.toml/
 Sleep 8s
 
 Type ":qa"
@@ -64,8 +71,8 @@ Type "nvim --version | head -1"
 Enter
 Sleep 3s
 
-# Everything above the install wait runs ~14s and everything below it ~17s.
-# Those two spans are the only part of the recording played at 1:1; the
-# ffmpeg pass that builds the GIF decimates the frames between them, so
-# changing a Sleep or TypingSpeed here means changing that pass's head/tail
-# constants to match.
+# The spans above and below the install wait are the only footage played at
+# 1:1 (~14s and ~17s). The ffmpeg pass that builds the GIF decimates
+# everything between them, so its head/tail seconds must stay comfortably
+# ABOVE these — 17/20 today. Set them lower and the typing or the editor
+# beat gets sped up, which is the one thing the ramp must never do.
