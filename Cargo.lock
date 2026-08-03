@@ -574,7 +574,6 @@ dependencies = [
  "brontes",
  "cfgd-core",
  "cfgd-crd",
- "cfgd-operator",
  "clap",
  "clap_complete",
  "clap_mangen",

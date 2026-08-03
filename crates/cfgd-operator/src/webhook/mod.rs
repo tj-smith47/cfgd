@@ -21,12 +21,17 @@ use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{info, warn};
 
+// The admission rule for `disallowUnsigned` lives in `cfgd-crd`, below the
+// operator in the dependency graph, so non-operator consumers of `ModuleSpec`
+// (the CLI's typed CRD-construction tests) exercise the exact same predicate
+// without pulling in axum/hyper.
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlertSpec,
     MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
+use cfgd_crd::check_unsigned_policy;
 
 #[derive(Clone)]
 struct WebhookState {
@@ -303,25 +308,6 @@ fn check_trusted_registries(spec: &ModuleSpec, registries: &[String]) -> Result<
                 "spec.ociArtifact '{}' does not match any trusted registry",
                 oci_ref
             ));
-        }
-    }
-    Ok(())
-}
-
-/// Reject unsigned modules when any ClusterConfigPolicy disallows unsigned.
-pub fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
-    if disallow_unsigned && spec.oci_artifact.is_some() {
-        let has_signing = spec
-            .signature
-            .as_ref()
-            .and_then(|s| s.cosign.as_ref())
-            .map(|c| c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty()))
-            .unwrap_or(false);
-        if !has_signing {
-            return Err(
-                "unsigned modules are not allowed: configure spec.signature.cosign with publicKey or keyless"
-                    .to_string(),
-            );
         }
     }
     Ok(())
