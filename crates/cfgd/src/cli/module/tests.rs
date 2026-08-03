@@ -4734,6 +4734,90 @@ fn print_module_review_summary_omits_empty_sections() {
     assert!(!out.contains("Post-apply"), "no scripts section: {out}");
 }
 
+fn module_with_post_apply_script(run: &str) -> modules::LoadedModule {
+    make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                pre_apply: vec![],
+                post_apply: vec![cfgd_core::config::ScriptEntry::Simple(run.to_string())],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn print_module_review_summary_single_line_script_renders_as_bullet() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("echo hello");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("- $ echo hello"),
+        "expected bullet line: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet() {
+    // The `run: |` YAML block-scalar shape: `run_str()` returns the line plus
+    // a trailing `\n`. This is the exact case that used to reach `bullet()`
+    // with an embedded newline and trip the `write_line` debug_assert.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("echo hello\n");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("- $ echo hello"),
+        "expected trimmed bullet line: {out}"
+    );
+    assert_eq!(
+        out.matches("$ echo hello").count(),
+        1,
+        "trailing newline must not produce a second rendered line: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_leading_blank_line_script_renders_as_single_bullet() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("\necho hello");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("- $ echo hello"),
+        "expected trimmed bullet line: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_multi_line_script_renders_every_line_verbatim() {
+    // Genuine multi-line scripts must stay verbatim via `code_block` (not
+    // condensed to a single line) — this is the pre-install security review
+    // of a remote module's script, so nothing after the first line may be
+    // hidden from the user.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("echo one\necho two");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("$ echo one"), "first line verbatim: {out}");
+    assert!(out.contains("$ echo two"), "second line verbatim: {out}");
+    assert!(
+        !out.contains("- $ echo one") && !out.contains("- $ echo two"),
+        "multi-line script must render via code_block (no bullet dash), not condensed: {out}"
+    );
+}
+
 // ============================================================================
 // compute_lock_url — URL stored in lockfile entries
 //

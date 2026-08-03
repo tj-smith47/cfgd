@@ -511,16 +511,22 @@ pub(super) fn print_module_review_summary(
         let scripts_sec = mod_sec.section("Post-apply");
         for script in &scripts.post_apply {
             let body = script.run_str();
-            if body.lines().filter(|l| !l.trim().is_empty()).count() > 1 {
+            let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
+            let first = non_empty.next();
+            if non_empty.next().is_some() {
                 // `.bullet()` cannot carry a body containing `\n` (the
                 // `write_line` debug_assert). This is the pre-install
                 // security review of a remote module's scripts — condensing
                 // to the first line would hide the rest of the script from
                 // the user right before they approve running it on their
                 // machine, so show it verbatim via `code_block` instead.
+                // Deciding on line COUNT alone (rather than presence of a
+                // second non-empty line) misses the common `run: |` YAML
+                // block-scalar shape, whose trailing `\n` survives `run_str()`
+                // even for a single logical line of script.
                 scripts_sec.code_block(body.lines().map(|l| format!("$ {l}")));
-            } else {
-                scripts_sec.bullet(format!("$ {}", script));
+            } else if let Some(line) = first {
+                scripts_sec.bullet(format!("$ {}", line.trim()));
             }
         }
     }
