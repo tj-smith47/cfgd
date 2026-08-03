@@ -859,10 +859,11 @@ pub struct AppliedUpdate {
 /// their own success/failure surface around the returned [`AppliedUpdate`].
 ///
 /// `cfg` carries the effective [`UpdateConfig`] so the **ride-along** skill
-/// refresh ([spec §9] rule 2) runs here, in the single apply owner: every apply
-/// site inherits it, making a separate skill prompt after a binary upgrade
-/// unrepresentable. The refresh touches **user-scope skills only** and only
-/// those already installed — never a tracked project file, never a new kind.
+/// refresh (rule 2 in `dedup`'s module docs) runs here, in the single apply
+/// owner: every apply site inherits it, making a separate skill prompt after a
+/// binary upgrade unrepresentable. The refresh touches **user-scope skills
+/// only** and only those already installed — never a tracked project file,
+/// never a new kind.
 pub fn install_release(
     release: &ReleaseInfo,
     asset: &ReleaseAsset,

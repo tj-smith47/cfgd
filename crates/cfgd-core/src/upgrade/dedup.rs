@@ -1,7 +1,7 @@
 //! At-most-one-update-surface dedup and the user-scope skill ride-along.
 //!
 //! Binary and skill staleness are two update surfaces that, left unmanaged,
-//! could both fire on one invocation. The three [spec §9] rules collapse them
+//! could both fire on one invocation. The three rules below collapse them
 //! to **at most one surface, ever**, and this module makes that guarantee
 //! structural rather than incidental:
 //!
@@ -37,7 +37,7 @@ pub struct UpdateSurfaces {
     pub skill_surface_count: usize,
 }
 
-/// Resolve the single update surface to show, encoding the three [spec §9]
+/// Resolve the single update surface to show, encoding the module's three
 /// dedup rules.
 ///
 /// * **Rule 1 (binary outranks skills):** when `binary_available`, the binary
@@ -87,7 +87,7 @@ pub struct RideAlongOutcome {
 }
 
 /// Refresh already-installed **user-scope** skills as the ride-along half of an
-/// applied binary upgrade ([spec §9] rule 2).
+/// applied binary upgrade (rule 2 — ride-along).
 ///
 /// Call this *after* the binary install has happened (`Auto`, an accepted
 /// `Prompt`, or a manual `cfgd upgrade`). It re-renders every skill already
@@ -219,7 +219,8 @@ pub fn consolidated_skill_stale_message(staleness: SkillStaleness) -> String {
 }
 
 /// What the standalone-stale path (binary current, skills stale) should do,
-/// resolved from the effective skills policy per the [spec §9] scope table.
+/// resolved from the effective skills policy — see the variants below for the
+/// Auto/Notify/Prompt/Manual mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StandaloneSkillAction {
     /// `Auto` / `Inherit→Auto`: re-render USER-scope skills directly, then a
@@ -228,17 +229,18 @@ pub enum StandaloneSkillAction {
     /// `Notify` / `Prompt` (and their `Inherit` resolutions): emit the single
     /// consolidated notice covering both scopes; write nothing.
     ///
-    /// `Prompt` standalone-stale has no binary upgrade to ride along, so per the
-    /// §9 headline "at most ONE surface" it shows the consolidated notice exactly
-    /// like `Notify` — never a separate skill prompt and never an auto-write.
+    /// `Prompt` standalone-stale has no binary upgrade to ride along, so per this
+    /// module's at-most-one-surface guarantee it shows the consolidated notice
+    /// exactly like `Notify` — never a separate skill prompt and never an auto-write.
     ConsolidatedNotice,
     /// `Manual` / `Inherit→Manual`: silent — the user runs `cfgd skill update`.
     Silent,
 }
 
 /// Resolve the standalone-stale action from the effective skills policy. Pure:
-/// the caller performs the I/O (refresh / notice / nothing). Keeps the §9 scope
-/// table in one place so the CLI and daemon consumers cannot diverge.
+/// the caller performs the I/O (refresh / notice / nothing). Keeps the
+/// policy→action mapping in one place so the CLI and daemon consumers cannot
+/// diverge.
 pub fn resolve_standalone_skill_action(cfg: &UpdateConfig) -> StandaloneSkillAction {
     match cfg.effective_skill_policy() {
         UpdatePolicy::Auto => StandaloneSkillAction::RefreshUserThenNoticeProject,
@@ -247,7 +249,7 @@ pub fn resolve_standalone_skill_action(cfg: &UpdateConfig) -> StandaloneSkillAct
     }
 }
 
-/// What the §9 skill-surface orchestration decided, as a pure value for a
+/// What the skill-surface orchestration decided, as a pure value for a
 /// consumer to render. At most ONE consolidated notice is ever indicated
 /// ([`StandaloneSkillOutcome::NoticeNeeded`] carries the single staleness it
 /// covers); every other variant indicates no notice.
@@ -265,7 +267,7 @@ pub enum StandaloneSkillOutcome {
     Silent,
 }
 
-/// Run the §9 skill-surface orchestration end to end and return a pure outcome
+/// Run the skill-surface orchestration end to end and return a pure outcome
 /// for the consumer to render (CLI Doc or daemon notifier).
 ///
 /// This is the SINGLE owner of the effectful "how the standalone-stale action
@@ -277,8 +279,9 @@ pub enum StandaloneSkillOutcome {
 /// 1. Aggregate stale-skill counts and apply [`compute_update_surfaces`]: a
 ///    pending binary update (`binary_available`) suppresses skills (rule 1), and
 ///    nothing-stale yields no surface.
-/// 2. Otherwise dispatch on [`resolve_standalone_skill_action`] (the §9 scope
-///    table): `Auto` re-renders USER-scope skills via [`refresh_user_scope_skills`]
+/// 2. Otherwise dispatch on [`resolve_standalone_skill_action`] (the
+///    policy→action mapping on [`StandaloneSkillAction`]): `Auto` re-renders
+///    USER-scope skills via [`refresh_user_scope_skills`]
 ///    then re-aggregates — a non-zero project remainder needs a notice, else
 ///    `Refreshed`; `Notify`/`Prompt` need one consolidated both-scopes notice with
 ///    no write; `Manual` is silent.

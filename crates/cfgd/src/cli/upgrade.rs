@@ -263,7 +263,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
 
     let outcome = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
 
-    // §9 consolidated skill-stale surface. The binary surface (above) and this
+    // Consolidated skill-stale surface. The binary surface (above) and this
     // skill surface are deduped to AT MOST ONE: `compute_update_surfaces`
     // suppresses skills whenever a binary update is pending (rule 1), and when
     // the binary is current it yields exactly ONE consolidated skill notice
@@ -274,13 +274,14 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
     }
 }
 
-/// Render the §9 consolidated skill-stale surface for the CLI startup check.
+/// Render the consolidated skill-stale surface for the CLI startup check.
 ///
-/// The §9 decision + effectful orchestration (rule 1 suppression, the scope
-/// table, `Auto` refresh → re-aggregate → project-only remainder) is single-
-/// sourced in [`run_standalone_skill_action`]; this function only renders the
-/// returned [`StandaloneSkillOutcome`] as a `Printer` Doc. It returns that
-/// outcome so tests assert the decision SHAPE, not rendered text.
+/// The decision + effectful orchestration (rule 1 suppression, the
+/// policy→action mapping, `Auto` refresh → re-aggregate → project-only
+/// remainder) is single-sourced in [`run_standalone_skill_action`]; this
+/// function only renders the returned [`StandaloneSkillOutcome`] as a
+/// `Printer` Doc. It returns that outcome so tests assert the decision SHAPE,
+/// not rendered text.
 ///
 /// Only [`StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
 /// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
@@ -940,7 +941,8 @@ mod tests {
         );
     }
 
-    // ----- §9 wired skill surface (rule 1 / rule 3 / Auto refresh) -----
+    // ----- Wired skill surface (rule 1 / rule 3 / Auto refresh) -----
+    // Rule numbering per `cfgd_core::upgrade::dedup`'s module docs.
 
     use cfgd_core::config::{SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig, UpdatePolicy};
     use cfgd_core::generate::{SkillKind, skill_model_for};

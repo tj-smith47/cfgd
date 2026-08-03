@@ -1,4 +1,4 @@
-//! At-most-one-update-surface dedup (spec §9): the three precedence/consolidation
+//! At-most-one-update-surface dedup: the three precedence/consolidation
 //! rules and the user-scope skill ride-along.
 //!
 //! The two filesystem tests resolve scope-rooted skill paths, so each runs inside
