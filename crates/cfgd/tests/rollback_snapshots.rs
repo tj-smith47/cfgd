@@ -150,7 +150,7 @@ fn rollback_non_file_actions_human() {
     );
 }
 
-/// F4 regression: a "script" journal action's `resource_id` is the raw
+/// A "script" journal action's `resource_id` is the raw
 /// run_str body — the "Actions" bullet must condense a multi-line body
 /// rather than interpolating it raw (which trips `Renderer::write_line`'s
 /// no-embedded-newline assert), while the JSON `non_file_actions` payload

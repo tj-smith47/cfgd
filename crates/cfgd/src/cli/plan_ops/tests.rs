@@ -805,7 +805,7 @@ fn build_plan_output_empty_plan_has_zero_actions() {
     assert!(output.phases.is_empty());
 }
 
-// F6 regression: `build_plan_output`'s `PlanActionOutput.description` is the
+// `build_plan_output`'s `PlanActionOutput.description` is the
 // `-o json` plan payload — it must preserve a multi-line inline script's
 // run_str body byte-identical, never condensed. Condensing belongs solely to
 // human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
@@ -999,7 +999,7 @@ fn display_plan_table_phase_filter_omits_other_phases() {
     );
 }
 
-// F6 regression: `display_plan_table` must condense a multi-line inline
+// `display_plan_table` must condense a multi-line inline
 // script's `format_plan_items` line before handing it to `bullet()` — the
 // raw string returned by `format_plan_items` embeds `\n`, which would trip
 // `Renderer::write_line`'s no-embedded-newline assert.

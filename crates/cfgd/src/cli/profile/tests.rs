@@ -206,7 +206,7 @@ fn update_script_list_remove_nonexistent() {
     assert_eq!(changes, 0);
 }
 
-// F9 regression: the "not found" message must echo the user's raw
+// the "not found" message must echo the user's raw
 // `--remove-*-script` argument, not a condensed/truncated view — condensing
 // would hide the exact text that failed to match. Uses a multi-line raw
 // argument to prove the raw string wins over `condense_script_label`'s

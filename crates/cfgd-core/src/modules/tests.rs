@@ -1968,7 +1968,7 @@ fn diff_module_specs_scripts_changed() {
     assert!(changes.iter().any(|c| c.contains("- postApply script")));
 }
 
-// F5 regression: `diff_module_specs` is the pre-approval security review of
+// `diff_module_specs` is the pre-approval security review of
 // a module upgrade — it must never condense/truncate a multi-line script
 // body, or the user approves running code they never saw. The rendering
 // decision (bullet vs code_block) belongs to the caller.

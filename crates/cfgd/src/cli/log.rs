@@ -180,7 +180,7 @@ mod tests {
         );
     }
 
-    // F3 regression: `cmd_log_show_output`'s per-entry section header embeds
+    // `cmd_log_show_output`'s per-entry section header embeds
     // `entry.resource_id` raw — for a "script" journal row that is the raw
     // run_str body, which for a multi-line inline script trips
     // `Renderer::write_line`'s no-embedded-newline assert.

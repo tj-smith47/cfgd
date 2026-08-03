@@ -6620,7 +6620,7 @@ fn cmd_module_update_remove_nonexistent_script_warns_not_found() {
     );
 }
 
-// F9 regression: the "not found" message must echo the raw removal
+// the "not found" message must echo the raw removal
 // argument (flattened via `collapse_to_subject_line`, all lines preserved),
 // not `condense_script_label`'s truncated first-line-only view — a
 // condensed echo would hide the exact text that failed to match.

@@ -356,7 +356,7 @@ fn execute_script_runs_with_valid_working_dir() {
     );
 }
 
-// F2 regression: `execute_script`'s return value is the persisted
+// `execute_script`'s return value is the persisted
 // `ActionResult.description` for onChange callers, which
 // `parse_resource_from_description` parses back into a managed-resource
 // id — it must be byte-identical to the raw run_str, never condensed via

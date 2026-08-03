@@ -4496,7 +4496,7 @@ fn apply_continue_on_error_post_script_continues() {
     );
 }
 
-// F1 regression: a multi-line failing script's `format_action_description`
+// a multi-line failing script's `format_action_description`
 // output must stay raw in the persisted `ActionResult.description` (the
 // SQLite managed-resource / drift-matching key) while the `continueOnError`
 // warning status subject condenses it — the `Renderer::write_line` debug
@@ -4628,7 +4628,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
     );
 }
 
-// F1 regression: the "pre-script failed, aborting apply: {desc}" error
+// the "pre-script failed, aborting apply: {desc}" error
 // message must condense a multi-line script's `format_action_description`
 // output, not interpolate it raw — a raw multi-line `desc` here would trip
 // `Renderer::write_line`'s no-embedded-newline assert wherever this error
@@ -5883,7 +5883,7 @@ fn format_plan_items_script_action_with_provenance() {
     assert!(items[0].contains("<- corp-source"));
 }
 
-// F6 regression: `format_plan_items`'s Script arm feeds BOTH the human
+// `format_plan_items`'s Script arm feeds BOTH the human
 // `display_plan_table` preview AND `build_plan_output`'s
 // `PlanActionOutput.description` JSON payload — it must return the raw,
 // uncondensed `run_str()` body; condensing is the exclusive job of the

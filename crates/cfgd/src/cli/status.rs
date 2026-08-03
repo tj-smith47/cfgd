@@ -709,7 +709,7 @@ mod tests {
         );
     }
 
-    // F2 corollary regression: onChange scripts persist under resource_type
+    // onChange scripts persist under resource_type
     // "Running script" (execute_script's own return value), distinct from
     // the main pre/post-apply phase scripts' "script" type
     // (apply_script_action's return value). Both must condense for human
