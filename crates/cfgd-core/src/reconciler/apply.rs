@@ -244,9 +244,11 @@ impl<'a> super::Reconciler<'a> {
                 // post-apply snapshot.
                 if let Some(ref path) = action_target_path(action) {
                     // Backup key, not display: every writer of
-                    // `file_backups.file_path` folds with `to_posix_string` so a
-                    // rollback lookup finds the row a Windows apply wrote.
-                    let path_str = crate::to_posix_string(path);
+                    // `file_backups.file_path` folds with `to_posix_fs_key` so a
+                    // rollback lookup finds the row a Windows apply wrote — and
+                    // so the row a rollback reopens still names the file that
+                    // was backed up.
+                    let path_str = crate::to_posix_fs_key(path);
                     match crate::capture_file_state(path) {
                         Ok(Some(file_state)) => {
                             if let Err(e) =
@@ -636,7 +638,7 @@ impl<'a> super::Reconciler<'a> {
         let mut snapshot_paths = std::collections::HashSet::new();
         for managed in &resolved.merged.files.managed {
             let target = crate::expand_tilde(&managed.target);
-            let key = crate::to_posix_string(&target);
+            let key = crate::to_posix_fs_key(&target);
             if snapshot_paths.contains(&key) {
                 continue;
             }
@@ -650,7 +652,7 @@ impl<'a> super::Reconciler<'a> {
         for module in module_actions {
             for file in &module.files {
                 let target = crate::expand_tilde(&file.target);
-                let key = crate::to_posix_string(&target);
+                let key = crate::to_posix_fs_key(&target);
                 if snapshot_paths.contains(&key) {
                     continue;
                 }

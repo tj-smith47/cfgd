@@ -863,6 +863,30 @@ pub fn to_posix_string(path: impl AsRef<std::path::Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
 }
 
+/// Lossless POSIX form for a persisted string that is ALSO reopened as a
+/// filesystem path — `file_backups.file_path` and
+/// `module_file_manifest.file_path`, whose rows a rollback feeds straight back
+/// to `Path::new` to restore or delete a real file.
+///
+/// Folds on Windows only, where `\` cannot occur inside a filename and the
+/// substitution is therefore reversible. On POSIX a backslash is an ordinary
+/// filename character, so [`to_posix_string`]'s unconditional fold would turn
+/// `/home/u/od\d.conf` into a key naming a different file — and a restore
+/// keyed on it would write backup content over, or delete, that other file.
+///
+/// Prefer [`to_posix_string`] for every key that is only ever compared, never
+/// reopened; the sacrifice it documents is safe only there.
+pub fn to_posix_fs_key(path: impl AsRef<std::path::Path>) -> String {
+    #[cfg(windows)]
+    {
+        to_posix_string(path)
+    }
+    #[cfg(not(windows))]
+    {
+        path.as_ref().to_string_lossy().into_owned()
+    }
+}
+
 /// Strip a leading Windows extended-length (`\\?\`) verbatim prefix from a
 /// path string, returning the rest unchanged.
 ///

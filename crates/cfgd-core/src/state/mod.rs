@@ -256,30 +256,32 @@ const MIGRATIONS: &[&str] = &[
            OR (resource_type = 'package' AND resource_id IN ('bootstrap', 'skip'));",
     // Migration 11: fold the persisted file-path keys to `/`. Every writer of
     // `file_backups.file_path` and `module_file_manifest.file_path` now uses
-    // `to_posix_string`, so a Windows row written with the native separator
+    // `to_posix_fs_key`, so a Windows row written with the native separator
     // would no longer join: the manifest drives `latest_backup_for_path`, and a
     // mismatch there makes module removal DELETE a file it should have
     // RESTORED. These rows are normalized rather than dropped — unlike the
     // managed_resources bookkeeping above, `file_backups` holds the only copy
     // of pre-overwrite content and the manifest is the only record of what a
     // module deployed, so a DELETE would forfeit rollback.
-    // The manifest's UNIQUE(module_name, file_path) cannot actually collide
-    // here — a folded twin can only be written by an apply that runs after this
-    // migration — but `UPDATE OR REPLACE` keeps the statement total rather than
-    // aborting the whole upgrade on a row nobody can explain: the row being
-    // folded survives and the twin it collides with is dropped, since both name
-    // the same file.
-    // Scoped to Windows-rooted paths on purpose. A backslash is a legal
+    // `UPDATE OR REPLACE` because the manifest's UNIQUE(module_name, file_path)
+    // is reachable, if barely: a module that declared both `C:\dir\f` and
+    // `C:/dir/f` folds two historical rows onto one key. REPLACE keeps the row
+    // being folded and drops the twin, which is safe because both name the same
+    // file and the only column production reads from this table is file_path.
+    // Scoped to Windows-rooted shapes on purpose. A backslash is a legal
     // filename character on unix, so folding `/home/u/od\d.conf` would re-point
-    // the row at a different file; leaving such a row alone keeps its rollback
-    // exact, and a later apply writes the folded key alongside it.
+    // the row at a different file — which is also why the writers fold on
+    // Windows only. These columns hold absolute paths, so a unix row can never
+    // begin `X:/`, `X:\`, or `\\`, and the three patterns between them catch
+    // every Windows row including one authored with mixed separators.
+    // SQLite gives LIKE no escape character, so `\` here is a literal.
     r"UPDATE file_backups
          SET file_path = REPLACE(file_path, '\', '/')
-       WHERE file_path LIKE '_:\%' OR file_path LIKE '\\%';
+       WHERE file_path LIKE '_:\%' OR file_path LIKE '_:/%' OR file_path LIKE '\\%';
 
       UPDATE OR REPLACE module_file_manifest
          SET file_path = REPLACE(file_path, '\', '/')
-       WHERE file_path LIKE '_:\%' OR file_path LIKE '\\%';",
+       WHERE file_path LIKE '_:\%' OR file_path LIKE '_:/%' OR file_path LIKE '\\%';",
 ];
 
 /// SQLite-backed state store for cfgd.

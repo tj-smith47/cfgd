@@ -1761,6 +1761,11 @@ fn migration_11_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
         store
             .store_file_backup(apply_id, r"/home/me/od\d.conf", &backup(b"nix"))
             .unwrap();
+        // A Windows key authored with mixed separators is still Windows-rooted,
+        // so its trailing backslashes have to fold with the rest.
+        store
+            .store_file_backup(apply_id, r"C:/Users/me\nvim\init.vim", &backup(b"mix"))
+            .unwrap();
         store
             .upsert_module_file("nvim", r"C:\Users\me\init.lua", "h1", "Copy", apply_id)
             .unwrap();
@@ -1805,6 +1810,13 @@ fn migration_11_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
             .unwrap()
             .is_some(),
         "a unix filename containing a backslash must be left exact"
+    );
+    assert!(
+        state
+            .latest_backup_for_path("C:/Users/me/nvim/init.vim")
+            .unwrap()
+            .is_some(),
+        "a Windows key authored with mixed separators must fold whole"
     );
 
     let nvim = state.module_deployed_files("nvim").unwrap();
