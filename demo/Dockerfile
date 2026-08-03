@@ -73,8 +73,6 @@ ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 # inside the recorded window.
 RUN brew update --force --quiet
 
-USER root
-
 # cfgd enters as a prebuilt host binary, never built in-container: building
 # Rust here would add a toolchain and minutes of compile time the demo has no
 # use for. Staged at demo/bin/cfgd before `docker build` runs (see
@@ -87,6 +85,13 @@ USER root
 # statically linked with no glibc dependency at all — the same artifact
 # cfgd's own release pipeline already ships in every deb/rpm/apk package
 # (.anodizer.yaml build id `cfgd-musl`) for exactly this reason.
+#
+# No USER root switch for this or the WORKDIR/COPY below: COPY writes
+# directly into the build layer regardless of the active user's Unix write
+# permission on the target directory, so it needs no elevation, and staying
+# on linuxbrew keeps `WORKDIR /home/linuxbrew/cfgd` (which BuildKit creates
+# lazily, owned by whichever USER is active) linuxbrew-owned instead of
+# root-owned.
 COPY --chmod=0755 demo/bin/cfgd /usr/local/bin/cfgd
 
 WORKDIR /home/linuxbrew/cfgd
@@ -98,5 +103,3 @@ WORKDIR /home/linuxbrew/cfgd
 # repo never invalidates the apt and Homebrew layers above it, which take
 # minutes to rebuild.
 COPY --chown=linuxbrew:linuxbrew . .
-
-USER linuxbrew
