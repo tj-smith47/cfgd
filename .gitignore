@@ -29,7 +29,11 @@
 !manifests/
 !manifests/**
 
-# Demo container for the README VHS recording (see demo/Dockerfile)
+# demo/Dockerfile is already trackable via the !Dockerfile* rule above; this
+# pair exists for the demo's other, non-Dockerfile assets — the recorded
+# init.tape and its GIF — so the VHS recording task can commit them. The
+# `demo/bin/` re-ignore below still wins for the staged binary, a build
+# output that must never be tracked.
 !demo/
 !demo/**
 
