@@ -1,6 +1,3 @@
----
-paths: ["**/*.rs"]
----
 # cfgd Shared Utilities — `cfgd-core/src/util/`
 
 Cross-cutting functions used by multiple modules live in `cfgd-core/src/util/<topic>.rs` and are re-exported through `cfgd-core/src/lib.rs` so external callers reach them as `cfgd_core::<name>(...)`. **Before writing any helper function, check the topic file first** — if a similar function exists, use it. If a new function will be needed by more than one module, add it to the topic file that matches its domain (or to a new topic file if none fits cleanly).

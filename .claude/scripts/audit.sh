@@ -512,7 +512,7 @@ if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(Pr
 fi
 
 # 5. Structured-output coverage table — every cmd_* function in cli/ must
-#    appear in .claude/rules/output-module.md's coverage table.
+#    appear in .claude/rules/structured-output-coverage.md's table.
 #    Only match file-scope definitions (no leading whitespace) to avoid
 #    matching test helper functions inside #[cfg(test)] blocks.
 # LC_ALL=C: comm requires both inputs in the same collation as the sort that
@@ -523,15 +523,20 @@ cmds_in_code=$(rg --type rust --color never -n \
       crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
       2>/dev/null \
       | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | LC_ALL=C sort -u)
-rule_file=".claude/rules/output-module.md"
+rule_file=".claude/rules/structured-output-coverage.md"
 if [ -f "$rule_file" ]; then
-    cmds_in_table=$(awk '/^## Structured-output coverage/,0' "$rule_file" \
-        | grep -E '^\| [a-z]' | awk -F'|' '{print $2}' | tr -d ' ' | LC_ALL=C sort -u)
+    # The whole file is the table; row cells are lowercase, the header cell is not.
+    # `|| true` keeps an empty match from tripping pipefail into aborting the run —
+    # an empty table must be reported as total coverage loss, not swallowed.
+    cmds_in_table=$(grep -E '^\| [a-z]' "$rule_file" \
+        | awk -F'|' '{print $2}' | tr -d ' ' | LC_ALL=C sort -u) || cmds_in_table=""
     missing=$(LC_ALL=C comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
     if [ -n "$missing" ]; then
         log_error "Commands missing from structured-output coverage table in $rule_file:"
         echo "$missing"
     fi
+else
+    log_error "Structured-output coverage table missing: $rule_file"
 fi
 # --- end output audit block -------------------------------------------------
 
