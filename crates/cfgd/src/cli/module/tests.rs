@@ -4765,8 +4765,9 @@ fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
 fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code_block() {
     // Mirrors `print_module_review_summary_trailing_newline_script_renders_as_single_bullet`
     // but for the sibling upgrade-diff surface (`cmd_module_upgrade`'s
-    // "Changes" section) — before R5 this surface gated on raw
-    // `change.contains('\n')`, so a `run: |` single-logical-line
+    // "Changes" section) — this surface previously gated on raw
+    // `change.contains('\n')`, which disagreed with
+    // `print_module_review_summary`, so a `run: |` single-logical-line
     // `postApply script` diff (whose `run_str()` carries a trailing `\n`)
     // rendered as a code block here while the pre-approval review rendered
     // the identical body as a bullet.

@@ -418,19 +418,28 @@ fn format_module_action_body(action: &ModuleAction) -> String {
     }
 }
 
-/// Types whose `format_action_description`/`execute_script` output stamps
-/// TWO structural colons (`type:subtype:body`) before any user-controlled
-/// content begins — the subtype is dropped from the returned id on purpose
-/// (drift/state matching keys on `(type, body)`, not on which phase/verb
-/// produced it). Every other prefix (`system:configurator.key`,
-/// `system:configurator:skip`, `execute_script`'s `"Running script: {body}"`)
-/// has exactly ONE structural colon, so a blind `splitn(3, ':')` cannot tell
-/// "2 structural colons" apart from "1 structural colon + a colon embedded in
-/// the body" — both consume 2 colons and yield 3 pieces. Dispatching on the
-/// known prefix (rather than counting colons) keeps the body intact either
-/// way: a `run:` script or `-o json` value containing its own `:` no longer
-/// gets silently truncated mid-body.
-const TWO_COLON_PREFIXES: &[&str] = &["file", "package", "secret", "script", "module", "env"];
+/// Prefixes whose `format_action_description`/`execute_script` output has a
+/// structural-colon count fixed at TWO (`type:subtype:body`) for every variant
+/// of that action kind. Only for those is the second segment safely droppable:
+/// it names the verb/phase that produced the row (`create`/`update`/`delete`
+/// for `file`, `pre`/`post` for `script`, …), and drift/state matching keys on
+/// `(type, body)` so two verbs touching the same target share one id.
+///
+/// Excluded prefixes vary their structural-colon count, so no fixed split is
+/// correct for them:
+/// - `module` names the MODULE in its second segment (`module:{name}:{verb}`),
+///   not a verb — dropping it would collapse every module onto one
+///   `UNIQUE(resource_type, resource_id)` row.
+/// - `system` stamps `system:{configurator}.{key}` (one colon) but
+///   `system:{configurator}:skip` (two).
+/// - `execute_script`'s `"Running script: {body}"` has one.
+///
+/// A blind `splitn(3, ':')` cannot tell "2 structural colons" apart from
+/// "1 structural colon + a colon embedded in the body" — both consume 2 colons
+/// and yield 3 pieces. Dispatching on the known prefix (rather than counting
+/// colons) keeps the body intact either way: a `run:` script or `-o json` value
+/// containing its own `:` no longer gets silently truncated mid-body.
+const TWO_COLON_PREFIXES: &[&str] = &["file", "package", "secret", "script", "env"];
 
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
     let Some((prefix, rest)) = desc.split_once(':') else {

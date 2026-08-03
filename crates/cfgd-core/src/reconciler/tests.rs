@@ -5254,6 +5254,38 @@ fn parse_resource_from_description_cases() {
 }
 
 #[test]
+fn parse_resource_from_description_keeps_module_name_in_the_id() {
+    // `module:{name}:{verb}` puts the module NAME where other prefixes put a
+    // verb. Dropping that segment gave every module the same id, and
+    // `UNIQUE(resource_type, resource_id)` then collapsed the whole fleet of
+    // modules onto a single managed_resources row.
+    let (ty_a, id_a) = super::parse_resource_from_description("module:nvim:script");
+    let (ty_b, id_b) = super::parse_resource_from_description("module:zsh:script");
+    assert_eq!(ty_a, "module");
+    assert_eq!(ty_b, "module");
+    assert_eq!(id_a, "nvim:script");
+    assert_eq!(id_b, "zsh:script");
+    assert_ne!(
+        id_a, id_b,
+        "two modules running a script must not share one resource id"
+    );
+
+    // Same for the other module verbs.
+    assert_eq!(
+        super::parse_resource_from_description("module:nvim:skip").1,
+        "nvim:skip"
+    );
+    assert_eq!(
+        super::parse_resource_from_description("module:nvim:files:3").1,
+        "nvim:files:3"
+    );
+    assert_eq!(
+        super::parse_resource_from_description("module:nvim:packages:fd,rg").1,
+        "nvim:packages:fd,rg"
+    );
+}
+
+#[test]
 fn provenance_suffix_local_is_empty() {
     assert_eq!(super::provenance_suffix("local"), "");
     assert_eq!(super::provenance_suffix(""), "");
@@ -6706,6 +6738,67 @@ fn apply_secret_resolve_env_collects_env_vars() {
             ("GITHUB_TOKEN".to_string(), "env-secret-value".to_string()),
         ]
     );
+}
+
+#[test]
+fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
+    // Both ids embed the write target. Rendering it natively made a
+    // Windows-written key (`secret:decrypt:C:\…`) miss the POSIX key every
+    // other code path produces, so the same secret was tracked twice.
+    // `to_posix_string` folds on every host — unlike `posix()`, which is a
+    // no-op on unix — so the fold is observable here without cross-compiling,
+    // using a backslash-bearing file name (legal on unix).
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_backend = Some(Box::new(TestSecretBackend {
+        decrypted_value: "plaintext".to_string(),
+    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("resolved"),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let source = tmp.path().join("token.enc");
+    std::fs::write(&source, "encrypted").unwrap();
+
+    let mut collector: Vec<(String, String)> = Vec::new();
+    for (action, expected) in [
+        (
+            SecretAction::Decrypt {
+                source: source.clone(),
+                target: tmp.path().join(r"win\token.txt"),
+                backend: "test-sops".to_string(),
+                origin: "local".to_string(),
+            },
+            format!(
+                "secret:decrypt:{}/win/token.txt",
+                crate::to_posix_string(tmp.path())
+            ),
+        ),
+        (
+            SecretAction::Resolve {
+                provider: "vault".to_string(),
+                reference: "secret/data/gh#token".to_string(),
+                target: tmp.path().join(r"win\resolved.txt"),
+                origin: "local".to_string(),
+            },
+            format!(
+                "secret:resolve:vault:{}/win/resolved.txt",
+                crate::to_posix_string(tmp.path())
+            ),
+        ),
+    ] {
+        let desc = reconciler
+            .apply_secret_action(&action, tmp.path(), &printer, &mut collector)
+            .expect("secret action should succeed");
+        assert!(
+            !desc.contains('\\'),
+            "resource id must carry no native separator: {desc}"
+        );
+        assert_eq!(desc, expected);
+    }
 }
 
 #[test]

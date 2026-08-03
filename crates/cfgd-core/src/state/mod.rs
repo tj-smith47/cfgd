@@ -232,6 +232,22 @@ const MIGRATIONS: &[&str] = &[
     // content. DEFAULT 1 keeps every legacy row at today's content-restore
     // behavior.
     "ALTER TABLE file_backups ADD COLUMN existed INTEGER NOT NULL DEFAULT 1;",
+    // Migration 9: drop managed_resources bookkeeping rows whose resource_id
+    // shape changed. Four id derivations were corrected at once:
+    //   - `Running script: {body}` and `system:{cfg}.{key} ({cur} → {des})`
+    //     were split by a blind `splitn(3, ':')`, which truncated any body or
+    //     value holding its own colon (URLs, `sed`/`awk` programs, PATH values).
+    //   - `module:{name}:{verb}` dropped the module NAME, so every module
+    //     collapsed onto one UNIQUE(resource_type, resource_id) row.
+    //   - `secret:{decrypt,resolve}:…` keys were built with the native path
+    //     separator, so a Windows-written key never matched its POSIX form.
+    // Nothing sweeps managed_resources on observation (the only DELETE is
+    // package-scoped), so a row written under an old id would linger in
+    // `cfgd status` forever. These rows are pure bookkeeping — the next apply
+    // re-derives them — and carry no uninstall_cmd, which is package-only, so
+    // deleting them loses nothing.
+    "DELETE FROM managed_resources
+        WHERE resource_type IN ('Running script', 'system', 'module', 'secret');",
 ];
 
 /// SQLite-backed state store for cfgd.

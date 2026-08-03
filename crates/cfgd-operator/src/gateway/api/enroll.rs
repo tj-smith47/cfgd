@@ -356,7 +356,7 @@ pub(super) fn verify_ssh_signature(
     // Try each key until one verifies. Per-iteration `allowed_signers_{idx}`
     // file mirrors the GPG sibling's per-key homedir pattern: prevents any
     // cross-key contamination if this code is ever exercised concurrently
-    // (today the loop is sequential, but the asymmetry was an audit finding).
+    // (today the loop is sequential, but the asymmetry would be a latent bug).
     for (idx, key) in keys.iter().enumerate() {
         let signers_path = tmp_dir.path().join(format!("allowed_signers_{idx}"));
         // Write allowed_signers file: "username key_type key_data"

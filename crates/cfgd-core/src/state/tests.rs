@@ -1543,6 +1543,13 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
                 symlink_target TEXT, oversized INTEGER NOT NULL DEFAULT 0,
                 backed_up_at TEXT NOT NULL,
                 FOREIGN KEY (apply_id) REFERENCES applies(id));
+             CREATE TABLE managed_resources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'local', last_hash TEXT,
+                last_applied INTEGER, uninstall_cmd TEXT,
+                UNIQUE(resource_type, resource_id),
+                FOREIGN KEY (last_applied) REFERENCES applies(id));
              CREATE TABLE schema_version (version INTEGER NOT NULL);
              INSERT INTO schema_version (version) VALUES (5);
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
@@ -1579,6 +1586,121 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
         .query_row("SELECT COUNT(*) FROM source_applies", [], |r| r.get(0))
         .unwrap();
     assert_eq!(after, 0, "migration 6 must enable ON DELETE CASCADE");
+}
+
+#[test]
+fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
+    use crate::providers::ProviderRegistry;
+    use crate::reconciler::{
+        Action, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ReconcileContext,
+        Reconciler,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+
+    // Seed rows in the shapes the old id derivations produced, then wind
+    // schema_version back one step so reopening replays the sweep migration.
+    // Building the pre-migration schema by hand instead would duplicate every
+    // earlier migration's DDL and rot the moment one of them changes.
+    {
+        let store = StateStore::open(&path).unwrap();
+        // Every module collapsed onto the bare verb, so the module name was lost.
+        store
+            .upsert_managed_resource("module", "script", "local", None, None)
+            .unwrap();
+        // Truncated at the colon inside the script body.
+        store
+            .upsert_managed_resource("Running script", " curl https", "local", None, None)
+            .unwrap();
+        // Truncated at the colon inside the configurator value.
+        store
+            .upsert_managed_resource("system", "path.value (a", "local", None, None)
+            .unwrap();
+        // Native-separator secret key, as a Windows host would have written it.
+        store
+            .upsert_managed_resource("secret", r"C:\Users\me\.env", "local", None, None)
+            .unwrap();
+        // A package row must NOT be swept — it is the one type carrying an
+        // uninstall_cmd that cannot be re-derived once its manager leaves config.
+        store
+            .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE schema_version SET version = ?1",
+                params![(super::MIGRATIONS.len() - 1) as i64],
+            )
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+
+    let swept = state.managed_resources().unwrap();
+    assert!(
+        swept
+            .iter()
+            .all(|r| !["module", "Running script", "system", "secret"]
+                .contains(&r.resource_type.as_str())),
+        "migration 10 must remove every row whose id shape changed: {swept:?}"
+    );
+    let known = std::collections::HashSet::new();
+    let orphans = state.orphaned_package_resources(&known).unwrap();
+    assert_eq!(orphans.len(), 1, "package rows must survive the sweep");
+    assert_eq!(orphans[0].uninstall_cmd.as_deref(), Some("widgetmgr rm"));
+
+    // A fresh apply re-derives the rows under the corrected id — and two
+    // modules no longer contend for the same UNIQUE(resource_type, resource_id).
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = crate::test_helpers::make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: ["nvim", "zsh"]
+                .into_iter()
+                .map(|name| {
+                    Action::Module(ModuleAction {
+                        module_name: name.to_string(),
+                        kind: ModuleActionKind::Skip {
+                            reason: "platform not matched".to_string(),
+                        },
+                        origin: None,
+                    })
+                })
+                .collect(),
+        }],
+        warnings: vec![],
+    };
+    let printer = crate::test_helpers::test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let module_ids: Vec<String> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.resource_type == "module")
+        .map(|r| r.resource_id)
+        .collect();
+    assert_eq!(
+        module_ids,
+        vec!["nvim:skip".to_string(), "zsh:skip".to_string()],
+        "each module must re-appear under its own name-qualified id"
+    );
 }
 
 // --- file_backups_after_apply ---

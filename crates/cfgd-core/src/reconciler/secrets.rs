@@ -40,7 +40,13 @@ impl<'a> super::Reconciler<'a> {
                     format!("Decrypted {} → {}", source.posix(), target_path.posix()),
                 );
 
-                Ok(format!("secret:decrypt:{}", target_path.display()))
+                // Resource-id key, not display: `to_posix_string` folds on every
+                // host (unlike `posix()`, a no-op on unix) so a Windows-written
+                // key matches the POSIX one every other code path derives.
+                Ok(format!(
+                    "secret:decrypt:{}",
+                    crate::to_posix_string(&target_path)
+                ))
             }
             SecretAction::Resolve {
                 provider,
@@ -76,7 +82,7 @@ impl<'a> super::Reconciler<'a> {
                 Ok(format!(
                     "secret:resolve:{}:{}",
                     provider,
-                    target_path.display()
+                    crate::to_posix_string(&target_path)
                 ))
             }
             SecretAction::ResolveEnv {

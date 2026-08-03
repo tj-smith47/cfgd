@@ -64,6 +64,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `escape_double_quoted(s)` — escape inside bash/zsh double quotes
 - `xml_escape(s)` — escape `&<>"'` for safe XML/plist inclusion
 - `sanitize_k8s_name(name)` — RFC 1123 DNS label sanitization
+- `condense_action_desc_for_display(action, desc)` in `crates/cfgd-core/src/reconciler/format.rs`, re-exported from `reconciler/mod.rs` as `cfgd_core::reconciler::condense_action_desc_for_display` — the ONE gate deciding whether an action description may be condensed before it reaches a status subject, spinner label, bullet, or error line. It condenses (via `condense_script_label`) only the two arms that embed a raw `run_str()` body — `Action::Script` and `Action::Module` + `ModuleActionKind::RunScript` — and returns every other description untouched. It lives outside `util/` deliberately, because it takes an `&Action` and `util/` must not depend on `reconciler` types. Never apply it to the value you persist: the raw `desc` is the `managed_resources` id, the journal `resource_id`, `ActionResult.description`, and the `-o json` plan payload, all of which must stay byte-identical to the source body
 
 ## Filesystem
 
