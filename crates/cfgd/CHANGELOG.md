@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Features
+
+* let `CFGD_NO_UPDATE_CHECK` / `NO_UPDATE_NOTIFIER` / `DO_NOT_TRACK` silence the automatic update check (`cfgd doctor` names the active variable; explicit `cfgd upgrade` is unaffected)
+
 ## [0.7.0] - 2026-08-02
 
 ### Features

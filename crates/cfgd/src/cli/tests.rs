@@ -16791,6 +16791,7 @@ fn build_doctor_doc_system_state_store_inaccessible_emits_warn() {
         }),
         profiles_dir: None,
         config_sources: vec![],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(
@@ -16811,11 +16812,44 @@ fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
             error: None,
         }),
         config_sources: vec![],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains("Profiles directory not found") && text.contains("/etc/cfgd/profiles"),
         "should warn about missing profiles directory, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_update_optout_active_names_the_variable() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: None,
+        config_sources: vec![],
+        update_optout: Some("DO_NOT_TRACK"),
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Automatic update check: suppressed by DO_NOT_TRACK"),
+        "should name the active opt-out variable, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_no_update_optout_emits_nothing() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: None,
+        config_sources: vec![],
+        update_optout: None,
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        !text.contains("update check"),
+        "no opt-out active should emit no update-check line, got: {text}"
     );
 }
 
@@ -16829,6 +16863,7 @@ fn build_doctor_doc_source_cached_emits_ok() {
             name: "team-config".into(),
             cached_path: Some("/home/user/.cache/cfgd/sources/team-config".into()),
         }],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(
@@ -19513,6 +19548,7 @@ fn build_doctor_doc_unscannable_profiles_dir_fails() {
             error: Some("failed to read /etc/cfgd/profiles: permission denied".into()),
         }),
         config_sources: vec![],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(

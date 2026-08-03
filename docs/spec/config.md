@@ -635,6 +635,14 @@ skills (`cfgd skill update`).
 
 Values are matched case-insensitively.
 
+#### Suppressing the automatic check via environment
+
+Any of `CFGD_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER` (npm's `update-notifier`
+convention), or `DO_NOT_TRACK` (consoledonottrack.com) silences the automatic
+check regardless of `policy` — see
+[configuration.md](../configuration.md#suppressing-the-automatic-check) for
+the full precedence and value rules. `cfgd upgrade` (explicit) is unaffected.
+
 ---
 
 ### spec.update.skills

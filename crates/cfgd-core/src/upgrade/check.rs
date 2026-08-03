@@ -75,8 +75,39 @@ pub fn resolved_interval(config: &UpdateConfig) -> Duration {
     }
 }
 
+/// Env vars that silence the automatic update check, in precedence order.
+/// `CFGD_NO_UPDATE_CHECK` is cfgd's own and most specific; the other two are
+/// conventions shared with npm's `update-notifier` and consoledonottrack.com,
+/// so a workstation already opted out of those tools' checks is opted out of
+/// cfgd's too without new configuration.
+const OPTOUT_VARS: [&str; 3] = ["CFGD_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "DO_NOT_TRACK"];
+
+/// The environment variable currently suppressing the automatic update check,
+/// or `None` when no opt-out is in effect. Precedence: `CFGD_NO_UPDATE_CHECK`,
+/// then `NO_UPDATE_NOTIFIER`, then `DO_NOT_TRACK`.
+pub fn update_optout_var() -> Option<&'static str> {
+    OPTOUT_VARS
+        .into_iter()
+        .find(|&var| is_optout_value_set(var))
+}
+
+/// A variable counts as "set" when present and, after lowercasing and
+/// trimming, not one of `""`, `"0"`, `"false"` — so `DO_NOT_TRACK=0` means
+/// "do track", matching the convention it borrows from. One rule for all
+/// three variables; no per-variable special cases.
+fn is_optout_value_set(var: &str) -> bool {
+    match std::env::var(var) {
+        Ok(v) => !matches!(v.trim().to_lowercase().as_str(), "" | "0" | "false"),
+        Err(_) => false,
+    }
+}
+
 /// Pure interval/`Manual` gate: should a fresh network check run *now*?
 ///
+/// * an opt-out env var is set (see [`update_optout_var`]) → never (`false`),
+///   ahead of every other condition — this is the single choke point every
+///   automatic check funnels through, so a check added later cannot forget
+///   the opt-out.
 /// * `Manual` → never (`false`), short-circuiting before any work.
 /// * `last_checked == None` → yes (no prior check on record).
 /// * otherwise → yes only once `now - last_checked >= interval`.
@@ -90,6 +121,9 @@ pub fn should_check(
     now: u64,
     last_checked: Option<u64>,
 ) -> bool {
+    if update_optout_var().is_some() {
+        return false;
+    }
     if policy == UpdatePolicy::Manual {
         return false;
     }
@@ -579,5 +613,132 @@ mod tests {
         );
         assert_eq!(spy.applied.get(), 1);
         assert_eq!(spy.surfaced.get(), 1);
+    }
+
+    // ----- update-check opt-out -----
+
+    mod optout {
+        use super::*;
+        use crate::test_helpers::EnvVarGuard;
+        use serial_test::serial;
+
+        const CFGD_VAR: &str = "CFGD_NO_UPDATE_CHECK";
+        const NPM_VAR: &str = "NO_UPDATE_NOTIFIER";
+        const DNT_VAR: &str = "DO_NOT_TRACK";
+
+        /// Guard all three opt-out vars unset, so a value in the developer's
+        /// real environment cannot make a test that expects "none set" lie.
+        fn all_unset() -> (EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+            (
+                EnvVarGuard::unset(CFGD_VAR),
+                EnvVarGuard::unset(NPM_VAR),
+                EnvVarGuard::unset(DNT_VAR),
+            )
+        }
+
+        #[test]
+        #[serial]
+        fn none_set_behaves_as_today() {
+            let _g = all_unset();
+            assert_eq!(update_optout_var(), None);
+            assert!(should_check(
+                UpdatePolicy::Notify,
+                Duration::from_secs(HOUR),
+                100,
+                None
+            ));
+        }
+
+        #[test]
+        #[serial]
+        fn cfgd_var_opts_out() {
+            let _g = all_unset();
+            let _set = EnvVarGuard::set(CFGD_VAR, "1");
+            assert_eq!(update_optout_var(), Some(CFGD_VAR));
+            assert!(!should_check(
+                UpdatePolicy::Notify,
+                Duration::from_secs(HOUR),
+                100,
+                None
+            ));
+        }
+
+        #[test]
+        #[serial]
+        fn npm_convention_var_opts_out() {
+            let _g = all_unset();
+            let _set = EnvVarGuard::set(NPM_VAR, "1");
+            assert_eq!(update_optout_var(), Some(NPM_VAR));
+            assert!(!should_check(
+                UpdatePolicy::Notify,
+                Duration::from_secs(HOUR),
+                100,
+                None
+            ));
+        }
+
+        #[test]
+        #[serial]
+        fn do_not_track_var_opts_out() {
+            let _g = all_unset();
+            let _set = EnvVarGuard::set(DNT_VAR, "1");
+            assert_eq!(update_optout_var(), Some(DNT_VAR));
+            assert!(!should_check(
+                UpdatePolicy::Notify,
+                Duration::from_secs(HOUR),
+                100,
+                None
+            ));
+        }
+
+        #[test]
+        #[serial]
+        fn do_not_track_zero_is_not_an_optout() {
+            let _g = all_unset();
+            let _set = EnvVarGuard::set(DNT_VAR, "0");
+            assert_eq!(update_optout_var(), None);
+            assert!(should_check(
+                UpdatePolicy::Notify,
+                Duration::from_secs(HOUR),
+                100,
+                None
+            ));
+        }
+
+        #[test]
+        #[serial]
+        fn do_not_track_false_and_empty_are_not_an_optout() {
+            let _g = all_unset();
+            {
+                let _set = EnvVarGuard::set(DNT_VAR, "false");
+                assert_eq!(update_optout_var(), None);
+            }
+            let _set = EnvVarGuard::set(DNT_VAR, "");
+            assert_eq!(update_optout_var(), None);
+        }
+
+        #[test]
+        #[serial]
+        fn two_set_returns_higher_precedence() {
+            let _g = all_unset();
+            let _npm = EnvVarGuard::set(NPM_VAR, "1");
+            let _dnt = EnvVarGuard::set(DNT_VAR, "1");
+            assert_eq!(update_optout_var(), Some(NPM_VAR));
+        }
+
+        #[test]
+        #[serial]
+        fn optout_wins_over_auto_policy_with_interval_elapsed() {
+            let _g = all_unset();
+            let _set = EnvVarGuard::set(CFGD_VAR, "1");
+            // Auto + no prior check would otherwise always check — the gate
+            // must win regardless.
+            assert!(!should_check(
+                UpdatePolicy::Auto,
+                Duration::from_secs(HOUR),
+                10 * HOUR,
+                Some(8 * HOUR),
+            ));
+        }
     }
 }

@@ -601,6 +601,52 @@ mod tests {
         );
     }
 
+    /// An explicit `cfgd upgrade --check` must perform the check even with
+    /// every automatic-check opt-out variable set: `cmd_upgrade` never routes
+    /// through `should_check`, so the opt-out (which only gates the two
+    /// automatic paths) cannot suppress a user-requested check.
+    #[test]
+    #[serial]
+    fn cmd_upgrade_check_only_ignores_optout_vars() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(release_json_current_version())
+            .create();
+        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _no_update_check = EnvVarGuard::set("CFGD_NO_UPDATE_CHECK", "1");
+        let _no_update_notifier = EnvVarGuard::set("NO_UPDATE_NOTIFIER", "1");
+        let _do_not_track = EnvVarGuard::set("DO_NOT_TRACK", "1");
+        assert!(
+            cfgd_core::upgrade::update_optout_var().is_some(),
+            "sanity: an opt-out must actually be active for this test to prove anything"
+        );
+
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        );
+
+        assert!(
+            result.is_ok(),
+            "explicit --check must run even with every opt-out var set: {result:?}"
+        );
+        let json = cap
+            .json()
+            .expect("Doc must be emitted; the check must have actually run");
+        assert_eq!(
+            json["currentVersion"].as_str(),
+            Some(current_version_str()),
+            "the network check must have run and reported the current version: {json}"
+        );
+        _mock.assert();
+    }
+
     /// `--check` with an available update: subprocess test because cmd_upgrade calls
     /// process::exit(2) before returning. The parent spawns the test binary with a
     /// sentinel env var; the child body only executes when that var is set so the

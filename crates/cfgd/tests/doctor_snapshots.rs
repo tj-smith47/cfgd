@@ -109,6 +109,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             error: None,
         }),
         config_sources: Vec::new(),
+        update_optout: None,
     };
     (output, extras)
 }
@@ -186,6 +187,7 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
             error: None,
         }),
         config_sources: vec![],
+        update_optout: None,
     };
     (output, extras)
 }

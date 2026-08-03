@@ -34,6 +34,10 @@ pub struct DoctorExtras {
     pub state_store: Option<DoctorStateStore>,
     pub profiles_dir: Option<DoctorProfilesDir>,
     pub config_sources: Vec<DoctorConfigSource>,
+    /// The env var currently suppressing the automatic update check
+    /// (`CFGD_NO_UPDATE_CHECK` / `NO_UPDATE_NOTIFIER` / `DO_NOT_TRACK`), or
+    /// `None` when no opt-out is active.
+    pub update_optout: Option<&'static str>,
 }
 
 pub struct DoctorStateStore {
@@ -440,6 +444,7 @@ fn collect_doctor_output(
         state_store: Some(state_store),
         profiles_dir: Some(profiles_dir_extra),
         config_sources,
+        update_optout: cfgd_core::upgrade::update_optout_var(),
     };
 
     Ok((output, extras))
@@ -717,6 +722,12 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
                 format!("Profiles directory not found: {}", pd.path),
             )
         };
+    }
+    if let Some(var) = extras.update_optout {
+        s = s.status(
+            Role::Info,
+            format!("Automatic update check: suppressed by {var}"),
+        );
     }
     s
 }

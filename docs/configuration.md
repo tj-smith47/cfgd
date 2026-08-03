@@ -177,6 +177,33 @@ same four values **plus** `Inherit`, which is its default:
 | `Inherit` *(default)* | use the binary `spec.update.policy` value |
 | `Auto` / `Prompt` / `Notify` / `Manual` | as above, but for skill refresh only |
 
+### Suppressing the automatic check
+
+Three environment variables silence the *automatic* update check (CLI startup
+and the daemon sync loop) regardless of `spec.update.policy`, checked in this
+order:
+
+| Variable | Convention |
+|---|---|
+| `CFGD_NO_UPDATE_CHECK` | cfgd's own, most specific |
+| `NO_UPDATE_NOTIFIER` | shared with npm's `update-notifier` |
+| `DO_NOT_TRACK` | [consoledonottrack.com](https://consoledonottrack.com) |
+
+A variable counts as "set" when it is present and, after lowercasing and
+trimming, is not one of `""`, `"0"`, or `"false"` — so `DO_NOT_TRACK=0` means
+"do track", not "opt out". The same rule applies to all three; there is no
+per-variable special case.
+
+```sh
+DO_NOT_TRACK=1 cfgd status   # no "Update available" line, ever
+DO_NOT_TRACK=0 cfgd status   # NOT an opt-out — checks run as normal
+```
+
+**Explicit `cfgd upgrade` (and `cfgd upgrade --check`) is never suppressed** —
+the opt-out silences the automatic check only; a user who asks for an update
+check always gets one. `cfgd doctor` reports which variable, if any, is
+currently suppressing the automatic check.
+
 ### At most one update surface, ever
 
 Skill staleness is a *consequence* of a binary version change (a skill is stale
@@ -560,10 +587,16 @@ These flags work with any subcommand:
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
+| | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
+| | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
+| | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
 
 Boolean env vars accept shell-truthy spellings, not just `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)
-enable, `0`/`n`/`no`/`f`/`false`/`off` disable.
+enable, `0`/`n`/`no`/`f`/`false`/`off` disable. The three update-check opt-out
+variables above are the exception — they follow the npm/consoledonottrack
+rule instead (anything except `""`/`"0"`/`"false"` opts out); see
+[Suppressing the automatic check](#suppressing-the-automatic-check).
 
 ```sh
 CFGD_QUIET=1   cfgd profile list -o name   # same as -q
