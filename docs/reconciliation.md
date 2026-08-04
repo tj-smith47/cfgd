@@ -7,7 +7,7 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 Apply runs in a fixed phase order:
 
 1. **Pre-Scripts** — profile-level `preApply` or `preReconcile` hooks (context-dependent)
-2. **Env** — write env vars and shell aliases to `~/.cfgd.env`, inject shell rc source lines
+2. **Env** — write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`; inject shell rc source lines
 3. **Modules** — resolve module dependencies, install module packages, deploy module files, run module-level hooks
 4. **Packages** — install/uninstall across all package managers (profile-level packages)
 5. **System** — shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates

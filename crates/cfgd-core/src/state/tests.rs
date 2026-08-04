@@ -2288,3 +2288,88 @@ fn migrate_state_db_preserves_sidecars_when_checkpoint_fails() {
             .exists()
     );
 }
+
+// ---------------------------------------------------------------------------
+// bootstrapped_managers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bootstrap_path_dirs_round_trip_preserves_order() {
+    let store = StateStore::open_in_memory().unwrap();
+    let dirs = vec![
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+    ];
+    store.record_bootstrapped_path_dirs("brew", &dirs).unwrap();
+
+    // The generated env file's content is hashed and compared on every
+    // reconcile tick, so a reordered read would be reported as drift forever.
+    assert_eq!(
+        store.bootstrapped_path_dirs().unwrap(),
+        vec![("brew".to_string(), dirs)]
+    );
+}
+
+#[test]
+fn bootstrap_path_dirs_replaces_an_earlier_record_for_the_same_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/usr/local/bin".to_string()])
+        .unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+
+    // A re-bootstrap that lands in a different prefix must not leave the old
+    // prefix on PATH alongside the new one.
+    assert_eq!(
+        store.bootstrapped_path_dirs().unwrap(),
+        vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
+    );
+}
+
+#[test]
+fn bootstrap_path_dirs_orders_managers_deterministically() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs("npm", &["/home/u/.npm-global/bin".to_string()])
+        .unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+
+    let names: Vec<String> = store
+        .bootstrapped_path_dirs()
+        .unwrap()
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["brew".to_string(), "npm".to_string()],
+        "insertion order must not leak into the read"
+    );
+}
+
+#[test]
+fn bootstrap_path_dirs_skips_an_undecodable_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "INSERT INTO bootstrapped_managers (manager, path_dirs, bootstrapped_at)
+             VALUES ('npm', 'not-json', '2026-01-01T00:00:00Z')",
+            params![],
+        )
+        .unwrap();
+
+    // One unreadable row must not wedge `cfgd plan`, `cfgd status`, and the
+    // daemon tick, all of which read this table.
+    assert_eq!(
+        store.bootstrapped_path_dirs().unwrap(),
+        vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
+    );
+}

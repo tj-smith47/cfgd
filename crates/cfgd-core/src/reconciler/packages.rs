@@ -61,6 +61,11 @@ impl<'a> super::Reconciler<'a> {
                             }
                             .into());
                         }
+                        // Profile-level packages reach bootstrap through here
+                        // rather than through the Modules phase, so this site
+                        // owes the same record — without it a profile that names
+                        // only `spec.packages` never gets the manager on PATH.
+                        self.record_bootstrap_path_dirs(pm.as_ref());
                         return Ok(format!("package:{}:bootstrap", manager));
                     }
                 }

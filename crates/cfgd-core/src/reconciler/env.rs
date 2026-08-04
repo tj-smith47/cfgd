@@ -1,15 +1,104 @@
+use std::collections::HashSet;
+
 use crate::PathDisplayExt;
-use crate::config::EnvScope;
+use crate::config::{EnvScope, MergedProfile};
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
+use crate::providers::PackageManager;
+use crate::state::StateStore;
 
 use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
 use super::env_files::detect_rc_env_conflicts;
 use super::types::{Action, EnvAction};
 use super::verify::merge_module_env_aliases;
 
+/// PATH directories cfgd recorded when it bootstrapped a package manager,
+/// narrowed to the managers the desired state still names and deduped.
+///
+/// A bootstrapped manager (Homebrew, an npm global prefix) installs binaries
+/// into a directory no login shell has on PATH yet. Feeding those directories
+/// into the generated env file — rather than appending to it out of band right
+/// after `bootstrap()` — gives the file a single writer, so the wholesale
+/// rewrite on the second apply still holds them.
+///
+/// The directories come from the state store and never from a live
+/// `PackageManager::path_dirs()` probe. That probe touches the machine: npm's
+/// creates the global prefix directory, and brew's answer depends on which
+/// prefix already exists, so before bootstrap it names the wrong one on Apple
+/// Silicon. Reading a value recorded at bootstrap keeps planning and
+/// verification free of both.
+///
+/// Only a manager cfgd itself bootstrapped has a record, so a brew the user
+/// installed contributes nothing and earns no rc-file write.
+///
+/// Filtering to the still-named managers lets a manager dropped from the config
+/// age out of the generated file instead of lingering forever.
+pub(super) fn recorded_manager_path_dirs(
+    state: &StateStore,
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+) -> Vec<String> {
+    let named: HashSet<String> = crate::effective::effective_desired_packages(profile, modules)
+        .into_iter()
+        .map(|ep| ep.manager)
+        .collect();
+    if named.is_empty() {
+        return Vec::new();
+    }
+
+    let recorded = match state.bootstrapped_path_dirs() {
+        Ok(recorded) => recorded,
+        // Losing the records degrades to the pre-bootstrap state (no PATH entry)
+        // rather than failing the plan outright.
+        Err(e) => {
+            tracing::warn!("cannot read bootstrapped PATH directories: {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut dirs: Vec<String> = Vec::new();
+    for (manager, manager_dirs) in recorded {
+        if !named.contains(&manager) {
+            continue;
+        }
+        for dir in manager_dirs {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
+}
+
 impl<'a> super::Reconciler<'a> {
+    /// Capture the PATH directories `pm` contributes, immediately after it was
+    /// bootstrapped successfully.
+    ///
+    /// This is the only place the reconciler probes `path_dirs()`, and it is the
+    /// one instant the probe is trustworthy: the manager exists as of this call,
+    /// so it reports the prefix it actually installed into instead of guessing
+    /// from whatever happened to be on disk beforehand.
+    ///
+    /// A failed record does not fail the apply — the manager is installed either
+    /// way — but it does leave the PATH entry unwritten, so it is logged.
+    pub(super) fn record_bootstrap_path_dirs(&self, pm: &dyn PackageManager) {
+        // The directories land in shell files that a Git-Bash and a PowerShell
+        // session on the same Windows host both read, and in a state row those
+        // reads are compared against.
+        let dirs: Vec<String> = pm
+            .path_dirs()
+            .iter()
+            .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
+            .collect();
+        if let Err(e) = self.state.record_bootstrapped_path_dirs(pm.name(), &dirs) {
+            tracing::warn!(
+                "cannot record PATH directories for bootstrapped {}: {e}",
+                pm.name()
+            );
+        }
+    }
+
     /// Plan env file generation from merged profile + module env vars and aliases.
     /// Returns (actions, warnings) — warnings for shell rc conflicts.
     pub(super) fn plan_env(
@@ -18,6 +107,7 @@ impl<'a> super::Reconciler<'a> {
         scope: EnvScope,
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
+        path_dirs: &[String],
     ) -> (Vec<Action>, Vec<String>) {
         let home = crate::expand_tilde(std::path::Path::new("~"));
         Self::plan_env_with_home(
@@ -26,6 +116,7 @@ impl<'a> super::Reconciler<'a> {
             scope,
             modules,
             secret_envs,
+            path_dirs,
             &home,
         )
     }
@@ -36,6 +127,7 @@ impl<'a> super::Reconciler<'a> {
         scope: EnvScope,
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
+        path_dirs: &[String],
         home: &std::path::Path,
     ) -> (Vec<Action>, Vec<String>) {
         let (mut merged, merged_aliases) =
@@ -50,13 +142,25 @@ impl<'a> super::Reconciler<'a> {
             });
         }
 
-        if merged.is_empty() && merged_aliases.is_empty() {
+        // `path_dirs` alone is enough to warrant the file *and* its source
+        // lines: a profile whose only work is bootstrapping a package manager
+        // has no env vars, and without the source line no shell would ever read
+        // the PATH entry that makes the manager's binaries reachable.
+        if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
             return (Vec::new(), Vec::new());
         }
 
         let platform = EnvPlatform::current();
         let probe = EnvHostProbe::detect(home);
-        let targets = env_targets(&merged, &merged_aliases, scope, home, &probe, platform);
+        let targets = env_targets(
+            &merged,
+            &merged_aliases,
+            path_dirs,
+            scope,
+            home,
+            &probe,
+            platform,
+        );
 
         let mut actions = Vec::new();
         let mut warnings = Vec::new();

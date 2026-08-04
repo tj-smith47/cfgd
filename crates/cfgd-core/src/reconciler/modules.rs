@@ -114,42 +114,14 @@ impl<'a> super::Reconciler<'a> {
                             .find(|m| m.name() == first.manager);
 
                         if let Some(pm) = pm {
-                            // Bootstrap if needed
+                            // Bootstrap if needed. The manager's PATH directories
+                            // are recorded, never appended to `~/.cfgd.env` here:
+                            // the generated env file has exactly one writer, and
+                            // an out-of-band append would be erased by the next
+                            // wholesale rewrite of that file.
                             if !pm.is_available() && pm.can_bootstrap() {
                                 pm.bootstrap(printer)?;
-
-                                // Persist bootstrapped manager's PATH to ~/.cfgd.env
-                                let path_dirs = pm.path_dirs();
-                                if !path_dirs.is_empty() {
-                                    let env_path =
-                                        expand_tilde(std::path::Path::new("~/.cfgd.env"));
-                                    let existing = match std::fs::read_to_string(&env_path) {
-                                        Ok(s) => s,
-                                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                            String::new()
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("cannot read {}: {e}", env_path.posix());
-                                            String::new()
-                                        }
-                                    };
-                                    let new_dirs: Vec<&str> = path_dirs
-                                        .iter()
-                                        .filter(|d| !existing.contains(d.as_str()))
-                                        .map(|d| d.as_str())
-                                        .collect();
-                                    if !new_dirs.is_empty() {
-                                        let mut content = existing;
-                                        if !content.ends_with('\n') && !content.is_empty() {
-                                            content.push('\n');
-                                        }
-                                        content.push_str(&format!(
-                                            "export PATH=\"{}:$PATH\"\n",
-                                            new_dirs.join(":")
-                                        ));
-                                        crate::atomic_write_str(&env_path, &content)?;
-                                    }
-                                }
+                                self.record_bootstrap_path_dirs(pm.as_ref());
                             }
 
                             // Update package index before installing

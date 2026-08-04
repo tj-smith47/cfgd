@@ -27,12 +27,24 @@ pub(super) fn shell_var_indicates_fish(shell: Option<&str>) -> bool {
     shell.unwrap_or("").contains("fish")
 }
 
-/// Generate bash/zsh env file content from merged env vars and aliases.
+/// Generate bash/zsh env file content from merged env vars, aliases, and the
+/// PATH directories contributed by bootstrappable package managers.
 pub(super) fn generate_env_file_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
+    path_dirs: &[String],
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
+    if !path_dirs.is_empty() {
+        // Ahead of the user's own exports so a `spec.env` value may reference a
+        // binary that only exists on the bootstrapped manager's PATH.
+        let joined = path_dirs
+            .iter()
+            .map(|d| crate::escape_double_quoted(d))
+            .collect::<Vec<_>>()
+            .join(":");
+        lines.push(format!("export PATH=\"{joined}:$PATH\""));
+    }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
@@ -59,12 +71,24 @@ pub(super) fn generate_env_file_content(
     lines.join("\n")
 }
 
-/// Generate fish env file content from merged env vars and aliases.
+/// Generate fish env file content from merged env vars, aliases, and the PATH
+/// directories contributed by bootstrappable package managers.
 pub(super) fn generate_fish_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
+    path_dirs: &[String],
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
+    if !path_dirs.is_empty() {
+        // Trailing bare `$PATH` splices fish's existing list variable after the
+        // new entries; single quotes suppress fish expansion of each entry.
+        let parts = path_dirs
+            .iter()
+            .map(|d| format!("'{}'", d.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(format!("set -gx PATH {parts} $PATH"));
+    }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
@@ -113,12 +137,24 @@ pub(super) fn generate_fish_env_content(
     lines.join("\n")
 }
 
-/// Generate PowerShell env file content from merged env vars and aliases.
+/// Generate PowerShell env file content from merged env vars, aliases, and the
+/// PATH directories contributed by bootstrappable package managers.
 pub(super) fn generate_powershell_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
+    path_dirs: &[String],
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
+    if !path_dirs.is_empty() {
+        // Double-quoted so `$env:PATH` interpolates; `;` is the Windows PATH
+        // separator. Backtick is PowerShell's escape character inside "".
+        let joined = path_dirs
+            .iter()
+            .map(|d| d.replace('`', "``").replace('"', "`\""))
+            .collect::<Vec<_>>()
+            .join(";");
+        lines.push(format!("$env:PATH = \"{joined};$env:PATH\""));
+    }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);

@@ -7,6 +7,7 @@ use crate::errors::{Result, StateError};
 
 mod applies;
 mod backups;
+mod bootstrap;
 mod compliance;
 mod decisions;
 mod drift;
@@ -282,6 +283,20 @@ const MIGRATIONS: &[&str] = &[
       UPDATE OR REPLACE module_file_manifest
          SET file_path = REPLACE(file_path, '\', '/')
        WHERE file_path LIKE '_:\%' OR file_path LIKE '_:/%' OR file_path LIKE '\\%';",
+    // Migration 11: remember which package managers cfgd itself bootstrapped and
+    // the PATH directories each contributed. `PackageManager::path_dirs()` is a
+    // live probe of the machine — npm's creates a global prefix directory, and
+    // brew's answer flips with what already exists on disk — so it is accurate
+    // only in the instant after a successful bootstrap, and calling it from a
+    // read-only path would mutate the user's home. The recorded answer is what
+    // planning and verification read instead. `path_dirs` holds a JSON array
+    // because the order is load-bearing: the generated shell file is hashed and
+    // compared on every reconcile tick.
+    "CREATE TABLE IF NOT EXISTS bootstrapped_managers (
+        manager         TEXT PRIMARY KEY,
+        path_dirs       TEXT NOT NULL,
+        bootstrapped_at TEXT NOT NULL
+    );",
 ];
 
 /// SQLite-backed state store for cfgd.

@@ -40,13 +40,16 @@ impl<'a> super::Reconciler<'a> {
         // Env: write ~/.cfgd.env and inject shell rc source line.
         // Runs early so that env vars (including PATH for bootstrapped managers)
         // are available to all subsequent phases.
+        let path_dirs =
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
         let (env_actions, warnings) = Self::plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
             resolved.merged.env_scope,
             &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are
-                 // injected during the apply phase after ResolveEnv actions run.
+            // injected during the apply phase after ResolveEnv actions run.
+            &path_dirs,
         );
         phases.push(Phase {
             name: PhaseName::Env,

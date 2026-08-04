@@ -19,7 +19,7 @@ RUN userdel -r ubuntu
 # requirement: sudo (cfgd's apt provider shells out to `sudo apt-get`),
 # git/curl/ca-certificates (the tape's HTTPS clone), build-essential/
 # procps/file (Homebrew's own documented Linux prerequisites). nvim is
-# deliberately absent — the demo's first beat is `nvim .` failing with
+# deliberately absent — the demo's first beat is `nvim` failing with
 # "command not found" — and none of these packages pull in Ubuntu's
 # command-not-found handler, so that failure stays the plain bash message.
 RUN apt-get update \
@@ -50,14 +50,13 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash --user-group linuxbrew \
 USER linuxbrew
 WORKDIR /home/linuxbrew
 
-# Baked into the image config rather than a shell rc file so every process
-# the container starts inherits it — including the tape's `bash -l` login
-# shell, which must resolve `nvim` after the apply. No brew exists at build
-# time to have written this itself, and cfgd's own bootstrap never writes
-# `brew shellenv` into any rc file either — this baked PATH is the only
-# thing that makes `nvim` resolve once the apply installs it.
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}" \
-    HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
+# PATH is deliberately NOT baked here. When cfgd bootstraps Homebrew it
+# records the PATH directories that install contributed, then writes them
+# into ~/.cfgd.env and injects the source line into ~/.bashrc — so `nvim`
+# resolving after the apply is the product working, not the image
+# pre-arranging the outcome. These three HOMEBREW_* values stay because they
+# only name a prefix Homebrew installs into — they put nothing on PATH.
+ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
     HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
     HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
 

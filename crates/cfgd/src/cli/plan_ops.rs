@@ -62,6 +62,80 @@ pub(in crate::cli) fn print_apply_result(
     result.status.clone()
 }
 
+/// Basename of the bash/zsh managed env file the reconciler writes.
+const UNIX_ENV_FILE: &str = ".cfgd.env";
+/// Basename of the PowerShell managed env file the reconciler writes.
+const PS_ENV_FILE: &str = ".cfgd-env.ps1";
+
+/// Tell the user their already-running shell predates the env file this apply
+/// wrote, so the freshly bootstrapped PATH entries are one command away instead
+/// of requiring a re-login nobody thinks to try.
+///
+/// Gated purely on the descriptions `apply_env_action` returns — it suffixes
+/// `:skipped` when the on-disk bytes already matched — so nothing here re-stats
+/// the filesystem and races whatever ran after the Env phase.
+pub(in crate::cli) fn print_shell_env_reminder(
+    result: &cfgd_core::reconciler::ApplyResult,
+    printer: &Printer,
+) {
+    let mut wrote_env = false;
+    let mut env_file: Option<&str> = None;
+    for action in &result.action_results {
+        if !action.success || action.description.ends_with(":skipped") {
+            continue;
+        }
+        let desc = action.description.as_str();
+        let Some(path) = desc
+            .strip_prefix("env:write:")
+            .or_else(|| desc.strip_prefix("env:inject:"))
+        else {
+            continue;
+        };
+        wrote_env = true;
+        // The env phase writes several managed files (fish conf.d, systemd
+        // environment.d, a LaunchAgent); only the shell env file is something a
+        // running shell can usefully source, so the rest never name the command.
+        if env_file.is_none() && (path.ends_with(UNIX_ENV_FILE) || path.ends_with(PS_ENV_FILE)) {
+            env_file = Some(path);
+        }
+    }
+    if !wrote_env {
+        return;
+    }
+
+    // A run whose only env change was a source-line injection (or the
+    // secret-env regeneration, whose id carries no path) still needs a command
+    // to name, so fall back to this platform's canonical location.
+    let default_file = if cfg!(windows) {
+        PS_ENV_FILE
+    } else {
+        UNIX_ENV_FILE
+    };
+    let shown = match env_file {
+        Some(path) => fold_home_to_tilde(path),
+        None => format!("~/{default_file}"),
+    };
+    let command = if shown.ends_with(PS_ENV_FILE) {
+        format!(". {shown}")
+    } else {
+        format!("source {shown}")
+    };
+
+    let section = printer.section("Shell environment changed");
+    section.bullet(format!("run: {command}"));
+    section.bullet("or open a new shell");
+}
+
+/// Render an absolute env-file path as `~/…` when it sits under the current
+/// home, so the reminder shows a command the user can retype verbatim.
+fn fold_home_to_tilde(path: &str) -> String {
+    let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
+    match path.strip_prefix(&format!("{}/", home.trim_end_matches('/'))) {
+        Some(rest) if !home.is_empty() => format!("~/{rest}"),
+        _ => path.to_string(),
+    }
+}
+
 /// Derive a short action type string from a reconciler Action.
 pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static str {
     match action {

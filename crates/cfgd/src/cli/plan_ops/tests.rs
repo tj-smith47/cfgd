@@ -1228,3 +1228,96 @@ fn apply_backup_choice_adopt_leaves_action_unchanged() {
         "action should remain Create after Adopt choice"
     );
 }
+
+// --- Shell environment reminder ---
+
+fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
+    ApplyResult {
+        action_results: descriptions
+            .iter()
+            .map(|d| ActionResult {
+                phase: "env".to_string(),
+                description: (*d).to_string(),
+                success: true,
+                error: None,
+                changed: !d.ends_with(":skipped"),
+            })
+            .collect(),
+        status: ApplyStatus::Success,
+        apply_id: 0,
+        aborted: None,
+        planned_total: descriptions.len(),
+    }
+}
+
+#[test]
+fn shell_env_reminder_silent_when_all_env_actions_skipped() {
+    let result = env_apply_result(&[
+        "env:write:/home/u/.cfgd.env:skipped",
+        "env:inject:/home/u/.bashrc:skipped",
+        "env:session:skipped",
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.is_empty(),
+        "an apply that changed no env surface must not nag: {out}"
+    );
+}
+
+#[test]
+fn shell_env_reminder_names_the_written_env_file() {
+    let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
+    let result = env_apply_result(&[
+        format!("env:write:{home}/.cfgd.env").as_str(),
+        "env:inject:/home/u/.bashrc:skipped",
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Shell environment changed"),
+        "expected reminder heading, got: {out}"
+    );
+    assert!(
+        out.contains("- run: source ~/.cfgd.env"),
+        "expected a retypeable source command, got: {out}"
+    );
+    assert!(
+        out.contains("- or open a new shell"),
+        "expected the new-shell alternative, got: {out}"
+    );
+}
+
+#[test]
+fn shell_env_reminder_fires_for_source_line_injection_alone() {
+    let result = env_apply_result(&[
+        "env:write:/home/u/.cfgd.env:skipped",
+        "env:inject:/home/u/.bashrc",
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Shell environment changed"),
+        "an rc file that only just learned to source the env file still leaves \
+         the running shell stale: {out}"
+    );
+}
+
+#[test]
+fn shell_env_reminder_absent_under_structured_output() {
+    let result = env_apply_result(&["env:write:/home/u/.cfgd.env"]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.is_empty(),
+        "structured output auto-quiets; the reminder must not corrupt it: {out}"
+    );
+}

@@ -1792,7 +1792,7 @@ fn generate_env_file_quoted_and_unquoted() {
             value: "/usr/local/bin:$PATH".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &[]);
+    let content = super::generate_env_file_content(&env, &[], &[]);
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("export EDITOR=\"nvim\""));
     // PATH contains $, so double-quoted to allow expansion
@@ -1811,7 +1811,7 @@ fn generate_fish_env_splits_path() {
             value: "/usr/local/bin:/home/user/.cargo/bin:$PATH".into(),
         },
     ];
-    let content = super::generate_fish_env_content(&env, &[]);
+    let content = super::generate_fish_env_content(&env, &[], &[]);
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx PATH '/usr/local/bin' '/home/user/.cargo/bin' '$PATH'"));
@@ -1836,15 +1836,15 @@ fn generate_env_files_expand_leading_tilde() {
                 value: "~/bin:/usr/bin".into(),
             },
         ];
-        let bash = super::generate_env_file_content(&env, &[]);
+        let bash = super::generate_env_file_content(&env, &[], &[]);
         assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
         assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
 
-        let fish = super::generate_fish_env_content(&env, &[]);
+        let fish = super::generate_fish_env_content(&env, &[], &[]);
         assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
         assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
 
-        let ps = super::generate_powershell_env_content(&env, &[]);
+        let ps = super::generate_powershell_env_content(&env, &[], &[]);
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
     });
 }
@@ -1871,7 +1871,7 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
             name: "PATH".into(),
             value: "~/bin:/usr/bin".into(),
         }];
-        let fish = super::generate_fish_env_content(&env, &[]);
+        let fish = super::generate_fish_env_content(&env, &[], &[]);
         assert!(
             fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
             "drive/colon-containing home must stay one PATH part, got: {fish}"
@@ -1886,6 +1886,7 @@ fn plan_env_empty_when_no_env() {
         &[],
         &[],
         crate::config::EnvScope::Interactive,
+        &[],
         &[],
         &[],
         tmp.path(),
@@ -1928,6 +1929,7 @@ fn plan_env_module_wins_on_conflict() {
         crate::config::EnvScope::Interactive,
         &modules,
         &[],
+        &[],
         tmp.path(),
     );
     // With non-empty env, there should be at least a WriteEnvFile action
@@ -1947,7 +1949,7 @@ fn plan_env_generates_file_matching_expected() {
     // Write the expected content to a temp file to simulate "already applied"
     let dir = tempfile::tempdir().unwrap();
     let env_path = dir.path().join(".cfgd.env");
-    let expected = super::generate_env_file_content(&env, &[]);
+    let expected = super::generate_env_file_content(&env, &[], &[]);
     std::fs::write(&env_path, &expected).unwrap();
 
     // plan_env checks the real ~/.cfgd.env path, not our temp file,
@@ -1979,7 +1981,7 @@ fn generate_env_file_with_aliases() {
             command: "ls -la".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &aliases);
+    let content = super::generate_env_file_content(&env, &aliases, &[]);
     assert!(content.contains("export EDITOR=\"nvim\""));
     assert!(content.contains("alias vim=\"nvim\""));
     assert!(content.contains("alias ll=\"ls -la\""));
@@ -1995,7 +1997,7 @@ fn generate_fish_env_with_aliases() {
         name: "vim".into(),
         command: "nvim".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &aliases);
+    let content = super::generate_fish_env_content(&env, &aliases, &[]);
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("abbr -a vim 'nvim'"));
 }
@@ -2011,6 +2013,7 @@ fn plan_env_aliases_only() {
         &[],
         &aliases,
         crate::config::EnvScope::Interactive,
+        &[],
         &[],
         &[],
         tmp.path(),
@@ -2056,6 +2059,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         crate::config::EnvScope::Interactive,
         &modules,
         &[],
+        &[],
         tmp.path(),
     );
     // Find the WriteEnvFile action and check it has "nvim" not "vi"
@@ -2081,7 +2085,7 @@ fn generate_env_file_alias_escapes_quotes() {
         name: "greet".into(),
         command: "echo \"hello world\"".into(),
     }];
-    let content = super::generate_env_file_content(&[], &aliases);
+    let content = super::generate_env_file_content(&[], &aliases, &[]);
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
 }
 
@@ -2163,6 +2167,7 @@ fn plan_env_with_secret_envs_includes_them() {
         crate::config::EnvScope::Interactive,
         &[],
         &secret_envs,
+        &[],
         tmp.path(),
     );
     // With non-empty secret envs, there should be at least a WriteEnvFile action
@@ -2187,6 +2192,7 @@ fn plan_env_secret_envs_appear_in_generated_content() {
         crate::config::EnvScope::Interactive,
         &[],
         &secret_envs,
+        &[],
         tmp.path(),
     );
 
@@ -2341,7 +2347,7 @@ fn generate_powershell_env_basic() {
             value: r"C:\Users\user\.cargo\bin;$env:PATH".into(),
         },
     ];
-    let content = super::generate_powershell_env_content(&env, &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[]);
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("$env:EDITOR = 'code'"));
     // PATH references $env: so double-quoted to allow expansion
@@ -2360,7 +2366,7 @@ fn generate_powershell_env_with_aliases() {
             command: "Get-ChildItem -Force".into(),
         },
     ];
-    let content = super::generate_powershell_env_content(&[], &aliases);
+    let content = super::generate_powershell_env_content(&[], &aliases, &[]);
     assert!(content.contains("Set-Alias -Name g -Value git"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
@@ -2372,14 +2378,14 @@ fn generate_powershell_env_escapes_quotes() {
         name: "GREETING".into(),
         value: r#"say "hello""#.into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[]);
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
     assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
 }
 
 #[test]
 fn generate_powershell_env_empty() {
-    let content = super::generate_powershell_env_content(&[], &[]);
+    let content = super::generate_powershell_env_content(&[], &[], &[]);
     assert!(content.starts_with("# managed by cfgd"));
     // Only header + trailing newline
     assert_eq!(content.lines().count(), 1);
@@ -3022,7 +3028,7 @@ fn apply_env_write_env_file_to_tempdir() {
             value: "/home/user/.cargo".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &[]);
+    let content = super::generate_env_file_content(&env, &[], &[]);
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -3049,7 +3055,7 @@ fn apply_env_write_skips_when_content_matches() {
         name: "EDITOR".into(),
         value: "nvim".into(),
     }];
-    let content = super::generate_env_file_content(&env, &[]);
+    let content = super::generate_env_file_content(&env, &[], &[]);
 
     // Pre-write identical content
     std::fs::write(&env_path, &content).unwrap();
@@ -3562,7 +3568,7 @@ fn apply_env_write_with_aliases_produces_correct_file() {
         name: "ll".into(),
         command: "ls -la".into(),
     }];
-    let content = super::generate_env_file_content(&env, &aliases);
+    let content = super::generate_env_file_content(&env, &aliases, &[]);
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -6152,7 +6158,7 @@ fn generate_powershell_env_escapes_single_quotes() {
         name: "MSG".into(),
         value: "it's a test".into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[]);
     // Single quotes in values are doubled in PS
     assert!(content.contains("$env:MSG = 'it''s a test'"));
 }
@@ -6163,7 +6169,7 @@ fn generate_fish_env_escapes_single_quotes() {
         name: "MSG".into(),
         value: "it's a test".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &[]);
+    let content = super::generate_fish_env_content(&env, &[], &[]);
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
 }
 
@@ -8458,7 +8464,7 @@ fn generate_fish_env_content_basic() {
         name: "g".into(),
         command: "git".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &aliases);
+    let content = super::generate_fish_env_content(&env, &aliases, &[]);
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
@@ -8471,7 +8477,7 @@ fn generate_powershell_env_content_with_env_ref() {
         name: "MY_PATH".into(),
         value: r"C:\tools;$env:PATH".into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[]);
     // Contains $env: so should be double-quoted
     assert!(
         content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
@@ -8487,7 +8493,7 @@ fn generate_powershell_env_function_alias() {
         name: "ll".into(),
         command: "Get-ChildItem -Force".into(),
     }];
-    let content = super::generate_powershell_env_content(&[], &aliases);
+    let content = super::generate_powershell_env_content(&[], &aliases, &[]);
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -8499,7 +8505,7 @@ fn generate_fish_env_path_splitting() {
         name: "PATH".into(),
         value: "/usr/bin:/usr/local/bin:$PATH".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &[]);
+    let content = super::generate_fish_env_content(&env, &[], &[]);
     assert!(
         content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' '$PATH'"),
         "content: {}",
@@ -10875,12 +10881,12 @@ fn apply_file_action_direct_update_replaces_existing() {
 
 // -----------------------------------------------------------------------
 // apply_module_action: additional uncovered branches
-// (script-based package install, bootstrap-needs-PATH-write, manager-missing,
+// (script-based package install, bootstrap, manager-missing,
 // DeployFiles with no parent, RunScript with no module dir)
 // -----------------------------------------------------------------------
 
 /// A package manager that reports unavailable, can_bootstrap=true,
-/// and emits path_dirs after bootstrap so the .cfgd.env write branch fires.
+/// and emits path_dirs so the planner's PATH-entry branch fires.
 struct BootstrappingPackageManager {
     name: String,
     available: std::sync::Mutex<bool>,
@@ -10937,38 +10943,23 @@ impl PackageManager for BootstrappingPackageManager {
     }
 }
 
-#[test]
-#[serial_test::serial]
-fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env() {
-    use crate::with_test_home_guard;
-
-    let tmp_home = tempfile::tempdir().unwrap();
-    let _home = with_test_home_guard(tmp_home.path());
-
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappingPackageManager::new(
-            "brew",
-            &["/opt/homebrew/bin", "/opt/homebrew/sbin"],
-        )));
-
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
-
+/// Build the single-module fixture both out-of-band-write tests drive:
+/// one `brew` package, and the `InstallPackages` action the Modules phase
+/// would run for it.
+fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
+    let package = ResolvedPackage {
+        canonical_name: "ripgrep".to_string(),
+        resolved_name: "ripgrep".to_string(),
+        manager: "brew".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
     let modules = vec![ResolvedModule {
         name: "tools".to_string(),
-        packages: vec![ResolvedPackage {
-            canonical_name: "ripgrep".to_string(),
-            resolved_name: "ripgrep".to_string(),
-            manager: "brew".to_string(),
-            version: None,
-            script: None,
-            creates: None,
-            only_if: None,
-            unless: None,
-        }],
+        packages: vec![package.clone()],
         files: vec![],
         env: vec![],
         aliases: vec![],
@@ -10984,65 +10975,90 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
         origin: None,
         platform_skip_reason: None,
     }];
-
-    let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![Action::Module(ModuleAction {
-                module_name: "tools".to_string(),
-                kind: ModuleActionKind::InstallPackages {
-                    resolved: vec![ResolvedPackage {
-                        canonical_name: "ripgrep".to_string(),
-                        resolved_name: "ripgrep".to_string(),
-                        manager: "brew".to_string(),
-                        version: None,
-                        script: None,
-                        creates: None,
-                        only_if: None,
-                        unless: None,
-                    }],
-                },
-                origin: None,
-            })],
-        }],
-        warnings: vec![],
+    let action = ModuleAction {
+        module_name: "tools".to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![package],
+        },
+        origin: None,
     };
+    (modules, action)
+}
 
+/// Run one Modules-phase action against a registry holding a bootstrappable
+/// `brew` contributing `path_dirs`, and return the state store it recorded to.
+fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(BootstrappingPackageManager::new(
+            "brew", path_dirs,
+        )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let (modules, action) = brew_install_fixture();
     let printer = test_printer();
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
+
+    let (desc, changed) = reconciler
+        .apply_module_action(
+            &action,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
-            &modules,
+            1,
             ReconcileContext::Apply,
-            false,
+            &resolved,
+            &modules,
             None,
             &crate::AbortFlag::new(),
         )
-        .unwrap();
+        .expect("module action must succeed");
+    assert!(
+        changed,
+        "a manager-backed install counts as changed: {desc}"
+    );
+    state
+}
 
-    assert_eq!(result.status, ApplyStatus::Success);
-    assert!(result.action_results[0].success);
+#[test]
+#[serial_test::serial]
+fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
+    use crate::with_test_home_guard;
 
-    // Bootstrap must have been called and .cfgd.env populated with the new path dirs.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    let state = run_brew_module_action(&["/opt/homebrew/bin", "/opt/homebrew/sbin"]);
+
+    // The generated env file has exactly one writer — the Env phase. An
+    // out-of-band append here would be erased by the next plan's wholesale
+    // rewrite, so the bootstrapped PATH would vanish on the second apply.
     let env_path = tmp_home.path().join(".cfgd.env");
     assert!(
-        env_path.exists(),
-        ".cfgd.env must be created after bootstrap with path_dirs"
+        !env_path.exists(),
+        "the Modules phase must not write {}",
+        env_path.posix()
     );
-    let contents = std::fs::read_to_string(&env_path).unwrap();
-    assert!(
-        contents.contains("/opt/homebrew/bin"),
-        "bootstrap path must be in .cfgd.env: {contents}"
+
+    // The directories went to the state store instead, where the Env phase —
+    // this run's post-phase regeneration and every later plan — reads them.
+    assert_eq!(
+        state.bootstrapped_path_dirs().unwrap(),
+        vec![(
+            "brew".to_string(),
+            vec![
+                "/opt/homebrew/bin".to_string(),
+                "/opt/homebrew/sbin".to_string()
+            ]
+        )],
+        "a successful bootstrap must record the manager's PATH directories in order"
     );
 }
 
 #[test]
 #[serial_test::serial]
-fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
+fn apply_module_install_packages_leaves_existing_env_file_untouched() {
     use crate::with_test_home_guard;
 
     let tmp_home = tempfile::tempdir().unwrap();
@@ -11054,69 +11070,230 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
     .unwrap();
     let _home = with_test_home_guard(tmp_home.path());
 
-    let state = test_state();
+    // One dir already exists in env; one is new.
+    run_brew_module_action(&["/usr/local/bin", "/opt/homebrew/bin"]);
+
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env")).unwrap();
+    assert_eq!(
+        contents, "export PATH=\"/usr/local/bin:$PATH\"\n",
+        "the Modules phase must leave the Env phase's file byte-identical: {contents}"
+    );
+}
+
+/// Registry holding one bootstrappable manager contributing two PATH entries.
+///
+/// The registry alone contributes nothing to the planned env file: planning
+/// reads the state store's bootstrap record, never the manager's live
+/// `path_dirs()` probe. Pair with `record_brew_bootstrap` to give the planner
+/// something to work from.
+fn registry_with_bootstrappable_brew() -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers
         .push(Box::new(BootstrappingPackageManager::new(
             "brew",
-            // One dir already exists in env; one is new.
-            &["/usr/local/bin", "/opt/homebrew/bin"],
+            &[
+                "/home/linuxbrew/.linuxbrew/bin",
+                "/home/linuxbrew/.linuxbrew/sbin",
+            ],
         )));
+    registry
+}
 
+/// The PATH directories a linuxbrew bootstrap contributes, in the order the
+/// generated env file must export them.
+const BREW_PATH_DIRS: [&str; 2] = [
+    "/home/linuxbrew/.linuxbrew/bin",
+    "/home/linuxbrew/.linuxbrew/sbin",
+];
+
+/// Seed the state store as if cfgd had bootstrapped brew on this machine.
+fn record_brew_bootstrap(state: &crate::state::StateStore) {
+    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    state
+        .record_bootstrapped_path_dirs("brew", &dirs)
+        .expect("record bootstrap path dirs");
+}
+
+/// Body of the `.cfgd.env` write the Env phase planned, if any.
+fn planned_env_file_content(plan: &Plan) -> Option<String> {
+    plan.phases
+        .iter()
+        .find(|p| p.name == PhaseName::Env)?
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            Action::Env(EnvAction::WriteEnvFile { path, content })
+                if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) =>
+            {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_env_carries_bootstrap_path_dirs_on_every_plan() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    record_brew_bootstrap(&state);
+    let registry = registry_with_bootstrappable_brew();
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
 
-    let modules = vec![ResolvedModule {
-        name: "tools".to_string(),
-        packages: vec![ResolvedPackage {
-            canonical_name: "ripgrep".to_string(),
-            resolved_name: "ripgrep".to_string(),
-            manager: "brew".to_string(),
-            version: None,
-            script: None,
-            creates: None,
-            only_if: None,
-            unless: None,
-        }],
-        files: vec![],
-        env: vec![],
-        aliases: vec![],
-        post_apply_scripts: vec![],
-        pre_apply_scripts: Vec::new(),
-        pre_reconcile_scripts: Vec::new(),
-        post_reconcile_scripts: Vec::new(),
-        on_change_scripts: Vec::new(),
-        on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
-        depends: vec![],
-        dir: PathBuf::from("."),
-        origin: None,
-        platform_skip_reason: None,
-    }];
-
-    let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![Action::Module(ModuleAction {
-                module_name: "tools".to_string(),
-                kind: ModuleActionKind::InstallPackages {
-                    resolved: vec![ResolvedPackage {
-                        canonical_name: "ripgrep".to_string(),
-                        resolved_name: "ripgrep".to_string(),
-                        manager: "brew".to_string(),
-                        version: None,
-                        script: None,
-                        creates: None,
-                        only_if: None,
-                        unless: None,
-                    }],
-                },
-                origin: None,
-            })],
-        }],
-        warnings: vec![],
+    let plan_content = |m: Vec<ResolvedModule>| {
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                m,
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+        planned_env_file_content(&plan).expect("bootstrap path dirs must plan a .cfgd.env write")
     };
+
+    let first = plan_content(modules.clone());
+    let second = plan_content(modules);
+
+    assert!(
+        first.contains(
+            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "planned env file must export the manager's PATH entries in order: {first}"
+    );
+    // The file's content is hashed and compared on every reconcile tick, so a
+    // non-deterministic ordering would surface as drift on a random subset of
+    // ticks forever.
+    assert_eq!(
+        first, second,
+        "consecutive plans must produce byte-identical env file content"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_env_injects_source_line_for_bootstrap_only_profile() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    record_brew_bootstrap(&state);
+    let registry = registry_with_bootstrappable_brew();
+    let reconciler = Reconciler::new(&registry, &state);
+    // No env vars, no aliases — the manager's PATH entries are the only reason
+    // this profile has an env surface at all.
+    let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let env_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Env)
+        .expect("env phase");
+    assert!(
+        env_phase
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::InjectSourceLine { .. }))),
+        "a written env file no shell sources is inert: {:?}",
+        env_phase.actions
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_env_writes_nothing_for_a_manager_cfgd_never_bootstrapped() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // Registry knows brew and the profile names brew packages, but the state
+    // store holds no bootstrap record — the machine's brew is the user's own.
+    let state = test_state();
+    let registry = registry_with_bootstrappable_brew();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let env_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Env)
+        .expect("env phase");
+    // Rewriting a user's `.bashrc` because a profile happens to name a manager
+    // the user installed themselves claims ownership of a machine change cfgd
+    // never made.
+    assert!(
+        env_phase.actions.is_empty(),
+        "an unbootstrapped manager must earn no env file and no rc source line: {:?}",
+        env_phase.actions
+    );
+    assert!(
+        !tmp_home.path().join(".cfgd.env").exists(),
+        "planning must not write the env file"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // First apply on a bare machine: no record exists when the Env phase is
+    // planned, so its PATH entries cannot be known that early.
+    let state = test_state();
+    let registry = registry_with_bootstrappable_brew();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    assert!(
+        planned_env_file_content(&plan).is_none(),
+        "nothing is recorded yet, so the Env phase has nothing to write"
+    );
 
     let printer = test_printer();
     let result = reconciler
@@ -11125,7 +11302,7 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            None,
             &modules,
             ReconcileContext::Apply,
             false,
@@ -11133,23 +11310,35 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
             &crate::AbortFlag::new(),
         )
         .unwrap();
-
     assert_eq!(result.status, ApplyStatus::Success);
 
-    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env")).unwrap();
-    // Existing dir must remain; new dir must be appended; no duplicate.
+    // The Modules phase bootstrapped brew and recorded its directories, and the
+    // post-phase regeneration folded them in — so the file is right by the end
+    // of THIS apply, not only from the next one on.
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
+        .expect("the bootstrapping apply must leave a .cfgd.env behind");
     assert!(
-        contents.contains("/usr/local/bin"),
-        "pre-existing line preserved"
+        contents.contains(
+            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "the bootstrapped manager's directories must reach the env file: {contents}"
     );
-    assert!(
-        contents.contains("/opt/homebrew/bin"),
-        "new dir appended: {contents}"
-    );
+
+    // The record is what a later plan reads back, so a second apply is a no-op
+    // rather than a rewrite.
+    let replan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
     assert_eq!(
-        contents.matches("/usr/local/bin").count(),
-        1,
-        "no dup of existing dir: {contents}"
+        planned_env_file_content(&replan).as_deref(),
+        Some(contents.as_str()),
+        "the next plan must re-derive byte-identical content from the record"
     );
 }
 
@@ -12911,6 +13100,7 @@ fn env_targets_empty_yields_nothing() {
     let t = env_targets(
         &[],
         &[],
+        &[],
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -12924,6 +13114,7 @@ fn env_targets_interactive_is_env_file_plus_interactive_rc() {
     let home = Path::new("/h");
     let t = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::Interactive,
         home,
@@ -12939,6 +13130,7 @@ fn env_targets_interactive_zsh_uses_zshrc() {
     let t = env_targets(
         &one_env(),
         &[],
+        &[],
         EnvScope::Interactive,
         home,
         &env_probe("/usr/bin/zsh"),
@@ -12952,6 +13144,7 @@ fn env_targets_login_adds_zshenv_and_profile_but_not_bash_profile_when_absent() 
     let home = Path::new("/h");
     let t = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::Login,
         home,
@@ -12984,6 +13177,7 @@ fn env_targets_login_injects_existing_bash_profile() {
     let t = env_targets(
         &one_env(),
         &[],
+        &[],
         EnvScope::Login,
         home,
         &probe,
@@ -13002,6 +13196,7 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
     let t = env_targets(
         &one_env(),
         &[],
+        &[],
         EnvScope::Login,
         home,
         &probe,
@@ -13017,6 +13212,7 @@ fn env_targets_all_linux_adds_environment_d_and_session() {
     let home = Path::new("/h");
     let t = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::All,
         home,
@@ -13035,6 +13231,7 @@ fn env_targets_all_macos_adds_launchagent_not_environment_d() {
     let home = Path::new("/h");
     let t = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::All,
         home,
@@ -13059,6 +13256,7 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
     let t = env_targets(
         &one_env(),
         &[],
+        &[],
         EnvScope::All,
         home,
         &env_probe("/bin/sh"),
@@ -13078,6 +13276,7 @@ fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
     let home = Path::new("/h");
     let t = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::All,
         home,
@@ -13104,6 +13303,7 @@ fn env_targets_match_what_verify_rederives() {
     let a = env_targets(
         &one_env(),
         &[],
+        &[],
         EnvScope::All,
         home,
         &probe,
@@ -13111,6 +13311,7 @@ fn env_targets_match_what_verify_rederives() {
     );
     let b = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::All,
         home,
@@ -13215,7 +13416,7 @@ fn launchd_plist_xml_escapes_values() {
 fn plan_env_all_scope_emits_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
     let (actions, _w) =
-        Reconciler::plan_env_with_home(&one_env(), &[], EnvScope::All, &[], &[], tmp.path());
+        Reconciler::plan_env_with_home(&one_env(), &[], EnvScope::All, &[], &[], &[], tmp.path());
     assert!(
         actions
             .iter()
@@ -13231,6 +13432,7 @@ fn plan_env_interactive_scope_has_no_live_session_action() {
         &one_env(),
         &[],
         EnvScope::Interactive,
+        &[],
         &[],
         &[],
         tmp.path(),
@@ -13505,6 +13707,7 @@ fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
     let t = env_targets(
         &one_env(),
         &[],
+        &[],
         EnvScope::All,
         home,
         &probe,
@@ -13535,6 +13738,7 @@ fn env_targets_fish_present_adds_managed_fish_file() {
     };
     let t = env_targets(
         &one_env(),
+        &[],
         &[],
         EnvScope::Interactive,
         home,

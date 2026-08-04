@@ -355,7 +355,11 @@ impl PackageManager for NpmManager {
     }
 
     fn path_dirs(&self) -> Vec<String> {
-        npm_path_dirs_for(cfgd_core::is_root())
+        // `effective_elevated()`, not `is_root()` directly: the two branches
+        // answer with different directories, so a root test runner could never
+        // exercise the unelevated one. It compiles down to `is_root()` outside
+        // `cfg(test)`.
+        npm_path_dirs_for(effective_elevated())
     }
 
     fn can_bootstrap(&self) -> bool {
@@ -937,6 +941,96 @@ mod tests {
                 EnvVarGuard::unset("npm_config_prefix"),
                 EnvVarGuard::unset("NPM_CONFIG_PREFIX"),
             )
+        }
+
+        /// A prefix whose `lib/node_modules` can never be created, so the
+        /// write-probe fails and the resolver takes its `$HOME/.npm-global`
+        /// fallback — the branch that performs the filesystem write.
+        const UNWRITABLE_PREFIX: &str = "/proc/self/cfgd-npm-prefix";
+
+        /// A module declaring one npm package, so the profile names npm and
+        /// the planner has a reason to consider the manager at all.
+        fn npm_module() -> cfgd_core::modules::ResolvedModule {
+            let mut module = cfgd_core::test_helpers::make_resolved_module("tools");
+            module.packages = vec![cfgd_core::modules::ResolvedPackage {
+                canonical_name: "typescript".to_string(),
+                resolved_name: "typescript".to_string(),
+                manager: "npm".to_string(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+            }];
+            module
+        }
+
+        /// `cfgd plan` is read-only, and the daemon re-plans on every tick. A
+        /// planner that reached for `PackageManager::path_dirs()` would run
+        /// `npm config get prefix` and create `$HOME/.npm-global` on each of
+        /// those ticks — mutating the user's home from a command that promises
+        /// to change nothing. Planning reads the bootstrap record instead, and
+        /// this pins that it stays that way.
+        #[test]
+        #[serial]
+        fn reconciler_plan_neither_spawns_npm_nor_creates_a_global_prefix() {
+            use cfgd_core::providers::ProviderRegistry;
+            use cfgd_core::reconciler::{ReconcileContext, Reconciler};
+
+            let _clear = clear_npm_env_prefix();
+            // Force the unelevated branch: under root the resolver
+            // short-circuits before the probe, which would make the assertions
+            // below pass without proving anything.
+            let _elevated = with_test_elevated_guard(false);
+            let shim = NpmShim::install(Path::new(UNWRITABLE_PREFIX), 0, "", "");
+
+            let tmp_home = tempfile::tempdir().expect("tempdir");
+            let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+
+            let state = cfgd_core::test_helpers::test_state();
+            let mut registry = ProviderRegistry::new();
+            registry.package_managers = crate::packages::all_package_managers();
+            let reconciler = Reconciler::new(&registry, &state);
+
+            reconciler
+                .plan(
+                    &cfgd_core::test_helpers::make_empty_resolved(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![npm_module()],
+                    ReconcileContext::Apply,
+                )
+                .expect("plan");
+
+            let global_prefix = tmp_home.path().join(".npm-global");
+            assert!(
+                !global_prefix.exists(),
+                "planning must not create {}",
+                global_prefix.display()
+            );
+            let argv = shim.argv_log();
+            assert!(
+                !argv.contains("config get prefix"),
+                "planning must not probe npm for its prefix: {argv}"
+            );
+
+            // Prove the two assertions above are not vacuous: the probe the
+            // planner declines to call does exactly what they forbid.
+            let dirs = npm_path_dirs_for(false);
+            assert!(
+                global_prefix.exists(),
+                "fixture check: the path_dirs probe is expected to create {}",
+                global_prefix.display()
+            );
+            assert!(
+                shim.argv_log().contains("config get prefix"),
+                "fixture check: the path_dirs probe is expected to spawn npm"
+            );
+            assert_eq!(
+                dirs,
+                vec![cfgd_core::to_posix_string(global_prefix.join("bin"))],
+                "fixture check: the probe resolves to the fallback prefix's bin dir"
+            );
         }
 
         #[test]

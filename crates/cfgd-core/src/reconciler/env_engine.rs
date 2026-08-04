@@ -110,32 +110,34 @@ fn reaches_all(scope: EnvScope) -> bool {
 
 /// Compute the ordered list of env targets for a scope. Empty input yields no
 /// targets.
+///
+/// `path_dirs` carries the PATH entries of the package managers the desired
+/// state names, so a profile that only bootstraps a manager still gets a
+/// managed file *and* the rc source lines that make it reachable.
 pub(super) fn env_targets(
     merged_env: &[EnvVar],
     merged_aliases: &[ShellAlias],
+    path_dirs: &[String],
     scope: EnvScope,
     home: &Path,
     probe: &EnvHostProbe,
     platform: EnvPlatform,
 ) -> Vec<EnvTarget> {
     let mut targets = Vec::new();
-    if merged_env.is_empty() && merged_aliases.is_empty() {
+    if merged_env.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
         return targets;
     }
 
+    let content = EnvContent {
+        env: merged_env,
+        aliases: merged_aliases,
+        path_dirs,
+    };
     match platform {
-        EnvPlatform::Windows => {
-            windows_targets(merged_env, merged_aliases, scope, home, probe, &mut targets)
+        EnvPlatform::Windows => windows_targets(content, home, probe, &mut targets),
+        EnvPlatform::Linux | EnvPlatform::MacOs | EnvPlatform::FreeBsd => {
+            unix_targets(content, scope, home, probe, platform, &mut targets)
         }
-        EnvPlatform::Linux | EnvPlatform::MacOs | EnvPlatform::FreeBsd => unix_targets(
-            merged_env,
-            merged_aliases,
-            scope,
-            home,
-            probe,
-            platform,
-            &mut targets,
-        ),
     }
 
     // Live-session refresh runs last, after the durable files are written.
@@ -149,20 +151,34 @@ pub(super) fn env_targets(
     targets
 }
 
+/// The three desired-state inputs every generated shell file is derived from,
+/// bundled so the per-platform target builders take one parameter instead of
+/// three parallel slices that must stay in the same order at each call site.
+#[derive(Clone, Copy)]
+struct EnvContent<'a> {
+    env: &'a [EnvVar],
+    aliases: &'a [ShellAlias],
+    path_dirs: &'a [String],
+}
+
 fn unix_targets(
-    env: &[EnvVar],
-    aliases: &[ShellAlias],
+    content: EnvContent<'_>,
     scope: EnvScope,
     home: &Path,
     probe: &EnvHostProbe,
     platform: EnvPlatform,
     out: &mut Vec<EnvTarget>,
 ) {
+    let EnvContent {
+        env,
+        aliases,
+        path_dirs,
+    } = content;
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
     out.push(EnvTarget::ManagedFile {
         path: home.join(".cfgd.env"),
-        content: generate_env_file_content(env, aliases),
+        content: generate_env_file_content(env, aliases, path_dirs),
     });
     let interactive_rc = if probe.shell.contains("zsh") {
         home.join(".zshrc")
@@ -176,7 +192,7 @@ fn unix_targets(
     if probe.fish_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(env, aliases),
+            content: generate_fish_env_content(env, aliases, path_dirs),
         });
     }
 
@@ -238,17 +254,20 @@ fn unix_targets(
 }
 
 fn windows_targets(
-    env: &[EnvVar],
-    aliases: &[ShellAlias],
-    _scope: EnvScope,
+    content: EnvContent<'_>,
     home: &Path,
     probe: &EnvHostProbe,
     out: &mut Vec<EnvTarget>,
 ) {
+    let EnvContent {
+        env,
+        aliases,
+        path_dirs,
+    } = content;
     // PowerShell env file + dot-source into both profile locations.
     out.push(EnvTarget::ManagedFile {
         path: home.join(".cfgd-env.ps1"),
-        content: generate_powershell_env_content(env, aliases),
+        content: generate_powershell_env_content(env, aliases, path_dirs),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
         out.push(EnvTarget::SourceLine {
@@ -260,7 +279,7 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(env, aliases),
+            content: generate_env_file_content(env, aliases, path_dirs),
         });
         out.push(EnvTarget::SourceLine {
             rc_path: home.join(".bashrc"),

@@ -203,6 +203,11 @@ impl<'a> super::Reconciler<'a> {
         let mut results = Vec::new();
         let mut action_index: usize = 0;
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
+        // The PATH directories the Env phase's planned content was built from.
+        // Compared against the post-run set below to detect a manager this run
+        // bootstrapped, whose directories could not have been known that early.
+        let path_dirs_at_plan =
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
         // Set when a signal requested cooperative cancellation. We stop BEFORE
         // the next action — the previous one already completed atomically, so no
         // file is left torn.
@@ -434,14 +439,22 @@ impl<'a> super::Reconciler<'a> {
             });
         }
 
-        // --- Secret env injection: re-generate env files with resolved secret env vars ---
-        if !secret_env_collector.is_empty() {
+        // --- Env regeneration: fold in inputs that only exist once the phases ran ---
+        // Two inputs land too late for the Env phase, which by `PhaseName` order
+        // runs before both Modules and Packages: a secret's resolved value, and
+        // the PATH directories of a manager bootstrapped during this very run.
+        // Regenerating once here, with both present, converges the file inside
+        // the same apply instead of leaving it right only from the next one on.
+        let path_dirs_now =
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
+        if !secret_env_collector.is_empty() || path_dirs_now != path_dirs_at_plan {
             let (env_actions, _) = Self::plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
                 resolved.merged.env_scope,
                 module_actions,
                 &secret_env_collector,
+                &path_dirs_now,
             );
             for env_action in &env_actions {
                 if let Action::Env(ea) = env_action {
@@ -455,7 +468,11 @@ impl<'a> super::Reconciler<'a> {
                             // shape — it is not a general description sniff.
                             let changed = !desc.contains(":skipped");
                             results.push(ActionResult {
-                                phase: PhaseName::Secrets.as_str().to_string(),
+                                // These are env actions no matter which late
+                                // input triggered them, and a caller filtering
+                                // results by phase must find them where every
+                                // other `env:write:`/`env:inject:` result sits.
+                                phase: PhaseName::Env.as_str().to_string(),
                                 description: desc,
                                 success: true,
                                 error: None,
@@ -465,11 +482,11 @@ impl<'a> super::Reconciler<'a> {
                         Err(e) => {
                             printer.status_simple(
                                 Role::Fail,
-                                format!("Failed to write secret env vars: {}", e),
+                                format!("Failed to regenerate shell env files: {}", e),
                             );
                             results.push(ActionResult {
-                                phase: PhaseName::Secrets.as_str().to_string(),
-                                description: "env:write:secret-envs".to_string(),
+                                phase: PhaseName::Env.as_str().to_string(),
+                                description: "env:write:regenerate".to_string(),
                                 success: false,
                                 error: Some(e.to_string()),
                                 changed: false,
