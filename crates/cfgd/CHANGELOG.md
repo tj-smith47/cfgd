@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-02
+
+### Features
+
+* 53b12af70406 pin the CLI server to the core group and hint every tool ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.6.2] - 2026-07-27
 
 ### Bug Fixes
@@ -124,7 +130,8 @@
 * 018a7ff7b259 migrate upgrade CLI test fixtures to split/keyless contract (TJ Smith)
 * a397277605a9 serialize LOCALAPPDATA env tests to fix full-suite flake (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/tj-smith47/cfgd/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0
