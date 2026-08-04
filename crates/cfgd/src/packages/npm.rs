@@ -82,13 +82,18 @@ fn test_elevated_override() -> Option<bool> {
 
 /// RAII guard restoring the previous elevation override on drop (including on panic).
 /// Modelled on `with_test_home`/`TestHomeGuard` in `cfgd-core/src/util/paths.rs`.
-#[cfg(test)]
+///
+/// `unix` as well as `test`: the only callers are the `npm_shim` tests, which
+/// drive npm through a `/bin/sh` shim and are themselves `#[cfg(unix)]`. Gating
+/// on `test` alone leaves this trio uncallable — and so dead under the `-D
+/// warnings` the Windows test job builds with.
+#[cfg(all(test, unix))]
 #[must_use = "dropping the guard immediately restores the previous override"]
-pub(super) struct TestElevatedGuard {
+struct TestElevatedGuard {
     prev: Option<bool>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for TestElevatedGuard {
     fn drop(&mut self) {
         let prev = self.prev.take();
@@ -96,14 +101,14 @@ impl Drop for TestElevatedGuard {
     }
 }
 
-#[cfg(test)]
-pub(super) fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
+#[cfg(all(test, unix))]
+fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
     let prev = TEST_ELEVATED_OVERRIDE.with(|o| o.replace(Some(elevated)));
     TestElevatedGuard { prev }
 }
 
-#[cfg(test)]
-pub(super) fn with_test_elevated<F, R>(elevated: bool, f: F) -> R
+#[cfg(all(test, unix))]
+fn with_test_elevated<F, R>(elevated: bool, f: F) -> R
 where
     F: FnOnce() -> R,
 {

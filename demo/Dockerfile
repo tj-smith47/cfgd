@@ -3,9 +3,8 @@
 # (3.2, above solargraph's 3.1 floor). A floating tag can land a point release
 # that regresses either, and the resulting take fails halfway through the
 # recording rather than at the start of it. Nothing here tracks Homebrew's
-# formula index, which
-# a pin would go stale against — this image ships none of Homebrew at all,
-# cfgd bootstraps it live during the recorded apply.
+# formula index, which a pin would go stale against — this image ships none of
+# Homebrew at all; cfgd bootstraps it live during the recorded apply.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
