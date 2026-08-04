@@ -52,7 +52,63 @@ impl NpmPrefixDecision {
 /// split out so tests can drive the elevated/unelevated branches directly
 /// without needing real root privileges.
 pub(super) fn resolve_npm_prefix() -> Result<NpmPrefixDecision> {
-    resolve_npm_prefix_for(cfgd_core::is_root())
+    resolve_npm_prefix_for(effective_elevated())
+}
+
+/// Real elevation, with a `#[cfg(test)]`-only override so tests can force
+/// the unelevated branch on a root test runner (or vice versa) without
+/// touching real privileges. Compiles down to exactly `cfgd_core::is_root()`
+/// in a release build — the override machinery does not exist outside `cfg(test)`.
+fn effective_elevated() -> bool {
+    #[cfg(test)]
+    {
+        if let Some(elevated) = test_elevated_override() {
+            return elevated;
+        }
+    }
+    cfgd_core::is_root()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ELEVATED_OVERRIDE: std::cell::RefCell<Option<bool>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn test_elevated_override() -> Option<bool> {
+    TEST_ELEVATED_OVERRIDE.with(|o| *o.borrow())
+}
+
+/// RAII guard restoring the previous elevation override on drop (including on panic).
+/// Modelled on `with_test_home`/`TestHomeGuard` in `cfgd-core/src/util/paths.rs`.
+#[cfg(test)]
+#[must_use = "dropping the guard immediately restores the previous override"]
+pub(super) struct TestElevatedGuard {
+    prev: Option<bool>,
+}
+
+#[cfg(test)]
+impl Drop for TestElevatedGuard {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        TEST_ELEVATED_OVERRIDE.with(|o| *o.borrow_mut() = prev);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
+    let prev = TEST_ELEVATED_OVERRIDE.with(|o| o.replace(Some(elevated)));
+    TestElevatedGuard { prev }
+}
+
+#[cfg(test)]
+pub(super) fn with_test_elevated<F, R>(elevated: bool, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _guard = with_test_elevated_guard(elevated);
+    f()
 }
 
 /// [`resolve_npm_prefix_with`] wired to the real write-probe
@@ -1188,6 +1244,88 @@ mod tests {
             );
         }
 
+        /// End-to-end proof of the brief's single most load-bearing property:
+        /// `NpmManager::install()` and `NpmManager::installed_packages()`
+        /// converge on ONE prefix through the real, uninjected composition —
+        /// real `npm_configured_prefix()`, real `npm_prefix_is_writable()`,
+        /// real `npm_fallback_prefix()`, real argv construction. Only the
+        /// elevation answer is injected (`with_test_elevated`); the two tests
+        /// above prove the resolver is deterministic in isolation, but this is
+        /// the one that proves the production methods actually land in the
+        /// same place, and it also exercises `install()`'s fallback-notice
+        /// branch, which nothing else in this suite reaches.
+        ///
+        /// The shim answers `npm config get prefix` with a RELATIVE path whose
+        /// first segment does not exist anywhere under this crate's test CWD
+        /// (`crates/cfgd/`, verified: no `cfgd-round2-nonexistent` entry
+        /// exists there). `npm_prefix_is_writable` computes
+        /// `deepest_existing_ancestor` on `<configured_prefix>/lib/node_modules`;
+        /// walking `.parent()` up a chain of nonexistent relative components
+        /// terminates at the empty path (`""`), whose own `.parent()` is
+        /// `None` — so the real write-probe returns `false` deterministically,
+        /// without ever touching the filesystem, on root and non-root alike.
+        /// Root's Unix-DAC bypass is irrelevant here: there is no real
+        /// directory for it to bypass permissions on.
+        #[test]
+        #[serial]
+        fn npm_install_and_installed_packages_converge_through_real_composition() {
+            let _clear = clear_npm_env_prefix();
+            let configured = Path::new("cfgd-round2-nonexistent/relative-prefix");
+            let shim = NpmShim::install(configured, 0, "{}", "");
+            let home = tempfile::tempdir().expect("tempdir");
+            let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+            let (install_result, installed_result) = cfgd_core::with_test_home(home.path(), || {
+                with_test_elevated(false, || {
+                    (
+                        NpmManager.install(&["typescript".to_string()], &printer),
+                        NpmManager.installed_packages(),
+                    )
+                })
+            });
+            install_result.expect("install() must resolve through the real fallback composition");
+            installed_result
+                .expect("installed_packages() must resolve through the real fallback composition");
+
+            let expected_fallback = cfgd_core::with_test_home(home.path(), npm_fallback_prefix)
+                .expect("npm_fallback_prefix Ok");
+
+            let log = shim.argv_log();
+            let prefix_values: Vec<String> = log
+                .lines()
+                .filter(|line| line.contains("--prefix"))
+                .filter_map(|line| {
+                    line.split_whitespace()
+                        .skip_while(|tok| *tok != "--prefix")
+                        .nth(1)
+                        .map(str::to_string)
+                })
+                .collect();
+            assert_eq!(
+                prefix_values.len(),
+                2,
+                "expected exactly two real `--prefix`-bearing invocations \
+                 (install + installed_packages), got argv log:\n{log}"
+            );
+            assert_eq!(
+                prefix_values[0], prefix_values[1],
+                "install() and installed_packages() must converge on the \
+                 identical prefix through the real, uninjected composition: {prefix_values:?}"
+            );
+            assert_eq!(
+                prefix_values[0],
+                expected_fallback.to_string_lossy(),
+                "the converged prefix must be the real npm_fallback_prefix(), \
+                 not merely equal to itself"
+            );
+
+            let captured = buf.lock().unwrap().clone();
+            assert!(
+                captured.contains("npm has no writable global prefix"),
+                "install()'s fallback-notice branch must have executed: {captured}"
+            );
+        }
+
         #[test]
         fn npm_prefix_is_writable_returns_false_for_unwritable_directory() {
             // The write-probe performs a real filesystem write, and root
@@ -1232,11 +1370,9 @@ mod tests {
             // invoking the write-probe — root-independent by construction.
             let _shim = NpmShim::install(Path::new(""), 0, "", "");
             let (dirs, fallback) = cfgd_core::with_test_home(home.path(), || {
-                (
-                    npm_path_dirs_for(false),
-                    cfgd_core::expand_tilde(Path::new("~/.npm-global")),
-                )
+                (npm_path_dirs_for(false), npm_fallback_prefix())
             });
+            let fallback = fallback.expect("npm_fallback_prefix Ok");
             assert_eq!(
                 dirs,
                 vec![cfgd_core::to_posix_string(npm_bin_dir(&fallback))],
