@@ -326,6 +326,9 @@ pub fn cmd_module_create(
                 &cfgd_core::AbortFlag::new(),
             )?;
             apply_status = super::print_apply_result(&result, printer, None);
+            // A module whose packages come from a manager this apply bootstrapped
+            // leaves the invoking shell one `source` away from reaching them.
+            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
             applied = true;
         }
     }

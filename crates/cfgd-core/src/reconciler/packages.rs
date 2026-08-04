@@ -54,6 +54,15 @@ impl<'a> super::Reconciler<'a> {
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
                         pm.bootstrap(printer)?;
+                        // Profile-level packages reach bootstrap through here
+                        // rather than through the Modules phase, so this site
+                        // owes the same record — without it a profile that names
+                        // only `spec.packages` never gets the manager on PATH.
+                        // It precedes the availability check because that check
+                        // resolves the binary, and a manager installed into a
+                        // prefix this process never inherited only becomes
+                        // resolvable once its directories are registered.
+                        self.record_bootstrap_path_dirs(pm.as_ref());
                         if !pm.is_available() {
                             return Err(crate::errors::PackageError::BootstrapFailed {
                                 manager: manager.clone(),
@@ -61,11 +70,6 @@ impl<'a> super::Reconciler<'a> {
                             }
                             .into());
                         }
-                        // Profile-level packages reach bootstrap through here
-                        // rather than through the Modules phase, so this site
-                        // owes the same record — without it a profile that names
-                        // only `spec.packages` never gets the manager on PATH.
-                        self.record_bootstrap_path_dirs(pm.as_ref());
                         return Ok(format!("package:{}:bootstrap", manager));
                     }
                 }

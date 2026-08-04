@@ -108,6 +108,11 @@ impl<'a> super::Reconciler<'a> {
             .iter()
             .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
             .collect();
+        // Registered before the state write, and unconditionally: the very next
+        // action in this apply may be an install through a binary that just
+        // landed in one of these directories, and a failed state write is no
+        // reason to leave the running process unable to find it.
+        crate::register_bootstrapped_path_dirs(&dirs);
         if let Err(e) = self.state.record_bootstrapped_path_dirs(pm.name(), &dirs) {
             tracing::warn!(
                 "cannot record PATH directories for bootstrapped {}: {e}",

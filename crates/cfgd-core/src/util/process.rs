@@ -171,20 +171,80 @@ pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
     } else {
         &[""]
     };
-    let paths = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&paths) {
-        for ext in extensions {
-            let candidate = dir.join(format!("{cmd}{ext}"));
-            if candidate.is_file()
-                && std::fs::metadata(&candidate)
-                    .map(|m| is_executable(&candidate, &m))
-                    .unwrap_or(false)
-            {
-                return Some(candidate);
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            if let Some(hit) = probe_dir_for_command(&dir, cmd, extensions) {
+                return Some(hit);
             }
         }
     }
+    for dir in bootstrapped_path_dirs() {
+        if let Some(hit) = probe_dir_for_command(&dir, cmd, extensions) {
+            return Some(hit);
+        }
+    }
     None
+}
+
+/// First `dir/cmd{ext}` that is a real, executable file, in `extensions` order.
+fn probe_dir_for_command(
+    dir: &std::path::Path,
+    cmd: &str,
+    extensions: &[&str],
+) -> Option<std::path::PathBuf> {
+    for ext in extensions {
+        let candidate = dir.join(format!("{cmd}{ext}"));
+        if candidate.is_file()
+            && std::fs::metadata(&candidate)
+                .map(|m| is_executable(&candidate, &m))
+                .unwrap_or(false)
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// PATH directories contributed by a package manager cfgd bootstrapped during
+/// this process's lifetime.
+///
+/// A bootstrap installs into a prefix that did not exist when cfgd started, so
+/// the inherited `PATH` cannot name it — and the next action in the same apply
+/// is routinely the install that needs it, as when brew lands `pipx` and the
+/// following action is `pipx install pynvim`. Rewriting the process's own
+/// `PATH` would be the obvious fix and is not available: `std::env::set_var` is
+/// unsound once any thread is live, and the daemon runs several. Holding the
+/// directories beside `PATH` and searching them after it gives the same
+/// resolution with none of that exposure.
+static BOOTSTRAPPED_PATH_DIRS: std::sync::RwLock<Vec<std::path::PathBuf>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Make `dirs` visible to every later [`command_path`] / [`command_available`]
+/// call in this process. Idempotent — a directory already registered is not
+/// re-added, so a manager bootstrapped twice in one run resolves the same way.
+pub fn register_bootstrapped_path_dirs(dirs: &[String]) {
+    if dirs.is_empty() {
+        return;
+    }
+    // A poisoned lock still holds a usable directory list: a panic in another
+    // thread is no reason to stop resolving binaries that exist on disk.
+    let mut guard = BOOTSTRAPPED_PATH_DIRS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    for dir in dirs {
+        let path = std::path::PathBuf::from(dir);
+        if !guard.contains(&path) {
+            guard.push(path);
+        }
+    }
+}
+
+/// Snapshot of the directories registered by [`register_bootstrapped_path_dirs`].
+pub fn bootstrapped_path_dirs() -> Vec<std::path::PathBuf> {
+    BOOTSTRAPPED_PATH_DIRS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Check if a command is available on the system via PATH lookup.
@@ -334,6 +394,77 @@ mod tests {
     #[test]
     fn command_available_finds_sh() {
         assert!(command_available("sh"));
+    }
+
+    /// Write an executable file named so `command_path(stem)` can resolve it.
+    fn write_probe_tool(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+        let name = if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem.to_string()
+        };
+        let path = dir.join(name);
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write probe tool");
+        crate::set_file_permissions(&path, 0o755).expect("chmod probe tool");
+        path
+    }
+
+    #[test]
+    #[serial]
+    fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-registered-tool";
+        let expected = write_probe_tool(dir.path(), stem);
+
+        assert!(
+            command_path(stem).is_none(),
+            "probe tool must not resolve before its directory is registered"
+        );
+
+        register_bootstrapped_path_dirs(&[dir.path().to_string_lossy().into_owned()]);
+
+        assert_eq!(command_path(stem).as_deref(), Some(expected.as_path()));
+        assert!(command_available(stem));
+    }
+
+    #[test]
+    #[serial]
+    fn path_still_wins_over_a_registered_dir() {
+        let on_path = tempfile::tempdir().expect("tempdir");
+        let registered = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-shadowed-tool";
+        let preferred = write_probe_tool(on_path.path(), stem);
+        write_probe_tool(registered.path(), stem);
+
+        register_bootstrapped_path_dirs(&[registered.path().to_string_lossy().into_owned()]);
+        let _path =
+            crate::test_helpers::EnvVarGuard::set("PATH", &on_path.path().to_string_lossy());
+
+        assert_eq!(command_path(stem).as_deref(), Some(preferred.as_path()));
+    }
+
+    #[test]
+    #[serial]
+    fn registering_the_same_dir_twice_records_it_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().to_string_lossy().into_owned();
+
+        register_bootstrapped_path_dirs(std::slice::from_ref(&entry));
+        register_bootstrapped_path_dirs(&[entry]);
+
+        let hits = bootstrapped_path_dirs()
+            .into_iter()
+            .filter(|p| p == dir.path())
+            .count();
+        assert_eq!(hits, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn registering_nothing_leaves_the_list_alone() {
+        let before = bootstrapped_path_dirs();
+        register_bootstrapped_path_dirs(&[]);
+        assert_eq!(bootstrapped_path_dirs(), before);
     }
 
     #[test]

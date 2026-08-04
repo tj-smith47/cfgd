@@ -513,7 +513,12 @@ pub(super) fn apply_plan(
         None,
         &cfgd_core::AbortFlag::new(),
     )?;
-    Ok(super::print_apply_result(&result, printer, None))
+    let status = super::print_apply_result(&result, printer, None);
+    // The one-command bootstrap is exactly where a stale shell bites hardest:
+    // this apply may have installed the first package manager on the box, and
+    // the invoking shell predates the env file naming its PATH entries.
+    crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+    Ok(status)
 }
 
 /// Interactively pick a profile from the profiles directory.

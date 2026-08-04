@@ -51,6 +51,31 @@ naming the fallback prefix and that its `bin` directory needs to be added to
 `PATH` — cfgd bootstraps installs into `$HOME/.npm-global` but does not
 silently rewrite your shell's `PATH` for you.
 
+## Reaching a manager cfgd bootstrapped mid-apply
+
+A manager cfgd installs during an apply lands in a prefix that did not exist
+when the `cfgd` process started, so nothing in the inherited `PATH` names it.
+cfgd records that manager's `PATH` directories the moment the bootstrap
+returns and uses them for the rest of the run, which is what makes this
+sequence work in a single `cfgd apply` on a machine with none of it installed:
+
+```yaml
+packages:
+  brew:
+    formulae:
+      - pipx        # brew is bootstrapped, then installs pipx
+  pipx:
+    packages:
+      - pynvim      # resolves through brew's prefix, same apply
+```
+
+The same directories reach lifecycle scripts (see
+[lifecycle-scripts.md](lifecycle-scripts.md)) and the generated env file, so a
+`postApply` step and your next login shell resolve the binary identically.
+Your *current* shell is the one exception — it predates the env file, which is
+why `cfgd apply`, `cfgd init --apply*`, and `cfgd module add --apply` all end
+by naming the file to source.
+
 ## Profile Usage
 
 ```yaml
