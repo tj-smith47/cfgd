@@ -946,7 +946,21 @@ mod tests {
         /// A prefix whose `lib/node_modules` can never be created, so the
         /// write-probe fails and the resolver takes its `$HOME/.npm-global`
         /// fallback — the branch that performs the filesystem write.
-        const UNWRITABLE_PREFIX: &str = "/proc/self/cfgd-npm-prefix";
+        ///
+        /// The block is structural, not permissions-based: the deepest
+        /// existing ancestor is a regular FILE, so the probe's `File::create`
+        /// fails with `ENOTDIR` on every OS and for every user, root included.
+        /// A permission-denied path (`/proc/self/...`) only blocks where that
+        /// path exists AND the runner is unprivileged — on FreeBSD, where
+        /// procfs is not mounted, the probe walked up to `/`, found it
+        /// writable as root, and the resolver never took the fallback.
+        fn unwritable_prefix() -> (tempfile::TempDir, PathBuf) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let blocker = dir.path().join("not-a-directory");
+            std::fs::write(&blocker, b"").expect("write blocker file");
+            let prefix = blocker.join("cfgd-npm-prefix");
+            (dir, prefix)
+        }
 
         /// A module declaring one npm package, so the profile names npm and
         /// the planner has a reason to consider the manager at all.
@@ -982,7 +996,8 @@ mod tests {
             // short-circuits before the probe, which would make the assertions
             // below pass without proving anything.
             let _elevated = with_test_elevated_guard(false);
-            let shim = NpmShim::install(Path::new(UNWRITABLE_PREFIX), 0, "", "");
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let shim = NpmShim::install(&unwritable, 0, "", "");
 
             let tmp_home = tempfile::tempdir().expect("tempdir");
             let _home = cfgd_core::with_test_home_guard(tmp_home.path());
@@ -1425,14 +1440,27 @@ mod tests {
             );
         }
 
+        /// The probe's boundary proven at ANY uid: a non-directory ancestor
+        /// fails `File::create` with `ENOTDIR`, which no privilege level
+        /// bypasses. The `0o555` sibling below can only run unelevated, so on
+        /// the root CI runners it is this assertion that keeps the probe
+        /// covered at all.
+        #[test]
+        fn npm_prefix_is_writable_returns_false_when_ancestor_is_not_a_directory() {
+            let (_blocker_dir, prefix) = unwritable_prefix();
+            assert!(
+                !npm_prefix_is_writable(&prefix),
+                "a prefix nested under a regular file must fail the write-probe"
+            );
+        }
+
         #[test]
         fn npm_prefix_is_writable_returns_false_for_unwritable_directory() {
             // The write-probe performs a real filesystem write, and root
             // bypasses Unix DAC permission checks entirely, so an unwritable
-            // directory cannot be constructed under root. This is the one
-            // legitimate root guard left in this file: it tests the probe's
-            // own boundary, not the decision logic above it (see
-            // resolve_npm_prefix_with for how that is tested at any uid).
+            // directory cannot be constructed under root. The ENOTDIR case
+            // above covers the probe at any uid; this one covers the DAC path
+            // specifically, which is only observable unelevated.
             if cfgd_core::is_root() {
                 return;
             }
