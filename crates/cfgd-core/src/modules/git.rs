@@ -731,7 +731,11 @@ mod tests {
 
     // --- default_module_cache_dir ---
 
+    // `default_module_cache_dir` reads the process-global `CFGD_CACHE_DIR` above
+    // the `with_test_home_guard` thread-local, so a concurrent setter hands this
+    // test another test's tempdir.
     #[test]
+    #[serial_test::serial]
     fn default_module_cache_dir_with_test_home() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::with_test_home_guard(dir.path());

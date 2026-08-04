@@ -405,6 +405,7 @@ mod tests {
 
     #[test]
     fn command_available_finds_sh() {
+        let _path = crate::test_helpers::path_env_read_guard();
         assert!(command_available("sh"));
     }
 
@@ -424,6 +425,7 @@ mod tests {
     #[test]
     #[serial]
     fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let dir = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-registered-tool";
@@ -443,6 +445,9 @@ mod tests {
     #[test]
     #[serial]
     fn path_still_wins_over_a_registered_dir() {
+        // Declared before the `EnvVarGuard` below so it drops last, bracketing
+        // the whole window in which `PATH` holds this test's tempdir.
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
         let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let on_path = tempfile::tempdir().expect("tempdir");
         let registered = tempfile::tempdir().expect("tempdir");
@@ -513,6 +518,7 @@ mod tests {
 
     #[test]
     fn command_path_resolves_sh_to_a_real_executable_file() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let p = command_path("sh").expect("sh is on PATH");
         assert!(p.is_file(), "resolved sh must be a real file: {p:?}");
         // Stem, not file_name: on Windows the resolved binary is `sh.exe`, so its
@@ -527,6 +533,7 @@ mod tests {
 
     #[test]
     fn command_path_and_command_available_agree() {
+        let _path = crate::test_helpers::path_env_read_guard();
         assert_eq!(command_available("sh"), command_path("sh").is_some());
         assert_eq!(
             command_available("absolutely-not-a-real-command-xyz"),
@@ -536,6 +543,7 @@ mod tests {
 
     #[test]
     fn require_tool_succeeds_for_sh() {
+        let _path = crate::test_helpers::path_env_read_guard();
         assert!(require_tool("sh", None).is_ok());
     }
 

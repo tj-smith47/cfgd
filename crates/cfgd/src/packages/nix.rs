@@ -344,6 +344,9 @@ mod tests {
 
     #[test]
     fn nix_manager_can_bootstrap_checks_curl() {
+        // Both sides read `PATH`; without the guard a concurrent test's
+        // `PATH` mutation can land between them and they disagree.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let mgr = NixManager;
         let can = mgr.can_bootstrap();
         assert_eq!(can, command_available("curl"));

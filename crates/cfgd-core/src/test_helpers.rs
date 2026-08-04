@@ -1453,30 +1453,35 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, En
 /// tests against the interpreter *spawns* done by script-execution tests.
 ///
 /// `std::env::set_var`/`remove_var` is `unsafe` precisely because a concurrent
-/// reader is a data race on the C `environ`. Any spawn that resolves its program
+/// reader is a data race on the C `environ`. Two kinds of code read `PATH`:
+/// resolution ([`crate::command_path`] and everything over it —
+/// `command_available`, `require_tool`) and any spawn that resolves its program
 /// through `PATH` — a script's interpreter (`sh`/`bash`), or `git` via
-/// [`crate::git_cmd_local`] / [`crate::git_cmd_safe`] — reads `PATH` at spawn
-/// time, so a test that empties `PATH` to drive a "command not found" branch
-/// races and corrupts any concurrently-spawning test. It surfaces as a spurious
-/// `could not spawn the script interpreter (os error 2)`, or as a `git … must
-/// succeed` assertion that fails on one arbitrary git call out of several.
+/// [`crate::git_cmd_local`] / [`crate::git_cmd_safe`]. A test that empties
+/// `PATH` to drive a "command not found" branch races and corrupts either. It
+/// surfaces as a spurious `could not spawn the script interpreter (os error 2)`,
+/// as a `git … must succeed` assertion that fails on one arbitrary git call out
+/// of several, or as an unrelated `require_tool("sh")` reporting sh missing.
 ///
 /// `#[serial]` cannot close this: it only excludes other `#[serial]` tests,
-/// never the non-serial spawner majority. Nor does `nextest` expose it — its
+/// never the non-serial reader majority. Nor does `nextest` expose it — its
 /// process-per-test model gives every test its own `environ`, so this races only
 /// under `cargo test`'s thread-per-test model (the shape CI runs on macOS).
-/// This lock guards the real resource boundary instead — spawns take the shared
-/// read guard ([`path_spawn_guard`]), PATH emptying takes the exclusive write
-/// guard ([`path_env_mutation_guard`]) — so the two can never overlap. Spawns
-/// run fully parallel with each other; only an active PATH-emptying window
-/// blocks them.
+/// This lock guards the real resource boundary instead — readers take the shared
+/// read guard ([`path_env_read_guard`]), PATH mutation takes the exclusive write
+/// guard ([`path_env_mutation_guard`]) — so the two can never overlap. Readers
+/// run fully parallel with each other; only an active mutation window blocks
+/// them.
 static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
 
-/// Shared read guard held across a `PATH`-resolved spawn. Acquired at the top of
-/// `reconciler::scripts::execute_script`, so every script-spawning test is
-/// covered automatically; a test that spawns `git` directly takes it by hand for
-/// the duration of its git work. See [`PATH_ENV_LOCK`].
-pub fn path_spawn_guard() -> RwLockReadGuard<'static, ()> {
+/// Shared read guard held across a read of `PATH`. Acquired at the top of
+/// `reconciler::scripts::execute_script` and inside the `git` command factories,
+/// so every script- and git-spawning test is covered automatically; a test that
+/// asserts a *successful* `command_path` / `command_available` / `require_tool`
+/// resolution takes it by hand. A test asserting a resolution *fails* does not
+/// need it — an empty `PATH` cannot turn a miss into a hit. See
+/// [`PATH_ENV_LOCK`].
+pub fn path_env_read_guard() -> RwLockReadGuard<'static, ()> {
     PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
 }
 

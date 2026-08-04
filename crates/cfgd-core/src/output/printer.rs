@@ -67,6 +67,27 @@ pub struct Printer {
     pub(crate) list_envelope: bool,
 }
 
+/// Whether constructing a `Printer` for `output_format` must turn the terminal's
+/// colour flags off.
+///
+/// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under
+/// structured output (Json / Yaml / Template / Jsonpath / Name) so a role-styled
+/// emission cannot leak ANSI escapes into payload string fields — the contract is
+/// enforced at construction, not by every caller remembering to wrap with
+/// `with_data`.
+///
+/// Split out of [`Printer::with_format`] so the decision is testable without
+/// reading `console`'s colour flags. Those flags are process-global and every
+/// structured-output `Printer` construction in the test binary writes them, so an
+/// assertion made against them races the whole non-serial majority of the suite —
+/// a race `#[serial]` cannot fence, because the mutators are ordinary production
+/// constructions rather than serial tests.
+fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
+    std::env::var_os("NO_COLOR").is_some()
+        || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
+        || output_format.is_structured()
+}
+
 impl Printer {
     /// Production constructor: stderr/stdout via `console::Term`.
     pub fn new(verbosity: Verbosity) -> Self {
@@ -82,15 +103,15 @@ impl Printer {
         theme_name: Option<&str>,
         output_format: OutputFormat,
     ) -> Self {
-        // Honor NO_COLOR / TERM=dumb at construction. Also disable colors
-        // under structured output (Json / Yaml / Template / Jsonpath / Name)
-        // so a future role-styled emission cannot leak ANSI escapes into
-        // payload string fields — the contract is enforced at construction,
-        // not by every caller remembering to wrap with with_data.
-        if std::env::var_os("NO_COLOR").is_some()
-            || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
-            || output_format.is_structured()
-        {
+        // A test holding a `ColorsEnabledGuard` owns both flags for its
+        // duration; clobbering them here would race it from any concurrently
+        // constructing test. Compiled out of release builds.
+        #[cfg(test)]
+        let pinned = crate::output::test_support::colors_are_pinned();
+        #[cfg(not(test))]
+        let pinned = false;
+
+        if !pinned && colors_must_be_disabled(&output_format) {
             console::set_colors_enabled(false);
             console::set_colors_enabled_stderr(false);
         }
@@ -411,7 +432,6 @@ mod tests {
     use super::*;
     #[cfg(feature = "test-helpers")]
     use crate::output::strip_ansi;
-    use crate::output::test_support::ColorsEnabledGuard;
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
 
@@ -444,7 +464,6 @@ mod tests {
         // Ensure NO_COLOR / TERM=dumb are not the ones triggering the gate.
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _term = EnvVarGuard::set("TERM", "xterm-256color");
-        let _guard = ColorsEnabledGuard::set(true);
 
         for fmt in [
             OutputFormat::Json,
@@ -453,18 +472,24 @@ mod tests {
             OutputFormat::Jsonpath("{.foo}".into()),
             OutputFormat::Template("{{ . }}".into()),
         ] {
-            console::set_colors_enabled(true);
-            console::set_colors_enabled_stderr(true);
-            let _p = Printer::with_format(Verbosity::Normal, None, fmt.clone());
             assert!(
-                !console::colors_enabled(),
-                "stdout colors should be disabled for {fmt:?}"
-            );
-            assert!(
-                !console::colors_enabled_stderr(),
-                "stderr colors should be disabled for {fmt:?}"
+                colors_must_be_disabled(&fmt),
+                "colors should be disabled for {fmt:?}"
             );
         }
+    }
+
+    #[test]
+    #[serial]
+    fn no_color_and_dumb_terminal_disable_colors() {
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+        {
+            let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+            assert!(colors_must_be_disabled(&OutputFormat::Table));
+        }
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _dumb = EnvVarGuard::set("TERM", "dumb");
+        assert!(colors_must_be_disabled(&OutputFormat::Table));
     }
 
     #[test]
@@ -472,18 +497,10 @@ mod tests {
     fn table_format_does_not_disable_colors_implicitly() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _term = EnvVarGuard::set("TERM", "xterm-256color");
-        let _guard = ColorsEnabledGuard::set(true);
-        console::set_colors_enabled(true);
-        console::set_colors_enabled_stderr(true);
 
-        let _p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
         assert!(
-            console::colors_enabled(),
+            !colors_must_be_disabled(&OutputFormat::Table),
             "Table format must not implicitly disable colors"
-        );
-        assert!(
-            console::colors_enabled_stderr(),
-            "Table format must not implicitly disable stderr colors"
         );
     }
 

@@ -90,7 +90,7 @@ pub fn try_git_cmd(
     // emptying `PATH` is a data race on `environ` that surfaces here as a git
     // child that mysteriously fails to run. Compiled out of release builds.
     #[cfg(any(test, feature = "test-helpers"))]
-    let _path_guard = crate::test_helpers::path_spawn_guard();
+    let _path_guard = crate::test_helpers::path_env_read_guard();
 
     let mut cmd = git_cmd_safe(url, ssh_policy);
     cmd.args(args);
@@ -151,7 +151,7 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
     // emptying `PATH` is a data race on `environ` that surfaces here as a git
     // child that mysteriously fails to run. Compiled out of release builds.
     #[cfg(any(test, feature = "test-helpers"))]
-    let _path_guard = crate::test_helpers::path_spawn_guard();
+    let _path_guard = crate::test_helpers::path_env_read_guard();
 
     let dir = repo_dir.display().to_string();
 
@@ -196,7 +196,7 @@ fn git_output_cwd(args: &[&str]) -> Option<String> {
     // emptying `PATH` is a data race on `environ` that surfaces here as a git
     // child that mysteriously fails to run. Compiled out of release builds.
     #[cfg(any(test, feature = "test-helpers"))]
-    let _path_guard = crate::test_helpers::path_spawn_guard();
+    let _path_guard = crate::test_helpers::path_env_read_guard();
 
     let output = git_cmd_local().args(args).output().ok()?;
     if output.status.success() {
@@ -451,7 +451,7 @@ mod tests {
         let git = move |args: &[&str]| {
             // `git` resolves through `PATH` at spawn time, so this child must not
             // overlap a concurrent test's empty-`PATH` window.
-            let _spawn = crate::test_helpers::path_spawn_guard();
+            let _spawn = crate::test_helpers::path_env_read_guard();
             let ok = super::git_cmd_local()
                 .current_dir(&anchor)
                 .args(["-c", "commit.gpgsign=false"])
@@ -524,7 +524,7 @@ mod tests {
         use crate::test_helpers::CwdGuard;
 
         fn git(dir: &std::path::Path, args: &[&str]) {
-            let _spawn = crate::test_helpers::path_spawn_guard();
+            let _spawn = crate::test_helpers::path_env_read_guard();
             let status = super::super::git_cmd_local()
                 .args(args)
                 .current_dir(dir)
