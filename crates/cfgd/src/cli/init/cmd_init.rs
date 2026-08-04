@@ -166,7 +166,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved,
                 Vec::new(),
                 Vec::new(),
-                resolved_modules,
+                resolved_modules.clone(),
                 cfgd_core::reconciler::ReconcileContext::Apply,
             )?;
 
@@ -174,6 +174,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &plan,
                 &reconciler,
                 &resolved,
+                &resolved_modules,
                 &target_dir,
                 ApplyPlanOpts {
                     dry_run: args.dry_run,
@@ -276,7 +277,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &resolved,
                 file_actions,
                 pkg_actions,
-                resolved_modules,
+                resolved_modules.clone(),
                 cfgd_core::reconciler::ReconcileContext::Apply,
             )?;
 
@@ -284,6 +285,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &plan,
                 &reconciler,
                 &resolved,
+                &resolved_modules,
                 &target_dir,
                 ApplyPlanOpts {
                     dry_run: args.dry_run,
@@ -442,6 +444,7 @@ pub(super) fn apply_plan(
     plan: &cfgd_core::reconciler::Plan,
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
     resolved: &config::ResolvedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
     config_dir: &Path,
     opts: ApplyPlanOpts<'_>,
     printer: &Printer,
@@ -473,13 +476,17 @@ pub(super) fn apply_plan(
     // mutually-excludes against `cfgd apply` and the daemon.
     let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(opts.state_dir, opts.scope)?)?;
 
+    // The resolved modules have to survive planning and reach the apply: it is
+    // what records module state, and what lets the post-phase env regeneration
+    // see the PATH directories of a manager this very run bootstrapped. Handing
+    // it an empty slice made `cfgd init --apply-module` leave both undone.
     let result = reconciler.apply(
         plan,
         resolved,
         config_dir,
         printer,
         None,
-        &[],
+        modules,
         cfgd_core::reconciler::ReconcileContext::Apply,
         false,
         None,

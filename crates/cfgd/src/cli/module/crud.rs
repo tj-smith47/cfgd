@@ -275,7 +275,7 @@ pub fn cmd_module_create(
             &resolved,
             Vec::new(),
             Vec::new(),
-            resolved_modules,
+            resolved_modules.clone(),
             cfgd_core::reconciler::ReconcileContext::Apply,
         )?;
 
@@ -307,13 +307,16 @@ pub fn cmd_module_create(
                 cli.scope(),
             )?)?;
 
+            // Same requirement as `cfgd init --apply-module`: the apply records
+            // module state from this slice, and regenerates the env files from
+            // the PATH directories of a manager it bootstrapped mid-run.
             let result = reconciler.apply(
                 &plan,
                 &resolved,
                 &config_dir,
                 printer,
                 None,
-                &[],
+                &resolved_modules,
                 cfgd_core::reconciler::ReconcileContext::Apply,
                 false,
                 None,

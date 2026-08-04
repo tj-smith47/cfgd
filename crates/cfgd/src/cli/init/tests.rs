@@ -1646,6 +1646,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2173,6 +2174,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2241,6 +2243,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2260,6 +2263,89 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
+    );
+}
+
+// --- apply_plan hands the apply the modules it planned ---
+
+#[test]
+#[serial_test::serial]
+fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
+    // `cfgd init --apply-module` resolved its modules for planning and then gave
+    // the apply an empty slice, so nothing past the plan ever saw them: no
+    // module row was written, and the post-phase env regeneration could not
+    // notice a package manager the same run had bootstrapped — which is why the
+    // demo's `nvim` stayed unreachable after a green apply. The recorded module
+    // row is the cheapest proof the slice arrives.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let (printer, _cap) = Printer::for_test_doc();
+
+    let registry = super::build_registry_with_config(None);
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+
+    let module = cfgd_core::modules::ResolvedModule {
+        name: "demo".to_string(),
+        packages: Vec::new(),
+        files: Vec::new(),
+        env: Vec::new(),
+        aliases: Vec::new(),
+        system: std::collections::HashMap::new(),
+        pre_apply_scripts: Vec::new(),
+        post_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        depends: Vec::new(),
+        dir: dir.path().to_path_buf(),
+        platform_skip_reason: None,
+        origin: None,
+    };
+
+    // A manager no registry can supply: the action is recorded as failed and
+    // skipped, so the apply is a real run that touches nothing on this host.
+    let plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase {
+            name: cfgd_core::reconciler::PhaseName::Packages,
+            actions: vec![cfgd_core::reconciler::Action::Package(
+                cfgd_core::providers::PackageAction::Install {
+                    manager: "no-such-package-manager".to_string(),
+                    packages: vec!["test-pkg".to_string()],
+                    origin: "test".to_string(),
+                },
+            )],
+        }],
+        warnings: Vec::new(),
+    };
+
+    let result = apply_plan(
+        &plan,
+        &reconciler,
+        &resolved,
+        std::slice::from_ref(&module),
+        dir.path(),
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: true,
+            state_dir: Some(&state_dir),
+            scope: cfgd_core::Scope::User,
+        },
+        &printer,
+    );
+    assert!(result.is_ok(), "apply must succeed: {:?}", result.err());
+
+    let recorded = store.module_state_by_name("demo").unwrap();
+    assert!(
+        recorded.is_some(),
+        "the apply must record state for the module it was handed"
     );
 }
 
@@ -2311,6 +2397,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2369,6 +2456,7 @@ fn apply_plan_dry_run_skips_apply() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: true,
