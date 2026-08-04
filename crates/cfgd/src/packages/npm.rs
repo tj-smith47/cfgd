@@ -1257,7 +1257,7 @@ mod tests {
         ///
         /// The shim answers `npm config get prefix` with a RELATIVE path whose
         /// first segment does not exist anywhere under this crate's test CWD
-        /// (`crates/cfgd/`, verified: no `cfgd-round2-nonexistent` entry
+        /// (`crates/cfgd/`, verified: no `cfgd-absent-prefix-root` entry
         /// exists there). `npm_prefix_is_writable` computes
         /// `deepest_existing_ancestor` on `<configured_prefix>/lib/node_modules`;
         /// walking `.parent()` up a chain of nonexistent relative components
@@ -1270,7 +1270,7 @@ mod tests {
         #[serial]
         fn npm_install_and_installed_packages_converge_through_real_composition() {
             let _clear = clear_npm_env_prefix();
-            let configured = Path::new("cfgd-round2-nonexistent/relative-prefix");
+            let configured = Path::new("cfgd-absent-prefix-root/relative-prefix");
             let shim = NpmShim::install(configured, 0, "{}", "");
             let home = tempfile::tempdir().expect("tempdir");
             let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
