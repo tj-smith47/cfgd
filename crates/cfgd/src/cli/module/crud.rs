@@ -243,6 +243,9 @@ pub fn cmd_module_create(
 
     // Apply if requested
     let mut applied = false;
+    // Deferred so the structured payload below still reaches `-o json`
+    // consumers before the process exits nonzero on a failed apply.
+    let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
         printer.heading("Applying Module");
 
@@ -322,7 +325,7 @@ pub fn cmd_module_create(
                 None,
                 &cfgd_core::AbortFlag::new(),
             )?;
-            super::print_apply_result(&result, printer, None);
+            apply_status = super::print_apply_result(&result, printer, None);
             applied = true;
         }
     }
@@ -332,6 +335,17 @@ pub fn cmd_module_create(
         "path": module_dir.display().to_string(),
         "applied": applied,
     })));
+
+    // Same contract as `cfgd apply`: an apply that ran and lost actions must not
+    // report success. Exiting directly (rather than returning an error) keeps
+    // render_cli_error from double-printing a failure line after the per-action
+    // report above.
+    if matches!(
+        apply_status,
+        cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
+    ) {
+        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+    }
 
     Ok(())
 }

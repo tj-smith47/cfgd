@@ -46,7 +46,24 @@ pub(super) fn recorded_manager_path_dirs(
     if named.is_empty() {
         return Vec::new();
     }
+    collect_recorded_path_dirs(state, Some(&named))
+}
 
+/// Every PATH directory cfgd recorded when it bootstrapped a package manager,
+/// with no narrowing to the desired state.
+///
+/// Lifecycle scripts take this unfiltered view where the generated env file
+/// takes the narrowed one. The env file is a durable artifact a login shell
+/// reads forever, so a manager dropped from the config has to age out of it; a
+/// child process's PATH lives for the length of one script, where a directory
+/// belonging to a manager this profile no longer names is inert. Buying the
+/// filter would mean threading the merged profile and the resolved module list
+/// into the drift and on-change paths, which hold neither.
+pub(crate) fn all_recorded_path_dirs(state: &StateStore) -> Vec<String> {
+    collect_recorded_path_dirs(state, None)
+}
+
+fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>) -> Vec<String> {
     let recorded = match state.bootstrapped_path_dirs() {
         Ok(recorded) => recorded,
         // Losing the records degrades to the pre-bootstrap state (no PATH entry)
@@ -59,7 +76,7 @@ pub(super) fn recorded_manager_path_dirs(
 
     let mut dirs: Vec<String> = Vec::new();
     for (manager, manager_dirs) in recorded {
-        if !named.contains(&manager) {
+        if keep.is_some_and(|keep| !keep.contains(&manager)) {
             continue;
         }
         for dir in manager_dirs {

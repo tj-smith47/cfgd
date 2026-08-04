@@ -3805,14 +3805,15 @@ fn plan_scripts_carries_full_entry() {
 
 #[test]
 fn build_script_env_includes_expected_vars() {
-    let env = super::build_script_env(
-        std::path::Path::new("/home/user/.config/cfgd"),
-        "default",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        None,
-        None,
-    );
+    let env = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/home/user/.config/cfgd"),
+        profile_name: "default",
+        context: ReconcileContext::Apply,
+        phase: &ScriptPhase::PreApply,
+        module_name: None,
+        module_dir: None,
+        path_dirs: &[],
+    });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(
         map.get("CFGD_CONFIG_DIR").unwrap(),
@@ -3828,14 +3829,15 @@ fn build_script_env_includes_expected_vars() {
 
 #[test]
 fn build_script_env_includes_module_vars() {
-    let env = super::build_script_env(
-        std::path::Path::new("/config"),
-        "work",
-        ReconcileContext::Reconcile,
-        &ScriptPhase::PostApply,
-        Some("nvim"),
-        Some(std::path::Path::new("/modules/nvim")),
-    );
+    let env = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/config"),
+        profile_name: "work",
+        context: ReconcileContext::Reconcile,
+        phase: &ScriptPhase::PostApply,
+        module_name: Some("nvim"),
+        module_dir: Some(std::path::Path::new("/modules/nvim")),
+        path_dirs: &[],
+    });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "nvim");
     assert_eq!(map.get("CFGD_MODULE_DIR").unwrap(), "/modules/nvim");
@@ -8567,14 +8569,15 @@ fn build_script_env_all_phases() {
     ];
 
     for (phase, expected_name) in &phases_and_expected {
-        let env = super::build_script_env(
-            std::path::Path::new("/etc/cfgd"),
-            "default",
-            ReconcileContext::Apply,
+        let env = super::build_script_env(&ScriptEnvContext {
+            config_dir: std::path::Path::new("/etc/cfgd"),
+            profile_name: "default",
+            context: ReconcileContext::Apply,
             phase,
-            None,
-            None,
-        );
+            module_name: None,
+            module_dir: None,
+            path_dirs: &[],
+        });
         let map: HashMap<String, String> = env.into_iter().collect();
         assert_eq!(
             map.get("CFGD_PHASE").unwrap(),
@@ -8594,28 +8597,30 @@ fn build_script_env_does_not_emit_dry_run() {
     // variable only as part of a full wire-through that threads a real
     // `dry_run` down `Reconciler::apply`. This test guards against
     // accidental re-introduction of the un-wired variable.
-    let env = super::build_script_env(
-        std::path::Path::new("/cfg"),
-        "laptop",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        None,
-        None,
-    );
+    let env = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/cfg"),
+        profile_name: "laptop",
+        context: ReconcileContext::Apply,
+        phase: &ScriptPhase::PreApply,
+        module_name: None,
+        module_dir: None,
+        path_dirs: &[],
+    });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert!(!map.contains_key("CFGD_DRY_RUN"));
 }
 
 #[test]
 fn build_script_env_reconcile_context() {
-    let env = super::build_script_env(
-        std::path::Path::new("/cfg"),
-        "server",
-        ReconcileContext::Reconcile,
-        &ScriptPhase::PostReconcile,
-        None,
-        None,
-    );
+    let env = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/cfg"),
+        profile_name: "server",
+        context: ReconcileContext::Reconcile,
+        phase: &ScriptPhase::PostReconcile,
+        module_name: None,
+        module_dir: None,
+        path_dirs: &[],
+    });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
     assert_eq!(map.get("CFGD_PHASE").unwrap(), "postReconcile");
@@ -8625,14 +8630,15 @@ fn build_script_env_reconcile_context() {
 #[test]
 fn build_script_env_module_name_without_dir() {
     // module_name provided but module_dir is None
-    let env = super::build_script_env(
-        std::path::Path::new("/cfg"),
-        "default",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        Some("zsh"),
-        None,
-    );
+    let env = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/cfg"),
+        profile_name: "default",
+        context: ReconcileContext::Apply,
+        phase: &ScriptPhase::PreApply,
+        module_name: Some("zsh"),
+        module_dir: None,
+        path_dirs: &[],
+    });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "zsh");
     assert!(
@@ -8645,25 +8651,27 @@ fn build_script_env_module_name_without_dir() {
 fn build_script_env_count_base_vars() {
     // Without module info, should have exactly 4 base vars
     // (CFGD_CONFIG_DIR, CFGD_PROFILE, CFGD_CONTEXT, CFGD_PHASE)
-    let env = super::build_script_env(
-        std::path::Path::new("/x"),
-        "p",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        None,
-        None,
-    );
+    let env = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/x"),
+        profile_name: "p",
+        context: ReconcileContext::Apply,
+        phase: &ScriptPhase::PreApply,
+        module_name: None,
+        module_dir: None,
+        path_dirs: &[],
+    });
     assert_eq!(env.len(), 4, "base env should have 4 entries");
 
     // With both module name and dir, should have 6
-    let env_with_module = super::build_script_env(
-        std::path::Path::new("/x"),
-        "p",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        Some("m"),
-        Some(std::path::Path::new("/modules/m")),
-    );
+    let env_with_module = super::build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/x"),
+        profile_name: "p",
+        context: ReconcileContext::Apply,
+        phase: &ScriptPhase::PreApply,
+        module_name: Some("m"),
+        module_dir: Some(std::path::Path::new("/modules/m")),
+        path_dirs: &[],
+    });
     assert_eq!(
         env_with_module.len(),
         6,

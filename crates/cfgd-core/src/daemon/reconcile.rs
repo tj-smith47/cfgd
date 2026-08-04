@@ -474,14 +474,16 @@ pub(crate) fn handle_reconcile(
         if module_filter.is_none() && !resolved.merged.scripts.on_drift.is_empty() {
             let scripts = &resolved.merged.scripts;
             tracing::info!(count = scripts.on_drift.len(), "running onDrift script(s)");
-            let script_env = crate::reconciler::build_script_env(
-                &config_dir,
-                profile_name,
-                crate::reconciler::ReconcileContext::Reconcile,
-                &crate::reconciler::ScriptPhase::OnDrift,
-                None,
-                None,
-            );
+            let script_env =
+                crate::reconciler::build_script_env(&crate::reconciler::ScriptEnvContext {
+                    config_dir: &config_dir,
+                    profile_name,
+                    context: crate::reconciler::ReconcileContext::Reconcile,
+                    phase: &crate::reconciler::ScriptPhase::OnDrift,
+                    module_name: None,
+                    module_dir: None,
+                    path_dirs: &crate::reconciler::all_recorded_path_dirs(&store),
+                });
             let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
             let working = crate::reconciler::script_default_workdir(&config_dir);
             for entry in &scripts.on_drift {
@@ -509,6 +511,7 @@ pub(crate) fn handle_reconcile(
         // Unlike profile onDrift, this fires on per-module ticks too: the plan is
         // already pruned to the filtered module above, so iterating it scopes
         // correctly in both the whole-profile and per-module cases.
+        let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
         for module in &resolved_modules_ref {
             if module.on_drift_scripts.is_empty() || !module_has_drift(&plan, &module.name) {
                 continue;
@@ -519,12 +522,15 @@ pub(crate) fn handle_reconcile(
                 "running module onDrift script(s)"
             );
             let script_env = crate::reconciler::build_module_script_env(
-                &config_dir,
-                profile_name,
-                crate::reconciler::ReconcileContext::Reconcile,
-                &crate::reconciler::ScriptPhase::OnDrift,
-                Some(&module.name),
-                Some(&module.dir),
+                &crate::reconciler::ScriptEnvContext {
+                    config_dir: &config_dir,
+                    profile_name,
+                    context: crate::reconciler::ReconcileContext::Reconcile,
+                    phase: &crate::reconciler::ScriptPhase::OnDrift,
+                    module_name: Some(&module.name),
+                    module_dir: Some(&module.dir),
+                    path_dirs: &drift_script_path_dirs,
+                },
                 &module.env,
             );
             let working = crate::reconciler::script_default_workdir(&config_dir);

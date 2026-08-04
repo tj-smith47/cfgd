@@ -6,7 +6,8 @@ use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, build_module_script_env, execute_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, execute_script,
+    script_default_workdir,
 };
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
 
@@ -50,6 +51,7 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(first) = pkgs.first() {
                     if first.manager == "script" {
                         // Script-based install: run each package's script via execute_script
+                        let path_dirs = super::all_recorded_path_dirs(self.state);
                         for pkg in pkgs {
                             if let Some(ref script_content) = pkg.script {
                                 let profile_name = resolved
@@ -58,12 +60,15 @@ impl<'a> super::Reconciler<'a> {
                                     .map(|l| l.profile_name.as_str())
                                     .unwrap_or("unknown");
                                 let env_vars = build_module_script_env(
-                                    config_dir,
-                                    profile_name,
-                                    context,
-                                    &ScriptPhase::PostApply,
-                                    Some(&action.module_name),
-                                    module_dir.as_deref(),
+                                    &ScriptEnvContext {
+                                        config_dir,
+                                        profile_name,
+                                        context,
+                                        phase: &ScriptPhase::PostApply,
+                                        module_name: Some(&action.module_name),
+                                        module_dir: module_dir.as_deref(),
+                                        path_dirs: &path_dirs,
+                                    },
                                     module_env,
                                 );
                                 // Build a Full entry so the package's idempotency
@@ -262,12 +267,15 @@ impl<'a> super::Reconciler<'a> {
                     .map(|l| l.profile_name.as_str())
                     .unwrap_or("unknown");
                 let env_vars = build_module_script_env(
-                    config_dir,
-                    profile_name,
-                    context,
-                    script_phase,
-                    Some(&action.module_name),
-                    module_dir.as_deref(),
+                    &ScriptEnvContext {
+                        config_dir,
+                        profile_name,
+                        context,
+                        phase: script_phase,
+                        module_name: Some(&action.module_name),
+                        module_dir: module_dir.as_deref(),
+                        path_dirs: &super::all_recorded_path_dirs(self.state),
+                    },
                     module_env,
                 );
 

@@ -38,36 +38,104 @@ fn interactive_disposition(interactive: bool, stdin_is_tty: bool) -> Interactive
     }
 }
 
+/// Prepend PATH directories cfgd recorded when it bootstrapped a package
+/// manager onto a script's process environment.
+///
+/// A manager cfgd installed this run put its binaries somewhere no ancestor of
+/// this process had on PATH, and the generated env file that carries them is
+/// only read by a shell started later — so without this a `postApply` script
+/// that calls the very binary the module just asked for dies with
+/// `command not found`.
+///
+/// Prepending (rather than appending) matches `generate_env_file_content`: a
+/// script and the login shell that follows it must resolve a command the same
+/// way, and cfgd installed the manager's copy on purpose.
+fn prepend_bootstrapped_path_dirs(env: &mut Vec<(String, String)>, path_dirs: &[String]) {
+    if path_dirs.is_empty() {
+        return;
+    }
+    let current = env
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
+
+    let mut merged: Vec<std::path::PathBuf> = Vec::new();
+    for dir in path_dirs {
+        let dir = std::path::PathBuf::from(dir);
+        if !existing.contains(&dir) && !merged.contains(&dir) {
+            merged.push(dir);
+        }
+    }
+    if merged.is_empty() {
+        return;
+    }
+    merged.extend(existing);
+
+    // `join_paths` rejects a directory containing the platform separator, which
+    // would otherwise silently split into two bogus entries. Keeping the
+    // original PATH is the safe answer.
+    let joined = match std::env::join_paths(&merged) {
+        Ok(joined) => joined.to_string_lossy().into_owned(),
+        Err(e) => {
+            tracing::warn!("cannot add bootstrapped PATH directories to script env: {e}");
+            return;
+        }
+    };
+    match env.iter_mut().rev().find(|(k, _)| k == "PATH") {
+        Some(slot) => slot.1 = joined,
+        None => env.push(("PATH".to_string(), joined)),
+    }
+}
+
+/// Everything a lifecycle script's environment is derived from.
+///
+/// A struct rather than a positional argument list: six of the seven fields are
+/// a path, an optional path, or a string, so a transposed pair would compile and
+/// silently mislabel `CFGD_MODULE_DIR` or the profile name.
+pub(crate) struct ScriptEnvContext<'a> {
+    pub config_dir: &'a std::path::Path,
+    pub profile_name: &'a str,
+    pub context: ReconcileContext,
+    pub phase: &'a ScriptPhase,
+    pub module_name: Option<&'a str>,
+    pub module_dir: Option<&'a std::path::Path>,
+    /// PATH entries of package managers cfgd bootstrapped; they land ahead of
+    /// the inherited PATH so a script can reach a binary the same apply just
+    /// installed.
+    pub path_dirs: &'a [String],
+}
+
 /// Build environment variables injected into every script invocation.
-pub(crate) fn build_script_env(
-    config_dir: &std::path::Path,
-    profile_name: &str,
-    context: ReconcileContext,
-    phase: &ScriptPhase,
-    module_name: Option<&str>,
-    module_dir: Option<&std::path::Path>,
-) -> Vec<(String, String)> {
+pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, String)> {
     let mut env = vec![
         (
             "CFGD_CONFIG_DIR".to_string(),
-            config_dir.display().to_string(),
+            ctx.config_dir.display().to_string(),
         ),
-        ("CFGD_PROFILE".to_string(), profile_name.to_string()),
+        ("CFGD_PROFILE".to_string(), ctx.profile_name.to_string()),
         (
             "CFGD_CONTEXT".to_string(),
-            match context {
+            match ctx.context {
                 ReconcileContext::Apply => "apply".to_string(),
                 ReconcileContext::Reconcile => "reconcile".to_string(),
             },
         ),
-        ("CFGD_PHASE".to_string(), phase.display_name().to_string()),
+        (
+            "CFGD_PHASE".to_string(),
+            ctx.phase.display_name().to_string(),
+        ),
     ];
-    if let Some(name) = module_name {
+    if let Some(name) = ctx.module_name {
         env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
     }
-    if let Some(dir) = module_dir {
+    if let Some(dir) = ctx.module_dir {
         env.push(("CFGD_MODULE_DIR".to_string(), dir.display().to_string()));
     }
+    prepend_bootstrapped_path_dirs(&mut env, ctx.path_dirs);
     env
 }
 
@@ -77,22 +145,10 @@ pub(crate) fn build_script_env(
 /// CFGD_* names in `spec.env` are silently dropped: runtime-injected metadata
 /// must not be shadowed by user-supplied values.
 pub(crate) fn build_module_script_env(
-    config_dir: &std::path::Path,
-    profile_name: &str,
-    context: ReconcileContext,
-    phase: &ScriptPhase,
-    module_name: Option<&str>,
-    module_dir: Option<&std::path::Path>,
+    ctx: &ScriptEnvContext<'_>,
     module_env: &[crate::config::EnvVar],
 ) -> Vec<(String, String)> {
-    let mut env = build_script_env(
-        config_dir,
-        profile_name,
-        context,
-        phase,
-        module_name,
-        module_dir,
-    );
+    let mut env = build_script_env(ctx);
     // Expand `$VAR`/`${VAR}` in each declared value before injecting it into the
     // process environment: no shell is present here to do it, so a literal
     // `PATH: ...:$PATH` would overwrite PATH with garbage and the interpreter

@@ -118,6 +118,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
+    // Deferred so the structured-output anchor below still reaches `-o json`
+    // consumers before the process exits nonzero on a failed apply.
+    let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if should_apply {
         let config_path = target_dir.join("cfgd.yaml");
         let profiles_dir = target_dir.join("profiles");
@@ -170,7 +173,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 cfgd_core::reconciler::ReconcileContext::Apply,
             )?;
 
-            apply_plan(
+            apply_status = apply_plan(
                 &plan,
                 &reconciler,
                 &resolved,
@@ -281,7 +284,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 cfgd_core::reconciler::ReconcileContext::Apply,
             )?;
 
-            apply_plan(
+            apply_status = apply_plan(
                 &plan,
                 &reconciler,
                 &resolved,
@@ -356,6 +359,18 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         Doc::new().with_data(&output)
     };
     printer.emit(doc);
+
+    // Same contract as `cfgd apply`: an apply that ran and lost actions must not
+    // report success, or a one-command bootstrap ends on a shell prompt with
+    // exit 0 and half a machine. Exiting directly (rather than returning an
+    // error) keeps render_cli_error from double-printing a failure line after
+    // the per-action report above.
+    if matches!(
+        apply_status,
+        cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
+    ) {
+        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+    }
 
     Ok(())
 }
@@ -440,6 +455,12 @@ pub(super) struct ApplyPlanOpts<'a> {
 }
 
 /// Show plan, prompt for confirmation, and apply.
+///
+/// Returns the resulting [`ApplyStatus`] so the caller can map a partial or
+/// total failure to a nonzero process exit, the same way `cfgd apply` does.
+/// The terminal paths that run no actions (nothing to do, dry-run, declined
+/// confirmation) report [`ApplyStatus::Success`]: nothing failed because
+/// nothing ran.
 pub(super) fn apply_plan(
     plan: &cfgd_core::reconciler::Plan,
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
@@ -448,18 +469,18 @@ pub(super) fn apply_plan(
     config_dir: &Path,
     opts: ApplyPlanOpts<'_>,
     printer: &Printer,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
     let total = plan.total_actions();
     if total == 0 {
         printer.status_simple(Role::Ok, "Nothing to do — system is already configured");
-        return Ok(());
+        return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
     super::display_plan_table(plan, printer, None);
     printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
     if opts.dry_run {
-        return Ok(());
+        return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
     if !opts.yes {
@@ -468,7 +489,7 @@ pub(super) fn apply_plan(
             .unwrap_or(false);
         if !confirmed {
             printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
-            return Ok(());
+            return Ok(cfgd_core::state::ApplyStatus::Success);
         }
     }
 
@@ -492,8 +513,7 @@ pub(super) fn apply_plan(
         None,
         &cfgd_core::AbortFlag::new(),
     )?;
-    super::print_apply_result(&result, printer, None);
-    Ok(())
+    Ok(super::print_apply_result(&result, printer, None))
 }
 
 /// Interactively pick a profile from the profiles directory.

@@ -12,8 +12,8 @@ use super::format::{
 };
 use super::restore::action_target_path;
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, effective_continue_on_error,
-    execute_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, build_script_env,
+    effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
     Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, PhaseName, Plan,
@@ -546,14 +546,15 @@ impl<'a> super::Reconciler<'a> {
                 .last()
                 .map(|l| l.profile_name.as_str())
                 .unwrap_or("unknown");
-            let env_vars = build_script_env(
+            let env_vars = build_script_env(&ScriptEnvContext {
                 config_dir,
                 profile_name,
                 context,
-                &ScriptPhase::OnChange,
-                None,
-                None,
-            );
+                phase: &ScriptPhase::OnChange,
+                module_name: None,
+                module_dir: None,
+                path_dirs: &super::all_recorded_path_dirs(self.state),
+            });
             let working = script_default_workdir(config_dir);
             for entry in &resolved.merged.scripts.on_change {
                 match execute_script(
@@ -600,6 +601,7 @@ impl<'a> super::Reconciler<'a> {
                 .last()
                 .map(|l| l.profile_name.as_str())
                 .unwrap_or("unknown");
+            let path_dirs = super::all_recorded_path_dirs(self.state);
             for module in module_actions {
                 if module.on_change_scripts.is_empty() {
                     continue;
@@ -612,12 +614,15 @@ impl<'a> super::Reconciler<'a> {
                     continue;
                 }
                 let env_vars = build_module_script_env(
-                    config_dir,
-                    profile_name,
-                    context,
-                    &ScriptPhase::OnChange,
-                    Some(&module.name),
-                    Some(&module.dir),
+                    &ScriptEnvContext {
+                        config_dir,
+                        profile_name,
+                        context,
+                        phase: &ScriptPhase::OnChange,
+                        module_name: Some(&module.name),
+                        module_dir: Some(&module.dir),
+                        path_dirs: &path_dirs,
+                    },
                     &module.env,
                 );
                 let working = script_default_workdir(config_dir);

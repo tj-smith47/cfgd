@@ -20,12 +20,15 @@ fn module_env_vars_propagated_to_script_env() {
         fake_env_var("GOPATH", "/foo"),
     ];
     let env = build_module_script_env(
-        &fake_config_dir(),
-        "workstation",
-        ReconcileContext::Apply,
-        &ScriptPhase::PostApply,
-        Some("nvim"),
-        None,
+        &ScriptEnvContext {
+            config_dir: &fake_config_dir(),
+            profile_name: "workstation",
+            context: ReconcileContext::Apply,
+            phase: &ScriptPhase::PostApply,
+            module_name: Some("nvim"),
+            module_dir: None,
+            path_dirs: &[],
+        },
         &module_env,
     );
 
@@ -56,12 +59,15 @@ fn module_env_values_expand_dollar_refs() {
         fake_env_var("BAZ", "a${S84_DEFINITELY_UNSET}b"),
     ];
     let env = build_module_script_env(
-        &fake_config_dir(),
-        "workstation",
-        ReconcileContext::Apply,
-        &ScriptPhase::PostApply,
-        Some("nvim"),
-        None,
+        &ScriptEnvContext {
+            config_dir: &fake_config_dir(),
+            profile_name: "workstation",
+            context: ReconcileContext::Apply,
+            phase: &ScriptPhase::PostApply,
+            module_name: Some("nvim"),
+            module_dir: None,
+            path_dirs: &[],
+        },
         &module_env,
     );
     let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
@@ -84,12 +90,15 @@ fn module_env_values_expand_leading_tilde() {
             fake_env_var("MIXED", "~/bin:/usr/bin:~/x"),
         ];
         let env = build_module_script_env(
-            &fake_config_dir(),
-            "workstation",
-            ReconcileContext::Apply,
-            &ScriptPhase::PostApply,
-            Some("clift"),
-            None,
+            &ScriptEnvContext {
+                config_dir: &fake_config_dir(),
+                profile_name: "workstation",
+                context: ReconcileContext::Apply,
+                phase: &ScriptPhase::PostApply,
+                module_name: Some("clift"),
+                module_dir: None,
+                path_dirs: &[],
+            },
             &module_env,
         );
         let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
@@ -394,23 +403,146 @@ fn execute_script_return_value_preserves_raw_multiline_body() {
 
 // build_module_script_env: empty module env produces the same output as
 // build_script_env (no regressions for modules without spec.env).
+fn joined(dirs: &[&str]) -> String {
+    std::env::join_paths(dirs)
+        .expect("test fixture dirs are joinable")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn path_of(env: &[(String, String)]) -> Option<&str> {
+    env.iter()
+        .rev()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.as_str())
+}
+
+// No bootstrapped manager means the script env is byte-identical to what it was
+// before this feature existed: no PATH entry appears at all.
+#[test]
+#[serial_test::serial]
+fn no_bootstrapped_dirs_leaves_path_absent() {
+    let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
+    let mut env: Vec<(String, String)> = Vec::new();
+    super::prepend_bootstrapped_path_dirs(&mut env, &[]);
+    assert!(env.is_empty());
+}
+
+// The bootstrapped prefix lands AHEAD of the inherited PATH, matching what
+// `generate_env_file_content` writes for the login shell that follows.
+#[test]
+#[serial_test::serial]
+fn bootstrapped_dirs_prepend_to_inherited_path() {
+    let inherited = joined(&["/usr/bin", "/bin"]);
+    let _g = crate::test_helpers::EnvVarGuard::set("PATH", &inherited);
+    let mut env: Vec<(String, String)> = Vec::new();
+    super::prepend_bootstrapped_path_dirs(
+        &mut env,
+        &["/home/linuxbrew/.linuxbrew/bin".to_string()],
+    );
+    assert_eq!(
+        path_of(&env),
+        Some(joined(&["/home/linuxbrew/.linuxbrew/bin", "/usr/bin", "/bin"]).as_str())
+    );
+}
+
+// A prefix already on PATH must not be duplicated, and if every recorded
+// directory is already there the PATH entry is not written at all — a
+// re-apply on a converged machine changes nothing.
+#[test]
+#[serial_test::serial]
+fn already_present_dir_is_not_duplicated() {
+    let inherited = joined(&["/opt/brew/bin", "/usr/bin"]);
+    let _g = crate::test_helpers::EnvVarGuard::set("PATH", &inherited);
+    let mut env: Vec<(String, String)> = Vec::new();
+    super::prepend_bootstrapped_path_dirs(&mut env, &["/opt/brew/bin".to_string()]);
+    assert!(env.is_empty());
+
+    let mut env: Vec<(String, String)> = Vec::new();
+    super::prepend_bootstrapped_path_dirs(
+        &mut env,
+        &["/opt/brew/bin".to_string(), "/opt/npm/bin".to_string()],
+    );
+    assert_eq!(
+        path_of(&env),
+        Some(joined(&["/opt/npm/bin", "/opt/brew/bin", "/usr/bin"]).as_str())
+    );
+}
+
+// A PATH already in the env vec — the value a caller assembled, not the one this
+// process inherited — is what the bootstrapped directories extend.
+#[test]
+#[serial_test::serial]
+fn existing_env_path_entry_is_the_base() {
+    let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/inherited"]));
+    let mut env = vec![("PATH".to_string(), joined(&["/caller/bin"]))];
+    super::prepend_bootstrapped_path_dirs(&mut env, &["/opt/brew/bin".to_string()]);
+    assert_eq!(env.len(), 1, "the PATH slot is replaced, not appended to");
+    assert_eq!(
+        path_of(&env),
+        Some(joined(&["/opt/brew/bin", "/caller/bin"]).as_str())
+    );
+}
+
+// A recorded directory containing the platform separator cannot be joined back
+// into a PATH; the inherited value survives untouched rather than splitting into
+// two bogus entries.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn unjoinable_dir_leaves_path_untouched() {
+    let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
+    let mut env = vec![("PATH".to_string(), "/caller/bin".to_string())];
+    super::prepend_bootstrapped_path_dirs(&mut env, &["/opt/a:b/bin".to_string()]);
+    assert_eq!(path_of(&env), Some("/caller/bin"));
+}
+
+// The dirs reach a module script through build_module_script_env, and a module's
+// own `PATH: ...:$PATH` expands against the merged value rather than dropping it.
+#[test]
+#[serial_test::serial]
+fn module_env_path_expands_against_bootstrapped_dirs() {
+    let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
+    let module_env = vec![fake_env_var("PATH", "/mod/bin:$PATH")];
+    let env = build_module_script_env(
+        &ScriptEnvContext {
+            config_dir: &fake_config_dir(),
+            profile_name: "workstation",
+            context: ReconcileContext::Apply,
+            phase: &ScriptPhase::PostApply,
+            module_name: Some("nvim"),
+            module_dir: None,
+            path_dirs: &["/home/linuxbrew/.linuxbrew/bin".to_string()],
+        },
+        &module_env,
+    );
+    assert_eq!(
+        path_of(&env),
+        Some(joined(&["/mod/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/bin"]).as_str())
+    );
+}
+
 #[test]
 fn empty_module_env_matches_base_build_script_env() {
-    let base = build_script_env(
-        &fake_config_dir(),
-        "workstation",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        Some("mymod"),
-        None,
-    );
+    let base = build_script_env(&ScriptEnvContext {
+        config_dir: &fake_config_dir(),
+        profile_name: "workstation",
+        context: ReconcileContext::Apply,
+        phase: &ScriptPhase::PreApply,
+        module_name: Some("mymod"),
+        module_dir: None,
+        path_dirs: &[],
+    });
     let with_empty = build_module_script_env(
-        &fake_config_dir(),
-        "workstation",
-        ReconcileContext::Apply,
-        &ScriptPhase::PreApply,
-        Some("mymod"),
-        None,
+        &ScriptEnvContext {
+            config_dir: &fake_config_dir(),
+            profile_name: "workstation",
+            context: ReconcileContext::Apply,
+            phase: &ScriptPhase::PreApply,
+            module_name: Some("mymod"),
+            module_dir: None,
+            path_dirs: &[],
+        },
         &[],
     );
     assert_eq!(base, with_empty);
@@ -1358,14 +1490,15 @@ fn resolve_script_workdir_expands_vars_then_tilde() {
 // None (scripts.rs:57-70).
 #[test]
 fn build_script_env_reconcile_context_and_module_dir() {
-    let env = build_script_env(
-        std::path::Path::new("/cfg"),
-        "node",
-        ReconcileContext::Reconcile,
-        &ScriptPhase::OnDrift,
-        None,
-        Some(std::path::Path::new("/mods/x")),
-    );
+    let env = build_script_env(&ScriptEnvContext {
+        config_dir: std::path::Path::new("/cfg"),
+        profile_name: "node",
+        context: ReconcileContext::Reconcile,
+        phase: &ScriptPhase::OnDrift,
+        module_name: None,
+        module_dir: Some(std::path::Path::new("/mods/x")),
+        path_dirs: &[],
+    });
     let lookup = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
 
     assert_eq!(lookup("CFGD_CONTEXT"), Some("reconcile"));

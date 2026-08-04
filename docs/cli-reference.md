@@ -863,7 +863,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
 | `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
-| `7` | `apply` ran but at least one action failed (partial or total). | `cfgd apply` when one or more actions fail. |
+| `7` | An apply ran but at least one action failed (partial or total). | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module add --apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
 
