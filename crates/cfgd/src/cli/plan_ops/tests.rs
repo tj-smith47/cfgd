@@ -1302,18 +1302,22 @@ fn shell_env_reminder_names_the_written_env_file() {
 }
 
 #[test]
+#[serial_test::serial]
 fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
     // The env engine emits the PowerShell file BEFORE the Git Bash one, so a
     // first-match-wins pick would name `.cfgd-env.ps1` here. This host is a
     // POSIX shell, so the reminder must reach past the leading candidate.
-    let result = env_apply_result(&[
-        "env:write:/home/u/.cfgd-env.ps1",
-        "env:write:/home/u/.cfgd.env",
-    ]);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    let tmp = tempfile::tempdir().unwrap();
+    let out = cfgd_core::with_test_home(tmp.path(), || {
+        let result = env_apply_result(&[
+            "env:write:/home/u/.cfgd-env.ps1",
+            "env:write:/home/u/.cfgd.env",
+        ]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        print_shell_env_reminder(&result, &printer);
+        buf.lock().unwrap().clone()
+    });
 
-    let out = buf.lock().unwrap().clone();
     assert!(
         out.contains("- run: source /home/u/.cfgd.env"),
         "expected the shell-matching file, got: {out}"
