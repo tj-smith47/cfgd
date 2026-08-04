@@ -32,12 +32,35 @@ pub(super) struct NpmPrefixDecision {
     pub(super) is_fallback: bool,
 }
 
+impl NpmPrefixDecision {
+    /// The prefix to apply on argv/notice — `Some` only when the resolver
+    /// fell back, since a writable configured prefix needs no argv change
+    /// and no notice at all. The single condition `apply_prefix_flag` and
+    /// `install()`'s notice branch both key off, so the two can never fire
+    /// out of step with each other.
+    pub(super) fn fallback_prefix(&self) -> Option<&Path> {
+        if self.is_fallback {
+            self.prefix.as_deref()
+        } else {
+            None
+        }
+    }
+}
+
 /// Resolve the global-install prefix for the current process (real
 /// `is_root()`). See [`resolve_npm_prefix_for`] for the decision logic;
 /// split out so tests can drive the elevated/unelevated branches directly
 /// without needing real root privileges.
 pub(super) fn resolve_npm_prefix() -> Result<NpmPrefixDecision> {
     resolve_npm_prefix_for(cfgd_core::is_root())
+}
+
+/// [`resolve_npm_prefix_with`] wired to the real write-probe
+/// ([`npm_prefix_is_writable`]) — the production entry point for a given
+/// elevation state. Split out so tests can drive `elevated` directly without
+/// needing real root privileges.
+pub(super) fn resolve_npm_prefix_for(elevated: bool) -> Result<NpmPrefixDecision> {
+    resolve_npm_prefix_with(elevated, npm_prefix_is_writable)
 }
 
 /// Decide whether cfgd should point npm at a prefix of its own choosing.
@@ -47,11 +70,20 @@ pub(super) fn resolve_npm_prefix() -> Result<NpmPrefixDecision> {
 ///    override it.
 /// 2. An elevated process can write npm's system prefix; overriding it would
 ///    install into cfgd's (root's) home instead, so leave it alone too.
-/// 3. Otherwise, ask npm for its configured prefix and write-probe it. A
-///    writable answer is used as-is (no argv change — the working case stays
-///    untouched). An unwritable or undeterminable answer falls back to
-///    `$HOME/.npm-global`, created if absent.
-pub(super) fn resolve_npm_prefix_for(elevated: bool) -> Result<NpmPrefixDecision> {
+/// 3. Otherwise, ask npm for its configured prefix and consult `is_writable`
+///    for it. A writable answer is used as-is (no argv change — the working
+///    case stays untouched). An unwritable or undeterminable answer falls
+///    back to `$HOME/.npm-global`, created if absent.
+///
+/// `is_writable` is injected rather than this function calling
+/// [`npm_prefix_is_writable`] itself, so a caller can force the fallback
+/// branch deterministically: a root process bypasses Unix DAC checks
+/// entirely, so the real probe can never observe an unwritable directory
+/// there.
+pub(super) fn resolve_npm_prefix_with(
+    elevated: bool,
+    is_writable: impl Fn(&Path) -> bool,
+) -> Result<NpmPrefixDecision> {
     if npm_env_prefix_set() || elevated {
         return Ok(NpmPrefixDecision {
             prefix: None,
@@ -60,7 +92,7 @@ pub(super) fn resolve_npm_prefix_for(elevated: bool) -> Result<NpmPrefixDecision
     }
 
     match npm_configured_prefix()? {
-        Some(prefix) if npm_prefix_is_writable(&prefix) => Ok(NpmPrefixDecision {
+        Some(prefix) if is_writable(&prefix) => Ok(NpmPrefixDecision {
             prefix: Some(prefix),
             is_fallback: false,
         }),
@@ -162,7 +194,13 @@ pub(super) fn npm_prefix_is_writable(prefix: &Path) -> bool {
     let probe = ancestor.join(nonce);
     match std::fs::File::create(&probe) {
         Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
+            if let Err(e) = std::fs::remove_file(&probe) {
+                tracing::warn!(
+                    error = %e,
+                    probe = %probe.display(), // native-ok: log line, not a persisted key
+                    "failed to remove npm write-probe file"
+                );
+            }
             true
         }
         Err(_) => false,
@@ -226,10 +264,23 @@ pub(super) fn npm_cmd() -> Command {
 /// fallback prefix — a writable configured prefix needs no argv change at
 /// all, keeping the working case identical to before this resolver existed.
 pub(super) fn apply_prefix_flag(cmd: &mut Command, decision: &NpmPrefixDecision) {
-    if decision.is_fallback
-        && let Some(ref prefix) = decision.prefix
-    {
+    if let Some(prefix) = decision.fallback_prefix() {
         cmd.arg("--prefix").arg(prefix);
+    }
+}
+
+/// [`PackageManager::path_dirs`] for npm, with `elevated` injected for the
+/// same reason as [`resolve_npm_prefix_for`]: `resolve_npm_prefix()`
+/// short-circuits under `is_root()` regardless of the configured prefix's
+/// own writability, so a root-running test needs a way to bypass that branch
+/// to exercise the mapping below it.
+pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
+    match resolve_npm_prefix_for(elevated) {
+        Ok(NpmPrefixDecision {
+            prefix: Some(prefix),
+            ..
+        }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
+        _ => Vec::new(),
     }
 }
 
@@ -243,13 +294,7 @@ impl PackageManager for NpmManager {
     }
 
     fn path_dirs(&self) -> Vec<String> {
-        match resolve_npm_prefix() {
-            Ok(NpmPrefixDecision {
-                prefix: Some(prefix),
-                ..
-            }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
-            _ => Vec::new(),
-        }
+        npm_path_dirs_for(cfgd_core::is_root())
     }
 
     fn can_bootstrap(&self) -> bool {
@@ -312,9 +357,7 @@ impl PackageManager for NpmManager {
             return Ok(());
         }
         let decision = resolve_npm_prefix()?;
-        if decision.is_fallback
-            && let Some(ref prefix) = decision.prefix
-        {
+        if let Some(prefix) = decision.fallback_prefix() {
             printer.status_simple(
                 Role::Info,
                 format!(
@@ -1065,85 +1108,139 @@ mod tests {
         /// leaving a 0o555 directory around outlives the guarantee this test
         /// relies on to clean up after itself.
         fn set_writable(path: &Path, writable: bool) {
-            use std::os::unix::fs::PermissionsExt;
             let mode = if writable { 0o755 } else { 0o555 };
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-                .expect("chmod probe dir");
-        }
-
-        /// Pull the single token immediately following `--prefix` out of a
-        /// space-joined argv line.
-        fn prefix_value(argv_line: &str) -> String {
-            let tokens: Vec<&str> = argv_line.split_whitespace().collect();
-            let idx = tokens
-                .iter()
-                .position(|&t| t == "--prefix")
-                .expect("--prefix token present");
-            tokens[idx + 1].to_string()
+            cfgd_core::set_file_permissions(path, mode).expect("chmod probe dir");
         }
 
         #[test]
         #[serial]
         fn npm_install_uses_fallback_prefix_on_argv_when_configured_prefix_unwritable() {
-            // Root bypasses the DAC write-probe entirely (root can always
-            // create the probe file), so the unwritable scenario this test
-            // constructs cannot exist under root — matches the guard used
-            // throughout this codebase's other permission-probe tests.
-            if cfgd_core::is_root() {
-                return;
-            }
+            // The decision is driven directly via `resolve_npm_prefix_with`
+            // with `is_writable` forced to `false`, so this runs for real at
+            // any uid — a root process bypasses the real write-probe (see
+            // npm_prefix_is_writable_returns_false_for_unwritable_directory
+            // for the one place that genuinely needs a root guard).
             let _clear = clear_npm_env_prefix();
-            let unwritable = tempfile::tempdir().expect("tempdir");
-            set_writable(unwritable.path(), false);
+            let rejected = tempfile::tempdir().expect("tempdir");
             let home = tempfile::tempdir().expect("tempdir");
-            let s = NpmShim::install(unwritable.path(), 0, "", "");
-            let p = test_printer();
-            cfgd_core::with_test_home(home.path(), || {
-                NpmManager.install(&["typescript".into()], &p).expect("Ok");
-            });
-            set_writable(unwritable.path(), true);
-            let argv = s.argv_log();
+            let _shim = NpmShim::install(rejected.path(), 0, "", "");
+            let decision = cfgd_core::with_test_home(home.path(), || {
+                resolve_npm_prefix_with(false, |_| false)
+            })
+            .expect("Ok");
             assert!(
-                argv.contains("--prefix"),
-                "an unwritable configured prefix must fall back onto argv: {argv}"
+                decision.is_fallback,
+                "an unwritable configured prefix must resolve to the fallback branch"
             );
-            assert!(
-                !argv.contains(unwritable.path().to_str().expect("utf8 tempdir path")),
-                "the rejected unwritable prefix must never itself land on argv: {argv}"
+
+            let mut cmd = npm_cmd();
+            apply_prefix_flag(&mut cmd, &decision);
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                args,
+                vec![
+                    "--prefix".to_string(),
+                    decision
+                        .prefix
+                        .as_deref()
+                        .expect("fallback decision carries a prefix")
+                        .to_string_lossy()
+                        .into_owned(),
+                ],
+                "an unwritable configured prefix must fall back onto argv: {args:?}"
+            );
+            assert_ne!(
+                args[1],
+                rejected.path().to_string_lossy(),
+                "the rejected unwritable prefix must never itself land on argv"
             );
         }
 
         #[test]
         #[serial]
         fn npm_install_and_installed_packages_resolve_to_same_fallback_prefix() {
+            // Same root-independence rationale as the test above: forces
+            // both resolutions into the fallback branch via the injected
+            // `is_writable` predicate instead of a real unwritable directory.
+            let _clear = clear_npm_env_prefix();
+            let rejected = tempfile::tempdir().expect("tempdir");
+            let home = tempfile::tempdir().expect("tempdir");
+            let _shim = NpmShim::install(rejected.path(), 0, "{}", "");
+            let (install_side, listing_side) = cfgd_core::with_test_home(home.path(), || {
+                (
+                    resolve_npm_prefix_with(false, |_| false),
+                    resolve_npm_prefix_with(false, |_| false),
+                )
+            });
+            let install_side = install_side.expect("install-side resolve Ok");
+            let listing_side = listing_side.expect("installed_packages-side resolve Ok");
+            assert!(
+                install_side.is_fallback && listing_side.is_fallback,
+                "both resolutions must land in the fallback branch: {install_side:?} / {listing_side:?}"
+            );
+            assert_eq!(
+                install_side, listing_side,
+                "install and installed_packages must resolve to the identical \
+                 fallback prefix — divergence here means state never converges"
+            );
+        }
+
+        #[test]
+        fn npm_prefix_is_writable_returns_false_for_unwritable_directory() {
+            // The write-probe performs a real filesystem write, and root
+            // bypasses Unix DAC permission checks entirely, so an unwritable
+            // directory cannot be constructed under root. This is the one
+            // legitimate root guard left in this file: it tests the probe's
+            // own boundary, not the decision logic above it (see
+            // resolve_npm_prefix_with for how that is tested at any uid).
             if cfgd_core::is_root() {
                 return;
             }
-            let _clear = clear_npm_env_prefix();
-            let unwritable = tempfile::tempdir().expect("tempdir");
-            set_writable(unwritable.path(), false);
-            let home = tempfile::tempdir().expect("tempdir");
-            let s = NpmShim::install(unwritable.path(), 0, "{}", "");
-            let p = test_printer();
-            cfgd_core::with_test_home(home.path(), || {
-                NpmManager
-                    .install(&["typescript".into()], &p)
-                    .expect("install Ok");
-                NpmManager.installed_packages().expect("list Ok");
-            });
-            set_writable(unwritable.path(), true);
-            let argv = s.argv_log();
-            let prefix_lines: Vec<&str> = argv.lines().filter(|l| l.contains("--prefix")).collect();
-            assert_eq!(
-                prefix_lines.len(),
-                2,
-                "both install and installed_packages must carry --prefix: {argv}"
+            let dir = tempfile::tempdir().expect("tempdir");
+            set_writable(dir.path(), false);
+            let writable = npm_prefix_is_writable(dir.path());
+            set_writable(dir.path(), true);
+            assert!(
+                !writable,
+                "a chmod 0o555 directory must fail the write-probe"
             );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_path_dirs_reports_configured_prefix_bin_dir_when_writable() {
+            let _clear = clear_npm_env_prefix();
+            let (_shim, prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
+            let dirs = npm_path_dirs_for(false);
             assert_eq!(
-                prefix_value(prefix_lines[0]),
-                prefix_value(prefix_lines[1]),
-                "install and installed_packages must resolve to the identical \
-                 fallback prefix — divergence here means state never converges: {argv}"
+                dirs,
+                vec![cfgd_core::to_posix_string(npm_bin_dir(prefix_dir.path()))],
+                "path_dirs must report the writable configured prefix's bin dir"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_path_dirs_reports_fallback_prefix_bin_dir_when_configured_prefix_missing() {
+            let _clear = clear_npm_env_prefix();
+            let home = tempfile::tempdir().expect("tempdir");
+            // Empty stdout for `config get prefix` makes npm_configured_prefix()
+            // return Ok(None), landing in the fallback branch without ever
+            // invoking the write-probe — root-independent by construction.
+            let _shim = NpmShim::install(Path::new(""), 0, "", "");
+            let (dirs, fallback) = cfgd_core::with_test_home(home.path(), || {
+                (
+                    npm_path_dirs_for(false),
+                    cfgd_core::expand_tilde(Path::new("~/.npm-global")),
+                )
+            });
+            assert_eq!(
+                dirs,
+                vec![cfgd_core::to_posix_string(npm_bin_dir(&fallback))],
+                "path_dirs must report the fallback prefix's bin dir when npm has no usable configured prefix"
             );
         }
 
