@@ -1,12 +1,11 @@
 # Pinned (not `latest`): the demo depends on this distro's glibc (2.39, the
-# floor above which Homebrew stops installing its own copy) and apt's Ruby
-# (3.2, above solargraph's 3.1 floor) — a floating tag could land a point
-# release that regresses either and silently reintroduce the bug this rebase
-# fixes. The old base was pinned to `latest` for the opposite reason: it
-# tracked Homebrew's own evolving formula index, which a pinned digest would
-# go stale against immediately. This image ships none of Homebrew at all —
-# cfgd bootstraps it live during the recorded apply — so only Ubuntu's
-# packages and glibc need to stay put.
+# floor above which Homebrew stops installing its own copy) and on apt's Ruby
+# (3.2, above solargraph's 3.1 floor). A floating tag can land a point release
+# that regresses either, and the resulting take fails halfway through the
+# recording rather than at the start of it. Nothing here tracks Homebrew's
+# formula index, which
+# a pin would go stale against — this image ships none of Homebrew at all,
+# cfgd bootstraps it live during the recorded apply.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -62,6 +61,11 @@ ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
     HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
     HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
     HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+
+# The image pins one cfgd build forever, so its update check can only ever say
+# "a newer cfgd exists" — an upgrade nag on camera that has nothing to do with
+# what the recording demonstrates.
+ENV CFGD_NO_UPDATE_CHECK=1
 
 # cfgd enters as a prebuilt host binary, never built in-container: building
 # Rust here would add a toolchain and minutes of compile time the demo has no

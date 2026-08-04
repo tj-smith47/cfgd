@@ -568,6 +568,50 @@ tasks:
       - tar -czf "cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz" -C target/release cfgd
       - echo "Built{{":"}} cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz"
 
+  # --- Demo ---
+
+  demo:
+    desc: Re-record the README demo end to end (binary, image, VHS take, GIF).
+    cmds:
+      - task: demo:image
+      - task: demo:record
+      - task: demo:gif
+
+  demo:binary:
+    desc: Build the statically-linked cfgd the demo image copies in.
+    cmds:
+      # musl, not the default gnu target: the demo image is Ubuntu 24.04 (glibc
+      # 2.39) and this host is newer, so a dynamically-linked build refuses to
+      # start in the container. Same artifact the release pipeline ships.
+      #
+      # zigbuild, not plain cargo build: ring compiles C, and there is no
+      # x86_64-linux-musl-gcc on this host — zig supplies the cross C toolchain,
+      # exactly as the nightly cross-compile job does.
+      - cargo zigbuild --release --target x86_64-unknown-linux-musl --bin cfgd
+      - install -D -m 0755 target/x86_64-unknown-linux-musl/release/cfgd demo/bin/cfgd
+
+  demo:image:
+    desc: Build the bare Ubuntu image the tape records against.
+    deps: [demo:binary]
+    cmds:
+      - docker build -f demo/Dockerfile -t cfgd-demo:latest .
+
+  demo:record:
+    desc: Run the VHS tape, producing demo/.out/raw.mp4.
+    preconditions:
+      # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
+      # font VHS still exits 0 and records a take full of tofu boxes.
+      - sh: fc-list | grep -qi 'JetBrainsMono Nerd Font'
+        msg: "JetBrainsMono Nerd Font is not installed — the take would record tofu boxes instead of LazyVim's glyphs."
+    cmds:
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh
+
+  demo:gif:
+    desc: Ramp the raw take into the README GIF (1:1 at both ends, fast in the middle).
+    cmds:
+      - bash demo/scripts/make-gif.sh
+
   # --- Deploy ---
 
   deploy:operator:

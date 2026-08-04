@@ -12,6 +12,10 @@ Declare your entire machine — packages, dotfiles, system settings, secrets —
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tj-smith47/cfgd/badges/coverage.json)](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+<img src="https://raw.githubusercontent.com/tj-smith47/cfgd/master/demo/cfgd-demo.gif" width="900" alt="cfgd installing a Neovim setup on a bare Ubuntu container in one command">
+
+*A bare `ubuntu:24.04` container with no Neovim, no Homebrew and no config. One `cfgd init` later, `nvim` opens a fully configured LazyVim. Recorded with [VHS](https://github.com/charmbracelet/vhs) — `task demo` reproduces it.*
+
 </div>
 
 > **Status:** Alpha — APIs may change.

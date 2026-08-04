@@ -44,7 +44,15 @@ Type "cfgd init --from https://github.com/tj-smith47/cfgd-config.git --apply-mod
 Sleep 700ms
 Enter
 # apt + brew + rustup + Lazy/Mason/treesitter bootstrap; minutes, not seconds.
-Wait@30m /cfgd\$$/
+# The ceiling has to clear the module's own worst case, or vhs gives up
+# mid-provision and records a truncated run instead of the failure the module
+# would have reported. The nvim module's postApply steps allot 50m between them
+# (120s + 900s + 600s + 900s + 300s + 180s) and the package phase ahead of them
+# has measured ~6m, so 60m covers a run where every step burns its whole budget.
+# A healthy take spends nowhere near it: the take this GIF was cut from ran
+# 7m12s end to end, with MasonToolsInstallSync — the step the ceiling was
+# sized around — returning in 70s.
+Wait@60m /cfgd\$$/
 # Long enough to read the apply summary before the alt screen covers it. It does
 # not settle the file tree: nvim-tree's first scan still loses its race about
 # half the time and paints an empty pane, which no amount of waiting here fixes.
@@ -56,7 +64,12 @@ Enter
 # empty pane; waiting on real tree content turns a bad take into a hard
 # failure instead of a silently-wrong GIF.
 Wait+Screen@20s /Cargo\.toml/
-Sleep 8s
+# The first interactive start raises notifications that cover half the editor.
+# They expire on their own, so this settles the screen rather than showing
+# anything — the ramp is free to compress it.
+Sleep 14s
+# The hero frames: LazyVim with the repo tree, no toasts left on top of it.
+Sleep 10s
 
 Type ":qa"
 Enter
@@ -71,8 +84,11 @@ Type "nvim --version | head -1"
 Enter
 Sleep 3s
 
-# The spans above and below the install wait are the only footage played at
-# 1:1 (~14s and ~17s). The ffmpeg pass that builds the GIF decimates
-# everything between them, so its head/tail seconds must stay comfortably
-# ABOVE these — 17/20 today. Set them lower and the typing or the editor
-# beat gets sped up, which is the one thing the ramp must never do.
+# The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
+# decimates everything between them. Two spans must land inside those ends:
+# the opening typing (~14s, under a 17s head) and the closing hold — the 10s
+# hero sleep plus the quit and version beats (~17s, under a 20s tail). The
+# 14s settle above is deliberately outside the tail so the toasts flash past
+# instead of playing out. Lengthen a beat here and the matching head/tail
+# second in demo/scripts/make-gif.sh moves with it, or the ramp eats footage
+# that has to play at real speed.
