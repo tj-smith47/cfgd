@@ -4,7 +4,7 @@
 #
 # The typing and the editor beats have to play at real speed or the demo stops
 # reading as a real session; only the install wait between them is compressed.
-# HEAD and TAIL exceed the 1:1 spans the tape records (~14s and ~17s) so the
+# HEAD and TAIL exceed the 1:1 spans the tape records (~11s and ~15s) so the
 # ramp can never reach into them — see the trailing note in demo/init.tape.
 set -euo pipefail
 
@@ -37,7 +37,7 @@ ffmpeg -y -loglevel error -i "$RAW" -filter_complex "\
 [0:v]trim=${HEAD}:${mid_end},setpts=(PTS-STARTPTS)/${speed}[b];\
 [0:v]trim=${mid_end},setpts=PTS-STARTPTS[c];\
 [a][b][c]concat=n=3:v=1:a=0[v];\
-[v]fps=10,scale=900:-1:flags=lanczos,split[s0][s1];\
+[v]fps=10,split[s0][s1];\
 [s0]palettegen=max_colors=128[p];\
 [s1][p]paletteuse=dither=bayer:bayer_scale=3" "$OUT"
 

@@ -7,6 +7,11 @@ cd "$(dirname "$0")/../.."
 TAPE=demo/init.tape
 RAW=demo/.out/raw.mp4
 
+# A failed tape leaves the previous run's mp4 untouched, and `task demo:gif`
+# would then ramp that stale take into the README GIF without a word. Clearing
+# it first makes "no file" the only thing a failed recording can leave behind.
+rm -f "$RAW"
+
 vhs "$TAPE"
 
 # VHS v0.11.0 exits 0 when its `Output` is a directory, writing nothing at all,

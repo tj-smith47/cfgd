@@ -10,10 +10,14 @@ Set Shell "bash"
 # LazyVim's tree, tabline and statusline are drawn with Nerd Font glyphs; the
 # default font renders every one of them as a tofu box.
 Set FontFamily "JetBrainsMono Nerd Font Mono"
-Set FontSize 16
-Set Width 1100
-Set Height 640
-Set TypingSpeed 60ms
+# 1200x780 at font 15 is a 128x41 terminal — wide and tall enough that
+# LazyVim's tree, tabline and statusline frame a real editing view rather than
+# a cropped one. Changing any of the three changes the grid. The GIF is not
+# rescaled, so this width is also the GIF's width and the README img width.
+Set FontSize 15
+Set Width 1200
+Set Height 780
+Set TypingSpeed 40ms
 Set Padding 20
 
 # 20 divides 100 exactly, so every GIF frame delay lands on a whole
@@ -26,9 +30,9 @@ Enter
 Show
 
 # `-it` because the recording needs cfgd's TTY output (spinners, colour), and
-# `bash -l` so the container's own login PATH is what resolves `nvim` — before
-# the install it resolves to nothing, after it to the brew-installed binary in
-# the same shell.
+# `bash -l` because the source line cfgd injects lands in the login shell's own
+# rc. The image bakes no brew PATH: before the apply `nvim` resolves to nothing,
+# after it to the binary cfgd's own ~/.cfgd.env put on PATH.
 Type "docker run --rm -it cfgd-demo:latest bash -l"
 Enter
 # The container prompt ends in the workdir name; matching `cfgd$` instead of a
@@ -36,7 +40,7 @@ Enter
 Wait@2m /cfgd\$$/
 Sleep 1s
 
-Type "nvim ."
+Type "nvim"
 Enter
 Sleep 3s
 
@@ -50,7 +54,7 @@ Enter
 # (120s + 900s + 600s + 900s + 300s + 180s) and the package phase ahead of them
 # has measured ~6m, so 60m covers a run where every step burns its whole budget.
 # A healthy take spends nowhere near it: the take this GIF was cut from ran
-# 7m12s end to end, with MasonToolsInstallSync — the step the ceiling was
+# 7m03s end to end, with MasonToolsInstallSync — the step the ceiling was
 # sized around — returning in 70s.
 Wait@60m /cfgd\$$/
 # Long enough to read the apply summary before the alt screen covers it. It does
@@ -58,8 +62,21 @@ Wait@60m /cfgd\$$/
 # half the time and paints an empty pane, which no amount of waiting here fixes.
 Sleep 3s
 
-Type "nvim ."
+# The one beat the apply cannot do for us: this shell was started before
+# ~/.bashrc learned to source ~/.cfgd.env, so its PATH is still the pre-apply
+# one. cfgd says exactly this in its post-apply reminder — the tape follows the
+# instruction on screen rather than working around it.
+Type "source ~/.cfgd.env"
 Enter
+Wait@30s /cfgd\$$/
+Sleep 1s
+
+# Bare `nvim`, not `nvim .`: a directory argument opens a file buffer, and the
+# beat this frames is the configured start screen — alpha's dashboard, with
+# nvim-tree opened beside it by alpha's own VimEnter hook.
+Type "nvim"
+Enter
+Wait+Screen@20s /Welcome, TJ Smith!/
 # The tree's first scan loses its race about half the time and paints an
 # empty pane; waiting on real tree content turns a bad take into a hard
 # failure instead of a silently-wrong GIF.
@@ -86,9 +103,9 @@ Sleep 3s
 
 # The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
 # decimates everything between them. Two spans must land inside those ends:
-# the opening typing (~14s, under a 17s head) and the closing hold — the 10s
-# hero sleep plus the quit and version beats (~17s, under a 20s tail). The
-# 14s settle above is deliberately outside the tail so the toasts flash past
-# instead of playing out. Lengthen a beat here and the matching head/tail
-# second in demo/scripts/make-gif.sh moves with it, or the ramp eats footage
-# that has to play at real speed.
+# the opening typing (~11s plus container start, under a 17s head) and the
+# closing hold — the 10s hero sleep plus the quit and version beats (~15s,
+# under a 20s tail). The 14s settle above is deliberately outside the tail so
+# the toasts flash past instead of playing out. Lengthen a beat here and the
+# matching head/tail second in demo/scripts/make-gif.sh moves with it, or the
+# ramp eats footage that has to play at real speed.
