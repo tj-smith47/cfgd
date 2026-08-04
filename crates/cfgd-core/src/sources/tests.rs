@@ -2590,6 +2590,7 @@ mod local_source_fixture {
 
             // Create + push a `-x` tag (git2 rejects the name; use git CLI refs).
             let src = tmp.path().join("pin-dash-src");
+            let _spawn = crate::test_helpers::path_spawn_guard();
             let mut tag_cmd = crate::git_cmd_local();
             tag_cmd.args([
                 "-C",
@@ -3529,6 +3530,7 @@ fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
     // Local git runner with a fixed identity so `commit` never depends on the
     // host's git config.
     let git = |args: &[&str]| -> String {
+        let _spawn = crate::test_helpers::path_spawn_guard();
         let mut cmd = crate::git_cmd_local();
         cmd.current_dir(&repo)
             .env("GIT_AUTHOR_NAME", "t")
@@ -3567,6 +3569,7 @@ fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
         "HEAD must resolve to the tagged commit after pinning"
     );
     // A detached HEAD has no symbolic ref.
+    let _sref_spawn = crate::test_helpers::path_spawn_guard();
     let mut sref = crate::git_cmd_local();
     sref.current_dir(&repo).args(["symbolic-ref", "-q", "HEAD"]);
     assert!(

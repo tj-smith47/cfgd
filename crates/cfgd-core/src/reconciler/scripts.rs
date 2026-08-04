@@ -227,7 +227,7 @@ pub(crate) fn execute_script(
     // on `environ` that surfaces here as a spurious ENOENT. Compiled out of
     // release builds.
     #[cfg(any(test, feature = "test-helpers"))]
-    let _path_guard = crate::test_helpers::script_spawn_path_guard();
+    let _path_guard = crate::test_helpers::path_spawn_guard();
 
     // `script_dir` is where the script's bundled files live (the module / config
     // source tree); a relative file-path `run:` resolves against it. `working_dir`
