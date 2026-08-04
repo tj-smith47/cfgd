@@ -184,7 +184,7 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
