@@ -503,7 +503,10 @@ fn unjoinable_dir_leaves_path_untouched() {
 #[serial_test::serial]
 fn module_env_path_expands_against_bootstrapped_dirs() {
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
-    let module_env = vec![fake_env_var("PATH", "/mod/bin:$PATH")];
+    // Separator via join_paths, not a literal `:` — the expansion splices the
+    // merged PATH in with the platform's own separator, so a hardcoded colon
+    // makes the fixture disagree with itself on Windows.
+    let module_env = vec![fake_env_var("PATH", &joined(&["/mod/bin", "$PATH"]))];
     let env = build_module_script_env(
         &ScriptEnvContext {
             config_dir: &fake_config_dir(),

@@ -1305,8 +1305,11 @@ fn shell_env_reminder_names_the_written_env_file() {
 #[serial_test::serial]
 fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
     // The env engine emits the PowerShell file BEFORE the Git Bash one, so a
-    // first-match-wins pick would name `.cfgd-env.ps1` here. This host is a
-    // POSIX shell, so the reminder must reach past the leading candidate.
+    // first-match-wins pick would name `.cfgd-env.ps1` here. The shell is pinned
+    // rather than inherited: the pick reads ambient MSYSTEM/SHELL, so on Windows
+    // the same property holds or fails purely on how the runner was launched —
+    // Git Bash in CI, `cmd /c` on a bare console.
+    let _msys = cfgd_core::test_helpers::EnvVarGuard::set("MSYSTEM", "MINGW64");
     let tmp = tempfile::tempdir().unwrap();
     let out = cfgd_core::with_test_home(tmp.path(), || {
         let result = env_apply_result(&[
