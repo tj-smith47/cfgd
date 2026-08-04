@@ -1,5 +1,4 @@
 Add Remote Module
-
 ✓ Fetched file://<BARE>@v1.0.0
 
 Commit     <COMMIT_SHA>
@@ -9,7 +8,6 @@ Module: bridgemod
   (none)
 
 Tag 'v1.0.0' is unsigned
-
 ✓ Added module 'bridgemod' to profile 'default'
 
 ✓ Locked remote module 'bridgemod' in modules.lock

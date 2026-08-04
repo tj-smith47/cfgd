@@ -1,5 +1,4 @@
 Module (Module)
-
 A reusable unit of packages, files, scripts, and environment.
 
 apiVersion  cfgd.io/v1alpha1

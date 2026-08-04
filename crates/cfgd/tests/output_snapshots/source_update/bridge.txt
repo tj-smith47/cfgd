@@ -1,5 +1,4 @@
 Update Sources
-
 ◐ Fetching source 'bridge-upd'
 
   From file://<BARE_ROOT>/bridge-upd-source

@@ -1,5 +1,4 @@
 Profile (Profile)
-
 A composable layer of modules, packages, files, and settings.
 
 apiVersion  cfgd.io/v1alpha1

@@ -12,6 +12,7 @@ use super::doc::Doc;
 use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
+    renderer.enter_doc();
     if let Some(h) = &doc.heading {
         renderer.render_heading(sink, h);
     }
@@ -19,6 +20,7 @@ pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
         render_component(renderer, sink, child, /*depth=*/ 0);
     }
     renderer.flush_kv_buffer(sink);
+    renderer.exit_doc();
 }
 
 fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth: usize) {

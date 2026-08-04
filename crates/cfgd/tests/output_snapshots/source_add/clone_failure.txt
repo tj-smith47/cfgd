@@ -1,5 +1,4 @@
 Add Config Source
-
 ◐ Cloning source 'doomed-src'
 
   Cloning into '<STATE_DIR>/sources/doomed-src'...
@@ -9,7 +8,6 @@ Add Config Source
   Please make sure you have the correct access rights
   and the repository exists.
 ✗ Cloning source 'doomed-src'
-
 ✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)
 
 ✗ Failed to load source 'doomed-src': source error: failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)

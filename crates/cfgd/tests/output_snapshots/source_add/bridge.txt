@@ -1,5 +1,4 @@
 Add Config Source
-
 ◐ Cloning source 'bridge-src'
 
   Cloning into '<STATE_DIR>/sources/bridge-src'...

@@ -1,11 +1,9 @@
 Replace Source: replace-old
 
 Remove Source: replace-old
-
 ✓ Source 'replace-old' removed
 
 Add Config Source
-
 ◐ Cloning source 'replace-old'
 
   Cloning into '<STATE_DIR>/sources/replace-old'...

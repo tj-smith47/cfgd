@@ -1596,7 +1596,7 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
 }
 
 #[test]
-fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
+fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
     use crate::providers::ProviderRegistry;
     use crate::reconciler::{
         Action, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ReconcileContext,
@@ -1643,11 +1643,11 @@ fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
             .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
             .unwrap();
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
-        // id-shape sweep", so appending migration 11 must not silently re-point
-        // it at the new tail.
+        // id-shape sweep", so appending a later migration must not silently
+        // re-point it at the new tail.
         store
             .conn
-            .execute("UPDATE schema_version SET version = 9", [])
+            .execute("UPDATE schema_version SET version = 8", [])
             .unwrap();
     }
 
@@ -1659,7 +1659,7 @@ fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
             .iter()
             .all(|r| !["module", "Running script", "system", "secret"]
                 .contains(&r.resource_type.as_str())),
-        "migration 10 must remove every row whose id shape changed: {swept:?}"
+        "migration 9 must remove every row whose id shape changed: {swept:?}"
     );
     assert!(
         !swept
@@ -1732,7 +1732,7 @@ fn migration_10_drops_stale_managed_resource_ids_and_apply_recreates_them() {
 }
 
 #[test]
-fn migration_11_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
+fn migration_10_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let backup = |content: &[u8]| crate::FileState {
@@ -1777,7 +1777,7 @@ fn migration_11_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
             .unwrap();
         store
             .conn
-            .execute("UPDATE schema_version SET version = 10", [])
+            .execute("UPDATE schema_version SET version = 9", [])
             .unwrap();
     }
 

@@ -117,7 +117,7 @@ impl Renderer {
                 .join("  ");
             self.write_line(w, depth, &line);
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(super::TopGroup::Table);
     }
 }
 

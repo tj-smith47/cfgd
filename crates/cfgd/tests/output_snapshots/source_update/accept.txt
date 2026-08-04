@@ -1,5 +1,4 @@
 Update Sources
-
 ◐ Fetching source 'accept-src'
 
   From file://<BARE_ROOT>/accept-src-source

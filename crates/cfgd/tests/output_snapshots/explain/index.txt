@@ -14,7 +14,5 @@ Module (CRD)         cfgd.io/v1alpha1/Module               Module CRD
 TeamConfig           cfgd.io/v1alpha1/TeamConfig           Crossplane Composite Resource (XR)
 
 → Use 'cfgd explain <resource>' for details
-
 → Use 'cfgd explain <resource>.<field>' to drill into a field
-
 → Use 'cfgd explain <resource> --recursive' for all fields expanded

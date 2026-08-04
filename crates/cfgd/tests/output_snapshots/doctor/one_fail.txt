@@ -1,5 +1,4 @@
 Doctor
-
 ✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
 
 Name     test-host

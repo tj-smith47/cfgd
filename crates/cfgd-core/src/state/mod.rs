@@ -254,7 +254,7 @@ const MIGRATIONS: &[&str] = &[
     "DELETE FROM managed_resources
         WHERE resource_type IN ('Running script', 'system', 'module', 'secret')
            OR (resource_type = 'package' AND resource_id IN ('bootstrap', 'skip'));",
-    // Migration 11: fold the persisted file-path keys to `/`. Every writer of
+    // Migration 10: fold the persisted file-path keys to `/`. Every writer of
     // `file_backups.file_path` and `module_file_manifest.file_path` now uses
     // `to_posix_fs_key`, so a Windows row written with the native separator
     // would no longer join: the manifest drives `latest_backup_for_path`, and a

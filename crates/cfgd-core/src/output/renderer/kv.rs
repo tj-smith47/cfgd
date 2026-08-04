@@ -93,7 +93,7 @@ impl Renderer {
                 w.write_line(&format!("{}  {}", prefix, v));
             }
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(super::TopGroup::KvBlock);
     }
 
     /// Render a KvBlock immediately. Public crate entry — thin forwarder to

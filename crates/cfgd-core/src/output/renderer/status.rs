@@ -54,8 +54,9 @@ impl Renderer {
             self.flush_pending_section_headers(w);
             return;
         }
+        self.open_top_group(super::TopGroup::Status);
         self.render_status_immediate(w, depth, f);
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(super::TopGroup::Status);
     }
 
     /// Actually emit a Status line, without buffering. Used by the immediate

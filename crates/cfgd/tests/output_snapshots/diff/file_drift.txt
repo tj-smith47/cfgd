@@ -3,10 +3,8 @@ Diff
   Profile  tiny
 
 Files
-
 <TARGET> (new file)
 hello world
-
 ⚠ File drift detected
 
 Packages

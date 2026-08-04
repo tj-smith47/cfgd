@@ -671,12 +671,11 @@ impl Validatable for ModuleSpec {
 /// Reject a Module whose `spec.oci_artifact` is set but carries no verifiable
 /// signature, when `disallow_unsigned` is true.
 ///
-/// This is the operator admission webhook's `disallowUnsigned` rule
-/// (`cfgd_operator::webhook`'s private `check_unsigned_policy` delegates here
-/// verbatim) hoisted into this crate so any consumer of `ModuleSpec` — the
-/// webhook, the CLI's `module push --apply` construction tests — exercises the
-/// exact same predicate instead of an approximation, with no dependency on the
-/// operator's server/gateway code.
+/// This is the operator admission webhook's `disallowUnsigned` rule, which
+/// calls straight into here, hoisted into this crate so any consumer of
+/// `ModuleSpec` — the webhook, the CLI's `module push --apply` construction
+/// tests — exercises the exact same predicate instead of an approximation, with
+/// no dependency on the operator's server/gateway code.
 pub fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
     if disallow_unsigned && spec.oci_artifact.is_some() {
         let has_signing = spec

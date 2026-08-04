@@ -1,5 +1,4 @@
 Update Sources
-
 ◐ Fetching source 'reject-src'
 
   From file://<BARE_ROOT>/reject-src-source

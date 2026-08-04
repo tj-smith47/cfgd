@@ -24,6 +24,37 @@ pub(crate) use glyphs::{finalize_subject, role_glyph};
 pub use status::StatusFields;
 pub use table::Table;
 
+/// The kind of a top-level (outside any section) group emission.
+///
+/// Blank lines separate GROUPS, not the lines inside one. Three rules follow
+/// from that and are enforced in `open_top_group`:
+///
+///   - consecutive emissions of a kind whose `runs_contiguously` is true
+///     (statuses, hints) are one group and render with no blank between them
+///   - a heading binds to whatever it introduces, so nothing directly after a
+///     top-level heading is preceded by a blank
+///   - the streaming → buffered seam always separates: a streamed line and a
+///     buffered `Doc`'s line never join into one group
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TopGroup {
+    Heading,
+    Status,
+    Hint,
+    Bullet,
+    CodeBlock,
+    Note,
+    KvBlock,
+    Table,
+}
+
+impl TopGroup {
+    /// True for single-line kinds that read as a list when repeated — a run of
+    /// `✓ Created …` lines is one block, not seven blocks of one line.
+    fn runs_contiguously(self) -> bool {
+        matches!(self, TopGroup::Status | TopGroup::Hint | TopGroup::Bullet)
+    }
+}
+
 /// Per-Printer rendering state. Held inside `Mutex` because multiple
 /// `SectionGuard`s may share the same `&Printer` and write concurrently
 /// from one thread (drop ordering is single-threaded but borrow-checker
@@ -45,6 +76,18 @@ pub(crate) struct RenderState {
     /// heading. Reset by any other emission (status, section header, bullet,
     /// etc.).
     pub(crate) last_was_top_heading: bool,
+    /// Kind of the most recent top-level group emission, or `None` when the
+    /// last thing written was not one (a section body, a section close).
+    /// Consumed by the next top-level emit to decide whether it continues that
+    /// group or starts a new one.
+    pub(crate) last_top_group: Option<TopGroup>,
+    /// Nesting depth of buffered `Doc` rendering; 0 while output is streaming.
+    /// A streamed line and a buffered Doc's line are never the same group even
+    /// when they are the same kind — the seam between them always separates.
+    doc_depth: usize,
+    /// Whether the most recent top-level emission came from inside a `Doc`.
+    /// Compared against the current side of the seam in `open_top_group`.
+    last_top_in_doc: bool,
 }
 
 impl RenderState {
@@ -56,6 +99,9 @@ impl RenderState {
             kv_buffer: Vec::new(),
             section_stack: Vec::new(),
             last_was_top_heading: false,
+            last_top_group: None,
+            doc_depth: 0,
+            last_top_in_doc: false,
         }
     }
 
@@ -212,16 +258,64 @@ impl Renderer {
     pub(crate) fn mark_blank_pending(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.blank_pending = true;
+        // A section boundary always separates: whatever follows starts a new
+        // group even if it is the same kind as what preceded the section.
+        s.last_top_group = None;
     }
 
     /// Set blank-pending iff we're at the root group level (no open section).
     /// Called at the end of every top-level group emission (heading, kv_block,
     /// status, hint, note, table) so the next top-level emit gets one blank.
-    /// One blank line precedes every top-level group after the first.
-    pub(crate) fn mark_top_level_blank_if_at_root(&self) {
+    /// One blank line precedes every top-level GROUP after the first —
+    /// `open_top_group` decides what continues a group rather than starting one.
+    pub(crate) fn mark_top_level_group(&self, kind: TopGroup) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.section_stack.is_empty() {
             s.blank_pending = true;
+            s.last_top_group = Some(kind);
+            s.last_top_in_doc = s.doc_depth > 0;
+        } else {
+            s.last_top_group = None;
+        }
+    }
+
+    /// Enter buffered `Doc` rendering. Paired with `exit_doc`; nests because a
+    /// Doc may render a nested Doc through a component.
+    pub(crate) fn enter_doc(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.doc_depth += 1;
+    }
+
+    /// Leave buffered `Doc` rendering.
+    pub(crate) fn exit_doc(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.doc_depth = s.doc_depth.saturating_sub(1);
+    }
+
+    /// Drop the pending blank when this emission continues the previous group
+    /// rather than starting a new one. Call before writing, from every
+    /// top-level emitter.
+    pub(crate) fn open_top_group(&self, kind: TopGroup) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !s.section_stack.is_empty() || !s.blank_pending {
+            return;
+        }
+        let continues = match kind {
+            // A heading introduces what follows it, so it never binds to the
+            // heading above: two consecutive headings are two groups.
+            TopGroup::Heading => false,
+            _ => {
+                s.last_was_top_heading
+                    || (kind.runs_contiguously()
+                        && s.last_top_group == Some(kind)
+                        // Streamed lines and a buffered Doc's lines are
+                        // different groups even when the kind matches: the
+                        // seam between them keeps its one blank line.
+                        && (s.doc_depth > 0) == s.last_top_in_doc)
+            }
+        };
+        if continues {
+            s.blank_pending = false;
         }
     }
 
@@ -231,6 +325,7 @@ impl Renderer {
             return;
         }
         let styled = self.theme.header.apply_to(text).to_string();
+        self.open_top_group(TopGroup::Heading);
         self.write_line(w, 0, &styled);
         // Set the heading-just-emitted flag AFTER write_line (which clears
         // it). The next top-level kv_block consumes this to re-anchor itself
@@ -241,7 +336,7 @@ impl Renderer {
                 s.last_was_top_heading = true;
             }
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::Heading);
     }
 
     /// Bullet: glyph `-`, then space, then text. Uncolored. The renderer's only
@@ -251,7 +346,9 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        self.open_top_group(TopGroup::Bullet);
         self.write_line(w, depth, &format!("- {}", text));
+        self.mark_top_level_group(TopGroup::Bullet);
     }
 
     /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
@@ -266,8 +363,9 @@ impl Renderer {
             .muted
             .apply_to(format!("{} ", self.theme.icon_arrow));
         let body = self.theme.muted.apply_to(text);
+        self.open_top_group(TopGroup::Hint);
         self.write_line(w, depth, &format!("{}{}", arrow, body));
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::Hint);
     }
 
     /// Code block: a tight run of verbatim lines (e.g. a copy-pasteable YAML
@@ -282,10 +380,11 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        self.open_top_group(TopGroup::CodeBlock);
         for line in lines {
             self.write_line(w, depth, &self.theme.muted.apply_to(line).to_string());
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::CodeBlock);
     }
 
     /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
@@ -294,11 +393,12 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        self.open_top_group(TopGroup::Note);
         for line in text.lines() {
             let dim = self.theme.muted.apply_to(line);
             self.write_line(w, depth, &dim.to_string());
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::Note);
     }
 }
 

@@ -1,7 +1,6 @@
 Update Profile: default
 
 Add Remote Module
-
 ✓ Fetched file://<BARE>@v1.0.0
 
 Commit     <COMMIT_SHA>
@@ -11,7 +10,6 @@ Module: mymod
   (none)
 
 Tag 'v1.0.0' is unsigned
-
 ✓ Added module 'mymod' to profile 'default'
 
 ✓ Locked remote module 'mymod' in modules.lock

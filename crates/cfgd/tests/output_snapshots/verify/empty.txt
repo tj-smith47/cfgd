@@ -1,3 +1,2 @@
 Verify
-
 No managed resources to verify
