@@ -2305,7 +2305,7 @@ fn bootstrap_path_dirs_round_trip_preserves_order() {
     // The generated env file's content is hashed and compared on every
     // reconcile tick, so a reordered read would be reported as drift forever.
     assert_eq!(
-        store.bootstrapped_path_dirs().unwrap(),
+        store.bootstrapped_managers().unwrap(),
         vec![("brew".to_string(), dirs)]
     );
 }
@@ -2323,7 +2323,7 @@ fn bootstrap_path_dirs_replaces_an_earlier_record_for_the_same_manager() {
     // A re-bootstrap that lands in a different prefix must not leave the old
     // prefix on PATH alongside the new one.
     assert_eq!(
-        store.bootstrapped_path_dirs().unwrap(),
+        store.bootstrapped_managers().unwrap(),
         vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
     );
 }
@@ -2339,7 +2339,7 @@ fn bootstrap_path_dirs_orders_managers_deterministically() {
         .unwrap();
 
     let names: Vec<String> = store
-        .bootstrapped_path_dirs()
+        .bootstrapped_managers()
         .unwrap()
         .into_iter()
         .map(|(m, _)| m)
@@ -2369,7 +2369,7 @@ fn bootstrap_path_dirs_skips_an_undecodable_row() {
     // One unreadable row must not wedge `cfgd plan`, `cfgd status`, and the
     // daemon tick, all of which read this table.
     assert_eq!(
-        store.bootstrapped_path_dirs().unwrap(),
+        store.bootstrapped_managers().unwrap(),
         vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
     );
 }

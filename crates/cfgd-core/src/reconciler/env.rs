@@ -64,7 +64,7 @@ pub(crate) fn all_recorded_path_dirs(state: &StateStore) -> Vec<String> {
 }
 
 fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>) -> Vec<String> {
-    let recorded = match state.bootstrapped_path_dirs() {
+    let recorded = match state.bootstrapped_managers() {
         Ok(recorded) => recorded,
         // Losing the records degrades to the pre-bootstrap state (no PATH entry)
         // rather than failing the plan outright.

@@ -1485,6 +1485,53 @@ pub fn path_env_mutation_guard() -> RwLockWriteGuard<'static, ()> {
     PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner())
 }
 
+/// RAII guard that snapshots the process-global bootstrapped-PATH registry on
+/// construction and restores it on drop.
+///
+/// The registry that `crate::register_bootstrapped_path_dirs` feeds is never
+/// cleared — in production a bootstrap that happened cannot un-happen. In a test
+/// binary that makes every registration permanent for every test that runs
+/// after it, and `command_path` searches those directories once `$PATH` misses.
+/// A fixture registering a real host directory therefore changes what unrelated
+/// later tests can resolve, and only on hosts where that directory exists:
+/// registering `/opt/homebrew/bin` made an empty-`PATH` "git is missing" test
+/// find git on macOS and not on Linux. Take this guard in any fixture that
+/// drives a bootstrap so the registration cannot outlive it.
+pub struct BootstrappedPathDirsGuard {
+    prior: Vec<std::path::PathBuf>,
+}
+
+impl BootstrappedPathDirsGuard {
+    /// Snapshot the currently registered directories.
+    pub fn capture() -> Self {
+        Self {
+            prior: crate::bootstrapped_path_dirs(),
+        }
+    }
+
+    /// Snapshot the registry and empty it for the guard's lifetime. Use in a
+    /// test asserting a "command not found" branch: emptying `PATH` alone does
+    /// not make a command unresolvable, because this registry is searched after
+    /// it.
+    pub fn capture_and_clear() -> Self {
+        let guard = Self::capture();
+        crate::restore_bootstrapped_path_dirs(Vec::new());
+        guard
+    }
+}
+
+impl Default for BootstrappedPathDirsGuard {
+    fn default() -> Self {
+        Self::capture()
+    }
+}
+
+impl Drop for BootstrappedPathDirsGuard {
+    fn drop(&mut self) {
+        crate::restore_bootstrapped_path_dirs(std::mem::take(&mut self.prior));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is

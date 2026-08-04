@@ -153,7 +153,6 @@ check_pattern error \
     'output/'
 
 log_section "Controlled Shell Execution"
-# sources/ allowed for git SSH fallback (git2 doesn't support all SSH configs)
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run (controlled execution layer for progress UI)
 # generate/ allowed for tool inspection (--version checks) and system settings scanning
@@ -165,9 +164,9 @@ log_section "Controlled Shell Execution"
 # test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
 # submodules and doc comments).
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|test_helpers\.rs:|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|test_helpers\.rs:|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \

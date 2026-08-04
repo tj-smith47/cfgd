@@ -2002,6 +2002,10 @@ fn verify_head_signature_with_no_git_on_path_returns_clear_error() {
     // Declared before the PATH override so it drops last, bracketing the whole
     // empty-PATH window against concurrent script-interpreter spawns.
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
+    // Emptying PATH is not on its own enough to make git unresolvable: the
+    // bootstrapped-dir registry is searched after PATH, and it holds whatever a
+    // fixture registered earlier in this binary.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _path = EnvVarGuard::set("PATH", "");
     let dir = tempfile::tempdir().unwrap();
     let err = super::verify_head_signature("nogit", dir.path())

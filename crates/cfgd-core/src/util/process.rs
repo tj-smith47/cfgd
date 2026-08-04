@@ -247,6 +247,18 @@ pub fn bootstrapped_path_dirs() -> Vec<std::path::PathBuf> {
         .clone()
 }
 
+/// Replace the registry with `dirs`, discarding everything registered since it
+/// was snapshotted. Test-only: a bootstrap that happened cannot un-happen, so
+/// production never rewinds this list. Reach for it through
+/// [`crate::test_helpers::BootstrappedPathDirsGuard`] rather than calling it
+/// directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn restore_bootstrapped_path_dirs(dirs: Vec<std::path::PathBuf>) {
+    *BOOTSTRAPPED_PATH_DIRS
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = dirs;
+}
+
 /// Check if a command is available on the system via PATH lookup.
 /// On Windows, tries common executable extensions (.exe, .cmd, .bat, .ps1, .com)
 /// since executables require an extension to be found. Thin `is_some()` view over
@@ -412,6 +424,7 @@ mod tests {
     #[test]
     #[serial]
     fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let dir = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-registered-tool";
         let expected = write_probe_tool(dir.path(), stem);
@@ -430,6 +443,7 @@ mod tests {
     #[test]
     #[serial]
     fn path_still_wins_over_a_registered_dir() {
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let on_path = tempfile::tempdir().expect("tempdir");
         let registered = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-shadowed-tool";
@@ -446,6 +460,7 @@ mod tests {
     #[test]
     #[serial]
     fn registering_the_same_dir_twice_records_it_once() {
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let dir = tempfile::tempdir().expect("tempdir");
         let entry = dir.path().to_string_lossy().into_owned();
 
@@ -457,6 +472,30 @@ mod tests {
             .filter(|p| p == dir.path())
             .count();
         assert_eq!(hits, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn the_test_guard_unregisters_dirs_registered_inside_its_scope() {
+        // Production never rewinds this registry, so a fixture that registers a
+        // real host directory would otherwise change what every later test in
+        // the binary can resolve — the shape that made an empty-PATH "git is
+        // missing" test pass on Linux and fail on macOS.
+        let before = bootstrapped_path_dirs();
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+            register_bootstrapped_path_dirs(&[dir.path().to_string_lossy().into_owned()]);
+            assert!(
+                bootstrapped_path_dirs().iter().any(|p| p == dir.path()),
+                "registration must take effect inside the guard's scope"
+            );
+        }
+        assert_eq!(
+            bootstrapped_path_dirs(),
+            before,
+            "the guard must leave the registry exactly as it found it"
+        );
     }
 
     #[test]

@@ -1095,7 +1095,7 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
     }
 
     let output = crate::command_output_with_timeout(
-        std::process::Command::new("git")
+        crate::git_cmd_local()
             .args([
                 "-C",
                 &repo_dir.display().to_string(),

@@ -1,7 +1,23 @@
 use super::constants::GIT_NETWORK_TIMEOUT;
 use super::paths::home_dir_var;
-use super::process::{command_output_with_timeout, stderr_lossy_trimmed, stdout_lossy_trimmed};
+use super::process::{
+    command_output_with_timeout, command_path, stderr_lossy_trimmed, stdout_lossy_trimmed,
+};
 use crate::config;
+
+/// Resolve the `git` program both factories below spawn.
+///
+/// `command_available("git")` answers from `$PATH` *plus* the directories of a
+/// package manager cfgd bootstrapped this run, but a bare `Command::new("git")`
+/// only walks `$PATH`. Resolving through the same lookup keeps availability and
+/// spawn from disagreeing — otherwise a git installed by a manager bootstrapped
+/// moments ago reports as present and then fails to spawn. Falls back to the
+/// bare name so the OS still performs its own lookup when resolution misses.
+fn git_program() -> std::ffi::OsString {
+    command_path("git")
+        .map(std::path::PathBuf::into_os_string)
+        .unwrap_or_else(|| std::ffi::OsString::from("git"))
+}
 
 /// Prepare a `git` CLI command with SSH hang protection.
 ///
@@ -20,7 +36,7 @@ pub fn git_cmd_safe(
     url: Option<&str>,
     ssh_policy: Option<config::SshHostKeyPolicy>,
 ) -> std::process::Command {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = std::process::Command::new(git_program());
     // git spawns credential-helper grandchildren (osxkeychain on macOS,
     // git-credential-manager-core on Windows) that inherit stdout/stderr pipes
     // and outlive the watchdog's SIGKILL of the immediate `git`, leaving
@@ -57,7 +73,7 @@ pub fn git_cmd_safe(
 /// network is involved. Use [`git_cmd_safe`] for any operation that talks to
 /// a remote.
 pub fn git_cmd_local() -> std::process::Command {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = std::process::Command::new(git_program());
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd
 }
@@ -272,8 +288,10 @@ mod tests {
     #[test]
     fn git_cmd_local_sets_terminal_prompt_zero_and_no_ssh_env() {
         let cmd = git_cmd_local();
+        // `file_stem`, not `file_name`: the program is a resolved absolute path
+        // whenever `git` is on PATH, and carries `.exe` on Windows.
         let prog = std::path::Path::new(cmd.get_program())
-            .file_name()
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
         assert_eq!(prog, "git", "program must resolve to `git`");
@@ -293,6 +311,42 @@ mod tests {
             !envs.contains_key(std::ffi::OsStr::new("GIT_SSH_COMMAND")),
             "git_cmd_local is for local-only ops and must not configure GIT_SSH_COMMAND"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn both_factories_spawn_a_git_found_only_in_a_bootstrapped_dir() {
+        // Declared before the PATH override so it drops last, bracketing the
+        // whole empty-PATH window against concurrent interpreter spawns.
+        let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let fake = tmp
+            .path()
+            .join(if cfg!(windows) { "git.exe" } else { "git" });
+        fs::write(&fake, "").expect("write fake git");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", "");
+        // native-ok: a real host directory handed back to the OS, never a key.
+        crate::register_bootstrapped_path_dirs(&[tmp.path().display().to_string()]);
+
+        // A manager bootstrapped mid-apply is exactly how git lands somewhere
+        // the inherited PATH cannot name. If the factories kept spawning the
+        // bare name, `command_available("git")` would report present and the
+        // spawn would still fail with "no such file or directory".
+        for cmd in [git_cmd_local(), git_cmd_safe(None, None)] {
+            assert_eq!(
+                std::path::Path::new(cmd.get_program()),
+                fake.as_path(),
+                "factory must spawn the git that command_path resolved"
+            );
+        }
     }
 
     #[test]

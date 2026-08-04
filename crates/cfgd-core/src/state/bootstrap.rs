@@ -30,7 +30,7 @@ impl StateStore {
 
     /// Every package manager cfgd has bootstrapped, paired with the PATH
     /// directories it contributed, ordered by manager name.
-    pub fn bootstrapped_path_dirs(&self) -> Result<Vec<(String, Vec<String>)>> {
+    pub fn bootstrapped_managers(&self) -> Result<Vec<(String, Vec<String>)>> {
         let mut stmt = self
             .conn
             .prepare("SELECT manager, path_dirs FROM bootstrapped_managers ORDER BY manager")?;

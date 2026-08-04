@@ -10996,6 +10996,11 @@ fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
 /// Run one Modules-phase action against a registry holding a bootstrappable
 /// `brew` contributing `path_dirs`, and return the state store it recorded to.
 fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
+    // The bootstrap below registers `path_dirs` into the process-global
+    // resolution registry, which production never clears. Without this the real
+    // host directories named here stay resolvable for every later test in the
+    // binary.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -11052,7 +11057,7 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
     // The directories went to the state store instead, where the Env phase —
     // this run's post-phase regeneration and every later plan — reads them.
     assert_eq!(
-        state.bootstrapped_path_dirs().unwrap(),
+        state.bootstrapped_managers().unwrap(),
         vec![(
             "brew".to_string(),
             vec![
