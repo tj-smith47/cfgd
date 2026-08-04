@@ -10,6 +10,7 @@ use crate::state::StateStore;
 
 use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
 use super::env_files::detect_rc_env_conflicts;
+use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
 use super::verify::merge_module_env_aliases;
 
@@ -269,13 +270,17 @@ impl<'a> super::Reconciler<'a> {
             EnvAction::RefreshLiveSession { vars } => {
                 let changed = crate::refresh_session_env(vars, printer);
                 if changed == 0 {
-                    return Ok("env:session:skipped".to_string());
+                    return Ok(format!("{LIVE_SESSION_RESOURCE_ID}:skipped"));
                 }
                 printer.status_simple(
                     Role::Ok,
                     format!("Refreshed {changed} live session variable(s)"),
                 );
-                Ok(format!("env:session:{changed}"))
+                // The count belongs in the status line above, never in the id:
+                // the same surface reached twice in one apply (Env phase, then
+                // the late regeneration) would otherwise return two different
+                // ids and be recorded as two separate results.
+                Ok(LIVE_SESSION_RESOURCE_ID.to_string())
             }
         }
     }

@@ -3114,6 +3114,31 @@ fn apply_env_inject_skips_when_already_present() {
 }
 
 #[test]
+fn apply_env_live_session_reports_the_planned_resource_id() {
+    // Empty vars keeps this hermetic: `refresh_session_env` short-circuits
+    // before any platform shell-out.
+    let planned =
+        crate::reconciler::format_action_description(&Action::Env(EnvAction::RefreshLiveSession {
+            vars: Vec::new(),
+        }));
+
+    let printer = test_printer();
+    let desc = Reconciler::apply_env_action(
+        &EnvAction::RefreshLiveSession { vars: Vec::new() },
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(
+        desc,
+        format!("{planned}:skipped"),
+        "the live-session result id must be the planned id plus the skip suffix, \
+         or `merge_env_result` records the Env phase and the late regeneration \
+         as two results for one action"
+    );
+}
+
+#[test]
 fn apply_env_inject_migrates_legacy_source_keyword() {
     let dir = tempfile::tempdir().unwrap();
     let rc_path = dir.path().join(".profile");
@@ -11418,8 +11443,20 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
     assert!(rows[0].changed, "the surface was written, so it changed");
     assert!(
         result.action_results.len() <= planned_total,
-        "results ({}) must not outgrow the {planned_total} planned actions",
-        result.action_results.len()
+        "results ({}) must not outgrow the {planned_total} planned actions.\nplanned: {:?}\nresults: {:?}",
+        result.action_results.len(),
+        plan.phases
+            .iter()
+            .flat_map(|p| p
+                .actions
+                .iter()
+                .map(crate::reconciler::format_action_description))
+            .collect::<Vec<_>>(),
+        result
+            .action_results
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect::<Vec<_>>()
     );
 
     // The merge must not swallow the regeneration's content.

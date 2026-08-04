@@ -342,9 +342,6 @@ impl SourceManager {
             "origin",
             &spec.origin.branch,
         ]);
-        // Ensure stderr is captured (git progress goes to stderr)
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
 
         let label = format!("Fetching source '{}'", spec.name);
         let cli_result = printer.run(&mut cmd, &label);
@@ -437,8 +434,6 @@ impl SourceManager {
             &spec.origin.url,
             &source_dir.display().to_string(),
         ]);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
 
         let label = format!("Cloning source '{}'", spec.name);
         let cli_result = printer.run(&mut cmd, &label);

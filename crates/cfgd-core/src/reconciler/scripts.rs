@@ -775,7 +775,6 @@ fn run_guard_command(
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-    cmd.stdin(std::process::Stdio::null());
     let outcome = crate::command_output_with_timeout_outcome(&mut cmd, timeout)?;
     if outcome.timed_out {
         return Err(CfgdError::Config(ConfigError::Invalid {

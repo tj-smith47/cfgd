@@ -8,6 +8,12 @@ use super::types::{
     Action, EnvAction, ModuleAction, ModuleActionKind, Phase, ScriptAction, SystemAction,
 };
 
+/// Resource id of the live-session env refresh. The planner and
+/// `apply_env_action` must both emit it verbatim: it is the only env surface
+/// with no path to key on, so a divergence between the two makes the applied
+/// result unmatchable against the action that planned it.
+pub(super) const LIVE_SESSION_RESOURCE_ID: &str = "env:session:refresh";
+
 /// Append source provenance suffix for non-local origins.
 pub(super) fn provenance_suffix(origin: &str) -> String {
     if origin.is_empty() || origin == "local" {
@@ -118,7 +124,7 @@ pub fn format_action_description(action: &Action) -> String {
             EnvAction::InjectSourceLine { rc_path, .. } => {
                 format!("env:inject:{}", path_str(rc_path))
             }
-            EnvAction::RefreshLiveSession { .. } => "env:session:refresh".to_string(),
+            EnvAction::RefreshLiveSession { .. } => LIVE_SESSION_RESOURCE_ID.to_string(),
         },
     }
 }

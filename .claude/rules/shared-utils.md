@@ -95,7 +95,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `register_bootstrapped_path_dirs(dirs)` — make the PATH directories of a package manager cfgd bootstrapped THIS RUN visible to every later `command_path` / `command_available` call in the process. Called from `Reconciler::record_bootstrap_path_dirs`; without it the action after a bootstrap cannot resolve the binary that bootstrap just installed (brew lands `pipx`, the next action is `pipx install …`). Deliberately not `std::env::set_var("PATH", …)`, which is unsound once any thread is live
 - `bootstrapped_path_dirs()` — snapshot of the above; the process-scope counterpart to the state-backed `reconciler::all_recorded_path_dirs`, which is what lifecycle scripts get
 - `restore_bootstrapped_path_dirs(dirs)` — overwrite the registry; gated behind `cfg(any(test, feature = "test-helpers"))` because production never rewinds it. Reach for it through `test_helpers::BootstrappedPathDirsGuard`, never directly
-- `command_output_with_timeout(cmd, timeout)` — run `Command` with timeout, kill on exceed; use for any external command that could hang
+- `command_output_with_timeout(cmd, timeout)` — run `Command` with timeout, kill on exceed; use for any external command that could hang. It OWNS the stdio configuration (stdout/stderr piped, stdin null) and drains the pipes on reader threads, so callers must not set stdio themselves — a caller that leaves it alone still gets captured output, and one that pipes by hand is redundant, not required
 - `terminate_process(pid)` — SIGTERM (Unix) / TerminateProcess (Windows)
 - `stdout_lossy_trimmed(output)` — trimmed lossy-UTF8 stdout from `Command` output
 - `stderr_lossy_trimmed(output)` — trimmed lossy-UTF8 stderr

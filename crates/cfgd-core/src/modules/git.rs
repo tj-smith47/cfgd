@@ -244,8 +244,6 @@ pub(super) fn clone_repo(
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Cloning module '{}'", module_name);
     let cli_result = printer.run(&mut cmd, &label);
@@ -298,8 +296,6 @@ pub(super) fn fetch_existing_repo(
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Fetching module '{}'", module_name);
     let cli_result = printer.run(&mut cmd, &label);

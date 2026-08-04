@@ -1255,7 +1255,7 @@ fn shell_env_reminder_silent_when_all_env_actions_skipped() {
     let result = env_apply_result(&[
         "env:write:/home/u/.cfgd.env:skipped",
         "env:inject:/home/u/.bashrc:skipped",
-        "env:session:skipped",
+        "env:session:refresh:skipped",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     print_shell_env_reminder(&result, &printer);

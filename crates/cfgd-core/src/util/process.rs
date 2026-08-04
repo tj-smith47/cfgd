@@ -29,11 +29,21 @@ pub struct CommandOutcome {
 /// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
 /// retry (Windows), and the returned [`CommandOutcome::timed_out`] is `true`.
 ///
-/// **Caveat**: if the child forks descendants that inherit its stdout/stderr
-/// pipes (e.g. a shell wrapper spawning a long-running grandchild), SIGKILL
-/// on the immediate child will not close those pipes — `wait_with_output`
-/// will block on them until the grandchild also dies. Production callers
-/// should invoke the target binary directly rather than via a shell wrapper.
+/// Stdio is configured here, not by callers: stdout and stderr are piped and
+/// stdin is null, matching [`std::process::Command::output`]. `spawn` alone
+/// defaults every stream to *inherit*, which fails twice over — the child's
+/// output bypasses the `output` module straight onto the terminal, and the
+/// captured buffers come back empty, so the text every caller here parses or
+/// reports is silently blank.
+///
+/// The pipes are drained by reader threads and the exit status is collected
+/// with [`Child::wait`](std::process::Child::wait), never `wait_with_output`.
+/// A killed child whose descendants inherited its pipe write ends leaves those
+/// pipes open, so `wait_with_output` would block past the timeout it exists to
+/// enforce — a shell-wrapped command (`run_guard_command`, a user `run:` body)
+/// backgrounding a daemon is enough to trigger it. Readers get
+/// [`PIPE_DRAIN_GRACE`] after child exit to reach EOF; past that they are
+/// abandoned and whatever they captured so far is returned.
 pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -42,8 +52,17 @@ pub fn command_output_with_timeout_outcome(
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
-    let child = cmd.spawn()?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
     let id = child.id();
+
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let (drained_tx, drained_rx) = mpsc::channel();
+    let stdout_buf = spawn_pipe_reader(child.stdout.take(), &abandoned, drained_tx.clone());
+    let stderr_buf = spawn_pipe_reader(child.stderr.take(), &abandoned, drained_tx);
+
     let (tx, rx) = mpsc::channel();
     let timed_out = Arc::new(AtomicBool::new(false));
     let timed_out_watchdog = Arc::clone(&timed_out);
@@ -52,20 +71,87 @@ pub fn command_output_with_timeout_outcome(
         if rx.recv_timeout(timeout).is_err() {
             timed_out_watchdog.store(true, Ordering::SeqCst);
             terminate_process(id);
-            // SIGTERM-trapping children can hang the wait_with_output below
-            // indefinitely. Give them a grace window to flush, then escalate.
+            // SIGTERM-trapping children can hang the wait below indefinitely.
+            // Give them a grace window to flush, then escalate.
             if rx.recv_timeout(KILL_GRACE_PERIOD).is_err() {
                 force_kill_process(id);
             }
         }
     });
 
-    let result = child.wait_with_output();
+    let status = child.wait();
     let _ = tx.send(());
-    result.map(|output| CommandOutcome {
-        output,
+    let status = status?;
+
+    let deadline = std::time::Instant::now() + PIPE_DRAIN_GRACE;
+    for _ in 0..2 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if drained_rx.recv_timeout(remaining).is_err() {
+            break;
+        }
+    }
+    abandoned.store(true, Ordering::SeqCst);
+
+    Ok(CommandOutcome {
+        output: std::process::Output {
+            status,
+            stdout: take_pipe_buffer(&stdout_buf),
+            stderr: take_pipe_buffer(&stderr_buf),
+        },
         timed_out: timed_out.load(Ordering::SeqCst),
     })
+}
+
+/// How long the pipe readers get to reach EOF after the child has exited,
+/// before they are abandoned and their partial capture is returned. Only ever
+/// elapses when a surviving descendant still holds the child's pipe write end.
+const PIPE_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Drain one child pipe on its own thread into a shared buffer, signalling
+/// `drained` at EOF.
+///
+/// The buffer is shared rather than returned through the channel so that an
+/// abandoned reader's partial capture is still readable; the reader checks
+/// `abandoned` each chunk so it stops growing the buffer once nobody is left
+/// to read it.
+fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
+    source: Option<R>,
+    abandoned: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    drained: std::sync::mpsc::Sender<()>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    use std::sync::atomic::Ordering;
+
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let Some(mut source) = source else {
+        let _ = drained.send(());
+        return buffer;
+    };
+    let sink = std::sync::Arc::clone(&buffer);
+    let abandoned = std::sync::Arc::clone(abandoned);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match source.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if abandoned.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    sink.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&chunk[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let _ = drained.send(());
+    });
+    buffer
+}
+
+fn take_pipe_buffer(buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> Vec<u8> {
+    std::mem::take(&mut *buffer.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Run a [`Command`] with a timeout, discarding the timeout signal.
@@ -654,7 +740,7 @@ mod tests {
     #[test]
     fn command_output_with_timeout_succeeds() {
         let mut cmd = std::process::Command::new("echo");
-        cmd.arg("hello").stdout(std::process::Stdio::piped());
+        cmd.arg("hello");
         let output =
             command_output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)).unwrap();
         assert!(output.status.success());
@@ -737,5 +823,51 @@ mod tests {
             "a fast command must not report timed_out"
         );
         assert!(outcome.output.status.success());
+    }
+
+    // Callers pass a bare Command and configure no stdio. Spawning without
+    // piping inherits the parent's terminal, which both leaks the child's
+    // output past the `output` module and hands back empty capture buffers —
+    // every caller that parses this text would silently read "".
+    #[cfg(unix)]
+    #[test]
+    fn command_output_captures_both_streams_without_caller_piping() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo to-stdout; echo to-stderr >&2");
+        let output =
+            command_output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(stdout_lossy_trimmed(&output), "to-stdout");
+        assert_eq!(stderr_lossy_trimmed(&output), "to-stderr");
+    }
+
+    // A killed child's descendants keep the pipe write ends open, so waiting
+    // for pipe EOF would outlast the timeout by however long the descendant
+    // lives — here 30s against a 200ms timeout.
+    #[cfg(unix)]
+    #[test]
+    fn command_output_returns_when_descendant_holds_pipe_open() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("sleep 30 & echo $!; sleep 30");
+
+        let started = std::time::Instant::now();
+        let outcome =
+            command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_millis(200))
+                .expect("spawn should succeed");
+        let elapsed = started.elapsed();
+
+        let orphan = stdout_lossy_trimmed(&outcome.output);
+        if let Ok(pid) = orphan.parse::<u32>() {
+            force_kill_process(pid);
+        }
+
+        assert!(outcome.timed_out, "the watchdog must report the timeout");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "returned in {elapsed:?}; a surviving descendant must not extend the wait"
+        );
+        assert!(
+            !orphan.is_empty(),
+            "output written before the kill must still be captured"
+        );
     }
 }

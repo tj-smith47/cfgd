@@ -254,8 +254,6 @@ fn run_pkg_cmd_prefixed(
     msg_prefix: Option<&str>,
 ) -> std::result::Result<Output, PackageError> {
     // Ensure stdout/stderr are captured for timeout-based execution
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
     let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
         PackageError::CommandFailed {
             manager: manager.into(),
@@ -302,8 +300,6 @@ pub(super) fn run_pkg_query(
     manager: &str,
     cmd: &mut Command,
 ) -> std::result::Result<Output, PackageError> {
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
     cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
         PackageError::CommandFailed {
             manager: manager.into(),
