@@ -79,7 +79,7 @@ pub(in crate::cli) fn print_shell_env_reminder(
     printer: &Printer,
 ) {
     let mut wrote_env = false;
-    let mut env_file: Option<&str> = None;
+    let mut candidates: Vec<&str> = Vec::new();
     for action in &result.action_results {
         if !action.success || action.description.ends_with(":skipped") {
             continue;
@@ -95,25 +95,27 @@ pub(in crate::cli) fn print_shell_env_reminder(
         // The env phase writes several managed files (fish conf.d, systemd
         // environment.d, a LaunchAgent); only the shell env file is something a
         // running shell can usefully source, so the rest never name the command.
-        if env_file.is_none() && (path.ends_with(UNIX_ENV_FILE) || path.ends_with(PS_ENV_FILE)) {
-            env_file = Some(path);
+        if path.ends_with(UNIX_ENV_FILE) || path.ends_with(PS_ENV_FILE) {
+            candidates.push(path);
         }
     }
     if !wrote_env {
         return;
     }
 
-    // A run whose only env change was a source-line injection (or the
+    // Windows can produce BOTH files in one apply, so the command is chosen by
+    // the shell the user is standing in, never by which target was emitted
+    // first. A run whose only env change was a source-line injection (or the
     // secret-env regeneration, whose id carries no path) still needs a command
-    // to name, so fall back to this platform's canonical location.
-    let default_file = if cfg!(windows) {
-        PS_ENV_FILE
-    } else {
-        UNIX_ENV_FILE
-    };
-    let shown = match env_file {
+    // to name, so the same choice supplies the fallback location.
+    let preferred = current_shell_env_file();
+    let shown = match candidates
+        .iter()
+        .find(|p| p.ends_with(preferred))
+        .or_else(|| candidates.first())
+    {
         Some(path) => fold_home_to_tilde(path),
-        None => format!("~/{default_file}"),
+        None => format!("~/{preferred}"),
     };
     let command = if shown.ends_with(PS_ENV_FILE) {
         format!(". {shown}")
@@ -124,6 +126,45 @@ pub(in crate::cli) fn print_shell_env_reminder(
     let section = printer.section("Shell environment changed");
     section.bullet(format!("run: {command}"));
     section.bullet("or open a new shell");
+}
+
+/// The env file the shell the user is *standing in* can actually source.
+///
+/// On Windows both files can exist after a single apply: the env engine always
+/// writes `.cfgd-env.ps1`, and additionally writes `.cfgd.env` when Git Bash is
+/// installed. Naming whichever one was emitted first tells a Git Bash user to
+/// run `. ~/.cfgd-env.ps1`, which their shell cannot read. `MSYSTEM` is exported
+/// by every MSYS2 / Git Bash shell (`MINGW64`, `MINGW32`, `MSYS`, `CLANG64`, …)
+/// and is the marker for that environment; `SHELL` is the secondary signal for
+/// a POSIX shell launched some other way.
+fn preferred_env_file(windows: bool, msystem: Option<&str>, shell: Option<&str>) -> &'static str {
+    if !windows {
+        return UNIX_ENV_FILE;
+    }
+    let in_msys = msystem.is_some_and(|v| !v.trim().is_empty());
+    let posix_shell = shell.is_some_and(|s| {
+        let normalized = cfgd_core::posixify_text(s);
+        let file = normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let stem = file.strip_suffix(".exe").unwrap_or(file.as_str());
+        matches!(stem, "bash" | "sh" | "zsh" | "dash" | "fish" | "ksh")
+    });
+    if in_msys || posix_shell {
+        UNIX_ENV_FILE
+    } else {
+        PS_ENV_FILE
+    }
+}
+
+fn current_shell_env_file() -> &'static str {
+    preferred_env_file(
+        cfg!(windows),
+        std::env::var("MSYSTEM").ok().as_deref(),
+        std::env::var("SHELL").ok().as_deref(),
+    )
 }
 
 /// Render an absolute env-file path as `~/…` when it sits under the current

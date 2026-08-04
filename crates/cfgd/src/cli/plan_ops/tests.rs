@@ -1268,16 +1268,25 @@ fn shell_env_reminder_silent_when_all_env_actions_skipped() {
 }
 
 #[test]
+#[serial_test::serial]
 fn shell_env_reminder_names_the_written_env_file() {
-    let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
-    let result = env_apply_result(&[
-        format!("env:write:{home}/.cfgd.env").as_str(),
-        "env:inject:/home/u/.bashrc:skipped",
-    ]);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    let tmp = tempfile::tempdir().unwrap();
+    let (out, home) = cfgd_core::with_test_home(tmp.path(), || {
+        let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
+        let result = env_apply_result(&[
+            format!("env:write:{home}/.cfgd.env").as_str(),
+            "env:inject:/home/u/.bashrc:skipped",
+        ]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        print_shell_env_reminder(&result, &printer);
+        let out = buf.lock().unwrap().clone();
+        (out, home)
+    });
 
-    let out = buf.lock().unwrap().clone();
+    assert!(
+        !home.is_empty() && home != "~",
+        "the test home must resolve to a real sandbox path, got: {home}"
+    );
     assert!(
         out.contains("Shell environment changed"),
         "expected reminder heading, got: {out}"
@@ -1290,6 +1299,58 @@ fn shell_env_reminder_names_the_written_env_file() {
         out.contains("- or open a new shell"),
         "expected the new-shell alternative, got: {out}"
     );
+}
+
+#[test]
+fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
+    // The env engine emits the PowerShell file BEFORE the Git Bash one, so a
+    // first-match-wins pick would name `.cfgd-env.ps1` here. This host is a
+    // POSIX shell, so the reminder must reach past the leading candidate.
+    let result = env_apply_result(&[
+        "env:write:/home/u/.cfgd-env.ps1",
+        "env:write:/home/u/.cfgd.env",
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("- run: source /home/u/.cfgd.env"),
+        "expected the shell-matching file, got: {out}"
+    );
+    assert!(
+        !out.contains(".cfgd-env.ps1"),
+        "must not name a file this shell cannot source: {out}"
+    );
+}
+
+#[test]
+fn preferred_env_file_follows_the_running_shell_on_windows() {
+    let cases: [(bool, Option<&str>, Option<&str>, &str); 7] = [
+        // POSIX hosts have exactly one env file, whatever `SHELL` says.
+        (false, None, Some("/bin/bash"), ".cfgd.env"),
+        (false, None, None, ".cfgd.env"),
+        // Windows with no POSIX-shell marker: PowerShell is the shell in use.
+        (true, None, None, ".cfgd-env.ps1"),
+        (true, Some(""), Some("cmd.exe"), ".cfgd-env.ps1"),
+        // MSYSTEM is exported by every MSYS2 / Git Bash shell.
+        (true, Some("MINGW64"), None, ".cfgd.env"),
+        (true, Some("CLANG64"), Some("powershell.exe"), ".cfgd.env"),
+        // A POSIX shell reached some other way still reads SHELL.
+        (
+            true,
+            None,
+            Some(r"C:\Program Files\Git\usr\bin\bash.exe"),
+            ".cfgd.env",
+        ),
+    ];
+    for (windows, msystem, shell, want) in cases {
+        let got = preferred_env_file(windows, msystem, shell);
+        assert_eq!(
+            got, want,
+            "windows={windows} msystem={msystem:?} shell={shell:?}"
+        );
+    }
 }
 
 #[test]

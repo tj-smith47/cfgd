@@ -11343,6 +11343,187 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
 }
 
 #[test]
+#[serial_test::serial]
+fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // `spec.env` makes the Env phase write the file early; the bootstrap makes
+    // the post-phase regeneration rewrite the same file. One surface, one row.
+    let state = test_state();
+    let registry = registry_with_bootstrappable_brew();
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env = vec![crate::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }];
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let planned_total: usize = plan.phases.iter().map(|p| p.actions.len()).sum();
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let env_file = crate::to_posix_string(tmp_home.path().join(".cfgd.env"));
+    let rows: Vec<&ActionResult> = result
+        .action_results
+        .iter()
+        .filter(|r| r.description.trim_end_matches(":skipped") == format!("env:write:{env_file}"))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one env surface must yield one result: {:?}",
+        result.action_results
+    );
+    assert!(rows[0].changed, "the surface was written, so it changed");
+    assert!(
+        result.action_results.len() <= planned_total,
+        "results ({}) must not outgrow the {planned_total} planned actions",
+        result.action_results.len()
+    );
+
+    // The merge must not swallow the regeneration's content.
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env")).unwrap();
+    assert!(
+        contents.contains("export EDITOR=\"nvim\"")
+            && contents.contains("/home/linuxbrew/.linuxbrew/bin"),
+        "both inputs must survive into the file: {contents}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_phase_modules_bootstraps_without_touching_any_env_surface() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // A pre-existing rc file gives the source-line injection something real to
+    // land in, so its absence afterwards is evidence rather than a vacuous pass.
+    let bashrc = tmp_home.path().join(".bashrc");
+    std::fs::write(&bashrc, "# user's own line\n").unwrap();
+
+    let state = test_state();
+    let registry = registry_with_bootstrappable_brew();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // `--phase modules` must stay inside the Modules phase. Rewriting the env
+    // file or injecting a source line into an rc file reaches surfaces the
+    // caller deliberately excluded.
+    assert!(
+        !tmp_home.path().join(".cfgd.env").exists(),
+        "a phase-scoped apply must not write the env file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bashrc).unwrap(),
+        "# user's own line\n",
+        "a phase-scoped apply must not inject a source line"
+    );
+    assert!(
+        !result
+            .action_results
+            .iter()
+            .any(|r| r.description.starts_with("env:")),
+        "no env result may be reported: {:?}",
+        result.action_results
+    );
+
+    // The bootstrap record IS durable, so the next unfiltered apply converges
+    // the file rather than losing the directories forever. It re-plans first,
+    // exactly as `cfgd apply` does — and that fresh plan reads the record the
+    // phase-scoped run left behind.
+    let replan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let unfiltered = reconciler
+        .apply(
+            &replan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(unfiltered.status, ApplyStatus::Success);
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
+        .expect("the following unfiltered apply must converge the env file");
+    assert!(
+        contents.contains(
+            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "the recorded directories must survive the phase-scoped run: {contents}"
+    );
+}
+
+#[test]
 fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
     let state = test_state();
     let registry = ProviderRegistry::new();

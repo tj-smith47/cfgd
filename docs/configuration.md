@@ -551,6 +551,7 @@ On Windows, cfgd supports the same configuration structure with these platform-s
 | Package managers | `winget`, `chocolatey`, `scoop` (in addition to cross-platform managers like `cargo`, `npm`, `pipx`) |
 | System configurators | `windowsRegistry`, `windowsServices`; `shell` targets Windows Terminal; `environment` writes to `HKCU\Environment` via `setx` |
 | `spec.env` reach | Writes `~/.cfgd-env.ps1` dot-sourced from the PowerShell profiles (and Git Bash rc when present); `envScope: All` (default) also persists vars to `HKCU\Environment` via `setx` |
+| Reload reminder | After an apply changes your env, cfgd names the file your current shell can read — `. ~/.cfgd-env.ps1` under PowerShell, `source ~/.cfgd.env` under Git Bash / MSYS2 (detected via `MSYSTEM`, falling back to `SHELL`) |
 | File strategy | `Symlink` requires Developer Mode or an elevated prompt; `Copy` is a safe default |
 | Daemon service | Registered as a Windows Service via `sc.exe`; starts at boot; logs to `%LOCALAPPDATA%\cfgd\daemon.log` |
 | Config directory | `%APPDATA%\cfgd` (equivalent to `~/.config/cfgd` on Unix) |

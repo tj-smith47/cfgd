@@ -15,7 +15,14 @@ Apply runs in a fixed phase order:
 7. **Secrets** — decrypt SOPS files, resolve external provider references
 8. **Post-Scripts** — profile-level `postApply` or `postReconcile` hooks, `onChange` hooks
 
-Each phase can be applied independently with `cfgd apply --phase <name>`.
+Each phase can be applied independently with `cfgd apply --phase <name>`. A phase-scoped
+apply only touches the surfaces that phase owns: bootstrapping a package manager under
+`--phase modules` records its PATH entries but leaves `~/.cfgd.env` and your shell rc files
+alone. The record is durable, so the next full `cfgd apply` folds those entries in.
+
+A full apply needs no second run for that: the Env phase runs before Modules and Packages,
+so cfgd regenerates `~/.cfgd.env` once at the end of the apply that bootstrapped the manager,
+and the file is correct when that run finishes.
 
 ## Apply vs Reconcile Context
 

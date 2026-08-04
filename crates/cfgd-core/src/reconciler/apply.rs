@@ -50,6 +50,51 @@ pub fn action_matches_phase_filter(
     }
 }
 
+/// Suffix `apply_env_action` appends to a description when the surface was
+/// already correct and nothing was written.
+const ENV_SKIPPED_SUFFIX: &str = ":skipped";
+
+fn env_result_key(description: &str) -> &str {
+    description
+        .strip_suffix(ENV_SKIPPED_SUFFIX)
+        .unwrap_or(description)
+}
+
+/// Fold a late env regeneration into the result the Env phase already recorded
+/// for the same surface.
+///
+/// The regeneration rewrites files the Env phase may have written earlier in the
+/// same apply. Appending a second result would report one `~/.cfgd.env` twice and
+/// push `results.len()` past the planned-action count every caller compares it
+/// against. A prior *failure* is left standing as its own row: a failed attempt
+/// and a later successful one are distinct events and collapsing them would hide
+/// the error.
+fn merge_env_result(results: &mut Vec<ActionResult>, description: String, changed: bool) {
+    let key = env_result_key(&description);
+    if let Some(prev) = results
+        .iter_mut()
+        .find(|r| r.success && env_result_key(&r.description) == key)
+    {
+        prev.changed = prev.changed || changed;
+        prev.description = if prev.changed {
+            key.to_string()
+        } else {
+            description
+        };
+        return;
+    }
+    results.push(ActionResult {
+        // These are env actions no matter which late input triggered them, and a
+        // caller filtering results by phase must find them where every other
+        // `env:write:`/`env:inject:` result sits.
+        phase: PhaseName::Env.as_str().to_string(),
+        description,
+        success: true,
+        error: None,
+        changed,
+    });
+}
+
 fn is_post_apply_script(action: &Action) -> bool {
     matches!(
         action,
@@ -447,7 +492,13 @@ impl<'a> super::Reconciler<'a> {
         // the same apply instead of leaving it right only from the next one on.
         let path_dirs_now =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
-        if !secret_env_collector.is_empty() || path_dirs_now != path_dirs_at_plan {
+        // A phase-scoped run must stay inside the phase the caller asked for.
+        // `--phase modules` bootstrapping a manager would otherwise reach out
+        // and rewrite `~/.cfgd.env` plus the source lines in `~/.bashrc` —
+        // surfaces the Env phase owns. The bootstrap record is durable either
+        // way, so the next unfiltered apply still converges the file.
+        let path_dirs_changed = phase_filter.is_none() && path_dirs_now != path_dirs_at_plan;
+        if !secret_env_collector.is_empty() || path_dirs_changed {
             let (env_actions, _) = Self::plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
@@ -466,18 +517,8 @@ impl<'a> super::Reconciler<'a> {
                             // write marks itself skipped). This path calls
                             // `apply_env_action` directly, so it reads the same
                             // shape — it is not a general description sniff.
-                            let changed = !desc.contains(":skipped");
-                            results.push(ActionResult {
-                                // These are env actions no matter which late
-                                // input triggered them, and a caller filtering
-                                // results by phase must find them where every
-                                // other `env:write:`/`env:inject:` result sits.
-                                phase: PhaseName::Env.as_str().to_string(),
-                                description: desc,
-                                success: true,
-                                error: None,
-                                changed,
-                            });
+                            let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
+                            merge_env_result(&mut results, desc, changed);
                         }
                         Err(e) => {
                             printer.status_simple(
