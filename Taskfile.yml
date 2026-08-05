@@ -602,7 +602,11 @@ tasks:
       # x86_64-linux-musl-gcc on this host — zig supplies the cross C toolchain,
       # exactly as the nightly cross-compile job does.
       - cargo zigbuild --release --target x86_64-unknown-linux-musl --bin cfgd
-      - install -D -m 0755 target/x86_64-unknown-linux-musl/release/cfgd demo/bin/cfgd
+      # `install -D` is a GNU coreutils extension; BSD/macOS `install` lacks
+      # it, so create the destination directory separately and use the
+      # `-m`-only form both userlands support.
+      - mkdir -p demo/bin
+      - install -m 0755 target/x86_64-unknown-linux-musl/release/cfgd demo/bin/cfgd
 
   demo:image:
     desc: Build the bare Ubuntu image the tape records against.
