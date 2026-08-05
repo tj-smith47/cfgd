@@ -42,9 +42,11 @@ pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyl
         Role::Pending => (Some(theme.icon_pending.as_str()), theme.muted.clone()),
         Role::Running => (Some(theme.icon_running.as_str()), theme.running.clone()),
         Role::Skipped => (Some(theme.icon_skipped.as_str()), theme.muted.clone()),
-        Role::Info => (None, ThemedStyle::plain()),
-        // Accent + Secondary intentionally claim no icon — they accent the
-        // text payload, they don't reserve a status-line glyph column.
+        // Info, Accent + Secondary intentionally claim no icon — they style the
+        // text payload, they don't reserve a status-line glyph column. Info still
+        // takes its theme slot: a role that renders as unstyled default terminal
+        // text is indistinguishable from output that bypassed the Printer.
+        Role::Info => (None, theme.info.clone()),
         Role::Accent => (None, theme.accent.clone()),
         Role::Secondary => (None, theme.secondary.clone()),
     }
@@ -54,11 +56,68 @@ pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyl
 mod tests {
     use super::*;
 
+    /// `ThemedStyle` has no `PartialEq`; its `Debug` carries the color triple
+    /// and the attribute set, which is the whole of its rendering payload.
+    fn style_repr(style: &ThemedStyle) -> String {
+        format!("{style:?}")
+    }
+
     #[test]
-    fn info_has_no_icon() {
+    fn info_has_no_icon_but_keeps_its_theme_style() {
         let t = Theme::default();
-        let (icon, _) = role_glyph(&t, Role::Info);
+        let (icon, style) = role_glyph(&t, Role::Info);
         assert!(icon.is_none());
+        assert_eq!(style_repr(&style), style_repr(&t.info));
+        assert_ne!(style_repr(&style), style_repr(&ThemedStyle::plain()));
+    }
+
+    /// A role that renders with a style it did not take from the active theme
+    /// is invisible to every theme preset and to `ThemeOverrides` — that is how
+    /// the npm global-prefix notice shipped as bare unstyled white text while
+    /// still passing the "all output routes through Printer" gate. Checked
+    /// against each preset so a slot mixup can't hide behind two themes that
+    /// happen to color two roles alike.
+    #[test]
+    fn every_role_renders_with_its_own_theme_slot() {
+        for preset in [
+            "default",
+            "dracula",
+            "solarized-dark",
+            "solarized-light",
+            "minimal",
+        ] {
+            let t = Theme::from_preset(preset);
+            for role in [
+                Role::Ok,
+                Role::Warn,
+                Role::Fail,
+                Role::Pending,
+                Role::Running,
+                Role::Skipped,
+                Role::Info,
+                Role::Accent,
+                Role::Secondary,
+            ] {
+                // Exhaustive by construction: a new `Role` fails to compile here
+                // until its theme slot is named.
+                let expected = match role {
+                    Role::Ok => &t.success,
+                    Role::Warn => &t.warning,
+                    Role::Fail => &t.error,
+                    Role::Pending | Role::Skipped => &t.muted,
+                    Role::Running => &t.running,
+                    Role::Info => &t.info,
+                    Role::Accent => &t.accent,
+                    Role::Secondary => &t.secondary,
+                };
+                let (_, style) = role_glyph(&t, role);
+                assert_eq!(
+                    style_repr(&style),
+                    style_repr(expected),
+                    "{role:?} does not use its {preset} theme slot"
+                );
+            }
+        }
     }
 
     #[test]

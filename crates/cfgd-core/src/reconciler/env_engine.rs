@@ -84,18 +84,26 @@ pub(super) struct EnvHostProbe {
     pub bash_login_exists: bool,
     /// Whether a POSIX `sh` (Git Bash) is on PATH — Windows-only relevance.
     pub git_bash_present: bool,
+    /// Whether zsh is actually in use on this host — the login shell is zsh, a
+    /// `zsh` binary is on PATH, or the user already keeps a `~/.zshrc`. Gates
+    /// `~/.zshenv`: a bash-only host must not gain an inert cfgd-owned login file.
+    pub zsh_present: bool,
 }
 
 impl EnvHostProbe {
     pub(super) fn detect(home: &Path) -> Self {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let fish_conf_d = home.join(".config/fish/conf.d");
+        let zsh_present = shell.contains("zsh")
+            || crate::command_available("zsh")
+            || home.join(".zshrc").exists();
         Self {
             shell,
             fish_present: fish_in_use() && fish_conf_d.exists(),
             bash_profile_exists: home.join(".bash_profile").exists(),
             bash_login_exists: home.join(".bash_login").exists(),
             git_bash_present: cfg!(windows) && crate::command_available("sh"),
+            zsh_present,
         }
     }
 }
@@ -198,11 +206,15 @@ fn unix_targets(
 
     // Login (Login + All): login shells via source lines into user-owned files.
     if reaches_login(scope) {
-        // zsh reads ~/.zshenv in every context; safe to create when absent.
-        out.push(EnvTarget::SourceLine {
-            rc_path: home.join(".zshenv"),
-            line: UNIX_SOURCE_LINE.to_string(),
-        });
+        // zsh reads ~/.zshenv in every context, but only write it when zsh is
+        // actually in use — a bash-only host would otherwise gain an inert file
+        // (and a spurious write line on-camera) for a shell it never runs.
+        if probe.zsh_present {
+            out.push(EnvTarget::SourceLine {
+                rc_path: home.join(".zshenv"),
+                line: UNIX_SOURCE_LINE.to_string(),
+            });
+        }
         // ~/.profile is the safe sh/bash login fallback. Never create
         // ~/.bash_profile — bash reads the first existing of .bash_profile,
         // .bash_login, .profile and stops, so creating one shadows .profile.
@@ -306,7 +318,14 @@ pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
-        lines.push(format!("{}={}", ev.name, ev.value));
+        // Quoted, not raw: a newline in the value would otherwise end the
+        // assignment and let the rest of it stand as further assignments in
+        // the user's systemd environment.
+        lines.push(format!(
+            "{}={}",
+            ev.name,
+            crate::posix_single_quoted(&ev.value)
+        ));
     }
     lines.push(String::new());
     lines.join("\n")

@@ -371,6 +371,7 @@ pub(in crate::cli) fn display_plan_table(
     printer: &Printer,
     phase_filter: Option<&PhaseName>,
 ) {
+    let mut printed_any = false;
     for phase_item in &plan.phases {
         if let Some(pf) = phase_filter
             && &phase_item.name != pf
@@ -378,6 +379,14 @@ pub(in crate::cli) fn display_plan_table(
             continue;
         }
         let items = reconciler::format_plan_items(phase_item);
+        // With no phase filter, an empty phase is pure noise beside phases that
+        // have real work — skip its header entirely. A single "(nothing to do)"
+        // for a wholly empty plan is emitted after the loop. When a phase was
+        // explicitly requested, always show it so the answer is never silent.
+        if items.is_empty() && phase_filter.is_none() {
+            continue;
+        }
+        printed_any = true;
         let phase = printer.section(format!("Phase: {}", phase_item.name.display_name()));
         if items.is_empty() {
             phase.empty_state("(nothing to do)");
@@ -397,6 +406,10 @@ pub(in crate::cli) fn display_plan_table(
                 }
             }
         }
+    }
+    if !printed_any && phase_filter.is_none() {
+        let phase = printer.section("Plan");
+        phase.empty_state("(nothing to do)");
     }
 }
 

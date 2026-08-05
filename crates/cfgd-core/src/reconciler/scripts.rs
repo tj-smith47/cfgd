@@ -540,10 +540,15 @@ pub(crate) fn execute_script(
         if !ring.is_empty() {
             let mut msg = label.clone();
             for l in &ring {
-                let display = if l.len() > 120 {
-                    l.get(..120).unwrap_or(l)
+                // A child like `nvim --headless` emits its own ANSI screen-reset
+                // and cursor-move sequences; fed verbatim into the spinner message
+                // they execute on the real terminal and blank the recording. Strip
+                // full ANSI sequences, then escape any residual bare control bytes.
+                let clean = crate::escape_control_chars(&crate::output::strip_ansi(l));
+                let display = if clean.len() > 120 {
+                    clean.get(..120).unwrap_or(&clean)
                 } else {
-                    l.as_str()
+                    clean.as_str()
                 };
                 msg.push_str(&format!("\n  {}", display));
             }

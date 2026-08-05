@@ -5,12 +5,12 @@ use std::str::FromStr;
 
 use crate::PathDisplayExt;
 use crate::config::*;
-use crate::providers::PackageManager;
+use crate::providers::{PackageContext, PackageManager};
 
 use crate::providers::StubPackageManager as MockPackageManager;
 use crate::test_helpers::{
     MockSecretBackend, MockSecretProvider, MockSystemConfigurator, make_empty_resolved,
-    make_resolved_module, test_printer, test_state,
+    make_resolved_module, test_package_context, test_printer, test_state,
 };
 
 #[test]
@@ -1889,6 +1889,7 @@ fn plan_env_empty_when_no_env() {
         &[],
         &[],
         &[],
+        &[],
         tmp.path(),
     );
     assert!(actions.is_empty());
@@ -1928,6 +1929,7 @@ fn plan_env_module_wins_on_conflict() {
         &[],
         crate::config::EnvScope::Interactive,
         &modules,
+        &[],
         &[],
         &[],
         tmp.path(),
@@ -2016,6 +2018,7 @@ fn plan_env_aliases_only() {
         &[],
         &[],
         &[],
+        &[],
         tmp.path(),
     );
     let has_write = actions
@@ -2058,6 +2061,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         &profile_aliases,
         crate::config::EnvScope::Interactive,
         &modules,
+        &[],
         &[],
         &[],
         tmp.path(),
@@ -2168,6 +2172,7 @@ fn plan_env_with_secret_envs_includes_them() {
         &[],
         &secret_envs,
         &[],
+        &[],
         tmp.path(),
     );
     // With non-empty secret envs, there should be at least a WriteEnvFile action
@@ -2192,6 +2197,7 @@ fn plan_env_secret_envs_appear_in_generated_content() {
         crate::config::EnvScope::Interactive,
         &[],
         &secret_envs,
+        &[],
         &[],
         tmp.path(),
     );
@@ -2367,7 +2373,7 @@ fn generate_powershell_env_with_aliases() {
         },
     ];
     let content = super::generate_powershell_env_content(&[], &aliases, &[]);
-    assert!(content.contains("Set-Alias -Name g -Value git"));
+    assert!(content.contains("Set-Alias -Name g -Value 'git'"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -2449,10 +2455,10 @@ impl PackageManager for TrackingPackageManager {
     fn bootstrap(&self, _printer: &Printer) -> Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(self.installed.lock().unwrap().clone())
     }
-    fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.install_calls.lock().unwrap().push(packages.to_vec());
         let mut installed = self.installed.lock().unwrap();
         for p in packages {
@@ -2460,7 +2466,7 @@ impl PackageManager for TrackingPackageManager {
         }
         Ok(())
     }
-    fn uninstall(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.uninstall_calls.lock().unwrap().push(packages.to_vec());
         let mut installed = self.installed.lock().unwrap();
         for p in packages {
@@ -2468,7 +2474,7 @@ impl PackageManager for TrackingPackageManager {
         }
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -2499,7 +2505,10 @@ fn stale_tracked_packages_core_identifies_gone_rows() {
     let cfgd_installed: HashSet<String> = ["cargo/bat".to_string(), "cargo/ghost".to_string()]
         .into_iter()
         .collect();
-    let stale = stale_tracked_packages(&managers, &cfgd_installed).unwrap();
+    let state = test_state();
+    let printer = test_printer();
+    let cx = test_package_context(&printer, &state);
+    let stale = stale_tracked_packages(&managers, &cfgd_installed, &cx).unwrap();
     assert_eq!(stale, vec![("cargo".to_string(), "ghost".to_string())]);
 }
 
@@ -2611,7 +2620,8 @@ fn apply_package_install_calls_mock_and_records_state() {
 
     // Verify install was actually called on the tracking mock
     let pm = registry.package_managers[0].as_ref();
-    let installed = pm.installed_packages().unwrap();
+    let cx = test_package_context(&printer, &state);
+    let installed = pm.installed_packages(&cx).unwrap();
     assert!(installed.contains("ripgrep"));
     assert!(installed.contains("fd"));
 }
@@ -2636,16 +2646,16 @@ impl PackageManager for ScriptedLikeManager {
     fn bootstrap(&self, _printer: &Printer) -> Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(HashSet::new())
     }
-    fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -2783,7 +2793,8 @@ fn apply_package_uninstall_calls_mock() {
     assert!(result.action_results[0].success);
 
     let pm = registry.package_managers[0].as_ref();
-    let installed = pm.installed_packages().unwrap();
+    let cx = test_package_context(&printer, &state);
+    let installed = pm.installed_packages(&cx).unwrap();
     assert!(!installed.contains("ripgrep"));
     assert!(installed.contains("fd"));
 }
@@ -3530,9 +3541,10 @@ fn apply_multiple_package_actions_all_succeed() {
 
     // Verify both managers had their install called
     let brew = registry.package_managers[0].as_ref();
-    assert!(brew.installed_packages().unwrap().contains("jq"));
     let cargo = registry.package_managers[1].as_ref();
-    assert!(cargo.installed_packages().unwrap().contains("bat"));
+    let cx = test_package_context(&printer, &state);
+    assert!(brew.installed_packages(&cx).unwrap().contains("jq"));
+    assert!(cargo.installed_packages(&cx).unwrap().contains("bat"));
 }
 
 #[test]
@@ -4316,20 +4328,20 @@ impl PackageManager for FailingPackageManager {
     fn bootstrap(&self, _printer: &Printer) -> Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(HashSet::new())
     }
-    fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Err(crate::errors::PackageError::InstallFailed {
             manager: self.name.clone(),
             message: "simulated install failure".to_string(),
         }
         .into())
     }
-    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -5366,7 +5378,10 @@ fn action_target_path_file_create() {
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
     });
-    assert_eq!(super::action_target_path(&action), Some(target));
+    assert_eq!(
+        super::action_target_path(&action).map(|b| b.path),
+        Some(target)
+    );
 }
 
 #[test]
@@ -5380,7 +5395,10 @@ fn action_target_path_file_update() {
         strategy: crate::config::FileStrategy::Copy,
         source_hash: None,
     });
-    assert_eq!(super::action_target_path(&action), Some(target));
+    assert_eq!(
+        super::action_target_path(&action).map(|b| b.path),
+        Some(target)
+    );
 }
 
 #[test]
@@ -5390,7 +5408,10 @@ fn action_target_path_file_delete() {
         target: target.clone(),
         origin: "local".into(),
     });
-    assert_eq!(super::action_target_path(&action), Some(target));
+    assert_eq!(
+        super::action_target_path(&action).map(|b| b.path),
+        Some(target)
+    );
 }
 
 #[test]
@@ -5400,7 +5421,10 @@ fn action_target_path_env_write() {
         path: path.clone(),
         content: "test".into(),
     });
-    assert_eq!(super::action_target_path(&action), Some(path));
+    assert_eq!(
+        super::action_target_path(&action).map(|b| b.path),
+        Some(path)
+    );
 }
 
 #[test]
@@ -5426,12 +5450,21 @@ fn action_target_path_module_returns_none() {
 }
 
 #[test]
-fn action_target_path_env_inject_returns_none() {
+fn action_target_path_env_inject_returns_the_rc_path() {
+    // The injection rewrites a user-owned dotfile in full, so it must produce a
+    // backup row: without one, a failed or unwanted rewrite of ~/.bashrc has
+    // nothing for `cfgd rollback` to restore.
+    let rc_path = PathBuf::from("/home/user/.bashrc");
     let action = Action::Env(EnvAction::InjectSourceLine {
-        rc_path: PathBuf::from("/home/user/.bashrc"),
+        rc_path: rc_path.clone(),
         line: ". ~/.cfgd.env".into(),
     });
-    assert!(super::action_target_path(&action).is_none());
+    let backup = super::action_target_path(&action).expect("an injection must be backed up");
+    assert_eq!(backup.path, rc_path);
+    assert!(
+        backup.follow_symlink,
+        "the injection writes through a symlinked rc, so the backup must read through it too"
+    );
 }
 
 #[test]
@@ -6304,24 +6337,24 @@ impl PackageManager for BootstrappablePackageManager {
         *self.bootstrapped.lock().unwrap() = true;
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(self.installed.lock().unwrap().clone())
     }
-    fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         let mut installed = self.installed.lock().unwrap();
         for p in packages {
             installed.insert(p.clone());
         }
         Ok(())
     }
-    fn uninstall(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         let mut installed = self.installed.lock().unwrap();
         for p in packages {
             installed.remove(p);
         }
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -7609,7 +7642,10 @@ fn apply_module_install_packages_calls_manager() {
     );
 
     // Verify install was called
-    let installed = registry.package_managers[0].installed_packages().unwrap();
+    let cx = test_package_context(&printer, &state);
+    let installed = registry.package_managers[0]
+        .installed_packages(&cx)
+        .unwrap();
     assert!(installed.contains("neovim"));
 }
 
@@ -7918,9 +7954,10 @@ fn apply_module_install_packages_bootstraps_when_needed() {
 
     // Manager should have been bootstrapped and package installed
     assert!(registry.package_managers[0].is_available());
+    let cx = test_package_context(&printer, &state);
     assert!(
         registry.package_managers[0]
-            .installed_packages()
+            .installed_packages(&cx)
             .unwrap()
             .contains("jq")
     );
@@ -10955,23 +10992,23 @@ impl PackageManager for BootstrappingPackageManager {
         *self.available.lock().unwrap() = true;
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(HashSet::new())
     }
-    fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.install_calls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
-    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
-    fn path_dirs(&self) -> Vec<String> {
+    fn path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
         self.path_dirs_after.clone()
     }
 }
@@ -11398,6 +11435,12 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
         name: "EDITOR".into(),
         value: "nvim".into(),
     }];
+    // The default `EnvScope::All` also plans a live-session refresh, and this
+    // test applies unfiltered — that action shells out to the developer's real
+    // login session (`systemctl --user set-environment`, `launchctl setenv`,
+    // `setx` into HKCU) which no test home can sandbox. File merging is the
+    // subject here, so keep the scope to the surfaces that stay on disk.
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
     let modules = vec![make_resolved_module("tools")];
 
     let plan = reconciler
@@ -11410,6 +11453,14 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
         )
         .unwrap();
     let planned_total: usize = plan.phases.iter().map(|p| p.actions.len()).sum();
+    assert!(
+        !plan
+            .phases
+            .iter()
+            .flat_map(|p| &p.actions)
+            .any(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. }))),
+        "no live-session refresh may be planned before this test applies"
+    );
 
     let printer = test_printer();
     let result = reconciler
@@ -11427,6 +11478,21 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
         )
         .unwrap();
     assert_eq!(result.status, ApplyStatus::Success);
+    // The bootstrap makes this apply a candidate for the post-phase env
+    // regeneration, which re-plans env work from scratch — so a plan-level
+    // check alone cannot prove the live session was left alone. The applied
+    // results are where a regenerated refresh would surface.
+    assert!(
+        !result.action_results.iter().any(|r| r
+            .description
+            .contains(super::format::LIVE_SESSION_RESOURCE_ID)),
+        "the host's live session must not be touched: {:?}",
+        result
+            .action_results
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect::<Vec<_>>()
+    );
 
     let env_file = crate::to_posix_string(tmp_home.path().join(".cfgd.env"));
     let rows: Vec<&ActionResult> = result
@@ -11465,6 +11531,71 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
         contents.contains("export EDITOR=\"nvim\"")
             && contents.contains("/home/linuxbrew/.linuxbrew/bin"),
         "both inputs must survive into the file: {contents}"
+    );
+}
+
+/// Planning is pure, so the widest scope can be covered here without the
+/// session shell-out that makes applying it untestable: the refresh action is
+/// asserted as a planned value and the plan is deliberately never applied.
+#[test]
+#[serial_test::serial]
+fn plan_env_all_scope_appends_a_live_session_refresh_after_the_file_surfaces() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env = vec![crate::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }];
+    resolved.merged.env_scope = crate::config::EnvScope::All;
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let env_actions: Vec<&Action> = plan
+        .phases
+        .iter()
+        .flat_map(|p| &p.actions)
+        .filter(|a| matches!(a, Action::Env(_)))
+        .collect();
+    let refresh_at = env_actions
+        .iter()
+        .position(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. })))
+        .expect("EnvScope::All must plan a live-session refresh");
+    assert_eq!(
+        refresh_at,
+        env_actions.len() - 1,
+        "the refresh must run after the durable files are written: {:?}",
+        env_actions
+            .iter()
+            .map(|a| crate::reconciler::format_action_description(a))
+            .collect::<Vec<_>>()
+    );
+    let Action::Env(EnvAction::RefreshLiveSession { vars }) = env_actions[refresh_at] else {
+        unreachable!("the position above matched this variant")
+    };
+    assert_eq!(
+        vars.as_slice(),
+        &[("EDITOR".to_string(), "nvim".to_string())],
+        "the refresh must carry the declared variables"
+    );
+    assert_eq!(
+        crate::reconciler::format_action_description(env_actions[refresh_at]),
+        super::format::LIVE_SESSION_RESOURCE_ID,
+        "the refresh resource-id is what the apply-side guards match on"
     );
 }
 
@@ -12245,6 +12376,12 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
         name: "API_TOKEN".to_string(),
         value: String::new(),
     });
+    // Under the default `EnvScope::All` the secret-env regeneration also plans a
+    // live-session refresh, which would publish the resolved secret into the
+    // developer's real login session via `systemctl --user set-environment` /
+    // `launchctl setenv` / `setx`. A test home cannot sandbox a session
+    // shell-out, so keep the scope to on-disk surfaces.
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
 
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
@@ -12300,6 +12437,12 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
             .iter()
             .any(|d| d.contains("secret:resolve-env")),
         "expected secret:resolve-env action result, got: {descriptions:?}"
+    );
+    assert!(
+        !descriptions
+            .iter()
+            .any(|d| d.contains(super::format::LIVE_SESSION_RESOURCE_ID)),
+        "the resolved secret must not be pushed into the host's live session: {descriptions:?}"
     );
     // PathBuf usage to anchor the import even when run on platforms where
     // home expansion differs.
@@ -13304,6 +13447,7 @@ fn env_probe(shell: &str) -> EnvHostProbe {
         bash_profile_exists: false,
         bash_login_exists: false,
         git_bash_present: false,
+        zsh_present: shell.contains("zsh"),
     }
 }
 
@@ -13371,8 +13515,30 @@ fn env_targets_interactive_zsh_uses_zshrc() {
 }
 
 #[test]
-fn env_targets_login_adds_zshenv_and_profile_but_not_bash_profile_when_absent() {
+fn env_targets_login_adds_zshenv_only_when_zsh_present() {
     let home = Path::new("/h");
+    // zsh in use ⇒ ~/.zshenv is written into the login chain.
+    let t = env_targets(
+        &one_env(),
+        &[],
+        &[],
+        EnvScope::Login,
+        home,
+        &env_probe("/bin/zsh"),
+        EnvPlatform::Linux,
+    );
+    let keys = target_keys(&t);
+    assert_eq!(
+        keys,
+        vec![
+            "file:/h/.cfgd.env",
+            "src:/h/.zshrc",
+            "src:/h/.zshenv",
+            "src:/h/.profile",
+        ]
+    );
+
+    // bash-only host ⇒ no inert ~/.zshenv for a shell it never runs.
     let t = env_targets(
         &one_env(),
         &[],
@@ -13385,12 +13551,7 @@ fn env_targets_login_adds_zshenv_and_profile_but_not_bash_profile_when_absent() 
     let keys = target_keys(&t);
     assert_eq!(
         keys,
-        vec![
-            "file:/h/.cfgd.env",
-            "src:/h/.bashrc",
-            "src:/h/.zshenv",
-            "src:/h/.profile",
-        ]
+        vec!["file:/h/.cfgd.env", "src:/h/.bashrc", "src:/h/.profile"]
     );
     // The bash first-match gotcha: never create ~/.bash_profile from nothing.
     assert!(!keys.iter().any(|k| k.ends_with(".bash_profile")));
@@ -13565,11 +13726,40 @@ fn environment_d_content_is_key_value_not_shell() {
         },
     ];
     let content = generate_environment_d_content(&env);
-    assert!(content.contains("EDITOR=nvim"));
-    assert!(content.contains("PATH=/usr/bin:/bin"));
-    // environment.d is not shell: no `export`, no surrounding quotes.
+    assert!(content.contains("EDITOR='nvim'"));
+    assert!(content.contains("PATH='/usr/bin:/bin'"));
+    // environment.d is not shell: the parser reads assignments, so `export`
+    // would be part of the name rather than a keyword.
     assert!(!content.contains("export "));
-    assert!(!content.contains("EDITOR=\""));
+}
+
+#[test]
+fn environment_d_content_quotes_a_value_carrying_a_newline() {
+    let env = vec![EnvVar {
+        name: "RAW".into(),
+        // Unquoted, the newline ends the assignment and the tail stands as a
+        // second one — systemd would put LD_PRELOAD in the user's session.
+        value: "a\nLD_PRELOAD=/evil.so".into(),
+    }];
+    let content = generate_environment_d_content(&env);
+    assert!(
+        content.contains("RAW='a\nLD_PRELOAD=/evil.so'"),
+        "unexpected content: {content}"
+    );
+    assert!(!content.contains("\nLD_PRELOAD=/evil.so\n"));
+}
+
+#[test]
+fn environment_d_content_re_supplies_an_embedded_quote() {
+    let env = vec![EnvVar {
+        name: "Q".into(),
+        value: "it's".into(),
+    }];
+    let content = generate_environment_d_content(&env);
+    assert!(
+        content.contains("Q='it'\\''s'"),
+        "unexpected content: {content}"
+    );
 }
 
 #[test]
@@ -13646,8 +13836,16 @@ fn launchd_plist_xml_escapes_values() {
 #[test]
 fn plan_env_all_scope_emits_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _w) =
-        Reconciler::plan_env_with_home(&one_env(), &[], EnvScope::All, &[], &[], &[], tmp.path());
+    let (actions, _w) = Reconciler::plan_env_with_home(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        &[],
+        &[],
+        &[],
+        &[],
+        tmp.path(),
+    );
     assert!(
         actions
             .iter()
@@ -13663,6 +13861,7 @@ fn plan_env_interactive_scope_has_no_live_session_action() {
         &one_env(),
         &[],
         EnvScope::Interactive,
+        &[],
         &[],
         &[],
         &[],
@@ -13934,6 +14133,7 @@ fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
         bash_profile_exists: false,
         bash_login_exists: false,
         git_bash_present: true,
+        zsh_present: false,
     };
     let t = env_targets(
         &one_env(),
@@ -13966,6 +14166,7 @@ fn env_targets_fish_present_adds_managed_fish_file() {
         bash_profile_exists: false,
         bash_login_exists: false,
         git_bash_present: false,
+        zsh_present: false,
     };
     let t = env_targets(
         &one_env(),
@@ -14089,4 +14290,599 @@ fn execute_script_only_if_guard_skips_when_condition_unmet() {
     .unwrap();
     assert!(!changed, "onlyIf-unmet must skip the body");
     assert!(!dir.path().join("should-not-exist").exists());
+}
+
+#[test]
+fn apply_env_inject_refuses_a_non_utf8_rc_and_leaves_it_byte_identical() {
+    // A latin-1 rc file is a read failure, not an empty file. Degrading to an
+    // empty baseline would rewrite the user's whole rc down to cfgd's one line.
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    let original: &[u8] = b"# caf\xe9\nexport FOO=bar\n";
+    std::fs::write(&rc_path, original).unwrap();
+
+    let action = EnvAction::InjectSourceLine {
+        rc_path: rc_path.clone(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+    };
+    let printer = test_printer();
+    let err = Reconciler::apply_env_action(&action, &printer).unwrap_err();
+
+    assert!(
+        err.to_string().contains("not valid UTF-8"),
+        "error must name the cause: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&rc_path).unwrap(),
+        original,
+        "a refused inject must leave the rc byte-identical"
+    );
+}
+
+#[test]
+fn apply_env_write_regenerates_a_corrupt_managed_file() {
+    // The target of a managed write is cfgd's own generated file, so unreadable
+    // bytes are damage to regenerate, not user content to protect. Refusing
+    // instead would wedge every future apply on one stray byte, and the only
+    // recovery would be deleting a file the user never wrote.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".cfgd.env");
+    std::fs::write(&path, b"\xff\xfe# managed by cfgd\n").unwrap();
+
+    let content = "# managed by cfgd\nexport FOO=\"bar\"\n";
+    let action = EnvAction::WriteEnvFile {
+        path: path.clone(),
+        content: content.to_string(),
+    };
+    let printer = test_printer();
+    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+
+    assert!(
+        !desc.ends_with(super::apply::ENV_SKIPPED_SUFFIX),
+        "a regenerated file is a change, not a skip: {desc}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+}
+
+#[test]
+fn apply_env_inject_propagates_a_non_notfound_read_error() {
+    // Reading a directory as a file fails with something other than NotFound —
+    // the class of failure (EACCES after an elevated run, EIO) that must abort
+    // the write instead of producing an empty baseline.
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join("rc-as-a-directory");
+    std::fs::create_dir(&rc_path).unwrap();
+
+    let action = EnvAction::InjectSourceLine {
+        rc_path: rc_path.clone(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+    };
+    let printer = test_printer();
+    assert!(Reconciler::apply_env_action(&action, &printer).is_err());
+    assert!(rc_path.is_dir(), "the target must be left untouched");
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_env_inject_refuses_an_unreadable_rc() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    let original = "export FOO=bar\n";
+    std::fs::write(&rc_path, original).unwrap();
+    std::fs::set_permissions(&rc_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let action = EnvAction::InjectSourceLine {
+        rc_path: rc_path.clone(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+    };
+    let printer = test_printer();
+    let outcome = Reconciler::apply_env_action(&action, &printer);
+
+    // The kernel's read check does not apply to uid 0, so what stops an
+    // elevated run from rewriting this file is cfgd's own mode-based guard, and
+    // that is what the root arm pins. Both arms assert, so neither runner
+    // reports green having verified nothing.
+    let err = outcome.unwrap_err();
+    let expected = if crate::is_root() {
+        "read-only"
+    } else {
+        "permission"
+    };
+    assert!(
+        err.to_string().to_lowercase().contains(expected),
+        "error must name the failure ({expected}): {err}"
+    );
+
+    std::fs::set_permissions(&rc_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(std::fs::read_to_string(&rc_path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_env_inject_refuses_a_read_only_rc() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A rename lands regardless of the write bit, so a read-only rc would
+    // otherwise be replaced silently despite the user marking it untouchable.
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    let original = "export FOO=bar\n";
+    std::fs::write(&rc_path, original).unwrap();
+    std::fs::set_permissions(&rc_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    let action = EnvAction::InjectSourceLine {
+        rc_path: rc_path.clone(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+    };
+    let printer = test_printer();
+    let err = Reconciler::apply_env_action(&action, &printer).unwrap_err();
+    assert!(err.to_string().contains("read-only"), "{err}");
+    assert_eq!(std::fs::read_to_string(&rc_path).unwrap(), original);
+
+    std::fs::set_permissions(&rc_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[test]
+fn guard_rc_write_refuses_an_empty_baseline_over_existing_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    std::fs::write(&rc_path, "export FOO=bar\n").unwrap();
+
+    let err = super::env_files::guard_rc_write(&rc_path, "").unwrap_err();
+    assert!(err.to_string().contains("refusing to replace"), "{err}");
+
+    // A truthful empty baseline over an absent or empty file still passes.
+    assert!(super::env_files::guard_rc_write(&rc_path, "export FOO=bar\n").is_ok());
+    let missing = dir.path().join(".zshrc");
+    assert!(super::env_files::guard_rc_write(&missing, "").is_ok());
+    let empty = dir.path().join(".profile");
+    std::fs::write(&empty, "").unwrap();
+    assert!(super::env_files::guard_rc_write(&empty, "").is_ok());
+}
+
+#[test]
+fn merge_source_line_keeps_a_commented_loader_and_a_user_note() {
+    // A deliberately disabled loader must not be deleted and re-enabled, and a
+    // user's prose mentioning the file is not a loader at all.
+    let line = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
+    let existing = "# ~/.cfgd.env is generated by cfgd\n# [ -f ~/.cfgd.env ] && . ~/.cfgd.env\nexport FOO=bar\n";
+
+    let merged = super::env_files::merge_source_line(existing, line).unwrap();
+    assert!(merged.contains("# ~/.cfgd.env is generated by cfgd\n"));
+    assert!(merged.contains("# [ -f ~/.cfgd.env ] && . ~/.cfgd.env\n"));
+    assert!(merged.contains("export FOO=bar\n"));
+    assert!(merged.ends_with(&format!("{line}\n")));
+    assert_eq!(
+        merged.matches(line).count(),
+        2,
+        "only the commented form and the appended live one may be present"
+    );
+}
+
+#[test]
+fn merge_source_line_replaces_only_the_live_loader() {
+    let line = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
+    let existing = "# [ -f ~/.cfgd.env ] && source ~/.cfgd.env\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\nexport FOO=bar\n";
+
+    let merged = super::env_files::merge_source_line(existing, line).unwrap();
+    assert_eq!(
+        merged,
+        "# [ -f ~/.cfgd.env ] && source ~/.cfgd.env\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\nexport FOO=bar\n",
+        "the stale live loader is upgraded in place; the commented one is untouched"
+    );
+}
+
+#[test]
+fn merge_source_line_preserves_crlf_and_trailing_blank_lines() {
+    let line = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
+    let existing = "# my config\r\nexport FOO=bar\r\n\r\n\r\n";
+
+    let merged = super::env_files::merge_source_line(existing, line).unwrap();
+    assert_eq!(merged, format!("{existing}{line}\r\n"));
+    assert!(
+        !merged.contains("bar\n\n"),
+        "existing CRLF terminators must survive: {merged:?}"
+    );
+}
+
+#[test]
+fn merge_source_line_keeps_the_terminator_of_the_line_it_replaces() {
+    let line = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
+    let existing = "[ -f ~/.cfgd.env ] && source ~/.cfgd.env\r\nexport FOO=bar\n";
+
+    let merged = super::env_files::merge_source_line(existing, line).unwrap();
+    assert_eq!(merged, format!("{line}\r\nexport FOO=bar\n"));
+}
+
+#[test]
+fn apply_env_inject_stores_a_file_backup_for_the_rc() {
+    // The injection rewrites a user-owned dotfile, so rollback needs a row
+    // holding the pre-write bytes.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(dir.path());
+    let rc_path = dir.path().join(".bashrc");
+    let original = "# my config\nexport FOO=bar\n";
+    std::fs::write(&rc_path, original).unwrap();
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Env,
+            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+                rc_path: rc_path.clone(),
+                line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let key = crate::to_posix_fs_key(&rc_path);
+    let backups = state.file_backups_after_apply(0).unwrap();
+    let row = backups
+        .iter()
+        .find(|b| b.file_path == key)
+        .expect("inject must leave a backup row for the rc file");
+    assert!(row.existed);
+    assert_eq!(String::from_utf8(row.content.clone()).unwrap(), original);
+    assert!(
+        std::fs::read_to_string(&rc_path)
+            .unwrap()
+            .contains(". ~/.cfgd.env")
+    );
+}
+
+#[test]
+fn apply_env_records_one_managed_resource_across_a_converged_second_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(dir.path());
+    let rc_path = dir.path().join(".bashrc");
+    std::fs::write(&rc_path, "export FOO=bar\n").unwrap();
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Env,
+            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+                rc_path: rc_path.clone(),
+                line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    for _ in 0..2 {
+        reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+                None,
+                &crate::AbortFlag::new(),
+            )
+            .unwrap();
+    }
+
+    let env_rows: Vec<_> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.resource_type == "env")
+        .collect();
+    assert_eq!(
+        env_rows.len(),
+        1,
+        "a converged second run must not mint a second row: {env_rows:?}"
+    );
+    assert_eq!(env_rows[0].resource_id, crate::to_posix_string(&rc_path));
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
+    // Deleting every `spec.env` entry must stop the exports taking effect; the
+    // last generated file would otherwise keep exporting them forever.
+    let home = tempfile::tempdir().unwrap();
+    let env_file = home.path().join(".cfgd.env");
+    let neutral = "# managed by cfgd \u{2014} do not edit\n";
+    std::fs::write(&env_file, format!("{neutral}export FOO=\"bar\"\n")).unwrap();
+    let managed = vec![crate::to_posix_string(&env_file)];
+
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        EnvScope::Interactive,
+        &[],
+        &[],
+        &[],
+        &managed,
+        home.path(),
+    );
+
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    match &actions[0] {
+        Action::Env(EnvAction::WriteEnvFile { path, content }) => {
+            assert_eq!(path, &env_file);
+            assert_eq!(content, neutral);
+        }
+        other => panic!("expected a managed-file rewrite, got {other:?}"),
+    }
+
+    // Already neutral: nothing left to strip.
+    std::fs::write(&env_file, neutral).unwrap();
+    let (actions, _) = Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        EnvScope::Interactive,
+        &[],
+        &[],
+        &[],
+        &managed,
+        home.path(),
+    );
+    assert!(actions.is_empty(), "{actions:?}");
+
+    // A file cfgd's generator did not write is not cfgd's to strip.
+    std::fs::write(&env_file, "export FOO=\"user-authored\"\n").unwrap();
+    let (actions, _) = Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        EnvScope::Interactive,
+        &[],
+        &[],
+        &[],
+        &managed,
+        home.path(),
+    );
+    assert!(actions.is_empty(), "{actions:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
+    // The gate that keeps a home directory reached from a machine with no
+    // record of writing it — every test with a fresh state store included —
+    // from having its env file stripped.
+    let home = tempfile::tempdir().unwrap();
+    let env_file = home.path().join(".cfgd.env");
+    let body = "# managed by cfgd \u{2014} do not edit\nexport FOO=\"bar\"\n";
+    std::fs::write(&env_file, body).unwrap();
+
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        EnvScope::Interactive,
+        &[],
+        &[],
+        &[],
+        &[],
+        home.path(),
+    );
+
+    assert!(actions.is_empty(), "{actions:?}");
+    assert_eq!(std::fs::read_to_string(&env_file).unwrap(), body);
+}
+
+#[test]
+fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
+    // Every apply-side env path reads the home the reconciler was constructed
+    // with, so no call site can reach a home of its own — including the
+    // mid-apply regeneration that runs when a secret-backed env var or a
+    // bootstrapped PATH directory appears after planning.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::with_home(&registry, &state, elsewhere.path());
+    let env = vec![crate::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }];
+
+    let (actions, _warnings) =
+        reconciler.plan_env(&env, &[], EnvScope::Interactive, &[], &[], &[], &[]);
+
+    assert!(!actions.is_empty(), "the env plan must not be empty");
+    for action in &actions {
+        let path = match action {
+            Action::Env(EnvAction::WriteEnvFile { path, .. }) => path.clone(),
+            Action::Env(EnvAction::InjectSourceLine { rc_path, .. }) => rc_path.clone(),
+            _ => continue,
+        };
+        assert!(
+            path.starts_with(elsewhere.path()),
+            "{} escaped the home the reconciler was built with",
+            path.posix()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_env_inject_backs_up_and_rolls_back_through_a_symlinked_rc() {
+    // The write follows the link, so the backup has to read through it too:
+    // a link-only row carries no bytes, and rollback would have nothing to put
+    // back for exactly the population that symlinks its rc into a dotfile repo.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(dir.path());
+    let repo_rc = dir.path().join("dotfiles/bashrc");
+    std::fs::create_dir_all(repo_rc.parent().unwrap()).unwrap();
+    let original = "# my config\nexport FOO=bar\n";
+    std::fs::write(&repo_rc, original).unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    std::os::unix::fs::symlink(&repo_rc, &rc_path).unwrap();
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Env,
+            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+                rc_path: rc_path.clone(),
+                line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+            })],
+        }],
+        warnings: vec![],
+    };
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let key = crate::to_posix_fs_key(&rc_path);
+    let backups = state.file_backups_after_apply(0).unwrap();
+    let row = backups
+        .iter()
+        .find(|b| b.file_path == key)
+        .expect("a symlinked rc still needs a backup row");
+    assert_eq!(
+        String::from_utf8(row.content.clone()).unwrap(),
+        original,
+        "the row must hold the bytes the write replaced, read through the link"
+    );
+
+    assert_eq!(
+        super::restore_file_from_backup(&rc_path, row, &printer),
+        RestoreOutcome::Restored
+    );
+    assert!(
+        std::fs::symlink_metadata(&rc_path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "rollback must not leave a regular file where the dotfile link was"
+    );
+    assert_eq!(std::fs::read_to_string(&repo_rc).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_env_write_refuses_a_link_redirecting_it_out_of_the_owner_s_tree() {
+    // `sudo -E cfgd apply` keeps the invoking user's HOME, so a link that user
+    // plants at ~/.cfgd.env decides where an elevated write lands, with content
+    // their own `spec.env` supplies. A link may only redirect a write inside
+    // the tree its own owner already controls.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let _guard = crate::with_test_home_guard(&home);
+
+    let outside = dir.path().join("outside-the-home");
+    let original = "root:x:0:0:root:/root:/bin/sh\n";
+    std::fs::write(&outside, original).unwrap();
+    let env_path = home.join(".cfgd.env");
+    std::os::unix::fs::symlink(&outside, &env_path).unwrap();
+
+    let action = EnvAction::WriteEnvFile {
+        path: env_path.clone(),
+        content: "# managed by cfgd\nexport EVIL=\"1\"\n".to_string(),
+    };
+    let printer = test_printer();
+
+    if !crate::is_root() {
+        // Only root can stage a foreign owner, so unprivileged this asserts the
+        // permitted half: link and target share one uid, the write follows.
+        Reconciler::apply_env_action(&action, &printer).unwrap();
+        assert!(std::fs::read_to_string(&outside).unwrap().contains("EVIL"));
+        return;
+    }
+
+    std::os::unix::fs::chown(&env_path, Some(12345), Some(12345)).unwrap();
+    let err = Reconciler::apply_env_action(&action, &printer)
+        .expect_err("a link out of the owner's tree must be refused");
+
+    assert!(
+        err.to_string().contains("refusing to write through it"),
+        "the refusal must name its reason: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap(),
+        original,
+        "the redirected-to file must be byte-identical"
+    );
+    assert!(
+        std::fs::symlink_metadata(&env_path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "refusing must not degrade to replacing the link"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_env_inject_writes_through_a_symlinked_rc() {
+    // stow and chezmoi leave ~/.bashrc as a link into a dotfile repo. Replacing
+    // the link would strand the repo copy and lose the injection at the next
+    // re-link, so the injected line has to land in the file the link names.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(dir.path());
+    let repo_rc = dir.path().join("dotfiles/bashrc");
+    std::fs::create_dir_all(repo_rc.parent().unwrap()).unwrap();
+    std::fs::write(&repo_rc, "export FOO=bar\n").unwrap();
+    let rc_path = dir.path().join(".bashrc");
+    std::os::unix::fs::symlink(&repo_rc, &rc_path).unwrap();
+
+    let action = EnvAction::InjectSourceLine {
+        rc_path: rc_path.clone(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+    };
+    let printer = test_printer();
+    Reconciler::apply_env_action(&action, &printer).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&rc_path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the rc symlink must survive the injection"
+    );
+    let repo_body = std::fs::read_to_string(&repo_rc).unwrap();
+    assert_eq!(
+        repo_body,
+        "export FOO=bar\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n"
+    );
 }
