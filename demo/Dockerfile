@@ -89,9 +89,10 @@ COPY --chmod=0755 demo/bin/cfgd /usr/local/bin/cfgd
 WORKDIR /home/linuxbrew/cfgd
 
 # Real source tree for `nvim .` to open on both sides of the demo. .dockerignore
-# is an allowlist — it ignores `*` and re-admits only crates/, examples/,
-# tests/, Cargo.*, README.md and demo/bin/ — so target/ (gigabytes of build
-# output the demo has no use for) never reaches the context in the first place.
-# Last layer in the file, so editing the repo never invalidates the apt and
-# user-setup layers above it.
+# is an allowlist — it ignores `*` and re-admits only what a cfgd-core build
+# and the demo binary actually need (see .dockerignore for the exact list, not
+# duplicated here so this comment can't drift out of sync with it) — so
+# target/ (gigabytes of build output the demo has no use for) never reaches
+# the context in the first place. Last layer in the file, so editing the repo
+# never invalidates the apt and user-setup layers above it.
 COPY --chown=linuxbrew:linuxbrew . .

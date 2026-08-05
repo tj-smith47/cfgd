@@ -12,6 +12,18 @@ RAW=demo/.out/raw.mp4
 # it first makes "no file" the only thing a failed recording can leave behind.
 rm -f "$RAW"
 
+# vhs writes a PNG pair per recorded frame into $TMPDIR, which for a take this
+# long is several hundred MB. On Linux /tmp is tmpfs, so every one of those
+# frames is resident RAM competing with the headless chromium vhs screenshots
+# through — and when this box ran short the kernel killed that browser mid-take,
+# leaving vhs waiting on a screen that would never change again until its
+# 60-minute ceiling. Putting the frames on disk drops the recording's largest
+# claim on memory. A take killed that way leaves its scratch behind, so clear
+# any before adding more.
+export TMPDIR="$PWD/demo/.out/tmp"
+rm -rf "$TMPDIR"
+mkdir -p "$TMPDIR"
+
 vhs "$TAPE"
 
 # VHS v0.11.0 exits 0 when its `Output` is a directory, writing nothing at all,
