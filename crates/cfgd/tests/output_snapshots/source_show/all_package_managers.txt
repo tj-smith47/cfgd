@@ -12,11 +12,11 @@ Manifest
   Policy Summary
     Required
       Count  8
-      ⓘ brew formula: git
-      ⓘ brew formula: ripgrep
-      ⓘ brew cask: iterm2
-      ⓘ apt: build-essential
-      ⓘ cargo: cargo-edit
-      ⓘ pipx: black
-      ⓘ dnf: gcc
-      ⓘ npm: typescript
+      ⊙ brew formula: git
+      ⊙ brew formula: ripgrep
+      ⊙ brew cask: iterm2
+      ⊙ apt: build-essential
+      ⊙ cargo: cargo-edit
+      ⊙ pipx: black
+      ⊙ dnf: gcc
+      ⊙ npm: typescript

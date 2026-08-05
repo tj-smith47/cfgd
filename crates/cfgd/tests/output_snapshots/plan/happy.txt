@@ -5,4 +5,4 @@ Plan
 Phase: Files
   - create <TARGET>
 
-ⓘ 1 action(s) planned
+⊙ 1 action(s) planned

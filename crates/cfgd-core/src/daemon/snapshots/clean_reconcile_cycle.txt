@@ -1,6 +1,6 @@
 Daemon
-ⓘ Starting cfgd daemon...
+⊙ Starting cfgd daemon...
 ✓ Health: <IPC_PATH>
 ✓ Intervals: reconcile=300s
-ⓘ Daemon running — press Ctrl+C to stop
+⊙ Daemon running — press Ctrl+C to stop
 ✓ Daemon stopped

@@ -5,4 +5,4 @@ This source manages 1 resource(s)
   ──────────────────
   package  brew/curl
 
-ⓘ Cancelled — source not removed
+⊙ Cancelled — source not removed

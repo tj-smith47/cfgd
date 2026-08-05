@@ -7,7 +7,7 @@ Integrity  sha256:516f5495fa6ff3a4552d414b42565a523f3473abe558054719ae5bb9df53b0
 Module: bridgemod
   (none)
 
-ⓘ Tag 'v1.0.0' is unsigned
+⊙ Tag 'v1.0.0' is unsigned
 ✓ Added module 'bridgemod' to profile 'default'
 
 ✓ Locked remote module 'bridgemod' in modules.lock

@@ -12,11 +12,11 @@ Secrets
   ✓ age key: /home/test/.config/sops/age/keys.txt
   ✓ .sops.yaml: /home/test/.config/cfgd/.sops.yaml
   ✓ provider 1password: available
-  ⓘ provider vault: not installed (optional)
+  ⊙ provider vault: not installed (optional)
 
 Package Managers
   ✓ cargo: available (declared in config)
-  ⓘ brew: available (not used in config)
+  ⊙ brew: available (not used in config)
 
 Modules
   dotfiles

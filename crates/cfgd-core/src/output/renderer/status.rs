@@ -185,7 +185,7 @@ mod tests {
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
-        assert_eq!(out.trim_end(), "ⓘ note");
+        assert_eq!(out.trim_end(), "⊙ note");
     }
 
     #[test]

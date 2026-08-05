@@ -3,9 +3,9 @@ Plan
   Profile  tiny
 
 Pending Decisions (not included in this plan)
-  ⓘ permission packages.brew.ripgrep — add by team-config (run `cfgd decide accept/reject`)
+  ⊙ permission packages.brew.ripgrep — add by team-config (run `cfgd decide accept/reject`)
 
 Phase: Files
   - create <TARGET>
 
-ⓘ 1 action(s) planned
+⊙ 1 action(s) planned

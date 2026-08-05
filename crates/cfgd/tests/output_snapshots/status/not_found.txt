@@ -1,2 +1,2 @@
 Status: ghost
-ⓘ Module 'ghost' not found
+⊙ Module 'ghost' not found

@@ -11,4 +11,4 @@ Sources
   ⚠ 'perm-team' has permission changes
   ✓ 'perm-team' synced — commit: <COMMIT>
 
-ⓘ Sources updated. Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+⊙ Sources updated. Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'

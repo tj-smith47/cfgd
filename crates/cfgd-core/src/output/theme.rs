@@ -9,7 +9,11 @@ const ICON_PENDING: &str = "○";
 const ICON_RUNNING: &str = "◐";
 const ICON_SKIPPED: &str = "—";
 const ICON_ARROW: &str = "→";
-const ICON_INFO: &str = "ⓘ";
+// A circled mark, matching the ○/● family the rest of the set draws from.
+// The enclosed-alphanumeric `ⓘ` reads better in prose but is absent from
+// JetBrains Mono, DejaVu and every other common terminal font, so it renders
+// as a tofu box — including in cfgd's own recorded demo.
+const ICON_INFO: &str = "⊙";
 
 /// Single style slot held by `Theme`. Wraps `console::Style` (used for the
 /// 256-color fallback path and for non-color attributes like bold/dim) and
@@ -529,14 +533,31 @@ mod tests {
         assert_eq!(t.icon_running, "◐");
         assert_eq!(t.icon_skipped, "—");
         assert_eq!(t.icon_arrow, "→");
-        assert_eq!(t.icon_info, "ⓘ");
+        assert_eq!(t.icon_info, "⊙");
     }
 
-    /// Every default glyph must be text-presentation: an emoji-presentation
-    /// character renders double-width and color-substituted, breaking the
-    /// status-line glyph column that the whole icon set exists to align.
+    /// Every default glyph must be text-presentation AND drawn from a block the
+    /// fonts terminals actually ship. An emoji-presentation character renders
+    /// double-width and color-substituted; a character outside these blocks
+    /// renders as a tofu box, which is how `ⓘ` (U+24D8, Enclosed
+    /// Alphanumerics — absent from JetBrains Mono, DejaVu and Noto Sans Mono
+    /// alike) reached a recorded demo. Either way the status-line glyph column
+    /// that the whole icon set exists to align is broken.
     #[test]
     fn default_icons_are_all_text_presentation_single_glyphs() {
+        // Latin-1 Supplement, General Punctuation, Arrows, Mathematical
+        // Operators, Geometric Shapes, Miscellaneous Symbols, Dingbats — the
+        // ranges with near-universal coverage in monospaced terminal fonts.
+        const COVERED_BLOCKS: &[std::ops::RangeInclusive<u32>] = &[
+            0x00A0..=0x00FF,
+            0x2000..=0x206F,
+            0x2190..=0x21FF,
+            0x2200..=0x22FF,
+            0x25A0..=0x25FF,
+            0x2600..=0x26FF,
+            0x2700..=0x27BF,
+        ];
+
         let t = Theme::default();
         for icon in [
             &t.icon_ok,
@@ -557,6 +578,11 @@ mod tests {
                 "{icon:?} forces emoji presentation"
             );
             assert!(c < 0x1F300, "{icon:?} is from an emoji block");
+            assert!(
+                COVERED_BLOCKS.iter().any(|r| r.contains(&c)),
+                "{icon:?} (U+{c:04X}) is outside the blocks terminal fonts cover \
+                 and will render as a tofu box"
+            );
         }
     }
 

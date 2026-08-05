@@ -1,2 +1,2 @@
 Add Module Registry
-ⓘ Registry 'team' already configured
+⊙ Registry 'team' already configured

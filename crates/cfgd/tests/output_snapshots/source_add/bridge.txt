@@ -10,8 +10,8 @@ Source Manifest
   Profiles  default
 
 Policy
-  ⓘ Scripts: blocked
-  ⓘ Secret access: blocked
+  ⊙ Scripts: blocked
+  ⊙ Secret access: blocked
 
 ✓ No conflicts with current config
 

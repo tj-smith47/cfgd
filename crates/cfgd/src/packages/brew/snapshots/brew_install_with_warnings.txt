@@ -6,7 +6,7 @@
   ==> Summary
   git installed.
 ✓ brew install git
-ⓘ Post-install notes
+⊙ Post-install notes
 ⚠ [brew] Run xcode-select --install to complete setup.
 
 ⚠ brew packages installed with notes

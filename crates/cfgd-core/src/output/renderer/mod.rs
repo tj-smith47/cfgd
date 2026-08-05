@@ -362,6 +362,14 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        // Streamed output is the body of the line that just announced the
+        // command, so it continues that group rather than starting one: without
+        // this the status line's pending blank lands between the announcement
+        // and the first line of its own output.
+        {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.blank_pending = false;
+        }
         self.write_line(w, depth, &self.theme.muted.apply_to(text).to_string());
     }
 
@@ -453,6 +461,34 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         (r, sink, buf)
+    }
+
+    /// Streamed child output is the body of the announcement above it. A blank
+    /// line between the two reads as the command producing nothing and some
+    /// unrelated block following, which is exactly the seam a spinner used to
+    /// hide.
+    #[test]
+    fn streamed_lines_bind_to_the_status_that_announced_them() {
+        use crate::output::Role;
+        let status = |role: Role, subject: &'static str| status::StatusFields {
+            role,
+            subject,
+            detail: None,
+            duration: None,
+            target: None,
+        };
+
+        let (r, sink, buf) = capture();
+        r.render_status(&sink, 0, &status(Role::Running, "running a script"));
+        r.render_stream_line(&sink, 1, "first line of output");
+        r.render_stream_line(&sink, 1, "second line of output");
+        r.render_status(&sink, 0, &status(Role::Ok, "running a script"));
+
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(
+            !out.contains("\n\n"),
+            "blank line inside a streamed block: {out:?}"
+        );
     }
 
     #[test]
