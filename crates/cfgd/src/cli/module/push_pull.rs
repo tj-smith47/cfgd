@@ -98,10 +98,11 @@ pub fn cmd_module_push(
 /// key is read from the `cosign.pub` sibling file next to the private key
 /// path, the convention `cfgd module keys generate`/`keys rotate` establish.
 /// A `--key` naming a KMS URI (`k8s://`, `awskms://`, `azurekms://`,
-/// `gcpkms://`, `hashivault://`, …) has no filesystem sibling to read, so that
-/// case is detected up front rather than guessed at via a nonsense path. When
-/// no public key can be derived, the caller is warned that the applied CRD
-/// will fail the operator's `disallowUnsigned` admission check.
+/// `gcpkms://`, `hashivault://`, …) or a PKCS#11 URI (`pkcs11:token=...;...`,
+/// RFC 7512 — HSM-backed keys) has no filesystem sibling to read, so that case
+/// is detected up front rather than guessed at via a nonsense path. When no
+/// public key can be derived, the caller is warned that the applied CRD will
+/// fail the operator's `disallowUnsigned` admission check.
 fn build_module_signature(
     printer: &Printer,
     signed: bool,
@@ -118,6 +119,12 @@ fn build_module_signature(
         certificate_oidc_issuer: None,
     };
 
+    // PKCS#11 URIs (RFC 7512) use a single-colon `pkcs11:` scheme with no
+    // `//` authority, so they don't match the `://` KMS-URI check below —
+    // they need their own prefix check to avoid being mistaken for a path.
+    let is_non_filesystem_key_ref =
+        |key_ref: &str| key_ref.contains("://") || key_ref.starts_with("pkcs11:");
+
     let cosign = match key {
         None => cfgd_crd::CosignSignature {
             public_key: None,
@@ -125,11 +132,11 @@ fn build_module_signature(
             certificate_identity: None,
             certificate_oidc_issuer: None,
         },
-        Some(key_ref) if key_ref.contains("://") => {
+        Some(key_ref) if is_non_filesystem_key_ref(key_ref) => {
             printer.status_simple(
                 Role::Warn,
                 format!(
-                    "'{key_ref}' is a KMS key reference, not a filesystem path; \
+                    "'{key_ref}' is a KMS/PKCS#11 key reference, not a filesystem path; \
                      cfgd cannot derive its public key from a sibling `cosign.pub` file \
                      (run `cosign public-key --key {key_ref}` and configure \
                      spec.signature.cosign.publicKey manually) — the applied CRD will fail \
@@ -1097,8 +1104,36 @@ spec:
             );
             let warning = buf.lock().unwrap().clone();
             assert!(
-                warning.contains("KMS key reference"),
+                warning.contains("KMS/PKCS#11 key reference"),
                 "a KMS-style --key must be recognized instead of guessing a nonsense sibling path: {warning:?}"
+            );
+        }
+
+        #[test]
+        fn sign_with_pkcs11_key_reference_warns_and_fails_disallow_unsigned_admission() {
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
+            let signature = build_module_signature(
+                &printer,
+                true,
+                Some("pkcs11:token=cfgd-signing;object=cosign-key;type=private"),
+            );
+            let crd_json =
+                build_module_crd_json(&module_doc, "localhost:5000/test/mod:v1", signature)
+                    .expect("build crd json");
+            let spec = crd_spec(&crd_json);
+
+            let result = check_unsigned_policy(&spec, true);
+
+            assert!(
+                result.is_err(),
+                "a PKCS#11 key reference with no derivable public key must still fail the real disallowUnsigned admission rule"
+            );
+            let warning = buf.lock().unwrap().clone();
+            assert!(
+                warning.contains("KMS/PKCS#11 key reference"),
+                "a pkcs11: --key must be recognized as a non-filesystem reference instead of being \
+                 mistaken for a path (it has no `://`, only `contains(\"://\")` would miss it): {warning:?}"
             );
         }
 

@@ -661,6 +661,13 @@ with [cosign](https://github.com/sigstore/cosign). cfgd uses two distinct trust 
   cfgd module push ./mymod --artifact ghcr.io/org/mymod:v1 --sign --key ./keys/cosign.key
   cfgd module pull ghcr.io/org/mymod:v1 --dir ./out --require-signature --key ./keys/cosign.pub
   ```
+  `--key` also accepts a KMS URI (`awskms://`, `azurekms://`, `gcpkms://`, `hashivault://`,
+  `k8s://`) or a PKCS#11 URI (`pkcs11:token=...;object=...`, RFC 7512 — HSM-backed keys); both
+  are passed straight through to cosign. cfgd cannot derive a public key from a sibling
+  `cosign.pub` file for these (there is no filesystem path to look next to), so `cfgd module push
+  --sign --key <kms-or-pkcs11-uri>` warns and leaves `spec.signature.cosign.publicKey` unset —
+  run `cosign public-key --key <uri>` and set it manually if the operator enforces
+  `disallowUnsigned`.
 - **Keyless (Fulcio/Rekor).** Omit `--key` to sign with a short-lived certificate from the public
   Sigstore infrastructure; the signature is recorded in the Rekor transparency log. Verify with
   certificate identity/issuer constraints:
