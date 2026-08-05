@@ -2,6 +2,15 @@ use super::*;
 use cfgd_core::output::{Printer, Verbosity};
 use cfgd_core::test_helpers::test_printer as quiet_printer;
 
+// `cmd_init` gates on `command_available("git")` and calls `ExitCode::Error.exit()`
+// when it misses, so losing the race against a concurrent test's empty-`PATH`
+// window does not fail one test — it terminates the whole test binary. Only for a
+// `cmd_init` call that reaches neither a clone nor workflow regeneration: those
+// take the same lock internally and would deadlock beneath this guard.
+fn git_resolution_guard() -> std::sync::RwLockReadGuard<'static, ()> {
+    cfgd_core::test_helpers::path_env_read_guard()
+}
+
 // ─────────────────────────────────────────────────────
 // ensure_config_file — used by profile switch and tests
 // ─────────────────────────────────────────────────────
@@ -2537,6 +2546,10 @@ fn cmd_init_from_git_source_with_explicit_target() {
 
 #[test]
 fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
+    // Nesting-free: an already-initialized target skips the clone, and `--from`
+    // skips workflow regeneration.
+    let _path = git_resolution_guard();
+
     // `--from` skips step 3's already-initialized early return so that
     // `--apply-module` still reaches the apply step. That left step 4 free to
     // clone over a populated config dir: git refused, and the failed attempt's
@@ -2607,6 +2620,10 @@ fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
 
 #[test]
 fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
+    // Nesting-free: a plain `--from` never clones, and `--from` skips workflow
+    // regeneration.
+    let _path = git_resolution_guard();
+
     // A non-git `--from` resolves to the directory itself as the config dir.
     // With step 3's early return skipped, the scaffold branch used to overwrite
     // that very cfgd.yaml with a fresh template.

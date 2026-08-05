@@ -422,6 +422,7 @@ fn path_of(env: &[(String, String)]) -> Option<&str> {
 #[test]
 #[serial_test::serial]
 fn no_bootstrapped_dirs_leaves_path_absent() {
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
     let mut env: Vec<(String, String)> = Vec::new();
     super::prepend_bootstrapped_path_dirs(&mut env, &[]);
@@ -433,6 +434,7 @@ fn no_bootstrapped_dirs_leaves_path_absent() {
 #[test]
 #[serial_test::serial]
 fn bootstrapped_dirs_prepend_to_inherited_path() {
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
     let inherited = joined(&["/usr/bin", "/bin"]);
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &inherited);
     let mut env: Vec<(String, String)> = Vec::new();
@@ -452,6 +454,7 @@ fn bootstrapped_dirs_prepend_to_inherited_path() {
 #[test]
 #[serial_test::serial]
 fn already_present_dir_is_not_duplicated() {
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
     let inherited = joined(&["/opt/brew/bin", "/usr/bin"]);
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &inherited);
     let mut env: Vec<(String, String)> = Vec::new();
@@ -474,6 +477,7 @@ fn already_present_dir_is_not_duplicated() {
 #[test]
 #[serial_test::serial]
 fn existing_env_path_entry_is_the_base() {
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/inherited"]));
     let mut env = vec![("PATH".to_string(), joined(&["/caller/bin"]))];
     super::prepend_bootstrapped_path_dirs(&mut env, &["/opt/brew/bin".to_string()]);
@@ -491,6 +495,7 @@ fn existing_env_path_entry_is_the_base() {
 #[test]
 #[serial_test::serial]
 fn unjoinable_dir_leaves_path_untouched() {
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
     let mut env = vec![("PATH".to_string(), "/caller/bin".to_string())];
     super::prepend_bootstrapped_path_dirs(&mut env, &["/opt/a:b/bin".to_string()]);
@@ -502,6 +507,7 @@ fn unjoinable_dir_leaves_path_untouched() {
 #[test]
 #[serial_test::serial]
 fn module_env_path_expands_against_bootstrapped_dirs() {
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = crate::test_helpers::EnvVarGuard::set("PATH", &joined(&["/usr/bin"]));
     // Separator via join_paths, not a literal `:` — the expansion splices the
     // merged PATH in with the platform's own separator, so a hardcoded colon

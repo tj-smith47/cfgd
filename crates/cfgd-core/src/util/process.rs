@@ -727,14 +727,45 @@ mod tests {
         assert!(command_available_with_seam("CFGD_TEST_AVAIL_NONE", "sh"));
     }
 
+    // `tool_binary_name`'s own tests pin the resolution rule; what is unproven
+    // there is the wiring — that the factory asks the seam at all rather than
+    // handing `Command::new` the default it was passed.
     #[test]
-    fn tool_cmd_creates_command_with_piped_stderr() {
-        let cmd = tool_cmd("", "echo");
-        let prog = std::path::Path::new(cmd.get_program())
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        assert_eq!(prog, "echo");
+    #[serial]
+    fn tool_cmd_program_follows_the_env_seam() {
+        let _unset = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_TOOL_CMD_BIN");
+        assert_eq!(
+            tool_cmd("CFGD_TEST_TOOL_CMD_BIN", "echo").get_program(),
+            std::ffi::OsStr::new("echo")
+        );
+
+        let _seam =
+            crate::test_helpers::EnvVarGuard::set("CFGD_TEST_TOOL_CMD_BIN", "/shim/bin/echo");
+        assert_eq!(
+            tool_cmd("CFGD_TEST_TOOL_CMD_BIN", "echo").get_program(),
+            std::ffi::OsStr::new("/shim/bin/echo"),
+            "the factory must build the command from the seam, not the default"
+        );
+    }
+
+    // std exposes no getter for a `Command`'s configured stdio, so the piped
+    // stderr this factory sets is only observable on a spawned child, where
+    // `stderr` is `Some` exactly when the stream was piped rather than
+    // inherited. Asserting on the built `Command` alone would prove nothing.
+    #[cfg(unix)]
+    #[test]
+    fn tool_cmd_pipes_stderr_on_the_spawned_child() {
+        let _path = crate::test_helpers::path_env_read_guard();
+        let mut child = tool_cmd("", "sh")
+            .arg("-c")
+            .arg("")
+            .spawn()
+            .expect("sh must spawn");
+        assert!(
+            child.stderr.is_some(),
+            "tool_cmd must pipe stderr so callers can quote it in error messages"
+        );
+        let _ = child.wait();
     }
 
     #[test]

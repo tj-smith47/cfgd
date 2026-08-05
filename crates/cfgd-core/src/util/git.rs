@@ -38,9 +38,10 @@ pub fn git_cmd_safe(
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new(git_program());
     // git spawns credential-helper grandchildren (osxkeychain on macOS,
-    // git-credential-manager-core on Windows) that inherit stdout/stderr pipes
-    // and outlive the watchdog's SIGKILL of the immediate `git`, leaving
-    // `wait_with_output` blocked on the still-open pipes. `-c credential.helper=`
+    // git-credential-manager-core on Windows) that inherit the child's stderr
+    // pipe and outlive the watchdog's SIGKILL of the immediate `git`, so the
+    // captured stderr this function's callers report on is whatever the pipe
+    // readers managed to drain before they were abandoned. `-c credential.helper=`
     // resets the accumulated helper list (system + global + local) to empty so no
     // such grandchild launches — without discarding the rest of the user's git
     // config the way nulling GIT_CONFIG_GLOBAL/GIT_CONFIG_NOSYSTEM would, which
@@ -346,6 +347,14 @@ mod tests {
         // process-per-test model). The registry-fallback half of `command_path`
         // is pinned by `util::process::tests` against a tool name nothing else
         // spawns.
+        //
+        // One read guard brackets every resolution below, so the baseline and
+        // the two factory resolutions all observe the same `PATH`; without it a
+        // writer landing between them flips the answer mid-comparison. Safe to
+        // hold: `command_path` and the factories read `PATH` directly and never
+        // re-take this lock, and nothing here spawns.
+        let _path = crate::test_helpers::path_env_read_guard();
+
         let Some(resolved) = command_path("git") else {
             // No git on this host: the factories must still hand the OS the bare
             // name so it can perform its own lookup.
