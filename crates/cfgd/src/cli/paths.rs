@@ -332,11 +332,24 @@ mod tests {
 
     /// Unset the systemd `$*_DIRECTORY` vars so a user-scope default resolves to
     /// the XDG/platform root rather than a systemd-injected override.
+    /// Clears every ambient directory override a resolved path can come from.
+    ///
+    /// `#[serial]` excludes other serial tests but not the non-serial majority,
+    /// and `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` are clap env fallbacks: a
+    /// concurrent test pointing one at its tempdir made this file's absolute-root
+    /// assertions read that tempdir instead of the FHS path. Clearing them here
+    /// covers every caller rather than each test remembering the full set.
     fn unset_systemd_dir_vars() -> Vec<EnvVarGuard> {
-        ["STATE_DIRECTORY", "CACHE_DIRECTORY", "RUNTIME_DIRECTORY"]
-            .into_iter()
-            .map(EnvVarGuard::unset)
-            .collect()
+        [
+            "STATE_DIRECTORY",
+            "CACHE_DIRECTORY",
+            "RUNTIME_DIRECTORY",
+            "CFGD_STATE_DIR",
+            "CFGD_CACHE_DIR",
+        ]
+        .into_iter()
+        .map(EnvVarGuard::unset)
+        .collect()
     }
 
     #[test]

@@ -1409,6 +1409,17 @@ fn available_tags_hint(tags: &[RemoteTag]) -> Option<String> {
 ///
 /// The destination must be absent or empty. Returns Ok(()) on success, Err with
 /// description on failure.
+/// Whether a clone URL resolves through git's local transport — a `file://` URL
+/// or a plain filesystem path. Anything carrying a `scheme://` other than `file`,
+/// or an `scp`-style `user@host:path`, is remote.
+fn is_local_git_url(url: &str) -> bool {
+    if let Some(rest) = url.split_once("://") {
+        return rest.0 == "file";
+    }
+    // `user@host:path` is scp syntax; a bare path may still contain '@'.
+    !url.contains(':') || Path::new(url).exists()
+}
+
 pub fn git_clone_with_fallback(
     url: &str,
     target: &Path,
@@ -1469,7 +1480,15 @@ pub fn git_clone_with_fallback(
     let spinner = printer.spinner("Cloning (libgit2)...");
 
     let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.depth(1);
+    // libgit2 rejects a shallow fetch over the local transport outright ("shallow
+    // fetch is not supported by the local transport"), so asking for depth=1 on a
+    // `file://` or bare-path URL turns the fallback into a guaranteed failure —
+    // `cfgd init --from /path/to/repo.git` cannot clone at all on a host without
+    // the git CLI. Depth is a transfer-size guard for remotes; a local clone has
+    // no transfer to bound.
+    if !is_local_git_url(url) {
+        fetch_opts.depth(1);
+    }
     if url.starts_with("git@") || url.starts_with("ssh://") {
         let mut callbacks = git2::RemoteCallbacks::new();
         callbacks.credentials(crate::git_ssh_credentials);

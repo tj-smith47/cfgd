@@ -2,6 +2,23 @@ use super::*;
 use crate::test_helpers::test_printer;
 use serial_test::serial;
 
+/// libgit2's local transport rejects a shallow fetch, so the depth=1 the remote
+/// path wants must not be requested for a `file://` or filesystem-path URL —
+/// otherwise the libgit2 fallback can never clone a local repo, and `init --from`
+/// fails outright whenever the git CLI is unavailable or loses a PATH race.
+#[test]
+fn local_git_urls_are_recognized_so_shallow_depth_is_skipped() {
+    assert!(is_local_git_url("file:///tmp/upstream.git"));
+    assert!(is_local_git_url("/tmp/upstream.git"));
+    assert!(is_local_git_url("./relative/repo.git"));
+
+    assert!(!is_local_git_url("https://github.com/tj-smith47/cfgd.git"));
+    assert!(!is_local_git_url(
+        "ssh://git@github.com/tj-smith47/cfgd.git"
+    ));
+    assert!(!is_local_git_url("git@github.com:tj-smith47/cfgd.git"));
+}
+
 #[test]
 fn normalize_tilde_pin() {
     // ~N -> ^N.0.0 (any version N.x.x)
