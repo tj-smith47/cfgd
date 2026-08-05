@@ -83,6 +83,11 @@ cfgd init --from <source> --apply --yes --install-daemon  # full one-liner boots
 | `--install-daemon` | Install daemon service after init |
 | `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, minimal) |
 
+`init` never writes over a config directory that already has a `cfgd.yaml`: it
+reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With
+`--from`, the run continues to the `--apply` / `--apply-module` step against the
+existing config; `--name` / `--theme` are applied as overrides.
+
 See [bootstrap.md](bootstrap.md) for the full init flow.
 
 ### `cfgd apply`

@@ -1406,12 +1406,42 @@ fn available_tags_hint(tags: &[RemoteTag]) -> Option<String> {
 }
 
 /// Clone a git repo with git CLI (with live progress), falling back to libgit2.
-/// Returns Ok(()) on success, Err with description on failure.
+///
+/// The destination must be absent or empty. Returns Ok(()) on success, Err with
+/// description on failure.
 pub fn git_clone_with_fallback(
     url: &str,
     target: &Path,
     printer: &Printer,
 ) -> std::result::Result<(), String> {
+    // Establishing an empty destination up front is what makes the cleanup
+    // between the two clone attempts safe: everything under `target` at that
+    // point was put there by the attempt being undone. Without this gate, a CLI
+    // clone that failed *because* the destination was populated took the
+    // populated content with it — `cfgd init --from <repo>` re-run against an
+    // already-initialized `~/.config/cfgd` deleted the user's cfgd.yaml,
+    // profiles/, and files/ on its way to reporting the clone failure.
+    let destination_is_empty = match std::fs::read_dir(target) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        // Undecidable emptiness is treated as non-empty: refusing costs a
+        // clone, deleting costs the directory's contents.
+        Err(e) => {
+            return Err(format!(
+                // native-ok: human-facing error message
+                "Cannot inspect clone destination {}: {e}",
+                target.display()
+            ));
+        }
+    };
+    if !destination_is_empty {
+        return Err(format!(
+            // native-ok: human-facing error message
+            "Refusing to clone {url} into {}: directory is not empty",
+            target.display()
+        ));
+    }
+
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
     cmd.args([

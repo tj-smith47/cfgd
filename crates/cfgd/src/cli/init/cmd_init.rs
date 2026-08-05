@@ -85,10 +85,21 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // 4. Clone or scaffold
     // When --from is a git source, resolve_from already cloned it above.
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
+    // An existing cfgd.yaml means the target is already a config repo. Step 3
+    // returns early on that without `--from`; WITH `--from` control reaches
+    // here, and neither branch below may run over it — `git clone` cannot write
+    // into a populated directory (and the failed attempt used to take the
+    // directory's contents with it), while `scaffold` would overwrite the
+    // user's cfgd.yaml with a fresh template.
+    let already_initialized = target_dir.join("cfgd.yaml").exists();
     if let Some(url) = args.from.filter(|f| is_git_source(f)) {
-        if !target_dir.join(".git").exists() {
+        if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }
+        apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
+    } else if already_initialized {
+        // `--from <plain path>`: the directory is the user's own config repo,
+        // so --name/--theme land as overrides on it, never as a re-scaffold.
         apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
     } else {
         scaffold(&target_dir, args.name, args.theme, printer)?;

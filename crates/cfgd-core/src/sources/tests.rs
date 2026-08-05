@@ -1328,6 +1328,39 @@ fn git_clone_with_fallback_invalid_url() {
 }
 
 #[test]
+fn git_clone_with_fallback_refuses_a_populated_destination_without_deleting_it() {
+    // The cleanup between the CLI and libgit2 attempts is an unconditional
+    // remove_dir_all. Cloning into a populated destination CANNOT succeed, so
+    // the only thing the attempt could ever accomplish there is deleting the
+    // content that made it fail — `cfgd init --from <repo>` re-run against an
+    // already-initialized config dir wiped cfgd.yaml, profiles/, and files/.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("existing-config");
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    let keeper = target.join("cfgd.yaml");
+    let body = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: mine\nspec: {}\n";
+    std::fs::write(&keeper, body).unwrap();
+
+    let printer = test_printer();
+    let err =
+        git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer).unwrap_err();
+
+    assert!(
+        err.contains("not empty"),
+        "refusal must name the non-empty destination as the cause, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&keeper).unwrap(),
+        body,
+        "the pre-existing config must survive the refused clone byte-for-byte"
+    );
+    assert!(
+        target.join("profiles").is_dir(),
+        "sibling content of the destination must survive too"
+    );
+}
+
+#[test]
 fn remove_source_cleans_up_directory() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("removable");
