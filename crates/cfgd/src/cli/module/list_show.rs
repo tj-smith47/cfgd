@@ -320,7 +320,7 @@ pub(crate) fn cmd_module_show(
         metadata: ModuleShowMetadata {
             version: module.version.clone(),
         },
-        directory: module.dir.display().to_string(),
+        directory: cfgd_core::to_posix_string(&module.dir),
         source: source_type.to_string(),
         depends: module.spec.depends.clone(),
         state: state_rec,
