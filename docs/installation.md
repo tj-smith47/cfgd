@@ -62,16 +62,16 @@ one matching your distro and install it with the native package manager:
 ```sh
 # Debian / Ubuntu (and derivatives)
 curl -L -o cfgd.deb \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.5.0_linux_amd64.deb
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.7.0_linux_amd64.deb
 sudo dpkg -i cfgd.deb        # or: sudo apt install ./cfgd.deb
 
 # Fedora / RHEL / Alma / Rocky / Amazon Linux (dnf or yum)
 sudo dnf install \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.5.0_linux_amd64.rpm
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.7.0_linux_amd64.rpm
 
 # Alpine
 curl -L -o cfgd.apk \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.5.0_linux_amd64.apk
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.7.0_linux_amd64.apk
 sudo apk add --allow-untrusted cfgd.apk
 ```
 
@@ -281,14 +281,26 @@ verified path. Reinstall once via any of the [install methods](#linux--macos)
 above (Homebrew, the install script, etc.); subsequent `cfgd upgrade` runs then
 work from the newer binary.
 
-> **v0.7.0 with the cosign CLI installed:** the v0.7.0 binary pinned the signer
-> identity to `release.yml` alone, but assets are actually signed by the
-> `publish-crate.yml` leg. Keyless verification of a newer release therefore
-> fails closed on v0.7.0 when `cosign` is present (no SHA256 fallback — that is
-> the intended fail-closed behavior). Reinstall once via any install method above
-> to get the v0.7.0+ binary, which pins the identity at the repository level and
-> accepts the real signer; self-upgrade then works. Hosts **without** the `cosign`
-> CLI are unaffected — they take the documented SHA256 fallback.
+<!--
+  These version numbers are historical and frozen: they name the exact
+  release that shipped with the narrow signer-identity pin and the exact
+  release that widened it, not "the current release". Every crate version
+  in this file is otherwise kept in lockstep with the cfgd version by
+  release automation that does a literal old-version-string replace across
+  the whole file, so the digits below are backslash-escaped — an
+  intentional break of the literal match, invisible once rendered — to
+  keep that automation from sweeping a historical fact forward and making
+  it false.
+-->
+> **v0\.5\.0 with the cosign CLI installed:** the v0\.5\.0 binary pinned the
+> signer identity to `release.yml` alone, but assets are actually signed by
+> the `publish-crate.yml` leg. Keyless verification of a newer release
+> therefore fails closed on v0\.5\.0 when `cosign` is present (no SHA256
+> fallback — that is the intended fail-closed behavior). Reinstall once via
+> any install method above to get the v0\.6\.0+ binary, which pins the
+> identity at the repository level and accepts the real signer; self-upgrade
+> then works. Hosts **without** the `cosign` CLI are unaffected — they take
+> the documented SHA256 fallback.
 
 ## Containers and Kubernetes
 
