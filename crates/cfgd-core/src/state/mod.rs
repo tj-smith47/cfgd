@@ -14,10 +14,12 @@ mod drift;
 mod journal;
 mod managed;
 mod modules;
+mod package_prefix;
 mod pending_config;
 mod sources;
 mod types;
 
+pub use package_prefix::PackageManagerPrefixRecord;
 pub use pending_config::{
     PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
     save_pending_server_config,
@@ -296,6 +298,22 @@ const MIGRATIONS: &[&str] = &[
         manager         TEXT PRIMARY KEY,
         path_dirs       TEXT NOT NULL,
         bootstrapped_at TEXT NOT NULL
+    );",
+    // Migration 12: persist the resolved global-install prefix a package
+    // manager is actually using. `bootstrapped_managers` only gets a row when
+    // cfgd itself installs the manager; most machines already have npm
+    // present, so nothing ever writes one for it, and every install/uninstall
+    // /update/list call re-derives a prefix from live-fallible inputs
+    // (elevation, a write-probe, the project-local `.npmrc` npm itself
+    // consults). A later run can legitimately re-derive a DIFFERENT prefix
+    // than the one packages were actually installed under, making them
+    // invisible to `installed_packages()` — the prefix must be decided once
+    // and reused by every subsequent operation, not re-negotiated on each one.
+    "CREATE TABLE IF NOT EXISTS package_manager_prefixes (
+        manager     TEXT PRIMARY KEY,
+        prefix      TEXT NOT NULL,
+        is_fallback INTEGER NOT NULL,
+        resolved_at TEXT NOT NULL
     );",
 ];
 

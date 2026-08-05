@@ -2373,3 +2373,144 @@ fn bootstrap_path_dirs_skips_an_undecodable_row() {
         vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
     );
 }
+
+// ---------------------------------------------------------------------------
+// package_manager_prefixes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn package_manager_prefix_returns_none_when_nothing_recorded() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
+}
+
+#[test]
+fn package_manager_prefix_round_trips_prefix_and_fallback_flag() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    assert_eq!(
+        store.package_manager_prefix("npm").unwrap(),
+        Some(("/home/u/.npm-global".to_string(), true))
+    );
+}
+
+#[test]
+fn package_manager_prefix_replaces_an_earlier_record_for_the_same_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/usr/local", false)
+        .unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    // A prefix that was writable on an earlier run but isn't any more must
+    // not leave the stale writable-prefix record readable alongside the new
+    // fallback one — every later operation resolves through this row.
+    assert_eq!(
+        store.package_manager_prefix("npm").unwrap(),
+        Some(("/home/u/.npm-global".to_string(), true))
+    );
+}
+
+#[test]
+fn package_manager_prefix_is_scoped_per_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+    store
+        .record_package_manager_prefix("pipx", "/home/u/.local/pipx", false)
+        .unwrap();
+
+    assert_eq!(
+        store.package_manager_prefix("npm").unwrap(),
+        Some(("/home/u/.npm-global".to_string(), true))
+    );
+    assert_eq!(
+        store.package_manager_prefix("pipx").unwrap(),
+        Some(("/home/u/.local/pipx".to_string(), false))
+    );
+}
+
+#[test]
+fn package_manager_prefix_record_returns_none_when_nothing_recorded() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert!(
+        store
+            .package_manager_prefix_record("npm")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn package_manager_prefix_record_surfaces_resolved_at() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    let record = store
+        .package_manager_prefix_record("npm")
+        .unwrap()
+        .expect("row should exist");
+    assert_eq!(record.manager, "npm");
+    assert_eq!(record.prefix, "/home/u/.npm-global");
+    assert!(record.is_fallback);
+    assert!(
+        !record.resolved_at.is_empty(),
+        "resolved_at must be populated"
+    );
+}
+
+#[test]
+fn forget_package_manager_prefix_returns_none_when_nothing_recorded() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert!(
+        store
+            .forget_package_manager_prefix("npm")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn forget_package_manager_prefix_deletes_the_row_and_returns_it() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    let forgotten = store
+        .forget_package_manager_prefix("npm")
+        .unwrap()
+        .expect("row should have existed");
+    assert_eq!(forgotten.prefix, "/home/u/.npm-global");
+
+    // The row must actually be gone, not just returned — the whole point is
+    // forcing the next resolution to derive fresh.
+    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
+}
+
+#[test]
+fn forget_package_manager_prefix_is_scoped_per_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+    store
+        .record_package_manager_prefix("pipx", "/home/u/.local/pipx", false)
+        .unwrap();
+
+    store.forget_package_manager_prefix("npm").unwrap();
+
+    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
+    assert_eq!(
+        store.package_manager_prefix("pipx").unwrap(),
+        Some(("/home/u/.local/pipx".to_string(), false))
+    );
+}

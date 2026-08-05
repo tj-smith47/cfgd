@@ -52,7 +52,14 @@ pub fn action_matches_phase_filter(
 
 /// Suffix `apply_env_action` appends to a description when the surface was
 /// already correct and nothing was written.
-const ENV_SKIPPED_SUFFIX: &str = ":skipped";
+///
+/// Reading it back out of a description is not a general description sniff: the
+/// suffix is confined to env-action descriptions, and every reader below gets
+/// its string straight from `apply_env_action`, so the shape is the producer's
+/// own data. A converged surface also has to be stripped of it before the
+/// description becomes a `managed_resources` id, or one resource owns two rows
+/// that alternate by run and neither matches the id the planner derives.
+pub(super) const ENV_SKIPPED_SUFFIX: &str = ":skipped";
 
 fn env_result_key(description: &str) -> &str {
     description
@@ -253,7 +260,7 @@ impl<'a> super::Reconciler<'a> {
         // bootstrapped, whose directories could not have been known that early.
         let path_dirs_at_plan =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
-        // Set when a signal requested cooperative cancellation. We stop BEFORE
+        // Set when a signal requested cooperative cancellation. Stopping happens BEFORE
         // the next action — the previous one already completed atomically, so no
         // file is left torn.
         let mut aborted_code: Option<u8> = None;
@@ -279,7 +286,7 @@ impl<'a> super::Reconciler<'a> {
             let total = filtered.len();
             for (action_idx, action) in filtered.iter().copied().enumerate() {
                 // Cooperative cancellation: a signal flips the abort flag, and
-                // we stop before beginning the next atomic action.
+                // the loop stops before beginning the next atomic action.
                 if let Some(code) = abort.aborted() {
                     aborted_code = Some(code);
                     break 'phases;
@@ -292,14 +299,20 @@ impl<'a> super::Reconciler<'a> {
                 // that does not yet exist (a CREATE) gets an absent marker so
                 // rollback removes it rather than restoring a later apply's
                 // post-apply snapshot.
-                if let Some(ref path) = action_target_path(action) {
+                if let Some(backup) = action_target_path(action) {
+                    let path = &backup.path;
                     // Backup key, not display: every writer of
                     // `file_backups.file_path` folds with `to_posix_fs_key` so a
                     // rollback lookup finds the row a Windows apply wrote — and
                     // so the row a rollback reopens still names the file that
                     // was backed up.
                     let path_str = crate::to_posix_fs_key(path);
-                    match crate::capture_file_state(path) {
+                    let captured = if backup.follow_symlink {
+                        crate::capture_file_resolved_state(path)
+                    } else {
+                        crate::capture_file_state(path)
+                    };
+                    match captured {
                         Ok(Some(file_state)) => {
                             if let Err(e) =
                                 self.state
@@ -499,24 +512,19 @@ impl<'a> super::Reconciler<'a> {
         // way, so the next unfiltered apply still converges the file.
         let path_dirs_changed = phase_filter.is_none() && path_dirs_now != path_dirs_at_plan;
         if !secret_env_collector.is_empty() || path_dirs_changed {
-            let (env_actions, _) = Self::plan_env(
+            let (env_actions, _) = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
                 resolved.merged.env_scope,
                 module_actions,
                 &secret_env_collector,
                 &path_dirs_now,
+                &super::env::recorded_managed_env_files(self.state),
             );
             for env_action in &env_actions {
                 if let Action::Env(ea) = env_action {
                     match Self::apply_env_action(ea, printer) {
                         Ok(desc) => {
-                            // The `:skipped` substring convention is confined to
-                            // env-action descriptions, where it is the actual
-                            // data shape produced by `apply_env_action` (a no-op
-                            // write marks itself skipped). This path calls
-                            // `apply_env_action` directly, so it reads the same
-                            // shape — it is not a general description sniff.
                             let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
                             merge_env_result(&mut results, desc, changed);
                         }
@@ -784,7 +792,11 @@ impl<'a> super::Reconciler<'a> {
                 continue;
             }
 
-            let (rtype, rid) = parse_resource_from_description(&result.description);
+            let description = result
+                .description
+                .strip_suffix(ENV_SKIPPED_SUFFIX)
+                .unwrap_or(&result.description);
+            let (rtype, rid) = parse_resource_from_description(description);
             self.state
                 .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
@@ -841,11 +853,8 @@ impl<'a> super::Reconciler<'a> {
                     abort,
                 )
                 .map(|(d, c)| (d, c, None)),
-            // The `:skipped` substring convention is confined to env-action
-            // descriptions, where it is the actual data shape produced by
-            // `apply_env_action` (no-op writes mark themselves skipped).
             Action::Env(env) => Self::apply_env_action(env, printer).map(|d| {
-                let changed = !d.contains(":skipped");
+                let changed = !d.contains(ENV_SKIPPED_SUFFIX);
                 (d, changed, None)
             }),
         }
