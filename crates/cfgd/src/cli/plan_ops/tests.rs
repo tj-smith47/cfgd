@@ -1279,7 +1279,7 @@ fn shell_env_reminder_names_the_written_env_file() {
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         print_shell_env_reminder(&result, &printer);
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
         (out, home)
     });
 
@@ -1318,7 +1318,7 @@ fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         print_shell_env_reminder(&result, &printer);
-        buf.lock().unwrap().clone()
+        cfgd_core::output::strip_ansi(&buf.lock().unwrap())
     });
 
     assert!(

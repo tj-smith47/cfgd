@@ -346,8 +346,12 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        // The marker is structure, the text is content: muting the dash gives
+        // a run of bullets a scan column instead of leaving every character on
+        // the line at the terminal's default with nothing to read against.
+        let marker = self.theme.muted.apply_to("- ");
         self.open_top_group(TopGroup::Bullet);
-        self.write_line(w, depth, &format!("- {}", text));
+        self.write_line(w, depth, &format!("{marker}{text}"));
         self.mark_top_level_group(TopGroup::Bullet);
     }
 
@@ -463,6 +467,58 @@ mod tests {
         (r, sink, buf)
     }
 
+    /// The design system is only real if every free-text emitter routes its
+    /// line through a theme slot. "All output goes through `Printer`" checks
+    /// routing, not visual identity — which is how a notice reached the
+    /// terminal as bare default-coloured text sitting among themed output while
+    /// passing that gate cleanly. Table body cells are the one deliberate
+    /// exception: they carry caller data and take a `Role` per cell, opt-in.
+    #[test]
+    #[serial_test::serial]
+    fn every_free_text_emitter_applies_a_theme_style() {
+        use crate::output::Role;
+        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+
+        fn assert_styled(name: &str, emit: impl Fn(&Renderer, &StringSink)) {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = StringSink(buf.clone());
+            // Verbose so `note`, which is Verbose-only, still emits.
+            let r = Renderer::new(Theme::from_preset("dracula"), Verbosity::Verbose);
+            emit(&r, &sink);
+            let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            assert!(
+                out.contains('\u{1b}'),
+                "{name} emitted unstyled text: {out:?}"
+            );
+        }
+
+        assert_styled("heading", |r, s| r.render_heading(s, "h"));
+        assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b"));
+        assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
+        assert_styled("hint", |r, s| r.render_hint(s, 0, "h"));
+        assert_styled("code_block", |r, s| {
+            r.render_code_block(s, 0, &["c".to_string()])
+        });
+        assert_styled("note", |r, s| r.render_note(s, 0, "n"));
+        assert_styled("status", |r, s| {
+            r.render_status(
+                s,
+                0,
+                &status::StatusFields {
+                    role: Role::Info,
+                    subject: "s",
+                    detail: None,
+                    duration: None,
+                    target: None,
+                },
+            )
+        });
+        assert_styled("deprecation", |r, s| r.render_deprecation(s, 0, "d"));
+        assert_styled("table header", |r, s| {
+            r.render_table(s, 0, &Table::new(["col"]))
+        });
+    }
+
     /// Streamed child output is the body of the announcement above it. A blank
     /// line between the two reads as the command producing nothing and some
     /// unrelated block following, which is exactly the seam a spinner used to
@@ -546,7 +602,7 @@ mod tests {
     fn bullet_uses_dash_glyph() {
         let (r, sink, buf) = capture();
         r.render_bullet(&sink, 1, "foo");
-        let s = buf.lock().unwrap();
+        let s = strip_ansi(&buf.lock().unwrap());
         assert!(s.contains("  - foo"), "got: {s:?}");
     }
 

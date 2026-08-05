@@ -119,6 +119,7 @@ spec:
       iconRunning: string
       iconSkipped: string
       iconArrow: string
+      iconInfo: string
 
   ai:
     provider: string
@@ -542,6 +543,7 @@ strings. An omitted field inherits the value from the active theme.
 | `iconRunning` | string | Icon character for running state. |
 | `iconSkipped` | string | Icon character for skipped state. |
 | `iconArrow` | string | Icon character for directional arrows (e.g. plan output). |
+| `iconInfo` | string | Icon character for informational notices. Defaults to `⊙`; pick a glyph your terminal font carries, or the line renders with a tofu box in the icon column. |
 
 ---
 

