@@ -57,18 +57,25 @@ impl PackageManager for CargoManager {
         )
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("cargo", cargo_cmd().args(["install", "--list"]), "list")?;
         Ok(parse_cargo_install_list_packages(&String::from_utf8_lossy(
             &output.stdout,
         )))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             let label = format!("cargo install {}", pkg);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "cargo",
                 cargo_cmd().args(["install", pkg]),
                 &label,
@@ -78,11 +85,15 @@ impl PackageManager for CargoManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             let label = format!("cargo uninstall {}", pkg);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "cargo",
                 cargo_cmd().args(["uninstall", pkg]),
                 &label,
@@ -92,7 +103,7 @@ impl PackageManager for CargoManager {
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // cargo install re-installs to update; no separate update command
         Ok(())
     }
@@ -115,7 +126,10 @@ impl PackageManager for CargoManager {
         ))
     }
 
-    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
         let output = run_pkg_cmd("cargo", cargo_cmd().args(["install", "--list"]), "list")?;
         Ok(parse_cargo_install_list(&String::from_utf8_lossy(
             &output.stdout,
@@ -248,7 +262,9 @@ mod tests {
     fn cargo_manager_update_is_noop() {
         let mgr = CargoManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        mgr.update(&printer).unwrap();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        mgr.update(&cx).unwrap();
     }
 
     #[test]
@@ -340,7 +356,9 @@ tokei v12.1.2:
     fn cargo_update_returns_ok() {
         let mgr = CargoManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        mgr.update(&printer).unwrap();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        mgr.update(&cx).unwrap();
     }
 
     // --- parse_cargo_install_list_packages ---
@@ -427,7 +445,7 @@ tokei v12.1.2:
     mod cargo_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_CARGO_BIN";
@@ -437,8 +455,10 @@ tokei v12.1.2:
         fn cargo_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             CargoManager
-                .install(&["ripgrep".into(), "fd-find".into()], &p)
+                .install(&["ripgrep".into(), "fd-find".into()], &cx)
                 .expect("Ok");
             assert_eq!(s.invocation_count(), 2);
             let argv = s.argv_log();
@@ -451,7 +471,11 @@ tokei v12.1.2:
         fn cargo_uninstall_runs_uninstall_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            CargoManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            CargoManager
+                .uninstall(&["ripgrep".into()], &cx)
+                .expect("Ok");
             assert!(s.argv_log().contains("uninstall ripgrep"));
         }
 
@@ -460,7 +484,9 @@ tokei v12.1.2:
         fn cargo_update_is_noop_no_command_spawned() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            CargoManager.update(&p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            CargoManager.update(&cx).expect("Ok");
             assert_eq!(
                 s.invocation_count(),
                 0,
@@ -473,7 +499,10 @@ tokei v12.1.2:
         fn cargo_installed_packages_parses_install_list_output() {
             let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
             let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
-            let pkgs = CargoManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = CargoManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("ripgrep"));
             assert!(pkgs.contains("fd-find"));
@@ -514,7 +543,12 @@ tokei v12.1.2:
         fn cargo_installed_packages_with_versions_parses_install_list() {
             let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
             let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
-            let pkgs = CargoManager.installed_packages_with_versions().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = CargoManager
+                .installed_packages_with_versions(&cx)
+                .expect("Ok");
             let rg = pkgs
                 .iter()
                 .find(|p| p.name == "ripgrep")

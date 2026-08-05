@@ -509,6 +509,7 @@ pub struct InstalledPackageEntry {
 pub fn scan_installed_packages(
     managers: &[&dyn PackageManager],
     filter_manager: Option<&str>,
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> Result<Vec<InstalledPackageEntry>, CfgdError> {
     let mut entries = vec![];
     for manager in managers {
@@ -520,7 +521,7 @@ pub fn scan_installed_packages(
         if !manager.is_available() {
             continue;
         }
-        match manager.installed_packages_with_versions() {
+        match manager.installed_packages_with_versions(cx) {
             Ok(pkgs) => {
                 for pkg in pkgs {
                     entries.push(InstalledPackageEntry {

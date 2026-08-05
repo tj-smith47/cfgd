@@ -133,11 +133,16 @@ pub fn cmd_plan(
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
+        let pkg_cx = cfgd_core::providers::PackageContext {
+            printer,
+            state: &state,
+        };
         let pkg = packages::plan_packages(
             &effective_resolved.merged,
             &[],
             &all_managers,
             &cfgd_installed,
+            &pkg_cx,
         )?;
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;

@@ -5,7 +5,7 @@ use std::process::Command;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageInfo, PackageManager};
+use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
     canonical_ci_pkg_name, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd_live,
@@ -103,7 +103,7 @@ impl PackageManager for ScoopManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         // `scoop list` renders a PowerShell Format-Table that produces NO rows when
         // captured with no console width (any non-interactive child process), so it
         // cannot be parsed. `scoop export` emits stable JSON regardless of console —
@@ -122,17 +122,20 @@ impl PackageManager for ScoopManager {
 
     /// Display surface (scan/status): keep the REGISTERED app-name case and the real
     /// version, rather than the lowercase identity form used for matching.
-    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &PackageContext<'_>,
+    ) -> Result<Vec<PackageInfo>> {
         let output = run_pkg_query("scoop", scoop_cmd().arg("export"))?;
         Ok(parse_scoop_export_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "scoop",
                 scoop_cmd().args(["install", pkg]),
                 &format!("Installing {}", pkg),
@@ -142,10 +145,10 @@ impl PackageManager for ScoopManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "scoop",
                 scoop_cmd().args(["uninstall", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -155,9 +158,9 @@ impl PackageManager for ScoopManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "scoop",
             scoop_cmd().args(["update", "*"]),
             "Upgrading all scoop packages",
@@ -297,7 +300,9 @@ mod tests {
     #[cfg(unix)]
     mod scoop_shim {
         use super::*;
-        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
+        use cfgd_core::test_helpers::{
+            install_named_path_shim, test_package_context, test_printer, test_state,
+        };
         use serial_test::serial;
 
         // Local wrapper: scoop is invoked by name via PATH, no env-var seam.
@@ -340,8 +345,10 @@ mod tests {
         fn scoop_install_invokes_per_package() {
             let (_bin, _path) = install_scoop_shim(0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             ScoopManager
-                .install(&["git".into(), "ripgrep".into()], &p)
+                .install(&["git".into(), "ripgrep".into()], &cx)
                 .expect("install Ok");
         }
 
@@ -350,8 +357,10 @@ mod tests {
         fn scoop_install_propagates_nonzero_exit_as_install_failed() {
             let (_bin, _path) = install_scoop_shim(1, "", "couldn't find git");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let err = ScoopManager
-                .install(&["git".into()], &p)
+                .install(&["git".into()], &cx)
                 .expect_err("non-zero scoop install must error");
             let msg = err.to_string();
             // Error kind is "install" — surfaces as InstallFailed and carries
@@ -367,8 +376,10 @@ mod tests {
         fn scoop_uninstall_invokes_per_package() {
             let (_bin, _path) = install_scoop_shim(0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             ScoopManager
-                .uninstall(&["git".into()], &p)
+                .uninstall(&["git".into()], &cx)
                 .expect("uninstall Ok");
         }
 
@@ -377,8 +388,10 @@ mod tests {
         fn scoop_uninstall_propagates_nonzero_exit_as_uninstall_failed() {
             let (_bin, _path) = install_scoop_shim(1, "", "no such package");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let err = ScoopManager
-                .uninstall(&["git".into()], &p)
+                .uninstall(&["git".into()], &cx)
                 .expect_err("non-zero scoop uninstall must error");
             assert!(err.to_string().contains("scoop"));
         }
@@ -388,7 +401,9 @@ mod tests {
         fn scoop_update_runs_update_star() {
             let (_bin, _path) = install_scoop_shim(0, "", "");
             let p = test_printer();
-            ScoopManager.update(&p).expect("update Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ScoopManager.update(&cx).expect("update Ok");
         }
 
         #[test]
@@ -397,7 +412,10 @@ mod tests {
             let stdout =
                 r#"{"apps":[{"Name":"git","Version":"2.44.0"},{"Name":"fd","Version":"9.0.0"}]}"#;
             let (_bin, _path) = install_scoop_shim(0, stdout, "");
-            let pkgs = ScoopManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = ScoopManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.contains("git"));
             assert!(pkgs.contains("fd"));
             assert_eq!(pkgs.len(), 2);
@@ -407,7 +425,10 @@ mod tests {
         #[serial]
         fn scoop_installed_packages_empty_when_no_apps() {
             let (_bin, _path) = install_scoop_shim(0, r#"{"apps":[]}"#, "");
-            let pkgs = ScoopManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = ScoopManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.is_empty());
         }
 
@@ -420,8 +441,11 @@ mod tests {
             // apps array; some scoop versions emit a non-JSON message — both parse to
             // an empty set.)
             let (_bin, _path) = install_scoop_shim(1, "There aren't any apps installed.\n", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let pkgs = ScoopManager
-                .installed_packages()
+                .installed_packages(&cx)
                 .expect("empty-DB exit-1 must be Ok(empty), not Err");
             assert!(pkgs.is_empty());
         }

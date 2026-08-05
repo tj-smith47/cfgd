@@ -337,14 +337,22 @@ pub(crate) fn handle_reconcile(
         .into_iter()
         .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
         .collect();
-    let pkg_actions =
-        match hooks.plan_packages(&resolved.merged, &available_managers, &cfgd_installed) {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::error!(error = %e, "reconcile: package planning failed");
-                return;
-            }
-        };
+    let pkg_cx = crate::providers::PackageContext {
+        printer,
+        state: &store,
+    };
+    let pkg_actions = match hooks.plan_packages(
+        &resolved.merged,
+        &available_managers,
+        &cfgd_installed,
+        &pkg_cx,
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: package planning failed");
+            return;
+        }
+    };
 
     let file_actions = match hooks.plan_files(&config_dir, &resolved) {
         Ok(a) => a,
@@ -612,6 +620,7 @@ pub(crate) fn handle_reconcile(
                             match crate::reconciler::stale_tracked_packages(
                                 &available_managers,
                                 &cfgd_installed,
+                                &pkg_cx,
                             ) {
                                 Ok(stale) => {
                                     for (mgr, id) in stale {
@@ -634,7 +643,7 @@ pub(crate) fn handle_reconcile(
                             match store.orphaned_package_resources(&known) {
                                 Ok(orphans) if !orphans.is_empty() => {
                                     for (mgr, pkg) in
-                                        hooks.prune_orphaned_packages(&orphans, printer)
+                                        hooks.prune_orphaned_packages(&orphans, &pkg_cx)
                                     {
                                         let rid = format!("{mgr}/{pkg}");
                                         if let Err(e) =

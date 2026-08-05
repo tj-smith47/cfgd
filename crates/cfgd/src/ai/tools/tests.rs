@@ -3,12 +3,19 @@ use super::*;
 #[test]
 fn test_dispatch_unknown_tool() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "nonexistent",
         &Value::Null,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("Unknown tool"));
@@ -18,7 +25,13 @@ fn test_dispatch_unknown_tool() {
 fn test_dispatch_get_schema() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Module"});
-    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains("apiVersion"));
 }
@@ -27,7 +40,13 @@ fn test_dispatch_get_schema() {
 fn test_dispatch_get_schema_profile() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Profile"});
-    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains("kind: Profile"));
 }
@@ -36,7 +55,13 @@ fn test_dispatch_get_schema_profile() {
 fn test_dispatch_get_schema_config() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Config"});
-    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains("kind: Config"));
 }
@@ -45,7 +70,13 @@ fn test_dispatch_get_schema_config() {
 fn test_dispatch_get_schema_invalid_kind() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "InvalidKind"});
-    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[], &cx);
     assert!(result.is_error);
     assert!(result.content.contains("unknown schema kind"));
 }
@@ -54,7 +85,13 @@ fn test_dispatch_get_schema_invalid_kind() {
 fn test_dispatch_get_schema_missing_kind() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[], &cx);
     assert!(result.is_error);
     assert!(result.content.contains("'kind' parameter is required"));
 }
@@ -64,7 +101,20 @@ fn test_dispatch_validate_yaml_valid() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test\nspec: {}\n";
     let input = serde_json::json!({"content": yaml, "kind": "Module"});
-    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "validate_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error);
     assert!(result.content.contains("true"));
 }
@@ -73,7 +123,20 @@ fn test_dispatch_validate_yaml_valid() {
 fn test_dispatch_validate_yaml_invalid() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "not valid yaml {{", "kind": "Module"});
-    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "validate_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error); // validate_yaml itself returns a result struct, not an error
     assert!(result.content.contains("false"));
 }
@@ -82,7 +145,20 @@ fn test_dispatch_validate_yaml_invalid() {
 fn test_dispatch_validate_yaml_missing_content() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Module"});
-    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "validate_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(result.content.contains("'content' parameter is required"));
 }
@@ -93,7 +169,13 @@ fn test_dispatch_scan_dotfiles() {
     std::fs::write(tmp.path().join(".zshrc"), "# config").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("scan_dotfiles", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("scan_dotfiles", &input, &mut session, tmp.path(), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains(".zshrc"));
 }
@@ -104,12 +186,19 @@ fn test_dispatch_scan_dotfiles_with_home_override() {
     std::fs::write(tmp.path().join(".bashrc"), "# bash").unwrap();
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"home": tmp.path().to_str().unwrap()});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "scan_dotfiles",
         &input,
         &mut session,
         Path::new("/nonexistent"),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains(".bashrc"));
@@ -125,7 +214,20 @@ fn test_dispatch_scan_shell_config() {
     .unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"shell": "zsh"});
-    let result = dispatch_tool_call("scan_shell_config", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "scan_shell_config",
+        &input,
+        &mut session,
+        tmp.path(),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error);
     assert!(result.content.contains("ll"));
     assert!(result.content.contains("EDITOR"));
@@ -135,12 +237,19 @@ fn test_dispatch_scan_shell_config() {
 fn test_dispatch_scan_shell_config_missing_shell() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "scan_shell_config",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("'shell' parameter is required"));
@@ -150,12 +259,19 @@ fn test_dispatch_scan_shell_config_missing_shell() {
 fn test_dispatch_scan_system_settings() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "scan_system_settings",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
 }
@@ -164,7 +280,20 @@ fn test_dispatch_scan_system_settings() {
 fn test_dispatch_detect_platform() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("detect_platform", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "detect_platform",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error);
     assert!(result.content.contains("os"));
     assert!(result.content.contains("arch"));
@@ -174,7 +303,20 @@ fn test_dispatch_detect_platform() {
 fn test_dispatch_inspect_tool_missing_name() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("inspect_tool", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "inspect_tool",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(result.content.contains("'name' parameter is required"));
 }
@@ -185,7 +327,13 @@ fn test_dispatch_inspect_tool() {
     std::fs::write(tmp.path().join(".zshrc"), "# zsh config").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "zsh"});
-    let result = dispatch_tool_call("inspect_tool", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("inspect_tool", &input, &mut session, tmp.path(), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains("zsh"));
 }
@@ -194,12 +342,19 @@ fn test_dispatch_inspect_tool() {
 fn test_dispatch_query_package_manager_missing_manager() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"package": "neovim"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "query_package_manager",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("'manager' parameter is required"));
@@ -209,12 +364,19 @@ fn test_dispatch_query_package_manager_missing_manager() {
 fn test_dispatch_query_package_manager_missing_package() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"manager": "brew"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "query_package_manager",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("'package' parameter is required"));
@@ -224,12 +386,19 @@ fn test_dispatch_query_package_manager_missing_package() {
 fn test_dispatch_query_package_manager_not_found() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"manager": "nonexistent", "package": "vim"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "query_package_manager",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("not found"));
@@ -239,7 +408,13 @@ fn test_dispatch_query_package_manager_not_found() {
 fn test_dispatch_read_file_missing_path() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("read_file", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("read_file", &input, &mut session, Path::new("/"), &[], &cx);
     assert!(result.is_error);
     assert!(result.content.contains("'path' parameter is required"));
 }
@@ -248,7 +423,20 @@ fn test_dispatch_read_file_missing_path() {
 fn test_dispatch_list_directory_missing_path() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("list_directory", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "list_directory",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(result.content.contains("'path' parameter is required"));
 }
@@ -260,7 +448,13 @@ fn test_dispatch_read_file() {
     std::fs::write(&file, "hello world").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": file.to_str().unwrap()});
-    let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains("hello world"));
 }
@@ -272,7 +466,13 @@ fn test_dispatch_list_directory() {
     std::fs::write(tmp.path().join("b.txt"), "").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": tmp.path().to_str().unwrap()});
-    let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[], &cx);
     assert!(!result.is_error);
     assert!(result.content.contains("a.txt"));
     assert!(result.content.contains("b.txt"));
@@ -292,7 +492,20 @@ fn test_dispatch_adopt_files() {
             {"source": src_file.to_str().unwrap(), "dest": "tool/config.toml"}
         ]
     });
-    let result = dispatch_tool_call("adopt_files", &input, &mut session, src_dir.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "adopt_files",
+        &input,
+        &mut session,
+        src_dir.path(),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error);
     assert!(repo_dir.path().join("tool/config.toml").exists());
 }
@@ -301,7 +514,20 @@ fn test_dispatch_adopt_files() {
 fn test_dispatch_adopt_files_missing_files() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
-    let result = dispatch_tool_call("adopt_files", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "adopt_files",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(result.content.contains("'files' parameter is required"));
 }
@@ -310,7 +536,20 @@ fn test_dispatch_adopt_files_missing_files() {
 fn test_dispatch_adopt_files_missing_source() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"files": [{"dest": "out.txt"}]});
-    let result = dispatch_tool_call("adopt_files", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "adopt_files",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(result.content.contains("'source'"));
 }
@@ -319,7 +558,20 @@ fn test_dispatch_adopt_files_missing_source() {
 fn test_dispatch_adopt_files_missing_dest() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"files": [{"source": "/tmp/x"}]});
-    let result = dispatch_tool_call("adopt_files", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "adopt_files",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(result.content.contains("'dest'"));
 }
@@ -330,7 +582,20 @@ fn test_dispatch_write_module_yaml() {
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test\nspec:\n  packages:\n    - name: test-pkg\n";
     let input = serde_json::json!({"name": "test", "content": yaml});
-    let result = dispatch_tool_call("write_module_yaml", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "write_module_yaml",
+        &input,
+        &mut session,
+        tmp.path(),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error, "Error: {}", result.content);
     assert!(result.content.contains("path"));
     assert!(tmp.path().join("modules/test/module.yaml").exists());
@@ -341,7 +606,20 @@ fn test_dispatch_write_module_yaml_invalid() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "bad", "content": "invalid yaml {{"});
-    let result = dispatch_tool_call("write_module_yaml", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "write_module_yaml",
+        &input,
+        &mut session,
+        tmp.path(),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
 }
 
@@ -349,12 +627,19 @@ fn test_dispatch_write_module_yaml_invalid() {
 fn test_dispatch_write_module_yaml_missing_name() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "test"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "write_module_yaml",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("'name' parameter is required"));
@@ -366,7 +651,20 @@ fn test_dispatch_write_profile_yaml() {
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - test\n";
     let input = serde_json::json!({"name": "base", "content": yaml});
-    let result = dispatch_tool_call("write_profile_yaml", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "write_profile_yaml",
+        &input,
+        &mut session,
+        tmp.path(),
+        &[],
+        &cx,
+    );
     assert!(!result.is_error, "Error: {}", result.content);
     assert!(result.content.contains("path"));
     assert!(tmp.path().join("profiles/base/profile.yaml").exists());
@@ -376,12 +674,19 @@ fn test_dispatch_write_profile_yaml() {
 fn test_dispatch_write_profile_yaml_missing_content() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "test"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "write_profile_yaml",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("'content' parameter is required"));
@@ -390,12 +695,19 @@ fn test_dispatch_write_profile_yaml_missing_content() {
 #[test]
 fn test_dispatch_list_generated_empty() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "list_generated",
         &Value::Null,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert_eq!(result.content, "[]");
@@ -407,12 +719,19 @@ fn test_dispatch_list_generated_after_write() {
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n    - name: neovim\n";
     session.write_module_yaml("nvim", yaml).unwrap();
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "list_generated",
         &Value::Null,
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("nvim"));
@@ -426,12 +745,19 @@ fn test_dispatch_get_existing_modules() {
     std::fs::create_dir_all(&nvim_dir).unwrap();
     std::fs::write(nvim_dir.join("module.yaml"), "test").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "get_existing_modules",
         &Value::Null,
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("nvim"));
@@ -441,12 +767,19 @@ fn test_dispatch_get_existing_modules() {
 fn test_dispatch_get_existing_modules_empty() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "get_existing_modules",
         &Value::Null,
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert_eq!(result.content, "[]");
@@ -459,12 +792,19 @@ fn test_dispatch_get_existing_profiles() {
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(profiles_dir.join("base.yaml"), "test").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "get_existing_profiles",
         &Value::Null,
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("base"));
@@ -474,12 +814,19 @@ fn test_dispatch_get_existing_profiles() {
 fn test_dispatch_get_existing_profiles_empty() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "get_existing_profiles",
         &Value::Null,
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert_eq!(result.content, "[]");
@@ -527,12 +874,19 @@ fn test_tool_definitions_count() {
 fn test_dispatch_scan_installed_packages_empty() {
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "scan_installed_packages",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert_eq!(result.content, "[]");
@@ -548,12 +902,19 @@ fn test_generate_tool_pipeline_writes_module() {
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     // AI calls get_schema to learn Module format
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "get_schema",
         &serde_json::json!({"kind": "Module"}),
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("apiVersion"));
@@ -566,6 +927,7 @@ fn test_generate_tool_pipeline_writes_module() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("true"));
@@ -577,6 +939,7 @@ fn test_generate_tool_pipeline_writes_module() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
 
@@ -594,6 +957,7 @@ fn test_generate_tool_pipeline_writes_module() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("git"));
@@ -605,12 +969,19 @@ fn test_generate_tool_pipeline_writes_profile() {
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     let profile_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - git\n";
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "write_profile_yaml",
         &serde_json::json!({"name": "base", "content": profile_yaml}),
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
 
@@ -624,12 +995,19 @@ fn test_generate_scan_dotfiles_via_dispatch() {
     std::fs::write(tmp.path().join(".gitconfig"), "[user]\nname = Test").unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "scan_dotfiles",
         &serde_json::json!({}),
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains(".gitconfig"));
@@ -640,12 +1018,19 @@ fn test_generate_unknown_tool_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "nonexistent_tool",
         &serde_json::json!({}),
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(result.content.contains("Unknown tool"));
@@ -658,12 +1043,19 @@ fn test_generate_pipeline_module_then_profile() {
 
     // Write a module
     let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec:\n  packages:\n    - name: git\n";
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "write_module_yaml",
         &serde_json::json!({"name": "git", "content": module_yaml}),
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
 
@@ -675,6 +1067,7 @@ fn test_generate_pipeline_module_then_profile() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
 
@@ -685,6 +1078,7 @@ fn test_generate_pipeline_module_then_profile() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("git"));
@@ -699,6 +1093,7 @@ fn test_generate_pipeline_module_then_profile() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("git"));
@@ -710,6 +1105,7 @@ fn test_generate_pipeline_module_then_profile() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert!(result.content.contains("base"));
@@ -722,12 +1118,19 @@ fn test_generate_pipeline_invalid_yaml_does_not_write() {
 
     // validate_yaml reports invalid
     let bad_yaml = "not: valid: yaml: {{";
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "validate_yaml",
         &serde_json::json!({"content": bad_yaml, "kind": "Module"}),
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error); // validate_yaml never errors; returns a result struct
     assert!(result.content.contains("false"));
@@ -739,6 +1142,7 @@ fn test_generate_pipeline_invalid_yaml_does_not_write() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(result.is_error);
 
@@ -752,6 +1156,7 @@ fn test_generate_pipeline_invalid_yaml_does_not_write() {
         &mut session,
         tmp.path(),
         &[],
+        &cx,
     );
     assert!(!result.is_error);
     assert_eq!(result.content, "[]");
@@ -772,7 +1177,13 @@ fn test_dispatch_read_file_underlying_error_surfaces() {
     let missing = tmp.path().join("not-on-disk.txt");
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": missing.to_str().unwrap()});
-    let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[], &cx);
     assert!(result.is_error);
     assert!(
         result.content.starts_with("Error: "),
@@ -790,7 +1201,13 @@ fn test_dispatch_list_directory_underlying_error_surfaces() {
     let missing = tmp.path().join("no-such-dir");
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": missing.to_str().unwrap()});
-    let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[], &cx);
     assert!(result.is_error);
     assert!(
         result.content.starts_with("Error: "),
@@ -812,7 +1229,13 @@ fn test_dispatch_adopt_files_underlying_error_surfaces() {
             {"source": "/tmp/__cfgd_test_does_not_exist__", "dest": "x.txt"}
         ]
     });
-    let result = dispatch_tool_call("adopt_files", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call("adopt_files", &input, &mut session, tmp.path(), &[], &cx);
     assert!(result.is_error);
     assert!(
         result.content.starts_with("Error: "),
@@ -827,7 +1250,20 @@ fn test_dispatch_validate_yaml_missing_kind() {
     // content is present but 'kind' is not → "Error: 'kind' parameter is required".
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "apiVersion: x"});
-    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "validate_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(
         result.content.contains("'kind' parameter is required"),
@@ -843,7 +1279,20 @@ fn test_dispatch_validate_yaml_invalid_kind_value() {
     // Err → "Error: unknown schema kind" surfaced verbatim.
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "anything", "kind": "NotARealKind"});
-    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "validate_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(
         result.content.contains("unknown schema kind"),
@@ -859,12 +1308,19 @@ fn test_dispatch_write_module_yaml_missing_content() {
     // Complements the existing _missing_name test.
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "test"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "write_module_yaml",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(
@@ -881,12 +1337,19 @@ fn test_dispatch_write_profile_yaml_missing_name() {
     // the existing _missing_content test.
     let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "yaml goes here"});
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
     let result = dispatch_tool_call(
         "write_profile_yaml",
         &input,
         &mut session,
         Path::new("/"),
         &[],
+        &cx,
     );
     assert!(result.is_error);
     assert!(
@@ -905,7 +1368,20 @@ fn test_dispatch_write_profile_yaml_underlying_error_surfaces() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "bad", "content": "not yaml {{ unclosed"});
-    let result = dispatch_tool_call("write_profile_yaml", &input, &mut session, tmp.path(), &[]);
+    let (test_printer, _test_cap) = cfgd_core::output::Printer::for_test_doc();
+    let test_state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext {
+        printer: &test_printer,
+        state: &test_state,
+    };
+    let result = dispatch_tool_call(
+        "write_profile_yaml",
+        &input,
+        &mut session,
+        tmp.path(),
+        &[],
+        &cx,
+    );
     assert!(result.is_error);
     assert!(
         result.content.starts_with("Error: "),

@@ -39,10 +39,11 @@ pub fn verify(
     resolved: &ResolvedProfile,
     registry: &ProviderRegistry,
     state: &StateStore,
-    _printer: &Printer,
+    printer: &Printer,
     modules: &[ResolvedModule],
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
+    let cx = crate::providers::PackageContext { printer, state };
 
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the
@@ -72,7 +73,7 @@ pub fn verify(
         };
 
         if !installed_cache.contains_key(&ep.manager) {
-            installed_cache.insert(ep.manager.clone(), mgr.installed_packages()?);
+            installed_cache.insert(ep.manager.clone(), mgr.installed_packages(&cx)?);
         }
         let installed = &installed_cache[&ep.manager];
         // Compare through package_identity so case-insensitive managers (choco/scoop/

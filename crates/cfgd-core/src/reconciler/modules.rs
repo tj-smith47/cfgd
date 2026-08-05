@@ -126,15 +126,20 @@ impl<'a> super::Reconciler<'a> {
                             // wholesale rewrite of that file.
                             if !pm.is_available() && pm.can_bootstrap() {
                                 pm.bootstrap(printer)?;
-                                self.record_bootstrap_path_dirs(pm.as_ref());
+                                self.record_bootstrap_path_dirs(pm.as_ref(), printer);
                             }
+
+                            let cx = crate::providers::PackageContext {
+                                printer,
+                                state: self.state,
+                            };
 
                             // Update package index before installing
                             if pm.is_available() {
-                                pm.update(printer)?;
+                                pm.update(&cx)?;
                             }
 
-                            pm.install(&pkg_names, printer)?;
+                            pm.install(&pkg_names, &cx)?;
                             manager_changed = true;
                         }
                     }

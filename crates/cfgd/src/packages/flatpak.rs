@@ -6,7 +6,7 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageContext, PackageManager};
 
 #[cfg(target_os = "linux")]
 use super::shared::linux_system_manager_available;
@@ -54,7 +54,7 @@ impl PackageManager for FlatpakManager {
         bootstrap_via_system_manager(printer, "flatpak", "flatpak")
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         let output = run_pkg_cmd(
             "flatpak",
             flatpak_cmd().args(["list", "--app", "--columns=application"]),
@@ -65,11 +65,11 @@ impl PackageManager for FlatpakManager {
         )))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             let label = format!("flatpak install -y {}", pkg);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "flatpak",
                 flatpak_cmd().args(["install", "-y", pkg]),
                 &label,
@@ -79,11 +79,11 @@ impl PackageManager for FlatpakManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             let label = format!("flatpak uninstall -y {}", pkg);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "flatpak",
                 flatpak_cmd().args(["uninstall", "-y", pkg]),
                 &label,
@@ -93,9 +93,9 @@ impl PackageManager for FlatpakManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "flatpak",
             flatpak_cmd().args(["update", "-y"]),
             "flatpak update -y",
@@ -216,7 +216,7 @@ mod tests {
     mod flatpak_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_FLATPAK_BIN";
@@ -226,10 +226,12 @@ mod tests {
         fn flatpak_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             FlatpakManager
                 .install(
                     &["org.mozilla.firefox".into(), "org.signal.Signal".into()],
-                    &p,
+                    &cx,
                 )
                 .expect("Ok");
             assert_eq!(s.invocation_count(), 2);
@@ -243,8 +245,10 @@ mod tests {
         fn flatpak_uninstall_runs_uninstall_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             FlatpakManager
-                .uninstall(&["org.mozilla.firefox".into()], &p)
+                .uninstall(&["org.mozilla.firefox".into()], &cx)
                 .expect("Ok");
             assert!(s.argv_log().contains("uninstall -y org.mozilla.firefox"));
         }
@@ -254,7 +258,9 @@ mod tests {
         fn flatpak_update_runs_update_y() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            FlatpakManager.update(&p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            FlatpakManager.update(&cx).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
             assert!(s.argv_log().contains("update -y"), "argv: {}", s.argv_log());
         }
@@ -264,7 +270,10 @@ mod tests {
         fn flatpak_installed_packages_parses_columns_application_output() {
             let stdout = "org.mozilla.firefox\norg.signal.Signal\n";
             let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
-            let pkgs = FlatpakManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = FlatpakManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("org.mozilla.firefox"));
         }

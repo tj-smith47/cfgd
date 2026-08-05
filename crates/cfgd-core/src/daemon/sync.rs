@@ -424,6 +424,26 @@ pub(crate) fn handle_compliance_snapshot(
         .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
         .collect();
 
+    // Opened before the snapshot collect (not just before the store write) so
+    // `collect_package_checks` can thread the same connection through
+    // `PackageContext` instead of a manager opening its own second one.
+    let store = match state_dir_override {
+        Some(d) => match StateStore::open_in_dir(d) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "compliance: state store error");
+                return;
+            }
+        },
+        None => match StateStore::open_default() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "compliance: state store error");
+                return;
+            }
+        },
+    };
+
     let snapshot = match crate::compliance::collect_snapshot(
         profile_name,
         &resolved.merged,
@@ -432,6 +452,8 @@ pub(crate) fn handle_compliance_snapshot(
         &registry,
         &compliance_cfg.scope,
         &source_names,
+        &printer,
+        &store,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -450,23 +472,6 @@ pub(crate) fn handle_compliance_snapshot(
     };
 
     let hash = crate::sha256_hex(json.as_bytes());
-
-    let store = match state_dir_override {
-        Some(d) => match StateStore::open_in_dir(d) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "compliance: state store error");
-                return;
-            }
-        },
-        None => match StateStore::open_default() {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "compliance: state store error");
-                return;
-            }
-        },
-    };
 
     // Only store if state actually changed
     let latest_hash = match store.latest_compliance_hash() {

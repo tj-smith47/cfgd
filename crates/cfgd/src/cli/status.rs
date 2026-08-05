@@ -331,12 +331,17 @@ pub(super) fn cmd_status(
         let mut registry = build_registry_with_profile(&resolved.merged.packages);
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(&state)?;
+        let pkg_cx = cfgd_core::providers::PackageContext {
+            printer,
+            state: &state,
+        };
         let drift = super::live_drift::live_drift_results(
             &config_dir,
             &resolved,
             &registry,
             &resolved_modules,
             &cfgd_installed,
+            &pkg_cx,
         )?;
         for r in &drift {
             output.drift.push(cfgd_core::state::DriftEvent {

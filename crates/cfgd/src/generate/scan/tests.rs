@@ -387,22 +387,39 @@ impl PackageManager for TestPackageManager {
     fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> cfgd_core::errors::Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<HashSet<String>> {
         Ok(self.packages.iter().map(|p| p.name.clone()).collect())
     }
-    fn install(&self, _packages: &[String], _printer: &Printer) -> cfgd_core::errors::Result<()> {
+    fn install(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> cfgd_core::errors::Result<()> {
+    fn uninstall(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+    fn update(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
         Ok(None)
     }
-    fn installed_packages_with_versions(&self) -> cfgd_core::errors::Result<Vec<PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<Vec<PackageInfo>> {
         Ok(self.packages.clone())
     }
 }
@@ -416,6 +433,9 @@ fn pkg(name: &str, version: &str) -> PackageInfo {
 
 #[test]
 fn test_scan_installed_packages_collects_from_multiple_managers() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let brew = TestPackageManager {
         manager_name: "brew",
         available: true,
@@ -428,7 +448,7 @@ fn test_scan_installed_packages_collects_from_multiple_managers() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &apt];
-    let entries = scan_installed_packages(&managers, None).unwrap();
+    let entries = scan_installed_packages(&managers, None, &cx).unwrap();
 
     assert_eq!(entries.len(), 3);
 
@@ -446,6 +466,9 @@ fn test_scan_installed_packages_collects_from_multiple_managers() {
 
 #[test]
 fn test_scan_installed_packages_filter_by_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let brew = TestPackageManager {
         manager_name: "brew",
         available: true,
@@ -458,7 +481,7 @@ fn test_scan_installed_packages_filter_by_manager() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &apt];
-    let entries = scan_installed_packages(&managers, Some("brew")).unwrap();
+    let entries = scan_installed_packages(&managers, Some("brew"), &cx).unwrap();
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "ripgrep");
@@ -467,6 +490,9 @@ fn test_scan_installed_packages_filter_by_manager() {
 
 #[test]
 fn test_scan_installed_packages_skips_unavailable() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let unavailable = TestPackageManager {
         manager_name: "brew",
         available: false,
@@ -479,7 +505,7 @@ fn test_scan_installed_packages_skips_unavailable() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&unavailable, &available];
-    let entries = scan_installed_packages(&managers, None).unwrap();
+    let entries = scan_installed_packages(&managers, None, &cx).unwrap();
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "curl");
@@ -488,13 +514,19 @@ fn test_scan_installed_packages_skips_unavailable() {
 
 #[test]
 fn test_scan_installed_packages_empty_managers() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let managers: Vec<&dyn PackageManager> = vec![];
-    let entries = scan_installed_packages(&managers, None).unwrap();
+    let entries = scan_installed_packages(&managers, None, &cx).unwrap();
     assert!(entries.is_empty());
 }
 
 #[test]
 fn test_scan_installed_packages_sorted_by_name_then_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mgr_a = TestPackageManager {
         manager_name: "apt",
         available: true,
@@ -507,7 +539,7 @@ fn test_scan_installed_packages_sorted_by_name_then_manager() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&mgr_a, &mgr_b];
-    let entries = scan_installed_packages(&managers, None).unwrap();
+    let entries = scan_installed_packages(&managers, None, &cx).unwrap();
 
     // awk comes first alphabetically
     assert_eq!(entries[0].name, "awk");
@@ -1108,6 +1140,9 @@ fn test_parse_shell_file_plugin_manager_non_source_line() {
 
 #[test]
 fn test_scan_installed_packages_error_manager_does_not_abort() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     struct ErrorManager;
     impl cfgd_core::providers::PackageManager for ErrorManager {
         fn name(&self) -> &str {
@@ -1124,24 +1159,28 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         }
         fn installed_packages(
             &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
             Ok(Default::default())
         }
         fn install(
             &self,
             _pkgs: &[String],
-            _p: &cfgd_core::output::Printer,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
         fn uninstall(
             &self,
             _pkgs: &[String],
-            _p: &cfgd_core::output::Printer,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
-        fn update(&self, _p: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+        fn update(
+            &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
         fn available_version(&self, _pkg: &str) -> cfgd_core::errors::Result<Option<String>> {
@@ -1149,6 +1188,7 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         }
         fn installed_packages_with_versions(
             &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<Vec<cfgd_core::providers::PackageInfo>> {
             Err(cfgd_core::errors::CfgdError::Package(
                 cfgd_core::errors::PackageError::ListFailed {
@@ -1167,7 +1207,7 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
 
     let err_mgr = ErrorManager;
     let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&err_mgr, &good];
-    let entries = scan_installed_packages(&managers, None)
+    let entries = scan_installed_packages(&managers, None, &cx)
         .expect("scan_installed_packages should not fail when one manager errors");
 
     assert_eq!(
@@ -1666,6 +1706,9 @@ fn test_strip_inline_comment_hash_inside_single_then_outside() {
 
 #[test]
 fn test_scan_installed_packages_filter_matches_nothing() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let brew = TestPackageManager {
         manager_name: "brew",
         available: true,
@@ -1673,7 +1716,7 @@ fn test_scan_installed_packages_filter_matches_nothing() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&brew];
-    let entries = scan_installed_packages(&managers, Some("nonexistent_manager")).unwrap();
+    let entries = scan_installed_packages(&managers, Some("nonexistent_manager"), &cx).unwrap();
     assert!(
         entries.is_empty(),
         "filter matching no manager should return empty"
@@ -1682,6 +1725,9 @@ fn test_scan_installed_packages_filter_matches_nothing() {
 
 #[test]
 fn test_scan_installed_packages_all_unavailable() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mgr1 = TestPackageManager {
         manager_name: "brew",
         available: false,
@@ -1694,7 +1740,7 @@ fn test_scan_installed_packages_all_unavailable() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&mgr1, &mgr2];
-    let entries = scan_installed_packages(&managers, None).unwrap();
+    let entries = scan_installed_packages(&managers, None, &cx).unwrap();
     assert!(
         entries.is_empty(),
         "all unavailable should return empty list"
@@ -1703,6 +1749,9 @@ fn test_scan_installed_packages_all_unavailable() {
 
 #[test]
 fn test_scan_installed_packages_filter_skips_non_matching_even_if_available() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let brew = TestPackageManager {
         manager_name: "brew",
         available: true,
@@ -1715,7 +1764,7 @@ fn test_scan_installed_packages_filter_skips_non_matching_even_if_available() {
     };
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &apt];
-    let entries = scan_installed_packages(&managers, Some("apt")).unwrap();
+    let entries = scan_installed_packages(&managers, Some("apt"), &cx).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "curl");
     assert_eq!(entries[0].manager, "apt");

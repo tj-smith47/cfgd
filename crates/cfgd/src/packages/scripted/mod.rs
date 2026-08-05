@@ -5,7 +5,7 @@ use std::process::Command;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageContext, PackageManager};
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
 
@@ -163,7 +163,7 @@ impl PackageManager for ScriptedManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         let output = run_pkg_cmd(&self.mgr_name, &mut shell_command(&self.list_cmd), "list")?;
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -172,17 +172,17 @@ impl PackageManager for ScriptedManager {
             .collect())
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
-        self.run_template(&self.install_cmd, packages, printer, "install")
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        self.run_template(&self.install_cmd, packages, cx.printer, "install")
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
-        self.run_template(&self.uninstall_cmd, packages, printer, "uninstall")
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        self.run_template(&self.uninstall_cmd, packages, cx.printer, "uninstall")
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         if let Some(ref cmd) = self.update_cmd {
-            printer.status_simple(Role::Info, cmd.as_str());
+            cx.printer.status_simple(Role::Info, cmd.as_str());
             run_pkg_cmd_msg(
                 &self.mgr_name,
                 &mut shell_command(cmd),

@@ -255,6 +255,10 @@ fn collect_doctor_output(
     let modules_registry = build_registry();
     let mgr_map = managers_map(&modules_registry);
     let platform = Platform::detect();
+    let doctor_state = open_state_store(cli.state_dir.as_deref()).ok();
+    let doctor_cx = doctor_state
+        .as_ref()
+        .map(|state| cfgd_core::providers::PackageContext { printer, state });
 
     let module_checks: Vec<DoctorModuleCheck> = module_list
         .iter()
@@ -267,9 +271,13 @@ fn collect_doctor_output(
                     .map(|entry| {
                         match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
                             Ok(Some(resolved)) => {
-                                let installed = mgr_map
-                                    .get(&resolved.manager)
-                                    .and_then(|m| m.installed_packages().ok())
+                                let installed = doctor_cx
+                                    .as_ref()
+                                    .and_then(|cx| {
+                                        mgr_map
+                                            .get(&resolved.manager)
+                                            .and_then(|m| m.installed_packages(cx).ok())
+                                    })
                                     .map(|pkgs| pkgs.contains(&resolved.resolved_name))
                                     .unwrap_or(false);
                                 DoctorModulePackageCheck {

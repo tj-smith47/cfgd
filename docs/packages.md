@@ -51,6 +51,24 @@ naming the fallback prefix and that its `bin` directory needs to be added to
 `PATH` — cfgd bootstraps installs into `$HOME/.npm-global` but does not
 silently rewrite your shell's `PATH` for you.
 
+Once resolved, the decision (prefix + whether it was the fallback) is
+persisted in cfgd's state store and reused by every later `install` /
+`uninstall` / `update` / listing call, so a package installed under one
+resolved prefix stays visible even if a later run's live inputs (elevation,
+write-probe result, project-local npm config) would resolve differently. A
+persisted prefix that itself becomes unwritable is revalidated and re-resolved
+automatically. If you fix the permissions that pushed npm onto the fallback
+and want cfgd to notice a *better* prefix is now available, clear the cached
+decision:
+
+```console
+$ cfgd state forget-prefix npm
+Forgot persisted global-install prefix for 'npm'
+```
+
+The next `install`/`uninstall`/`update`/list call re-derives the prefix from
+scratch using the four-step resolution above.
+
 ## Reaching a manager cfgd bootstrapped mid-apply
 
 A manager cfgd installs during an apply lands in a prefix that did not exist

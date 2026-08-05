@@ -11,7 +11,7 @@ use crate::ai::tools;
 use crate::generate;
 use crate::packages;
 
-use super::{Cli, config_dir};
+use super::{Cli, config_dir, open_state_store};
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -174,6 +174,11 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
+    let gen_state = open_state_store(cli.state_dir.as_deref())?;
+    let pkg_cx = cfgd_core::providers::PackageContext {
+        printer,
+        state: &gen_state,
+    };
 
     // 9. Conversation loop
     const MAX_TURNS: usize = 100;
@@ -217,8 +222,14 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                         let result = handle_present_yaml(printer, id, input, args.yes)?;
                         tool_results.push(result);
                     } else {
-                        let result =
-                            tools::dispatch_tool_call(name, input, &mut session, &home, &managers);
+                        let result = tools::dispatch_tool_call(
+                            name,
+                            input,
+                            &mut session,
+                            &home,
+                            &managers,
+                            &pkg_cx,
+                        );
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: result.content,

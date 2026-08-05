@@ -62,7 +62,10 @@ impl PackageManager for NixManager {
         )
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         // Prefer `nix profile list --json`: the plain-text format changed to
         // a multi-line `Key: value` block in nix 2.20+, which no line-oriented
         // parser can reliably read; the JSON shape is stable across versions.
@@ -93,12 +96,16 @@ impl PackageManager for NixManager {
         )))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             if nix_available() {
                 let label = format!("nix profile install nixpkgs#{}", pkg);
                 run_pkg_cmd_live(
-                    printer,
+                    cx.printer,
                     "nix",
                     nix_cmd().args(["profile", "install", &format!("nixpkgs#{}", pkg)]),
                     &label,
@@ -107,7 +114,7 @@ impl PackageManager for NixManager {
             } else {
                 let label = format!("nix-env -iA nixpkgs.{}", pkg);
                 run_pkg_cmd_live(
-                    printer,
+                    cx.printer,
                     "nix",
                     nix_env_cmd().args(["-iA", &format!("nixpkgs.{}", pkg)]),
                     &label,
@@ -118,7 +125,11 @@ impl PackageManager for NixManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             if nix_available() {
                 // nix 2.20+ removes by profile element NAME, not by flake
@@ -129,7 +140,7 @@ impl PackageManager for NixManager {
                 // the element name.
                 let label = format!("nix profile remove {}", pkg);
                 run_pkg_cmd_live(
-                    printer,
+                    cx.printer,
                     "nix",
                     nix_cmd().args(["profile", "remove", pkg]),
                     &label,
@@ -138,7 +149,7 @@ impl PackageManager for NixManager {
             } else {
                 let label = format!("nix-env -e {}", pkg);
                 run_pkg_cmd_live(
-                    printer,
+                    cx.printer,
                     "nix",
                     nix_env_cmd().args(["-e", pkg]),
                     &label,
@@ -149,7 +160,7 @@ impl PackageManager for NixManager {
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Nix packages are pinned; update is a no-op (channels are managed separately)
         Ok(())
     }
@@ -268,7 +279,9 @@ mod tests {
     fn nix_manager_update_is_noop() {
         let mgr = NixManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        mgr.update(&printer).unwrap();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        mgr.update(&cx).unwrap();
     }
 
     #[test]
@@ -386,7 +399,9 @@ mod tests {
     fn nix_update_returns_ok() {
         let mgr = NixManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        mgr.update(&printer).unwrap();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        mgr.update(&cx).unwrap();
     }
 
     // --- parse_nix_profile_list_json ---
@@ -497,7 +512,7 @@ mod tests {
     mod nix_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_NIX_BIN";
@@ -511,8 +526,10 @@ mod tests {
             // stay unset so the test fails loudly if the wrong branch fires.
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             NixManager
-                .install(&["ripgrep".into(), "fd".into()], &p)
+                .install(&["ripgrep".into(), "fd".into()], &cx)
                 .expect("Ok");
             // is_available() consults nix_env_available() first; install
             // hits nix_available() per package. With the shim set only on
@@ -534,7 +551,9 @@ mod tests {
         fn nix_uninstall_routes_through_nix_profile_when_nix_available() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            NixManager.uninstall(&["hello".into()], &p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            NixManager.uninstall(&["hello".into()], &cx).expect("Ok");
             let argv = s.argv_log();
             // nix 2.20+ removes by element NAME; `nix profile remove
             // nixpkgs#hello` matches nothing and exits 0, silently failing the
@@ -555,7 +574,10 @@ mod tests {
             // nix 2.34 `nix profile list --json` (version 3) object shape.
             let stdout = r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/abc-ripgrep"]},"fd":{"storePaths":["/nix/store/def-fd"]}},"version":3}"#;
             let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
-            let pkgs = NixManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = NixManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("ripgrep"));
             assert!(pkgs.contains("fd"));
@@ -575,7 +597,10 @@ mod tests {
             // its own tempdir per call, so each shim is independent.
             let _nix = ToolShim::install(SHIM_ENV, 1, "", "profile list unsupported on this nix");
             let _nix_env = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "ripgrep-14.1.0\nfd-9.0.0\n", "");
-            let pkgs = NixManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = NixManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.contains("ripgrep"));
             assert!(pkgs.contains("fd"));
         }
@@ -611,7 +636,9 @@ mod tests {
             // install routes through the nix-env -iA fallback path.
             let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
             let p = test_printer();
-            NixManager.install(&["ripgrep".into()], &p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            NixManager.install(&["ripgrep".into()], &cx).expect("Ok");
             let argv = s.argv_log();
             assert!(
                 argv.contains("-iA nixpkgs.ripgrep"),
@@ -624,7 +651,9 @@ mod tests {
         fn nix_uninstall_uses_nix_env_when_only_nix_env_seam_set() {
             let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
             let p = test_printer();
-            NixManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            NixManager.uninstall(&["ripgrep".into()], &cx).expect("Ok");
             assert!(
                 s.argv_log().contains("-e ripgrep"),
                 "fallback argv must use `nix-env -e <pkg>`: {}",

@@ -100,6 +100,7 @@ missing from the table.
 | source_show                  | yes               | introspection                                      |
 | source_update                | yes               | update result records                              |
 | source_validate              | yes               | validation result consumed by scripts/CI           |
+| state_forget_prefix          | yes               | cleared-row record (or forgotten:false) consumed by scripts |
 | status                       | yes               | drift + last-apply queried by scripts              |
 | status_module                | yes               | per-module status queried by scripts               |
 | sync                         | yes               | sync result records                                |

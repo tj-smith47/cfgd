@@ -73,6 +73,22 @@ pub struct RollbackOutput {
     pub non_file_actions: Vec<String>,
 }
 
+/// Structured payload for `cfgd state forget-prefix`. `prefix`/`is_fallback`/
+/// `resolved_at` describe the row that was cleared and are omitted (not
+/// nulled) when `forgotten` is `false` — there was no row to describe.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetPrefixOutput {
+    pub manager: String,
+    pub forgotten: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncOutput {

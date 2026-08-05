@@ -214,19 +214,30 @@ mod tests {
             Ok(())
         }
 
-        fn installed_packages(&self) -> Result<HashSet<String>> {
+        fn installed_packages(
+            &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> Result<HashSet<String>> {
             Ok(HashSet::new())
         }
 
-        fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        fn install(
+            &self,
+            _packages: &[String],
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> Result<()> {
             Ok(())
         }
 
-        fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        fn uninstall(
+            &self,
+            _packages: &[String],
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> Result<()> {
             Ok(())
         }
 
-        fn update(&self, _printer: &Printer) -> Result<()> {
+        fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
             Ok(())
         }
 

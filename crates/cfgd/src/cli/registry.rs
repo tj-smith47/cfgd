@@ -47,13 +47,14 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         profile: &cfgd_core::config::MergedProfile,
         managers: &[&dyn cfgd_core::providers::PackageManager],
         cfgd_installed: &std::collections::HashSet<String>,
+        cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<Vec<cfgd_core::providers::PackageAction>> {
         // The daemon reconcile is a full, unscoped run, so forward the real
         // tracked set: it prunes packages cfgd installed that have left the
         // desired set (the safety invariant bounds it to cfgd-owned packages).
         // Profile-scoped (`&[]`): the daemon adds module packages separately via
         // `reconciler.plan` as `Action::Module`, so this planner stays profile-only.
-        packages::plan_packages(profile, &[], managers, cfgd_installed)
+        packages::plan_packages(profile, &[], managers, cfgd_installed, cx)
     }
 
     fn extend_registry_custom_managers(
@@ -83,9 +84,9 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
     fn prune_orphaned_packages(
         &self,
         orphans: &[cfgd_core::providers::OrphanedPackage],
-        printer: &cfgd_core::output::Printer,
+        cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Vec<(String, String)> {
-        crate::packages::prune_orphaned_packages(orphans, printer)
+        crate::packages::prune_orphaned_packages(orphans, cx)
     }
 }
 
@@ -351,24 +352,30 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
     fn bootstrap(&self, _printer: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
         Ok(std::collections::HashSet::new())
     }
     fn install(
         &self,
         _packages: &[String],
-        _printer: &cfgd_core::output::Printer,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
     fn uninstall(
         &self,
         _packages: &[String],
-        _printer: &cfgd_core::output::Printer,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn update(&self, _printer: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+    fn update(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {

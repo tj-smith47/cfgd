@@ -31,7 +31,9 @@ use crate::config::{
 };
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Role};
-use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
+use crate::providers::{
+    FileAction, PackageAction, PackageContext, PackageManager, ProviderRegistry,
+};
 use crate::state::StateStore;
 
 /// Trait for binary-specific operations the daemon needs.
@@ -54,6 +56,7 @@ pub trait DaemonHooks: Send + Sync {
         profile: &MergedProfile,
         managers: &[&dyn PackageManager],
         cfgd_installed: &std::collections::HashSet<String>,
+        cx: &PackageContext<'_>,
     ) -> Result<Vec<PackageAction>>;
 
     /// Extend the registry with custom (user-defined) package managers from the profile.
@@ -85,7 +88,7 @@ pub trait DaemonHooks: Send + Sync {
     fn prune_orphaned_packages(
         &self,
         _orphans: &[crate::providers::OrphanedPackage],
-        _printer: &Printer,
+        _cx: &PackageContext<'_>,
     ) -> Vec<(String, String)> {
         Vec::new()
     }
