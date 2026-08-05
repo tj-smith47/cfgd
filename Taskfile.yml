@@ -164,6 +164,19 @@ tasks:
             ssh {{.HOST}} 'shutdown -p now' || true
           fi
 
+  test:threads:
+    desc: "Thread-model leg: plain `cargo test` (not nextest) at a high thread count, run by `task ci` and CI's dedicated ubuntu-only job."
+    deps: [_check:tmp-headroom]
+    cmds:
+      # nextest runs one process per test, so every test gets its own copy of
+      # `environ` and every `static` — it structurally cannot observe a race
+      # on process-global state shared across tests (PATH mutation raced
+      # against command_path resolution, the `console` crate's global colour
+      # flags, env vars like CFGD_CACHE_DIR). Plain `cargo test` runs tests as
+      # threads inside one process, so it can; --test-threads=16 forces
+      # enough interleaving to make that class reproducible.
+      - cargo test --workspace --all-features -- --test-threads=16
+
   test:crate:*:
     desc: 'Run tests for one crate: `task test:crate:<crate> -- <filter>`'
     deps: [_check:tmp-headroom]
@@ -431,6 +444,7 @@ tasks:
       - task: schema:check
       - task: gen:crds:check
       - task: test
+      - task: test:threads
       - task: audit
       - task: audit:test
       - task: package

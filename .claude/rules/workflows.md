@@ -115,6 +115,14 @@ single-source-of-truth wiring.
   the VM); `task`/`nextest` come from pkg; no protoc (neither in-scope crate
   compiles protos). `task test:freebsd` runs the same leg locally against the
   accept VM (start-if-stopped, poll, sync, `task test:ci`).
+- The `test-thread-model` job in ci.yml runs `task test:threads` — plain
+  `cargo test --test-threads=16`, not nextest. It is not redundant with the
+  `test` job: nextest runs one process per test, so each test gets its own
+  `environ` and its own copy of every `static`, and a race on process-global
+  state shared BETWEEN tests (PATH mutation vs `command_path` resolution, the
+  `console` crate's global colour flags) cannot be observed there at all.
+  ubuntu-only is deliberate — the race class is not OS-specific, so a matrix
+  buys nothing.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

@@ -97,6 +97,26 @@ jobs:
         shell: bash
         run: task test:ci
 
+  test-thread-model:
+    name: Tests (thread model)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          task-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # nextest (the `test` job above) runs one process per test, so it
+      # structurally cannot observe a race on process-global state shared
+      # across tests. Plain `cargo test` runs tests as threads inside one
+      # process and can, so this leg — one platform is enough, the race
+      # class isn't OS-specific — is the regression gate for that class.
+      - name: Tests (cargo test, threaded)
+        run: task test:threads
+
   test-freebsd:
     name: Tests (freebsd)
     runs-on: ubuntu-latest
