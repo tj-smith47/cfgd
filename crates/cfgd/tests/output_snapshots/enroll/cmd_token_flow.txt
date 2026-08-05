@@ -2,8 +2,8 @@ Server     <SERVER_URL>
 Device ID  <DEVICE_ID>
 
 Token Enrollment
-Exchanging bootstrap token for device credential...
-Enrolling device with device gateway
+ⓘ Exchanging bootstrap token for device credential...
+ⓘ Enrolling device with device gateway
 ✓ Enrolled as user 'alice'
 Team    platform
 Device  dev-abc-123

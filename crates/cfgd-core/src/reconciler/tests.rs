@@ -14,7 +14,7 @@ use crate::test_helpers::{
 };
 
 #[test]
-fn empty_plan_has_eight_phases() {
+fn empty_plan_has_no_phases() {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -30,7 +30,9 @@ fn empty_plan_has_eight_phases() {
         )
         .unwrap();
 
-    assert_eq!(plan.phases.len(), 8);
+    // An action-less phase is dropped, so a plan with nothing to do carries no
+    // phases at all rather than eight empty ones.
+    assert_eq!(plan.phases.len(), 0);
     assert!(plan.is_empty());
 }
 
@@ -530,7 +532,6 @@ fn plan_includes_module_phase() {
         )
         .unwrap();
 
-    assert_eq!(plan.phases.len(), 8);
     let module_phase = plan
         .phases
         .iter()
@@ -1476,7 +1477,7 @@ fn format_module_plan_script_packages() {
 }
 
 #[test]
-fn empty_modules_produces_empty_phase() {
+fn empty_modules_produces_no_module_phase() {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -1492,12 +1493,9 @@ fn empty_modules_produces_empty_phase() {
         )
         .unwrap();
 
-    let module_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Modules)
-        .unwrap();
-    assert!(module_phase.actions.is_empty());
+    // No modules ⇒ no module actions ⇒ the phase is dropped rather than carried
+    // as an empty one.
+    assert!(!plan.phases.iter().any(|p| p.name == PhaseName::Modules));
 }
 
 #[test]
@@ -11321,18 +11319,13 @@ fn plan_env_writes_nothing_for_a_manager_cfgd_never_bootstrapped() {
         )
         .unwrap();
 
-    let env_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Env)
-        .expect("env phase");
     // Rewriting a user's `.bashrc` because a profile happens to name a manager
     // the user installed themselves claims ownership of a machine change cfgd
-    // never made.
+    // never made. No env actions ⇒ the phase is dropped entirely.
     assert!(
-        env_phase.actions.is_empty(),
+        !plan.phases.iter().any(|p| p.name == PhaseName::Env),
         "an unbootstrapped manager must earn no env file and no rc source line: {:?}",
-        env_phase.actions
+        plan.phases
     );
     assert!(
         !tmp_home.path().join(".cfgd.env").exists(),

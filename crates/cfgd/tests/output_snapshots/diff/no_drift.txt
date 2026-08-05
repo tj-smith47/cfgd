@@ -2,7 +2,7 @@ Diff
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
 
-Files
+ⓘ Files
 ✓ No file drift
 
 Packages

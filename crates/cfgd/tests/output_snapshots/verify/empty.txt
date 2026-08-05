@@ -1,2 +1,2 @@
 Verify
-No managed resources to verify
+ⓘ No managed resources to verify

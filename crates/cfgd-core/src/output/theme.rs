@@ -9,6 +9,7 @@ const ICON_PENDING: &str = "○";
 const ICON_RUNNING: &str = "◐";
 const ICON_SKIPPED: &str = "—";
 const ICON_ARROW: &str = "→";
+const ICON_INFO: &str = "ⓘ";
 
 /// Single style slot held by `Theme`. Wraps `console::Style` (used for the
 /// 256-color fallback path and for non-color attributes like bold/dim) and
@@ -243,7 +244,7 @@ pub struct Theme {
     /// `Role::Secondary`.
     pub secondary: ThemedStyle,
 
-    // Icon slots (7)
+    // Icon slots (8)
     pub icon_ok: String,
     pub icon_warn: String,
     pub icon_fail: String,
@@ -251,6 +252,7 @@ pub struct Theme {
     pub icon_running: String,
     pub icon_skipped: String,
     pub icon_arrow: String,
+    pub icon_info: String,
 }
 
 impl Default for Theme {
@@ -278,6 +280,7 @@ impl Default for Theme {
             icon_running: ICON_RUNNING.into(),
             icon_skipped: ICON_SKIPPED.into(),
             icon_arrow: ICON_ARROW.into(),
+            icon_info: ICON_INFO.into(),
         }
     }
 }
@@ -412,6 +415,9 @@ impl Theme {
         if let Some(v) = &ov.icon_arrow {
             t.icon_arrow = v.clone();
         }
+        if let Some(v) = &ov.icon_info {
+            t.icon_info = v.clone();
+        }
         t
     }
 
@@ -439,6 +445,7 @@ impl Theme {
             icon_running: ".".into(),
             icon_skipped: "-".into(),
             icon_arrow: ">".into(),
+            icon_info: "i".into(),
         }
     }
 }
@@ -522,6 +529,35 @@ mod tests {
         assert_eq!(t.icon_running, "◐");
         assert_eq!(t.icon_skipped, "—");
         assert_eq!(t.icon_arrow, "→");
+        assert_eq!(t.icon_info, "ⓘ");
+    }
+
+    /// Every default glyph must be text-presentation: an emoji-presentation
+    /// character renders double-width and color-substituted, breaking the
+    /// status-line glyph column that the whole icon set exists to align.
+    #[test]
+    fn default_icons_are_all_text_presentation_single_glyphs() {
+        let t = Theme::default();
+        for icon in [
+            &t.icon_ok,
+            &t.icon_warn,
+            &t.icon_fail,
+            &t.icon_pending,
+            &t.icon_running,
+            &t.icon_skipped,
+            &t.icon_arrow,
+            &t.icon_info,
+        ] {
+            assert_eq!(icon.chars().count(), 1, "{icon:?} is not a single glyph");
+            let c = icon.chars().next().unwrap_or('\0') as u32;
+            // U+FE0F would force emoji presentation; the emoji-source blocks
+            // (Misc Symbols & Pictographs onward) are excluded outright.
+            assert!(
+                !icon.contains('\u{FE0F}'),
+                "{icon:?} forces emoji presentation"
+            );
+            assert!(c < 0x1F300, "{icon:?} is from an emoji block");
+        }
     }
 
     #[test]
@@ -886,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn from_config_icon_overrides_apply_all_seven_slots() {
+    fn from_config_icon_overrides_apply_all_eight_slots() {
         let cfg = crate::config::ThemeConfig {
             name: "default".to_string(),
             overrides: crate::config::ThemeOverrides {
@@ -897,6 +933,7 @@ mod tests {
                 icon_running: Some("[*]".into()),
                 icon_skipped: Some("[-]".into()),
                 icon_arrow: Some("=>".into()),
+                icon_info: Some("[i]".into()),
                 ..Default::default()
             },
         };
@@ -908,6 +945,7 @@ mod tests {
         assert_eq!(t.icon_running, "[*]");
         assert_eq!(t.icon_skipped, "[-]");
         assert_eq!(t.icon_arrow, "=>");
+        assert_eq!(t.icon_info, "[i]");
     }
 
     #[test]

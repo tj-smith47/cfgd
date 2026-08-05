@@ -42,11 +42,10 @@ pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyl
         Role::Pending => (Some(theme.icon_pending.as_str()), theme.muted.clone()),
         Role::Running => (Some(theme.icon_running.as_str()), theme.running.clone()),
         Role::Skipped => (Some(theme.icon_skipped.as_str()), theme.muted.clone()),
-        // Info, Accent + Secondary intentionally claim no icon — they style the
-        // text payload, they don't reserve a status-line glyph column. Info still
-        // takes its theme slot: a role that renders as unstyled default terminal
-        // text is indistinguishable from output that bypassed the Printer.
-        Role::Info => (None, theme.info.clone()),
+        Role::Info => (Some(theme.icon_info.as_str()), theme.info.clone()),
+        // Accent + Secondary intentionally claim no icon — they style the text
+        // payload inline, they don't occupy the status-line glyph column that
+        // every other role reserves.
         Role::Accent => (None, theme.accent.clone()),
         Role::Secondary => (None, theme.secondary.clone()),
     }
@@ -63,12 +62,17 @@ mod tests {
     }
 
     #[test]
-    fn info_has_no_icon_but_keeps_its_theme_style() {
+    fn info_uses_its_theme_icon_and_style() {
         let t = Theme::default();
         let (icon, style) = role_glyph(&t, Role::Info);
-        assert!(icon.is_none());
+        assert_eq!(icon, Some("ⓘ"));
         assert_eq!(style_repr(&style), style_repr(&t.info));
         assert_ne!(style_repr(&style), style_repr(&ThemedStyle::plain()));
+        // The ASCII preset downgrades it like every other glyph.
+        assert_eq!(
+            role_glyph(&Theme::from_preset("minimal"), Role::Info).0,
+            Some("i")
+        );
     }
 
     /// A role that renders with a style it did not take from the active theme

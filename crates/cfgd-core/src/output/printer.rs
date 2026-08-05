@@ -137,6 +137,26 @@ impl Printer {
         }
     }
 
+    /// A copy of this printer rendering with `theme_name`, preserving verbosity,
+    /// output format, and the List-envelope setting.
+    ///
+    /// The process printer is built from the config that existed at startup, so
+    /// on a fresh machine `cfgd init --theme dracula` would write `spec.theme`
+    /// and then render its own run in the default theme — the one command whose
+    /// output cannot show the theme it just chose. Re-theming after the config
+    /// is written closes that gap.
+    ///
+    /// Carries no test capture or queued prompts: those belong to the printer a
+    /// test constructed, and a re-themed copy is only taken on a real run.
+    pub fn rethemed(&self, theme_name: &str) -> Self {
+        Self::with_format(
+            self.verbosity(),
+            Some(theme_name),
+            self.output_format.clone(),
+        )
+        .with_list_envelope(self.list_envelope)
+    }
+
     /// Enable or disable the KRM List envelope for top-level JSON arrays under
     /// `-o json`/`-o yaml`. Builder-style; off by default. Wired from the global
     /// `--list-envelope` flag / `CFGD_LIST_ENVELOPE` env var.

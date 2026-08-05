@@ -500,8 +500,11 @@ pub(crate) fn execute_script(
         }
     })?;
 
-    // Spinner with live output display (same pattern as Printer::run_with_progress)
-    let pb = printer.spinner(&label);
+    // The script's own output is streamed line-by-line rather than repainted
+    // inside a spinner window: a fixed window erases and rewrites the lines
+    // above it every tick, which reads as the screen resetting. Announce the
+    // step, let its output scroll, then close it with a status line.
+    printer.status_simple(Role::Running, &label);
 
     // Channel for live display + Arc buffers for final capture.
     // Reader threads feed both so we get live scrolling output AND full capture.
@@ -524,35 +527,18 @@ pub(crate) fn execute_script(
     );
     drop(tx);
 
-    const VISIBLE_LINES: usize = 5;
-    let mut ring: std::collections::VecDeque<String> =
-        std::collections::VecDeque::with_capacity(VISIBLE_LINES);
-
     let start = std::time::Instant::now();
     loop {
-        // Drain any pending output lines and update the spinner display
+        // Drain pending output and stream it, one line at a time, in order.
         while let Ok(line) = rx.try_recv() {
-            if ring.len() >= VISIBLE_LINES {
-                ring.pop_front();
+            // A child like `nvim --headless` emits its own ANSI screen-reset and
+            // cursor-move sequences; written through verbatim they execute on the
+            // real terminal. Strip full ANSI, then escape residual control bytes.
+            let clean = crate::escape_control_chars(&crate::output::strip_ansi(&line));
+            let trimmed = clean.trim_end();
+            if !trimmed.is_empty() {
+                printer.stream_line(trimmed);
             }
-            ring.push_back(line);
-        }
-        if !ring.is_empty() {
-            let mut msg = label.clone();
-            for l in &ring {
-                // A child like `nvim --headless` emits its own ANSI screen-reset
-                // and cursor-move sequences; fed verbatim into the spinner message
-                // they execute on the real terminal and blank the recording. Strip
-                // full ANSI sequences, then escape any residual bare control bytes.
-                let clean = crate::escape_control_chars(&crate::output::strip_ansi(l));
-                let display = if clean.len() > 120 {
-                    clean.get(..120).unwrap_or(&clean)
-                } else {
-                    clean.as_str()
-                };
-                msg.push_str(&format!("\n  {}", display));
-            }
-            pb.set_message(msg);
         }
 
         match child.try_wait()? {
@@ -574,7 +560,8 @@ pub(crate) fn execute_script(
 
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
-                    pb.finish_fail(format!("{} (exit {})", run_label, exit_code));
+                    printer
+                        .status_simple(Role::Fail, format!("{} (exit {})", run_label, exit_code));
                     let base = format!("script '{}' failed (exit {})", run_label, exit_code);
                     let message = match captured.as_deref().filter(|s| !s.is_empty()) {
                         Some(c) => format!("{base}\n{c}"),
@@ -584,7 +571,7 @@ pub(crate) fn execute_script(
                 }
 
                 let elapsed = start.elapsed();
-                pb.finish_ok(format!("{} ({}s)", run_label, elapsed.as_secs()));
+                printer.status_simple(Role::Ok, format!("{} ({}s)", run_label, elapsed.as_secs()));
                 return Ok((resource_desc, true, captured));
             }
             None => {
@@ -609,7 +596,7 @@ pub(crate) fn execute_script(
                     && let Some(a) = abort
                     && a.aborted().is_some()
                 {
-                    pb.finish_fail(format!("{} interrupted", run_label));
+                    printer.status_simple(Role::Fail, format!("{} interrupted", run_label));
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
@@ -618,12 +605,10 @@ pub(crate) fn execute_script(
                     }));
                 }
                 if let Some((reason, duration)) = kill_reason {
-                    pb.finish_fail(format!(
-                        "{} {} after {}s",
-                        run_label,
-                        reason,
-                        duration.as_secs()
-                    ));
+                    printer.status_simple(
+                        Role::Fail,
+                        format!("{} {} after {}s", run_label, reason, duration.as_secs()),
+                    );
                     kill_script_child(&mut child, true);
                     // Join reader threads so we capture partial output
                     let _ = stdout_handle.join();

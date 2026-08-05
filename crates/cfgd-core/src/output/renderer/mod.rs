@@ -351,6 +351,20 @@ impl Renderer {
         self.mark_top_level_group(TopGroup::Bullet);
     }
 
+    /// One line of live output from a child process, rendered dim and indented.
+    /// Unlike a spinner message — which repaints a fixed window in place and so
+    /// erases and rewrites the lines above it — this appends, letting output
+    /// scroll exactly as it would in a bare terminal with the cursor resting on
+    /// the last line. Claims no `TopGroup`: interleaving child output must not
+    /// insert group-boundary blank lines between consecutive lines.
+    pub fn render_stream_line(&self, w: &dyn Writer, depth: usize, text: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        self.flush_pending_section_headers(w);
+        self.write_line(w, depth, &self.theme.muted.apply_to(text).to_string());
+    }
+
     /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
     /// canonical "next step" surface.
     pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str) {

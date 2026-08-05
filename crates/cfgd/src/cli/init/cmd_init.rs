@@ -127,6 +127,12 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
 
+    // The process printer was built from the config that existed at startup —
+    // on a fresh machine, none. Adopt the theme just written so the rest of this
+    // run renders in it, instead of `--theme` taking effect only next command.
+    let rethemed = args.theme.map(|t| printer.rethemed(t));
+    let printer = rethemed.as_ref().unwrap_or(printer);
+
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
     // Deferred so the structured-output anchor below still reaches `-o json`
@@ -274,11 +280,16 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             // fresh machine only ever installs, never uninstalls. Profile-scoped:
             // module packages are added separately by `reconciler.plan` as
             // `Action::Module`, so this planner stays profile-only.
+            let pkg_cx = cfgd_core::providers::PackageContext {
+                printer,
+                state: &store,
+            };
             let pkg_actions = super::packages::plan_packages(
                 &resolved.merged,
                 &[],
                 &all_managers,
                 &std::collections::HashSet::new(),
+                &pkg_cx,
             )?;
 
             let fm = super::CfgdFileManager::new(&target_dir, &resolved)?;

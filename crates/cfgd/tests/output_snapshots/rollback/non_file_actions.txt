@@ -4,11 +4,11 @@ Rollback
   Non-file actions         1
 
 Restoring
-  No files affected
+  ⓘ No files affected
 
 ⚠ 1 non-file action(s) require manual review
 
 Actions
   - package:brew:install:ripgrep
 
-No files were changed during rollback
+ⓘ No files were changed during rollback

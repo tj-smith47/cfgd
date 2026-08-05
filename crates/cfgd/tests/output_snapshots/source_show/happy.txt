@@ -22,8 +22,8 @@ Managed Resources
   env      EDITOR   
 
 Modules
-  dev-tools
-  shell
+  ⓘ dev-tools
+  ⓘ shell
 
 Manifest
   Name         team-config
@@ -31,8 +31,8 @@ Manifest
   Policy Summary
     Required
       Count  2
-      file: ~/.bashrc
-      env: EDITOR
+      ⓘ file: ~/.bashrc
+      ⓘ env: EDITOR
     Recommended
       Count  1
-      system: shellAliases
+      ⓘ system: shellAliases

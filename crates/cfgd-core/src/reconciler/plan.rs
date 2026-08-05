@@ -42,7 +42,7 @@ impl<'a> super::Reconciler<'a> {
         // are available to all subsequent phases.
         let path_dirs =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
-        let (env_actions, warnings) = Self::plan_env(
+        let (env_actions, warnings) = self.plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
             resolved.merged.env_scope,
@@ -50,6 +50,7 @@ impl<'a> super::Reconciler<'a> {
             &[], // Secret envs are not yet resolved at plan time; they are
             // injected during the apply phase after ResolveEnv actions run.
             &path_dirs,
+            &super::env::recorded_managed_env_files(self.state),
         );
         phases.push(Phase {
             name: PhaseName::Env,
@@ -111,6 +112,14 @@ impl<'a> super::Reconciler<'a> {
             name: PhaseName::PostScripts,
             actions: post_script_actions,
         });
+
+        // A phase with no actions is not a step the run will take — it is an
+        // artifact of every phase being constructed unconditionally. Applying a
+        // module with no profile (`init --apply-module`) resolves an empty
+        // profile, so files/packages/system materialized as empty phases that
+        // rendered "(nothing to do)" beside phases doing real work. Drop them
+        // here, at the source, so display, `-o json`, and apply all agree.
+        phases.retain(|p| !p.actions.is_empty());
 
         Ok(Plan { phases, warnings })
     }

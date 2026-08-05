@@ -1007,6 +1007,17 @@ pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::new(crate::output::Verbosity::Quiet)
 }
 
+/// Build a `PackageContext` from a borrowed `Printer` and `StateStore` — the
+/// pair every `PackageManager` fixture now needs alongside `test_printer()` /
+/// `test_state()` since `PackageContext` threading replaced the bare
+/// `&Printer` parameter on the state-touching trait methods.
+pub fn test_package_context<'a>(
+    printer: &'a crate::output::Printer,
+    state: &'a crate::state::StateStore,
+) -> crate::providers::PackageContext<'a> {
+    crate::providers::PackageContext { printer, state }
+}
+
 // ---------------------------------------------------------------------------
 // NoopDaemonHooks
 // ---------------------------------------------------------------------------
@@ -1034,6 +1045,7 @@ impl crate::daemon::DaemonHooks for NoopDaemonHooks {
         _: &crate::config::MergedProfile,
         _: &[&dyn crate::providers::PackageManager],
         _: &std::collections::HashSet<String>,
+        _: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
         Ok(vec![])
     }
@@ -1966,21 +1978,32 @@ impl crate::providers::PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> crate::errors::Result<std::collections::HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<std::collections::HashSet<String>> {
         Ok(self.installed.clone())
     }
 
-    fn install(&self, packages: &[String], _printer: &Printer) -> crate::errors::Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<()> {
         self.install_calls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], _printer: &Printer) -> crate::errors::Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<()> {
         self.uninstall_calls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> crate::errors::Result<()> {
+    fn update(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
 
@@ -2432,6 +2455,8 @@ mod tests {
             .unavailable()
             .bootstrappable();
         let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
 
         assert_eq!(mgr.name(), "pacman");
         assert!(
@@ -2445,13 +2470,13 @@ mod tests {
         mgr.bootstrap(&printer).unwrap();
 
         assert_eq!(
-            mgr.installed_packages().unwrap(),
+            mgr.installed_packages(&cx).unwrap(),
             std::collections::HashSet::from(["git".to_string()])
         );
 
-        mgr.install(&["vim".to_string()], &printer).unwrap();
-        mgr.uninstall(&["nano".to_string()], &printer).unwrap();
-        mgr.update(&printer).unwrap();
+        mgr.install(&["vim".to_string()], &cx).unwrap();
+        mgr.uninstall(&["nano".to_string()], &cx).unwrap();
+        mgr.update(&cx).unwrap();
         assert_eq!(
             mgr.install_calls.lock().unwrap().as_slice(),
             &[vec!["vim".to_string()]]
@@ -3084,14 +3109,15 @@ mod tests {
         use secrecy::ExposeSecret;
 
         #[test]
-        fn harness_plan_empty_profile_produces_eight_phases() {
+        fn harness_plan_empty_profile_produces_no_phases() {
             let h = ReconcilerTestHarness::builder()
                 .package_manager("brew", &["curl", "git"])
                 .system_configurator("shell", &[])
                 .build();
 
             let plan = h.plan().unwrap();
-            assert_eq!(plan.phases.len(), 8);
+            // Action-less phases are dropped, so an empty profile plans nothing.
+            assert_eq!(plan.phases.len(), 0);
             assert!(plan.is_empty());
         }
 
@@ -3200,9 +3226,9 @@ env:
             assert_eq!(h.registry.system_configurators.len(), 1);
 
             // Plan still works (system drift doesn't automatically generate actions
-            // without matching profile system config)
+            // without matching profile system config), so it yields no phases.
             let plan = h.plan().unwrap();
-            assert_eq!(plan.phases.len(), 8);
+            assert_eq!(plan.phases.len(), 0);
         }
 
         #[test]
@@ -3214,13 +3240,16 @@ env:
             assert!(pm.is_available());
             assert_eq!(pm.name(), "brew");
 
-            let installed = pm.installed_packages().unwrap();
+            let printer = test_printer();
+            let state = super::super::test_state();
+            let cx = super::super::test_package_context(&printer, &state);
+
+            let installed = pm.installed_packages(&cx).unwrap();
             assert!(installed.contains("curl"));
             assert!(installed.contains("git"));
             assert!(!installed.contains("ripgrep"));
 
-            let printer = test_printer();
-            pm.install(&["ripgrep".to_string(), "fd".to_string()], &printer)
+            pm.install(&["ripgrep".to_string(), "fd".to_string()], &cx)
                 .unwrap();
 
             let calls = pm.install_calls.lock().unwrap();

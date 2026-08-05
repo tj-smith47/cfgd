@@ -18,8 +18,8 @@ Config Sources
 
 Pending Decisions
   team-config
-    1 pending item
-    recommended package/curl — install curl 8.5.0 (install)
+    ⓘ 1 pending item
+    ⓘ recommended package/curl — install curl 8.5.0 (install)
 
 Modules
   ✓ shell-config: 0 pkgs, 4 files, installed

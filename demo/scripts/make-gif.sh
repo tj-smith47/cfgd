@@ -30,11 +30,13 @@ OUT=demo/cfgd-demo.gif
 # playing the first install lines at 1:1, which costs GIF seconds but can
 # never truncate the typing the demo opens on.
 HEAD=22
-# The 1:1 closing is ~14s: the 6s hero hold, `:qa`, the beat the terminal
-# takes to restore the primary screen, then the version line and its 6s hold.
-# 18 keeps real margin over that. At 16 a slow screen restore pushed the hero
-# hold into the compressed middle — the one beat that must never be sped up.
-TAIL=18
+# The tail starts at the moment the install finishes, so the whole payoff plays
+# at 1:1: the 5s summary read, `source ~/.cfgd.env`, nvim's start, the 5s toast
+# settle, the 4s hero hold, `:qa`, the screen restore, and the version line with
+# its 5s hold — ~31s of scripted beats plus nvim's own variable start. 34 keeps
+# margin over that. Too small and the summary or the hero hold falls into the
+# compressed middle, which is exactly the ramp-too-late this value fixes.
+TAIL=34
 # The install is the substance of the demo, not dead air to skip past: at 12s a
 # ~7m take ran ~32x and the package and bootstrap lines were unreadable smears.
 # 26s halves that to ~15x, which is fast enough to stay a montage and slow

@@ -90,6 +90,15 @@ impl super::Printer {
     pub fn data_line(&self, text: &str) {
         self.sink_stdout.write_line(text);
     }
+
+    /// One line of live child-process output, dim and indented, appended rather
+    /// than repainted — output scrolls like a bare terminal instead of a fixed
+    /// window rewriting itself in place. The caller sanitizes each line first
+    /// (child ANSI would otherwise execute against the real terminal).
+    pub fn stream_line(&self, text: &str) {
+        self.renderer
+            .render_stream_line(self.sink_stderr.as_ref(), 1, text);
+    }
 }
 
 #[cfg(test)]

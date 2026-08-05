@@ -54,7 +54,7 @@ Type "nvim"
 Enter
 Sleep 3s
 
-Type "cfgd init --from https://github.com/tj-smith47/cfgd-config.git --apply-module nvim --yes"
+Type "cfgd init --from https://github.com/tj-smith47/cfgd-config.git --apply-module nvim --theme dracula --yes"
 Sleep 700ms
 Enter
 # apt + brew + rustup + Lazy/Mason/treesitter bootstrap; minutes, not seconds.
@@ -67,10 +67,13 @@ Enter
 # 7m03s end to end, with MasonToolsInstallSync — the step the ceiling was
 # sized around — returning in 70s.
 Wait@60m /cfgd\$$/
-# Long enough to read the apply summary before the alt screen covers it. It does
-# not settle the file tree: nvim-tree's first scan still loses its race about
-# half the time and paints an empty pane, which no amount of waiting here fixes.
-Sleep 3s
+# Everything from here plays at 1:1 — the ramp's tail starts at the moment the
+# install finishes, so the payoff is soaked at real speed rather than ramping up
+# only once the editor is already open. Long enough to read the apply summary
+# before the alt screen covers it. It does not settle the file tree: nvim-tree's
+# first scan still loses its race about half the time and paints an empty pane,
+# which no amount of waiting here fixes.
+Sleep 5s
 
 # The one beat the apply cannot do for us: this shell was started before
 # ~/.bashrc learned to source ~/.cfgd.env, so its PATH is still the pre-apply
@@ -93,12 +96,13 @@ Wait+Screen@20s /Welcome, TJ Smith!/
 Wait+Screen@20s /Cargo\.toml/
 # The first interactive start raises notifications that cover half the editor.
 # They expire on their own, so this settles the screen rather than showing
-# anything — the ramp is free to compress it.
-Sleep 14s
+# anything. It now plays at 1:1 inside the tail, so it is cut to the shortest
+# span that still outlasts the toasts rather than the ramp-compressed 14s.
+Sleep 5s
 # The hero frames: LazyVim with the repo tree, no toasts left on top of it.
-# Long enough to take the dashboard in, short enough that the loop does not
-# sit on a still image — this is the beat the GIF ends up holding longest.
-Sleep 6s
+# Long enough to read the dashboard, short enough that the loop does not sit on
+# a still image — at 6s the hold read as the recording having stalled.
+Sleep 4s
 
 Type ":qa"
 Enter
@@ -113,13 +117,14 @@ Type "nvim --version | head -1"
 Enter
 # The closing frame is the claim the whole recording exists to prove, and a
 # loop that cuts away from it the instant it appears reads as an accident.
-Sleep 6s
+Sleep 5s
 
 # The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
 # decimates everything between them. Two spans must land inside those ends:
-# the opening typing (~11s at 50ms plus container start, under a 22s head)
-# and the closing hold — the 6s hero sleep plus the quit and version beats
-# (~14s, under an 18s tail). The 14s settle above is deliberately outside the
-# tail so the toasts flash past instead of playing out. Lengthen a beat here
-# and the matching head/tail second in demo/scripts/make-gif.sh moves with it,
-# or the ramp eats footage that has to play at real speed.
+# the opening typing (~11s at 50ms plus container start, under a 22s head) and
+# everything from the install finishing onward — the 5s summary read, the env
+# source, nvim's start, the 5s settle, the 4s hero hold, the quit and the
+# version beats (~31s plus nvim's variable start, under a 34s tail). Only the
+# install itself is compressed. Lengthen a beat here and the matching head/tail
+# second in demo/scripts/make-gif.sh moves with it, or the ramp eats footage
+# that has to play at real speed.

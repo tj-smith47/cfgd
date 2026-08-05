@@ -4613,9 +4613,16 @@ fn cmd_apply_dry_run_with_phase_filter() {
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
+    // The requested phase planned no actions, so it is not among the plan's
+    // phases at all; the empty-plan line stands in for it, and the warning below
+    // it names the phases that do have work.
     assert!(
-        output.contains("Nothing to do") || output.contains("Packages"),
-        "should mention nothing-to-do or the filtered phase, got: {output}"
+        output.contains("(nothing to do)"),
+        "a filter matching no planned actions must still say so, got: {output}"
+    );
+    assert!(
+        output.contains("actions exist in phase(s): Environment"),
+        "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
 
