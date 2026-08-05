@@ -254,9 +254,9 @@ fn apply_verify_args_keyless_with_identity_and_issuer() {
         args,
         vec![
             "--certificate-identity-regexp",
-            "user@example.com",
+            "^(?:user@example.com)$",
             "--certificate-oidc-issuer-regexp",
-            "https://accounts.google.com"
+            "^(?:https://accounts.google.com)$"
         ]
     );
 }
@@ -271,14 +271,14 @@ fn apply_verify_args_keyless_with_identity_only_defaults_issuer() {
     };
     apply_verify_args(&mut cmd, &opts);
     let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-    // When no issuer is provided, it defaults to ".*"
+    // When no issuer is provided, it defaults to ".*"; anchoring wraps it too.
     assert_eq!(
         args,
         vec![
             "--certificate-identity-regexp",
-            "ci@github.com",
+            "^(?:ci@github.com)$",
             "--certificate-oidc-issuer-regexp",
-            ".*"
+            "^(?:.*)$"
         ]
     );
 }
@@ -293,14 +293,14 @@ fn apply_verify_args_keyless_with_issuer_only_defaults_identity() {
     };
     apply_verify_args(&mut cmd, &opts);
     let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-    // When no identity is provided, it defaults to ".*"
+    // When no identity is provided, it defaults to ".*"; anchoring wraps it too.
     assert_eq!(
         args,
         vec![
             "--certificate-identity-regexp",
-            ".*",
+            "^(?:.*)$",
             "--certificate-oidc-issuer-regexp",
-            "https://token.actions.githubusercontent.com"
+            "^(?:https://token.actions.githubusercontent.com)$"
         ]
     );
 }
@@ -318,6 +318,66 @@ fn apply_verify_args_key_takes_precedence_over_keyless() {
     // When key is provided, only --key (+ offline tlog skip) should be added
     // (no certificate args).
     assert_eq!(args, vec!["--key", "my.pub", "--insecure-ignore-tlog=true"]);
+}
+
+// --- anchor_regexp: keyless identity/issuer must require a full match ---
+
+#[test]
+fn anchor_regexp_wraps_unanchored_pattern() {
+    assert_eq!(
+        anchor_regexp("alice@example.com"),
+        "^(?:alice@example.com)$"
+    );
+}
+
+#[test]
+fn anchor_regexp_leaves_fully_anchored_pattern_untouched() {
+    assert_eq!(anchor_regexp("^alice@example.com$"), "^alice@example.com$");
+}
+
+#[test]
+fn anchor_regexp_wraps_alternation_so_anchors_bind_the_whole_pattern() {
+    // Without the non-capturing group, `^a|b$` anchors only the first/last
+    // alternative (`^a` OR `b$`), not the whole alternation.
+    assert_eq!(
+        anchor_regexp("alice@example.com|bob@example.com"),
+        "^(?:alice@example.com|bob@example.com)$"
+    );
+}
+
+#[test]
+fn anchor_regexp_wraps_default_wildcard() {
+    assert_eq!(anchor_regexp(".*"), "^(?:.*)$");
+}
+
+/// Proves the unanchored-regex vulnerability class is closed: an unanchored identity pattern
+/// (cosign's default behavior, since it hands the pattern straight to Go's
+/// unanchored `regexp.MatchString`) matches a certificate subject that merely
+/// CONTAINS the expected identity as a substring, while the pattern `apply_verify_args`
+/// now sends to cosign anchors the match to the full subject and correctly rejects it.
+/// `regex::Regex::is_match` mirrors Go's `regexp.MatchString` unanchored-by-default
+/// semantics closely enough to stand in for cosign's own matcher here.
+#[test]
+fn anchor_regexp_rejects_subject_that_merely_contains_the_identity() {
+    let expected_identity = "alice@example.com";
+    let attacker_subject = "evil-alice@example.com.attacker.io";
+
+    let unanchored = regex::Regex::new(expected_identity).unwrap();
+    assert!(
+        unanchored.is_match(attacker_subject),
+        "the unanchored pattern cfgd used to send to cosign would wrongly accept a subject containing the identity as a substring"
+    );
+
+    let anchored_pattern = anchor_regexp(expected_identity);
+    let anchored = regex::Regex::new(&anchored_pattern).unwrap();
+    assert!(
+        !anchored.is_match(attacker_subject),
+        "the anchored pattern cfgd now sends to cosign must reject a subject that only contains the identity"
+    );
+    assert!(
+        anchored.is_match(expected_identity),
+        "the anchored pattern must still accept an exact match of the identity"
+    );
 }
 
 #[test]
@@ -549,12 +609,12 @@ mod fake_cosign {
             "argv must include 'verify': {argv}"
         );
         assert!(
-            argv.contains("--certificate-identity-regexp user@example.com"),
-            "argv must pin identity: {argv}"
+            argv.contains("--certificate-identity-regexp ^(?:user@example.com)$"),
+            "argv must pin an anchored identity: {argv}"
         );
         assert!(
-            argv.contains("--certificate-oidc-issuer-regexp https://accounts.google.com"),
-            "argv must pin issuer: {argv}"
+            argv.contains("--certificate-oidc-issuer-regexp ^(?:https://accounts.google.com)$"),
+            "argv must pin an anchored issuer: {argv}"
         );
     }
 
