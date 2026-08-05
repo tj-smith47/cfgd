@@ -140,6 +140,34 @@ spec:
       value: nvim
 ```
 
+#### What expands in a value
+
+cfgd quotes every value it writes into a shell startup file, so a value can hold
+quotes, backslashes, spaces, `#`, and even newlines without breaking the file or
+running anything. What each shell still expands at startup differs:
+
+| Declared value | bash / zsh | fish | PowerShell | `environment.d` (Linux `envScope: All`) |
+|---|---|---|---|---|
+| `$HOME/bin` | expands | literal | literal | expands |
+| `${EDITOR}` | expands | literal | literal | expands |
+| `$env:USERPROFILE` | literal | literal | expands | literal |
+| `$(id)` | literal | literal | literal | literal |
+| `` `id` `` | literal | literal | literal | literal |
+
+A declared reference like `PATH: /opt/bin:$PATH` therefore picks up the surrounding
+environment on bash/zsh and under systemd, and is a literal string on fish and
+PowerShell — write the full path there, or declare a per-platform value. Command
+substitution never runs, on any platform: cfgd is not a place to compute a value.
+
+```yaml
+spec:
+  env:
+    # /opt/bin prepended to the inherited PATH on bash/zsh and systemd;
+    # the literal text "/opt/bin:$PATH" on fish and PowerShell.
+    - name: PATH
+      value: /opt/bin:$PATH
+```
+
 ### Aliases
 
 Modules can declare shell aliases. These are merged with profile aliases using the same conflict rules as env vars — module wins on conflict by name.
@@ -152,6 +180,9 @@ spec:
     - name: vimdiff
       command: nvim -d
 ```
+
+An alias `command` is quoted the same way and follows the same table: it runs when
+you invoke the alias, never while the shell is loading its startup files.
 
 ## Cross-Platform Package Resolution
 
