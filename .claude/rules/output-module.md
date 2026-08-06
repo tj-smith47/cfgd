@@ -22,7 +22,9 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
 
 **Every module receives a `&Printer` (or `Arc<Printer>` in async contexts). This is non-negotiable.**
 
-**Status subjects must not contain `\n`.** When formatting a captured error (`io::Error`, `CfgdError`, command stderr) into a `status[_simple]` subject or detail, route through `cfgd_core::output::collapse_to_subject_line(err)` to flatten multi-line errors safely — the `Renderer::write_line` `debug_assert` will panic in debug builds otherwise.
+**Collapse a captured error before it becomes a status subject.** When formatting an `io::Error`, `CfgdError`, or command stderr into a `status[_simple]` subject or detail, route through `cfgd_core::output::collapse_to_subject_line(err)`: an error's own line breaks are an artifact of how it was captured, not structure the reader wants, and a one-line subject is what scans.
+
+A subject that is *genuinely* multi-line — a brew caveat is two sentences — may carry `\n`. The renderer lays those out as continuations of the status line, indented to the marker column by `renderer::wrap::wrap_body`, so they read as part of the line they belong to rather than as unmarked lines at column 0. Never hand-roll that indent at a call site; the renderer is the single layout authority and a `\n` continuation must look identical to a soft-wrapped one.
 
 For a user-authored script body (a `run:` entry, an `--add-*-script`/`--remove-*-script` CLI value) landing in a status subject, route through `cfgd_core::output::condense_script_label(body)` instead: it trims each line, drops empties, and truncates the first line to 80 chars with `…` (or appends ` …` if more lines follow) — a lossy, DISPLAY-only summary appropriate for "Added script: …" / "Removed script: …" confirmations. Never use it for:
 - **persisted / machine-matched strings** (a resource-id, journal `resource_id`, `ActionResult.description`, a `-o json` payload field) — these must stay byte-identical to the raw body so state-matching and `-o json` consumers never see a reshaped id

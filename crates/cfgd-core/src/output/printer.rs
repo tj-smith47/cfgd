@@ -311,6 +311,7 @@ impl Printer {
             &self.multi_progress,
             &self.renderer,
             self.verbosity(),
+            0,
             &message,
         );
         super::spinner::Spinner {

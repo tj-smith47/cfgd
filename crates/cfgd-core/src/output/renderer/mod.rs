@@ -20,7 +20,7 @@ pub mod kv;
 pub mod section;
 pub mod status;
 pub mod table;
-mod wrap;
+pub(crate) mod wrap;
 pub(crate) use glyphs::{finalize_subject, role_glyph};
 pub use status::StatusFields;
 pub use table::Table;
@@ -218,21 +218,14 @@ impl Renderer {
     /// recursing back into `flush_kv_buffer_internal`.
     pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
         self.flush_kv_buffer_internal(w);
-        debug_assert!(
-            !body.contains('\n'),
-            "Renderer::write_line received body with embedded newline: {body:?}. \
-             Callers must pre-split multi-line content (see render_note for the canonical pattern)."
-        );
-        // Callers must pre-split multi-line content; we normalize embedded \n
-        // defensively to keep blank-line accounting honest if they don't. The
-        // sink appends its own trailing newline per call; any newlines
-        // already in `body` would smuggle physical line breaks past the
-        // blank-line accounting (e.g. a Status subject ending with `\n` would
+        // The sink appends its own trailing newline per call, so a trailing
+        // newline already in `body` would smuggle a physical line break past
+        // the blank-line accounting (a Status subject ending with `\n` would
         // produce a stray blank between this emission and the next, breaking
-        // the one-blank-between-siblings invariant). Strip trailing newlines
-        // and split internal ones into separate sink writes at the same
-        // depth — `render_note` is the only intentional multi-line path and
-        // pre-splits before calling here.
+        // the one-blank-between-siblings invariant). Internal newlines are a
+        // supported shape — a brew caveat is genuinely two sentences — and
+        // `wrap_body` lays them out as continuations of this line rather than
+        // as unmarked lines of their own.
         let trimmed = body.trim_end_matches(['\n', '\r']);
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.leading {
@@ -246,16 +239,8 @@ impl Renderer {
         // sets the flag back true after this call returns.
         s.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
-        let wrap_at = w.wrap_columns();
-        for line in trimmed.split('\n') {
-            match wrap_at {
-                Some(cols) => {
-                    for physical in wrap::wrap_line(line, &prefix, cols) {
-                        w.write_line(&physical);
-                    }
-                }
-                None => w.write_line(&format!("{}{}", prefix, line)),
-            }
+        for physical in wrap::wrap_body(trimmed, &prefix, w.wrap_columns()) {
+            w.write_line(&physical);
         }
     }
 

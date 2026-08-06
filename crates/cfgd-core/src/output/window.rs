@@ -26,6 +26,7 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 
 use super::renderer::StatusFields;
+use super::renderer::wrap::{available_width, clamp as clamp_line};
 use super::spinner::Spinner;
 use super::status_builder::StatusBuilder;
 use super::{Role, Verbosity};
@@ -33,35 +34,20 @@ use super::{Role, Verbosity};
 /// Lines of tail kept on screen under the spinner.
 const VISIBLE_LINES: usize = 5;
 
-/// Fallback width when stderr has no size (redirected, or a terminal that
-/// won't answer). Wide enough to stay readable, narrow enough that a real
-/// 80-column terminal is the only thing that wraps.
-const FALLBACK_WIDTH: usize = 100;
-
-/// Smallest width worth clamping to; below this the ellipsis is most of the
-/// line and truncation stops telling the user anything.
-const MIN_WIDTH: usize = 24;
-
-/// Terminal columns available to a line rendered at `depth`, after the
-/// spinner's own glyph and separating space.
-fn available_width(depth: usize) -> usize {
-    let cols = console::Term::stderr()
-        .size_checked()
-        .map_or(FALLBACK_WIDTH, |(_, cols)| cols as usize);
-    cols.saturating_sub(depth * 2 + 2).max(MIN_WIDTH)
-}
-
-/// Clamp `text` to `max` display columns, width-aware (a CJK or emoji glyph
-/// counts as the two columns it occupies).
-fn clamp_line(text: &str, max: usize) -> String {
-    console::truncate_str(text, max, "…").into_owned()
-}
-
-/// Strip child ANSI, then render any control byte that survived as visible
-/// `\xNN`. Order matters: stripping first keeps a legitimate colour escape
-/// from surviving as literal `\x1b[32m` text.
+/// Strip child ANSI, collapse any in-place rewrite to what it settled on, then
+/// render a control byte that still survived as visible `\xNN`.
+///
+/// Order matters twice over. Stripping first keeps a legitimate colour escape
+/// from surviving as literal `\x1b[32m` text. Resolving carriage returns
+/// before escaping is what keeps a progress meter readable: a child that
+/// redraws one line by returning the carriage instead of ending it (`git
+/// clone`, `pip`) sends its entire redraw history as one line, and escaping
+/// that renders every superseded frame joined by a literal `\x0d`. Only the
+/// segment after the final return was ever meant to be on screen.
 fn sanitize(line: &str) -> String {
-    crate::escape_control_chars(&super::strip_ansi(line))
+    let stripped = super::strip_ansi(line);
+    let settled = stripped.trim_end_matches('\r');
+    crate::escape_control_chars(settled.rsplit('\r').next().unwrap_or(settled))
 }
 
 /// Bounded live view over a child process's output. Build with
@@ -204,6 +190,7 @@ impl super::Printer {
             &self.multi_progress,
             &self.renderer,
             self.verbosity(),
+            depth,
             &label,
         );
         let spinner = Spinner {
@@ -278,6 +265,24 @@ mod tests {
         let out = sanitize("\x1b[2J\x1b[Hcleared\r");
         assert!(!out.contains('\x1b'), "escape survived: {out:?}");
         assert!(out.contains("cleared"), "text lost: {out:?}");
+    }
+
+    #[test]
+    fn sanitize_keeps_only_what_a_rewritten_line_settled_on() {
+        // One `git clone` line carrying its whole redraw history. Escaping it
+        // wholesale rendered every superseded frame joined by literal `\x0d`.
+        let out =
+            sanitize("Receiving objects: 46% (4368/9495)\rReceiving objects: 91% (8640/9495)");
+        assert_eq!(out, "Receiving objects: 91% (8640/9495)");
+    }
+
+    #[test]
+    fn sanitize_keeps_a_line_a_trailing_return_left_on_screen() {
+        // The return came last, so nothing overwrote the text before it.
+        assert_eq!(
+            sanitize("Resolving deltas: 100%\r"),
+            "Resolving deltas: 100%"
+        );
     }
 
     #[test]
@@ -363,6 +368,6 @@ mod tests {
     #[test]
     fn available_width_shrinks_with_depth() {
         assert!(available_width(3) < available_width(0));
-        assert!(available_width(40) >= MIN_WIDTH);
+        assert!(available_width(40) >= 24, "clamped below a usable floor");
     }
 }

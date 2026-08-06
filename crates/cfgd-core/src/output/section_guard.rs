@@ -156,6 +156,7 @@ impl<'p> SectionGuard<'p> {
             &self.printer.multi_progress,
             &self.renderer,
             self.printer.verbosity(),
+            self.depth,
             &message,
         );
         super::spinner::Spinner {
