@@ -4649,7 +4649,7 @@ fn cmd_apply_dry_run_with_skip() {
     h.assert_header("Plan");
     let output = h.output();
     assert!(
-        output.contains("Nothing to do") || output.contains("Phase:"),
+        output.contains("nothing to do") || output.contains("Phase:"),
         "should mention plan or nothing to do, got: {output}"
     );
 }
@@ -4672,8 +4672,14 @@ fn cmd_apply_dry_run_with_only() {
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
+    // The default fixture profile only plans Environment actions, so
+    // `--only files` excludes every one of them. Post-fix, the now-empty
+    // Environment phase is dropped entirely rather than surviving as a
+    // phantom "Phase: Environment (nothing to do)" — the correct signal is
+    // the top-level empty-plan state plus the "filter excluded everything"
+    // warning, not a per-phase header.
     assert!(
-        output.contains("Nothing to do") || output.contains("Phase:"),
+        output.contains("nothing to do") || output.contains("No actions in scope"),
         "should mention plan or nothing to do, got: {output}"
     );
 }
@@ -9535,6 +9541,7 @@ fn build_plan_output_with_actions() {
     let plan = reconciler::Plan {
         phases: vec![reconciler::Phase {
             name: reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![reconciler::Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
@@ -9556,6 +9563,7 @@ fn build_plan_output_with_phase_filter() {
         phases: vec![
             reconciler::Phase {
                 name: reconciler::PhaseName::Packages,
+                scope: None,
                 actions: vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
@@ -9564,6 +9572,7 @@ fn build_plan_output_with_phase_filter() {
             },
             reconciler::Phase {
                 name: reconciler::PhaseName::Files,
+                scope: None,
                 actions: vec![reconciler::Action::File(FileAction::Create {
                     source: "/a".into(),
                     target: "/b".into(),
@@ -9592,6 +9601,7 @@ fn strip_scripts_removes_script_phases() {
         phases: vec![
             Phase {
                 name: PhaseName::PreScripts,
+                scope: None,
                 actions: vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo pre".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PreApply,
@@ -9600,6 +9610,7 @@ fn strip_scripts_removes_script_phases() {
             },
             Phase {
                 name: PhaseName::Packages,
+                scope: None,
                 actions: vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
@@ -9608,6 +9619,7 @@ fn strip_scripts_removes_script_phases() {
             },
             Phase {
                 name: PhaseName::PostScripts,
+                scope: None,
                 actions: vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo post".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PostApply,
@@ -9627,39 +9639,75 @@ fn strip_scripts_removes_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    use cfgd_core::reconciler::{ModuleAction, ModuleActionKind, Phase, PhaseName, Plan};
+    use cfgd_core::reconciler::{
+        ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase, PhaseName, Plan,
+    };
 
+    // Realistic post-split shape: one Phase per (module, section) run, never
+    // one combined "Modules" phase holding install + run_script + deploy_files
+    // together — `split_module_phases` can never produce that shape.
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![
-                reconciler::Action::Module(ModuleAction {
+        phases: vec![
+            Phase {
+                name: PhaseName::Modules,
+                scope: Some(ModuleScope {
+                    module: "m".into(),
+                    section: ModuleSection::Packages,
+                }),
+                actions: vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::InstallPackages { resolved: vec![] },
                     origin: None,
+                })],
+            },
+            Phase {
+                name: PhaseName::Modules,
+                scope: Some(ModuleScope {
+                    module: "m".into(),
+                    section: ModuleSection::PostScripts,
                 }),
-                reconciler::Action::Module(ModuleAction {
+                actions: vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::RunScript {
                         script: cfgd_core::config::ScriptEntry::Simple("echo hello".into()),
                         phase: cfgd_core::reconciler::ScriptPhase::PostApply,
                     },
                     origin: None,
+                })],
+            },
+            Phase {
+                name: PhaseName::Modules,
+                scope: Some(ModuleScope {
+                    module: "m".into(),
+                    section: ModuleSection::Files,
                 }),
-                reconciler::Action::Module(ModuleAction {
+                actions: vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::DeployFiles { files: vec![] },
                     origin: None,
-                }),
-            ],
-        }],
+                })],
+            },
+        ],
         warnings: vec![],
     };
 
     super::strip_scripts_from_plan(&mut plan);
 
-    // RunScript should be removed, other actions kept
-    assert_eq!(plan.phases[0].actions.len(), 2);
+    // The Post-Scripts phase held only a RunScript action, so it must be
+    // dropped entirely rather than surviving as an empty phase.
+    assert_eq!(
+        plan.phases.len(),
+        2,
+        "only the Packages and Files phases should remain: {:?}",
+        plan.phases
+    );
+    assert!(plan.phases.iter().all(|p| !matches!(
+        &p.scope,
+        Some(ModuleScope {
+            section: ModuleSection::PostScripts,
+            ..
+        })
+    )));
 }
 
 // --- filter_plan edge cases ---
@@ -9671,6 +9719,7 @@ fn filter_plan_skip_file_by_target() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Files,
+            scope: None,
             actions: vec![
                 Action::File(FileAction::Create {
                     source: "/tmp/a".into(),
@@ -9702,6 +9751,7 @@ fn filter_plan_empty_skip_and_only_noop() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
@@ -9722,6 +9772,7 @@ fn filter_plan_skip_uninstall_packages() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Uninstall {
                 manager: "brew".into(),
                 packages: vec!["old-tool".into(), "keep-me".into()],
@@ -9748,6 +9799,7 @@ fn filter_plan_only_with_uninstall() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Uninstall {
                 manager: "apt".into(),
                 packages: vec!["vim".into(), "nano".into()],
@@ -12112,6 +12164,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: false,
             unfiltered_total: 0,
             phases_with_work: vec![],
+            modules_have_work: false,
             module_miss: None,
         };
         report_no_in_scope_actions(&printer, &scope, None);
@@ -12130,7 +12183,8 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         let scope = ScopeReport {
             filter_active: true,
             unfiltered_total: 3,
-            phases_with_work: vec!["Modules".to_string()],
+            phases_with_work: vec!["nvim / Files".to_string()],
+            modules_have_work: true,
             module_miss: None,
         };
         report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
@@ -12157,6 +12211,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
+            modules_have_work: false,
             module_miss: None,
         };
         report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
@@ -12175,6 +12230,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
+            modules_have_work: false,
             module_miss: Some("nvm".to_string()),
         };
         report_no_in_scope_actions(&printer, &scope, None);
@@ -14416,6 +14472,7 @@ fn filter_plan_skip_removes_matching_packages() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![
                 Action::Package(PackageAction::Install {
                     manager: "brew".into(),
@@ -14466,6 +14523,7 @@ fn filter_plan_only_keeps_matching_phase() {
         phases: vec![
             Phase {
                 name: PhaseName::Packages,
+                scope: None,
                 actions: vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
@@ -14474,6 +14532,7 @@ fn filter_plan_only_keeps_matching_phase() {
             },
             Phase {
                 name: PhaseName::Files,
+                scope: None,
                 actions: vec![Action::File(FileAction::Create {
                     source: PathBuf::from("/src"),
                     target: PathBuf::from("/dst"),
@@ -14494,12 +14553,15 @@ fn filter_plan_only_keeps_matching_phase() {
         1,
         "packages phase should retain action"
     );
-    // Files phase should have its action removed by only filter
+    // Files phase's only action fell outside --only=packages, so the phase
+    // itself must be dropped entirely rather than surviving with zero actions.
     assert_eq!(
-        plan.phases[1].actions.len(),
-        0,
-        "files phase should be empty after only=packages"
+        plan.phases.len(),
+        1,
+        "the emptied Files phase should be dropped: {:?}",
+        plan.phases
     );
+    assert_eq!(plan.phases[0].name, PhaseName::Packages);
 }
 
 #[test]
@@ -14509,6 +14571,7 @@ fn filter_plan_skip_uninstall_packages_env() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Uninstall {
                 manager: "npm".into(),
                 packages: vec!["left-pad".into(), "is-odd".into()],
@@ -14535,6 +14598,7 @@ fn filter_plan_empty_filters_is_noop() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Install {
                 manager: "apt".into(),
                 packages: vec!["vim".into()],
@@ -14565,10 +14629,12 @@ fn strip_scripts_from_plan_removes_script_phases() {
         phases: vec![
             Phase {
                 name: PhaseName::PreScripts,
+                scope: None,
                 actions: vec![],
             },
             Phase {
                 name: PhaseName::Packages,
+                scope: None,
                 actions: vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
@@ -14577,6 +14643,7 @@ fn strip_scripts_from_plan_removes_script_phases() {
             },
             Phase {
                 name: PhaseName::PostScripts,
+                scope: None,
                 actions: vec![],
             },
         ],

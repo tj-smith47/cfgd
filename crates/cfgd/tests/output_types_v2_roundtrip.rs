@@ -87,6 +87,8 @@ fn plan_output_roundtrips_through_emit() {
         phases: vec![
             PlanPhaseOutput {
                 phase: "packages".into(),
+                module: None,
+                section: None,
                 actions: vec![
                     PlanActionOutput {
                         description: "install ripgrep via brew".into(),
@@ -104,6 +106,8 @@ fn plan_output_roundtrips_through_emit() {
             },
             PlanPhaseOutput {
                 phase: "files".into(),
+                module: None,
+                section: None,
                 actions: vec![PlanActionOutput {
                     description: "write ~/.gitconfig".into(),
                     action_type: "file_write".into(),

@@ -141,17 +141,38 @@ just like source-delivered files and packages: the human plan line ends with
 ` <- <source>`, and each action in the `-o json`/`-o yaml` payload carries an
 `origin` field (omitted for consumer-local modules).
 
+Modules get the same per-section breakdown a profile does: one heading per
+`<module> / <section>`, in the order the work runs, rather than a single
+`Modules` bucket. Sections are `Pre-Scripts`, `Packages`, `Files`,
+`Post-Scripts`, and `Skipped`.
+
 ```sh
 $ cfgd plan
-Phase: Modules
+Phase: dev-tools / Packages
   - [dev-tools] brew install ripgrep, fd <- team   # delivered by source 'team'
+Phase: localmod / Packages
   - [localmod] brew install jq                     # consumer-local, no tag
+Phase: localmod / Post-Scripts
+  - [localmod] jq --version
 ```
 
+`--phase modules` still selects every one of these — the section split is a
+display and payload refinement, not a new filter key.
+
 ```jsonc
-// cfgd plan -o json  →  phases[].actions[]
-{ "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
-{ "type": "install", "description": "[localmod] brew install jq" }   // no "origin" key
+// cfgd plan -o json  →  phases[]
+{
+  "phase": "Modules",           // unchanged; the filter identity
+  "module": "dev-tools",        // module-scoped phases only
+  "section": "packages",        // module-scoped phases only
+  "actions": [
+    { "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
+  ]
+}
+{
+  "phase": "Environment",       // non-module phases carry no module/section keys
+  "actions": [ /* … */ ]
+}
 ```
 
 ### `cfgd status`

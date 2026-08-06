@@ -1,5 +1,4 @@
 ◐ brew install git
-
   ==> Installing git
   ==> Caveats
   Run xcode-select --install to complete setup.

@@ -6,8 +6,8 @@ use cfgd_core::providers::{FileAction, PackageAction, SecretAction};
 use cfgd_core::reconciler::ActionResult;
 use cfgd_core::reconciler::ApplyResult;
 use cfgd_core::reconciler::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ScriptAction,
-    ScriptPhase, SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase,
+    PhaseName, Plan, ScriptAction, ScriptPhase, SystemAction,
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
@@ -206,8 +206,33 @@ fn make_plan(phases: Vec<(PhaseName, Vec<Action>)>) -> Plan {
     Plan {
         phases: phases
             .into_iter()
-            .map(|(name, actions)| Phase { name, actions })
+            .map(|(name, actions)| Phase {
+                name,
+                actions,
+                scope: None,
+            })
             .collect(),
+        warnings: vec![],
+    }
+}
+
+/// A single (module, section) Phase, the shape `Reconciler::split_module_phases`
+/// really produces — one Phase per consecutive module/section run, never one
+/// combined "Modules" phase holding every kind of module action together.
+fn scoped_phase(module: &str, section: ModuleSection, actions: Vec<Action>) -> Phase {
+    Phase {
+        name: PhaseName::Modules,
+        actions,
+        scope: Some(ModuleScope {
+            module: module.to_string(),
+            section,
+        }),
+    }
+}
+
+fn make_plan_from_phases(phases: Vec<Phase>) -> Plan {
+    Plan {
+        phases,
         warnings: vec![],
     }
 }
@@ -477,15 +502,12 @@ fn filter_plan_skip_removes_matching_file_actions() {
     ]);
     filter_plan(&mut plan, &["files".to_string()], &[]);
 
-    let file_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Files)
-        .unwrap();
-    assert_eq!(
-        file_phase.actions.len(),
-        0,
-        "all file actions should be skipped"
+    // Every action in the Files phase was skipped, so the phase itself must
+    // not survive with zero actions.
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Files),
+        "the Files phase should be dropped entirely once emptied: {:?}",
+        plan.phases
     );
     let pkg_phase = plan
         .phases
@@ -510,15 +532,12 @@ fn filter_plan_only_keeps_matching_actions() {
     ]);
     filter_plan(&mut plan, &[], &["packages".to_string()]);
 
-    let file_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Files)
-        .unwrap();
-    assert_eq!(
-        file_phase.actions.len(),
-        0,
-        "file actions outside --only scope should be removed"
+    // Every file action fell outside the --only scope, so the Files phase
+    // itself must not survive with zero actions.
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Files),
+        "the Files phase should be dropped entirely once emptied: {:?}",
+        plan.phases
     );
     let pkg_phase = plan
         .phases
@@ -650,33 +669,108 @@ fn strip_scripts_removes_pre_post_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    let mut plan = make_plan(vec![(
-        PhaseName::Modules,
-        vec![module_install(), module_run_script(), module_deploy_files()],
+    // Realistic post-split shape: one Phase per (module, section) run, never
+    // one combined "Modules" phase holding install + run_script + deploy_files
+    // together — `split_module_phases` can never produce that shape.
+    let mut plan = make_plan_from_phases(vec![
+        scoped_phase("dev-tools", ModuleSection::Packages, vec![module_install()]),
+        scoped_phase(
+            "dev-tools",
+            ModuleSection::PostScripts,
+            vec![module_run_script()],
+        ),
+        scoped_phase(
+            "dotfiles",
+            ModuleSection::Files,
+            vec![module_deploy_files()],
+        ),
+    ]);
+    strip_scripts_from_plan(&mut plan);
+
+    assert!(
+        plan.phases.iter().all(|p| !matches!(
+            &p.scope,
+            Some(ModuleScope {
+                section: ModuleSection::PostScripts,
+                ..
+            })
+        )),
+        "the dev-tools/Post-Scripts phase held only a RunScript action, so it \
+         must be dropped entirely, not left as an empty phase"
+    );
+    assert_eq!(
+        plan.phases.len(),
+        2,
+        "only the Packages and Files phases should remain"
+    );
+    for phase in &plan.phases {
+        assert!(
+            phase.actions.iter().all(|a| {
+                !matches!(
+                    a,
+                    Action::Module(ModuleAction {
+                        kind: ModuleActionKind::RunScript { .. },
+                        ..
+                    })
+                )
+            }),
+            "no RunScript actions should remain"
+        );
+    }
+}
+
+// Item 1 regression: before the module-plan split, `strip_scripts_from_plan`
+// only ever emptied an existing Modules phase's actions, never dropped it, so
+// the missing final `plan.phases.retain(...)` never showed up. Now every
+// module section is its own Phase, so a section made entirely of RunScript
+// actions (`nvim / Post-Scripts` on a plain `--skip-scripts` run) must vanish
+// completely instead of surviving with zero actions.
+//
+// Without the trailing `plan.phases.retain(|p| !p.actions.is_empty())` in
+// `strip_scripts_from_plan`, this phase's `actions` empties out (its only
+// action is a RunScript) but the `Phase` itself stays in `plan.phases`, so
+// `plan.phases.is_empty()` is false and this assertion fails.
+#[test]
+fn strip_scripts_drops_a_phase_left_entirely_empty() {
+    let mut plan = make_plan_from_phases(vec![scoped_phase(
+        "nvim",
+        ModuleSection::PostScripts,
+        vec![module_run_script()],
     )]);
     strip_scripts_from_plan(&mut plan);
 
-    let modules_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Modules)
-        .unwrap();
-    assert_eq!(
-        modules_phase.actions.len(),
-        2,
-        "RunScript action should be removed, others kept"
-    );
     assert!(
-        modules_phase.actions.iter().all(|a| {
-            !matches!(
-                a,
-                Action::Module(ModuleAction {
-                    kind: ModuleActionKind::RunScript { .. },
-                    ..
-                })
-            )
-        }),
-        "no RunScript actions should remain"
+        plan.phases.is_empty(),
+        "a phase whose only action was stripped must not survive empty: {:?}",
+        plan.phases
+    );
+}
+
+// Item 1 regression, `filter_plan` side: a `--skip` pattern can exclude every
+// action in one (module, section) Phase without touching a sibling section of
+// the same module. Without the trailing
+// `plan.phases.retain(|p| !p.actions.is_empty())` in `filter_plan`, the
+// `nvim / Packages` phase's `actions` empties out but the `Phase` itself
+// stays in `plan.phases`, so `plan.phases.is_empty()` is false and this
+// assertion fails.
+#[test]
+fn filter_plan_drops_a_phase_left_entirely_empty() {
+    let module_pkg_install = Action::Module(ModuleAction {
+        module_name: "nvim".to_string(),
+        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+        origin: None,
+    });
+    let mut plan = make_plan_from_phases(vec![scoped_phase(
+        "nvim",
+        ModuleSection::Packages,
+        vec![module_pkg_install],
+    )]);
+    filter_plan(&mut plan, &["modules.nvim".to_string()], &[]);
+
+    assert!(
+        plan.phases.is_empty(),
+        "a phase whose only action was skipped must not survive empty: {:?}",
+        plan.phases
     );
 }
 
@@ -723,6 +817,52 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
     assert_eq!(output.total_actions, 1);
+}
+
+#[test]
+fn build_plan_output_scoped_phase_carries_module_and_kebab_section() {
+    let plan = make_plan_from_phases(vec![scoped_phase(
+        "nvim",
+        ModuleSection::PostScripts,
+        vec![module_run_script()],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    assert_eq!(output.phases.len(), 1);
+    assert_eq!(output.phases[0].phase, "Modules");
+    assert_eq!(output.phases[0].module.as_deref(), Some("nvim"));
+    assert_eq!(
+        output.phases[0].section.as_deref(),
+        Some("post-scripts"),
+        "section must serialize in kebab form, matching ModuleSection::as_str"
+    );
+
+    let json = serde_json::to_value(&output).unwrap();
+    let phase = &json["phases"][0];
+    assert_eq!(phase["module"], serde_json::json!("nvim"));
+    assert_eq!(phase["section"], serde_json::json!("post-scripts"));
+}
+
+#[test]
+fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
+    let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    assert_eq!(output.phases[0].module, None);
+    assert_eq!(output.phases[0].section, None);
+
+    // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
+    // form carries no `module`/`section` keys at all, not `null` values.
+    let json = serde_json::to_value(&output).unwrap();
+    let phase = &json["phases"][0];
+    assert!(
+        phase.get("module").is_none(),
+        "non-module phase must omit the module key entirely: {phase}"
+    );
+    assert!(
+        phase.get("section").is_none(),
+        "non-module phase must omit the section key entirely: {phase}"
+    );
 }
 
 fn module_install_from_source(source: &str) -> Action {

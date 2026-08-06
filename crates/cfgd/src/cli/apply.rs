@@ -356,7 +356,7 @@ pub fn run_apply(
             if displayed.is_empty() {
                 continue;
             }
-            let phase_sec = preview.section(phase_item.name.display_name());
+            let phase_sec = preview.section(phase_item.display_label());
             for (action, item) in displayed {
                 phase_sec.bullet(reconciler::condense_action_desc_for_display(action, item));
             }

@@ -63,6 +63,7 @@ fn module_drift_plan(action: crate::reconciler::Action) -> crate::reconciler::Pl
     crate::reconciler::Plan {
         phases: vec![crate::reconciler::Phase {
             name: crate::reconciler::PhaseName::Modules,
+            scope: None,
             actions: vec![action],
         }],
         warnings: Vec::new(),

@@ -31,8 +31,9 @@ pub use format::{condense_action_desc_for_display, format_action_description, fo
 pub use packages::stale_tracked_packages;
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use types::{
-    Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,
-    Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction,
+    Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, ModuleScope,
+    ModuleSection, Phase, PhaseName, Plan, ReconcileContext, RollbackResult, ScriptAction,
+    ScriptPhase, SystemAction,
 };
 pub use verify::{VerifyResult, verify};
 

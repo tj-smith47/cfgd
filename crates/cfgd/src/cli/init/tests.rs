@@ -2168,6 +2168,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
@@ -2243,6 +2244,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::PreScripts,
+            scope: None,
             actions: vec![],
         }],
         warnings: Vec::new(),
@@ -2324,6 +2326,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "no-such-package-manager".to_string(),
@@ -2391,6 +2394,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Files,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::File(
                 cfgd_core::providers::FileAction::Skip {
                     target: dir.path().join("noop"),
@@ -2450,6 +2454,7 @@ fn apply_plan_dry_run_skips_apply() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),

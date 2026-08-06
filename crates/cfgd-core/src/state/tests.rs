@@ -1686,6 +1686,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
     let plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Modules,
+            scope: None,
             actions: ["nvim", "zsh"]
                 .into_iter()
                 .map(|name| {

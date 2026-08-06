@@ -34,10 +34,13 @@ Set Padding 20
 # drift against the recorded timing.
 Set Framerate 10
 
+# Everything up to the container's first prompt is hidden: the demo's claim is
+# that one command takes a bare machine to a working nvim, and `docker run` is
+# the harness that produces the bare machine, not a step the viewer performs.
+# Recording resumes with the cursor already sitting at the container prompt.
 Hide
 Type "clear"
 Enter
-Show
 
 # `-it` because the recording needs cfgd's TTY output (spinners, colour), and
 # `bash -l` because the source line cfgd injects lands in the login shell's own
@@ -49,6 +52,7 @@ Enter
 # bare `$` keeps package-manager output from satisfying the wait early.
 Wait@2m /cfgd\$$/
 Sleep 1s
+Show
 
 Type "nvim"
 Enter

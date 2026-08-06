@@ -397,6 +397,11 @@ pub(crate) fn handle_reconcile(
                 _ => false,
             });
         }
+        // Every non-module phase, and every module phase for a different
+        // module, is emptied by the retain above — drop them so drift
+        // recording and `reconciler.apply` below only ever see the filtered
+        // module's own work.
+        plan.phases.retain(|p| !p.actions.is_empty());
     }
 
     // Filter out pending decision items from the plan when auto-applying

@@ -331,6 +331,11 @@ pub(in crate::cli) fn build_plan_output(
             .collect();
         phases.push(PlanPhaseOutput {
             phase: phase_item.name.display_name().to_string(),
+            module: phase_item.scope.as_ref().map(|s| s.module.clone()),
+            section: phase_item
+                .scope
+                .as_ref()
+                .map(|s| s.section.as_str().to_string()),
             actions,
         });
     }
@@ -364,6 +369,13 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
             });
         }
     }
+    // Each (module, section) run is its own Phase since the module-plan split, so
+    // a section made entirely of the filtered-out kind (e.g. a module's
+    // Post-Scripts section holding only RunScript actions) survives the retain
+    // above with zero actions. Drop it here, the same way `Reconciler::plan`
+    // drops an action-less phase at construction, so it never reaches display
+    // or `-o json`.
+    plan.phases.retain(|p| !p.actions.is_empty());
 }
 
 pub(in crate::cli) fn display_plan_table(
@@ -371,8 +383,9 @@ pub(in crate::cli) fn display_plan_table(
     printer: &Printer,
     phase_filter: Option<&PhaseName>,
 ) {
-    // `Reconciler::plan` drops action-less phases, so anything reaching here has
-    // work; a wholly empty plan yields no phases at all and gets one line below.
+    // `Reconciler::plan`, `strip_scripts_from_plan`, and `filter_plan` all drop
+    // any phase left with zero actions, so anything reaching here has work; a
+    // wholly empty plan yields no phases at all and gets one line below.
     let mut printed_any = false;
     for phase_item in &plan.phases {
         if let Some(pf) = phase_filter
@@ -382,7 +395,7 @@ pub(in crate::cli) fn display_plan_table(
         }
         let items = reconciler::format_plan_items(phase_item);
         printed_any = true;
-        let phase = printer.section(format!("Phase: {}", phase_item.name.display_name()));
+        let phase = printer.section(format!("Phase: {}", phase_item.display_label()));
         if items.is_empty() {
             phase.empty_state("(nothing to do)");
         } else {
@@ -419,8 +432,14 @@ pub(in crate::cli) struct ScopeReport {
     pub filter_active: bool,
     /// Total actions the plan held before `--skip`/`--only` pruning.
     pub unfiltered_total: usize,
-    /// Display names of the phases that held actions before pruning.
+    /// Display labels of the phases that held actions before pruning (module-
+    /// scoped phases render as `"{module} / {section}"`, e.g. "nvim / Files").
     pub phases_with_work: Vec<String>,
+    /// Whether any `PhaseName::Modules` phase held actions before pruning,
+    /// independent of `phases_with_work`'s per-section split — the hint
+    /// below needs to detect "module work exists" without string-matching
+    /// against the "{module} / {section}" labels.
+    pub modules_have_work: bool,
     /// Set to the requested module name when `--module <name>` resolved to
     /// nothing (typo / not found / unreadable) rather than to real actions.
     pub module_miss: Option<String>,
@@ -439,8 +458,12 @@ impl ScopeReport {
                 .phases
                 .iter()
                 .filter(|p| !p.actions.is_empty())
-                .map(|p| p.name.display_name().to_string())
+                .map(|p| p.display_label())
                 .collect(),
+            modules_have_work: plan
+                .phases
+                .iter()
+                .any(|p| p.name == PhaseName::Modules && !p.actions.is_empty()),
             module_miss,
         }
     }
@@ -486,12 +509,7 @@ pub(in crate::cli) fn report_no_in_scope_actions(
     // The most common scoping mistake: `--phase files` against a config whose
     // files come from modules (those deploy in the Modules phase to keep each
     // module's files+packages+scripts atomic and dependency-ordered).
-    if phase_filter == Some(&PhaseName::Files)
-        && scope
-            .phases_with_work
-            .iter()
-            .any(|p| p.as_str() == PhaseName::Modules.display_name())
-    {
+    if phase_filter == Some(&PhaseName::Files) && scope.modules_have_work {
         printer.hint(
             "module-sourced files apply in the 'modules' phase — try `--phase modules` or `--module <name>`",
         );
@@ -907,6 +925,12 @@ pub(in crate::cli) fn filter_plan(plan: &mut reconciler::Plan, skip: &[String], 
 
         phase.actions = filtered_actions;
     }
+
+    // A `--skip`/`--only` pattern can exclude every action in a (module,
+    // section) Phase without touching a sibling section of the same module, so
+    // the phase must be re-checked here rather than assumed empty-safe from
+    // `Reconciler::plan` alone.
+    plan.phases.retain(|p| !p.actions.is_empty());
 }
 
 /// Filter individual packages from an install/uninstall list based on skip/only patterns.
