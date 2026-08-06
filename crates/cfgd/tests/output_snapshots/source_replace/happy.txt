@@ -5,7 +5,6 @@ Remove Source: replace-old
 
 Add Config Source
 ◐ Cloning source 'replace-old'
-
   Cloning into '<STATE_DIR>/sources/replace-old'...
 ✓ Cloning source 'replace-old'
 

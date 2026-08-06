@@ -162,9 +162,19 @@ impl<'p> OutputWindow<'p> {
         self.spinner.finish_fail(subject)
     }
 
+    /// True when the tail lived in the repainting window and is therefore gone
+    /// after the collapse — the only case where a failure has to replay it. In
+    /// the streaming degradation the lines are already in the scrollback, and
+    /// replaying them prints the whole stderr twice.
+    #[must_use]
+    pub fn tail_needs_replay(&self) -> bool {
+        self.windowed
+    }
+
     /// Render `lines` as muted body text under the closed window's Status —
-    /// the post-failure dump. Depth matches what the tail used, so the dumped
-    /// lines land where the live ones were.
+    /// the post-failure dump. Call only when the closed window's
+    /// [`Self::tail_needs_replay`] was `true`; in the streaming degradation the
+    /// lines this would render are already in the scrollback.
     pub fn dump_below(
         printer: &super::Printer,
         depth: usize,
@@ -339,6 +349,15 @@ mod tests {
             !out.contains("some noise nobody needs"),
             "window tail leaked into scrollback: {out:?}"
         );
+    }
+
+    #[test]
+    fn tail_needs_replay_is_false_on_the_streaming_path() {
+        // The test harness produces a hidden bar (no TTY), which is exactly
+        // the streaming degradation whose tail is already in the scrollback —
+        // a caller must not replay it after the collapse.
+        let (w, _buf) = window(0, Verbosity::Normal);
+        assert!(!w.tail_needs_replay(), "expected the streaming path");
     }
 
     #[test]

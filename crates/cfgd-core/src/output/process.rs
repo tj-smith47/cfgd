@@ -4,8 +4,11 @@
 //! child's stdout and stderr both feed an [`OutputWindow`], which owns the
 //! decision between a bounded repainting tail (TTY, non-quiet) and plain
 //! streaming (everything else). On exit the window collapses to one Status
-//! line; a failure additionally dumps the captured stderr beneath it, which is
-//! the only diagnostic surface a user gets for a spawned command that died.
+//! line; a failure additionally dumps the captured stderr beneath it when the
+//! tail lived in the repainting window ([`OutputWindow::tail_needs_replay`]) —
+//! the only diagnostic surface a user gets for a spawned command that died. In
+//! the streaming degradation the lines are already in the scrollback, so no
+//! replay is needed.
 //!
 //! Either way the full stdout + stderr are captured into the returned
 //! `CommandOutput`, so callers can post-process even when the display muted or
@@ -114,17 +117,36 @@ pub(crate) fn run_command(
     if status.success() {
         drop(window.finish_ok(label).duration(duration));
     } else {
+        let needs_replay = window.tail_needs_replay();
         drop(
             window
                 .finish_fail(label)
-                .detail("failed")
+                .detail(failure_detail(&status))
                 .duration(duration),
         );
-        // The window's tail is cleared by the collapse, so a failure has to
-        // re-render what the user needs to diagnose it.
-        OutputWindow::dump_below(printer, depth, &all_stderr);
+        // Streaming already left every line in the scrollback; replaying them
+        // here would print the whole of stderr a second time.
+        if needs_replay {
+            OutputWindow::dump_below(printer, depth, &all_stderr);
+        }
     }
     Ok(make_output(status, all_stdout, all_stderr, duration))
+}
+
+/// Render a failed child's exit status as a status-line detail: `exit <code>`,
+/// or `signal <n>` when it was killed rather than exiting on its own.
+fn failure_detail(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return format!("signal {sig}");
+        }
+    }
+    "failed".to_string()
 }
 
 #[cfg(test)]
@@ -257,6 +279,53 @@ mod tests {
             assert!(captured.contains("spin-fail"), "got: {captured:?}");
             assert!(captured.contains("boom-1"), "got: {captured:?}");
             assert!(captured.contains("boom-2"), "got: {captured:?}");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn failure_does_not_duplicate_streamed_stderr() {
+        // The test harness has no TTY, so `OutputWindow` takes the streaming
+        // branch: every stderr line lands in the scrollback as it arrives.
+        // A failure that unconditionally replayed the capture below the
+        // status would print each line twice.
+        with_deadline(Duration::from_secs(10), || {
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'MARKER-LINE\n' 1>&2; exit 3"),
+                "dup-check",
+            )
+            .unwrap();
+
+            assert!(!out.status.success());
+            assert_eq!(out.status.code(), Some(3));
+
+            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            assert_eq!(
+                captured.matches("MARKER-LINE").count(),
+                1,
+                "stderr line duplicated in streaming mode: {captured:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn failure_detail_carries_the_exit_code() {
+        with_deadline(Duration::from_secs(10), || {
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(&p, 0, &mut sh("exit 42"), "exit-code-job").unwrap();
+
+            assert!(!out.status.success());
+            assert_eq!(out.status.code(), Some(42));
+
+            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            assert!(
+                captured.contains("exit 42"),
+                "failure detail must carry the exit code; got: {captured:?}"
+            );
         });
     }
 
