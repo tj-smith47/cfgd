@@ -32,6 +32,20 @@ spec:
       - exa
 "#;
 
+// `DEFAULT_PROFILE_YAML` declares `cargo: [bat]`, so whether its Packages phase
+// plans anything depends on the host's own cargo install list. A test asserting
+// that a phase plans NOTHING has to declare no packages at all, or it only holds
+// on machines that already have the package.
+const ENV_ONLY_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  env:
+    - name: editor
+      value: vim
+"#;
+
 const SIMPLE_MODULE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n";
 
 const RICH_CONFIG_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
@@ -93,9 +107,15 @@ impl CliTestHarnessBuilder {
         self.config(RICH_CONFIG_YAML)
     }
 
+    /// Add a profile, or replace the built-in one of the same name — a test that
+    /// needs a narrower `default` than [`DEFAULT_PROFILE_YAML`] says so here
+    /// rather than relying on a second file write landing last.
     fn profile(mut self, name: &str, content: &str) -> Self {
-        self.profiles
-            .push((format!("{name}.yaml"), content.to_string()));
+        let file = format!("{name}.yaml");
+        match self.profiles.iter_mut().find(|(n, _)| *n == file) {
+            Some(existing) => existing.1 = content.to_string(),
+            None => self.profiles.push((file, content.to_string())),
+        }
         self
     }
 
@@ -4268,6 +4288,10 @@ fn cmd_doctor_with_valid_config() {
 
 #[test]
 fn cmd_doctor_without_config() {
+    // The verdict ANDs in `output.git` from a live `command_available("git")`
+    // read; a concurrent test emptying PATH to drive a command-not-found
+    // branch would otherwise flip this fresh-machine pass to a fail.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("nonexistent.yaml");
 
@@ -4597,7 +4621,12 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
 
 #[test]
 fn cmd_apply_dry_run_with_phase_filter() {
-    let h = CliTestHarness::builder().build();
+    // No packages declared, so the filtered-for Packages phase is empty on every
+    // host — the shared default profile's `cargo: [bat]` would otherwise plan an
+    // install anywhere `bat` is not already cargo-installed.
+    let h = CliTestHarness::builder()
+        .profile("default", ENV_ONLY_PROFILE_YAML)
+        .build();
     let args = ApplyArgs {
         from: None,
         dry_run: true,

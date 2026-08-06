@@ -151,26 +151,19 @@ mod tests {
     #[test]
     #[serial]
     fn run_inherit_returns_spawn_err_when_kubectl_not_on_path() {
-        // Force kubectl not findable so we hit the spawn-Err branch
-        // deterministically. We can't assert on its successful-spawn arm
-        // without polluting test stdout, so we pin only the Err path here.
-        let prior_path = std::env::var_os("PATH");
+        // Forcing kubectl unfindable is the only deterministic route to the
+        // spawn-Err branch; the successful-spawn arm cannot be asserted without
+        // polluting test stdout.
         let tmp = tempfile::tempdir().unwrap();
         // Excludes concurrent script-interpreter spawns (which resolve `sh` via
-        // PATH) for the whole empty-PATH window; held until end of scope.
+        // PATH) for the whole narrowed-PATH window. Declared before the env guard
+        // so the exclusion outlives the restore.
         let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
-        // SAFETY: spawn exclusion above + serial gate ⇒ no concurrent PATH reader.
-        unsafe {
-            std::env::set_var("PATH", tmp.path());
-        }
-        let result = run_inherit(&["version"]);
-        unsafe {
-            match prior_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-        let err = result.expect_err("kubectl missing from PATH → Err");
+        // RAII restore: a panic inside `run_inherit` would otherwise leave the
+        // narrowed PATH in place for every later test in this process.
+        let _path =
+            cfgd_core::test_helpers::EnvVarGuard::set("PATH", &tmp.path().to_string_lossy());
+        let err = run_inherit(&["version"]).expect_err("kubectl missing from PATH → Err");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 

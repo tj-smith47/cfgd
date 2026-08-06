@@ -1138,20 +1138,13 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         }
     }
 
-    let prev_path = std::env::var_os("PATH");
-    // SAFETY: serial; PATH restored below.
-    unsafe {
-        std::env::set_var("PATH", dir.path());
-    }
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        dir.path().to_str().expect("tempdir path is valid UTF-8"),
+    );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
-    // SAFETY: serial.
-    unsafe {
-        match prev_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-    }
     assert!(
         result.is_err(),
         "expected BootstrapFailed when no package manager is available"
@@ -1193,21 +1186,15 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
 
-    let prev_path = std::env::var_os("PATH");
-    // SAFETY: serial; PATH restored below.
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     // CFGD_BREW_BIN is already set by ToolShim — brew_available() finds the shim
     // via the env var before consulting PATH, so the brew path is intact.
-    unsafe {
-        std::env::set_var("PATH", dir.path());
-    }
+    let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        dir.path().to_str().expect("tempdir path is valid UTF-8"),
+    );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
-    unsafe {
-        match prev_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-    }
     assert!(
         !result.expect("no error when both paths simply unavailable"),
         "expected false when brew fails and no system manager present"
@@ -1246,20 +1233,13 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&shim, perms).unwrap();
 
-    let prev_path = std::env::var_os("PATH");
-    // SAFETY: serial; PATH restored below.
-    unsafe {
-        std::env::set_var("PATH", dir.path());
-    }
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        dir.path().to_str().expect("tempdir path is valid UTF-8"),
+    );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
-    // SAFETY: serial.
-    unsafe {
-        match prev_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-    }
     assert!(
         result.is_err(),
         "expected BootstrapFailed when apt-get exits 1 and dnf/zypper absent"
@@ -1285,32 +1265,18 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
 
-    let prev_path = std::env::var_os("PATH");
-    let prev_brew = std::env::var_os("CFGD_BREW_BIN");
-    let prev_apt = std::env::var_os("CFGD_APT_GET_BIN");
-    // SAFETY: serial; PATH + CFGD_BREW_BIN + CFGD_APT_GET_BIN restored below.
-    unsafe {
-        std::env::set_var("PATH", dir.path());
-        std::env::remove_var("CFGD_BREW_BIN");
-        std::env::set_var("CFGD_APT_GET_BIN", &shim);
-    }
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        dir.path().to_str().expect("tempdir path is valid UTF-8"),
+    );
+    let _brew_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _apt_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_APT_GET_BIN",
+        shim.to_str().expect("tempdir path is valid UTF-8"),
+    );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
-    // SAFETY: serial.
-    unsafe {
-        match prev_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        match prev_brew {
-            Some(v) => std::env::set_var("CFGD_BREW_BIN", v),
-            None => std::env::remove_var("CFGD_BREW_BIN"),
-        }
-        match prev_apt {
-            Some(v) => std::env::set_var("CFGD_APT_GET_BIN", v),
-            None => std::env::remove_var("CFGD_APT_GET_BIN"),
-        }
-    }
     assert!(
         result.expect("apt-get fallback should succeed"),
         "expected true when apt-get shim exits 0"
