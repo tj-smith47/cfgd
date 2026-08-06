@@ -20,6 +20,7 @@ pub mod kv;
 pub mod section;
 pub mod status;
 pub mod table;
+mod wrap;
 pub(crate) use glyphs::{finalize_subject, role_glyph};
 pub use status::StatusFields;
 pub use table::Table;
@@ -180,11 +181,22 @@ impl Renderer {
 /// Sink for one rendered line. Production = stderr Term; tests = string buffer.
 pub trait Writer: Send + Sync {
     fn write_line(&self, text: &str);
+
+    /// Columns at which this sink hard-wraps, or `None` when it does not wrap
+    /// at all. Only a terminal answers; a buffer or a redirected stream keeps
+    /// the default so its physical lines are exactly what the renderer emitted.
+    fn wrap_columns(&self) -> Option<usize> {
+        None
+    }
 }
 
 impl Writer for console::Term {
     fn write_line(&self, text: &str) {
         let _ = console::Term::write_line(self, text);
+    }
+
+    fn wrap_columns(&self) -> Option<usize> {
+        self.size_checked().map(|(_, cols)| cols as usize)
     }
 }
 
@@ -234,8 +246,16 @@ impl Renderer {
         // sets the flag back true after this call returns.
         s.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
+        let wrap_at = w.wrap_columns();
         for line in trimmed.split('\n') {
-            w.write_line(&format!("{}{}", prefix, line));
+            match wrap_at {
+                Some(cols) => {
+                    for physical in wrap::wrap_line(line, &prefix, cols) {
+                        w.write_line(&physical);
+                    }
+                }
+                None => w.write_line(&format!("{}{}", prefix, line)),
+            }
         }
     }
 

@@ -146,14 +146,18 @@ Modules get the same per-section breakdown a profile does: one heading per
 `Modules` bucket. Sections are `Pre-Scripts`, `Packages`, `Files`,
 `Post-Scripts`, and `Skipped`.
 
+A module-scoped heading already names its module, so the bullets under it drop
+the `[<module>]` tag they carry in the payload. `dev-tools` below is delivered
+by the source `team`; `localmod` is consumer-local and carries no origin.
+
 ```sh
 $ cfgd plan
 Phase: dev-tools / Packages
-  - [dev-tools] brew install ripgrep, fd <- team   # delivered by source 'team'
+  - brew install ripgrep, fd <- team
 Phase: localmod / Packages
-  - [localmod] brew install jq                     # consumer-local, no tag
+  - brew install jq
 Phase: localmod / Post-Scripts
-  - [localmod] jq --version
+  - postApply: jq --version
 ```
 
 `--phase modules` still selects every one of these — the section split is a

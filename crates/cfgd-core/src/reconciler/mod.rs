@@ -27,7 +27,10 @@ mod tests;
 
 pub use apply::action_matches_phase_filter;
 pub use env_engine::launchd_env_plist;
-pub use format::{condense_action_desc_for_display, format_action_description, format_plan_items};
+pub use format::{
+    condense_action_desc_for_display, display_action_desc_in_phase, format_action_description,
+    format_plan_items,
+};
 pub use packages::stale_tracked_packages;
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use types::{

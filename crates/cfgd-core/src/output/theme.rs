@@ -482,22 +482,57 @@ pub(super) fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// Quantize an RGB triple to the closest ANSI 256-color slot. Used for the
+/// The six values xterm's 6×6×6 colour cube actually uses per channel. They
+/// are not evenly spaced — the gap from 0 to 95 is nearly three times the gap
+/// between any later pair — so a channel cannot be mapped onto them by
+/// division.
+const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+/// Cube index whose level is closest to `v`.
+fn nearest_cube_index(v: u8) -> usize {
+    CUBE_LEVELS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, level)| v.abs_diff(**level))
+        .map_or(0, |(i, _)| i)
+}
+
+/// Squared euclidean distance between two RGB triples.
+fn rgb_dist2(a: (u8, u8, u8), b: (u8, u8, u8)) -> u32 {
+    let d = |x: u8, y: u8| {
+        let d = u32::from(x.abs_diff(y));
+        d * d
+    };
+    d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2)
+}
+
 /// 256-color fallback path when the terminal does not advertise truecolor
-/// support. Algorithm matches xterm's 6×6×6 cube + 24-step grayscale ramp.
+/// support. Quantizes to the nearer of xterm's 6×6×6 cube and its 24-step
+/// grayscale ramp.
 pub(super) fn ansi256_from_rgb(r: u8, g: u8, b: u8) -> u8 {
-    if r == g && g == b {
-        if r < 8 {
-            return 16;
-        }
-        if r > 248 {
-            return 231;
-        }
-        return (((r as u16 - 8) * 24 / 247) as u8) + 232;
+    let (ri, gi, bi) = (
+        nearest_cube_index(r),
+        nearest_cube_index(g),
+        nearest_cube_index(b),
+    );
+    let cube_rgb = (CUBE_LEVELS[ri], CUBE_LEVELS[gi], CUBE_LEVELS[bi]);
+    let cube_idx = (16 + 36 * ri + 6 * gi + bi) as u8;
+
+    // Both candidates are measured rather than branching on `r == g == b`: the
+    // ramp's 10-unit steps beat the cube's coarse levels for anything merely
+    // near-grey, not just exactly grey.
+    let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+    let ramp_i = u8::try_from(avg.saturating_sub(3) / 10)
+        .unwrap_or(23)
+        .min(23);
+    let ramp_level = 8 + 10 * ramp_i;
+    let ramp_rgb = (ramp_level, ramp_level, ramp_level);
+
+    if rgb_dist2(ramp_rgb, (r, g, b)) < rgb_dist2(cube_rgb, (r, g, b)) {
+        232 + ramp_i
+    } else {
+        cube_idx
     }
-    let ri = (r as u16 * 5 / 255) as u8;
-    let gi = (g as u16 * 5 / 255) as u8;
-    let bi = (b as u16 * 5 / 255) as u8;
-    16 + 36 * ri + 6 * gi + bi
 }
 
 fn hex(s: &str) -> ThemedStyle {
@@ -816,36 +851,69 @@ mod tests {
         assert!(s.attrs.underline);
     }
 
+    /// The RGB a terminal actually paints for one of the 240 addressable
+    /// slots: 16..=231 is the 6×6×6 cube, 232..=255 the grayscale ramp.
+    fn slot_rgb(slot: u8) -> (u8, u8, u8) {
+        if slot >= 232 {
+            let level = 8 + 10 * (slot - 232);
+            return (level, level, level);
+        }
+        let i = usize::from(slot - 16);
+        (
+            CUBE_LEVELS[i / 36],
+            CUBE_LEVELS[(i / 6) % 6],
+            CUBE_LEVELS[i % 6],
+        )
+    }
+
+    /// The property that matters, asserted directly rather than through the
+    /// algorithm that satisfies it: no addressable slot is closer to the
+    /// requested colour than the one chosen. An earlier implementation divided
+    /// each channel by 51 to index the cube, which systematically rounded down
+    /// — #50fa7b's green landed on 215 with 255 available — and no
+    /// membership-style assertion could see it.
+    fn assert_nearest_slot(r: u8, g: u8, b: u8) {
+        let chosen = ansi256_from_rgb(r, g, b);
+        let chosen_dist = rgb_dist2(slot_rgb(chosen), (r, g, b));
+        for slot in 16..=255u8 {
+            let d = rgb_dist2(slot_rgb(slot), (r, g, b));
+            assert!(
+                d >= chosen_dist,
+                "slot {slot} ({:?}) is nearer to ({r},{g},{b}) than chosen {chosen} ({:?})",
+                slot_rgb(slot),
+                slot_rgb(chosen),
+            );
+        }
+    }
+
     #[test]
-    fn ansi256_grayscale_low_clamps_to_pure_black() {
-        // r == g == b, with r < 8 → ANSI slot 16 (pure black).
+    fn ansi256_always_picks_the_nearest_addressable_slot() {
+        for (r, g, b) in [
+            (0, 0, 0),
+            (7, 7, 7),
+            (8, 8, 8),
+            (128, 128, 128),
+            (248, 248, 248),
+            (249, 249, 249),
+            (255, 255, 255),
+            // Every dracula slot — the preset this is most visible on.
+            (0xbd, 0x93, 0xf9),
+            (0x50, 0xfa, 0x7b),
+            (0xf1, 0xfa, 0x8c),
+            (0xff, 0x55, 0x55),
+            (0x8b, 0xe9, 0xfd),
+            (0x62, 0x72, 0xa4),
+            (0xff, 0xb8, 0x6c),
+            (0xff, 0x79, 0xc6),
+        ] {
+            assert_nearest_slot(r, g, b);
+        }
+    }
+
+    #[test]
+    fn ansi256_pure_black_and_white_are_exact() {
         assert_eq!(ansi256_from_rgb(0, 0, 0), 16);
-        assert_eq!(ansi256_from_rgb(7, 7, 7), 16);
-    }
-
-    #[test]
-    fn ansi256_grayscale_high_clamps_to_pure_white() {
-        // r == g == b, with r > 248 → ANSI slot 231 (pure white).
         assert_eq!(ansi256_from_rgb(255, 255, 255), 231);
-        assert_eq!(ansi256_from_rgb(249, 249, 249), 231);
-    }
-
-    #[test]
-    fn ansi256_grayscale_ramp_midrange_maps_into_232_to_255() {
-        // r == g == b, with 8 <= r <= 248 → grayscale ramp 232..=255.
-        let mid = ansi256_from_rgb(128, 128, 128);
-        assert!(
-            (232..=255).contains(&mid),
-            "expected grayscale-ramp slot for #808080, got: {mid}"
-        );
-        // Edge: r == 8 lands at 232 (first ramp slot).
-        assert_eq!(ansi256_from_rgb(8, 8, 8), 232);
-        // Edge: r == 248 maps near the top of the ramp.
-        let high = ansi256_from_rgb(248, 248, 248);
-        assert!(
-            (232..=255).contains(&high),
-            "r==248 should still be in the ramp, got: {high}"
-        );
     }
 
     #[test]

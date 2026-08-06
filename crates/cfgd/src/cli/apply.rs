@@ -358,7 +358,11 @@ pub fn run_apply(
             }
             let phase_sec = preview.section(phase_item.display_label());
             for (action, item) in displayed {
-                phase_sec.bullet(reconciler::condense_action_desc_for_display(action, item));
+                phase_sec.bullet(reconciler::display_action_desc_in_phase(
+                    action,
+                    item,
+                    phase_item.scope.as_ref(),
+                ));
             }
         }
         for w in &plan.warnings {

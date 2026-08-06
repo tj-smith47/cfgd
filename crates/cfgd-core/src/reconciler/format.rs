@@ -5,7 +5,8 @@ use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
 use super::types::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, Phase, ScriptAction, SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, ModuleScope, Phase, ScriptAction,
+    SystemAction,
 };
 
 /// Resource id of the live-session env refresh. The planner and
@@ -152,6 +153,35 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
     } else {
         desc.to_string()
     }
+}
+
+/// Condense `desc` as [`condense_action_desc_for_display`] does, then drop the
+/// `[module]` prefix when the enclosing phase heading already names that
+/// module.
+///
+/// `format_module_action` stamps every module action with `[module]` because
+/// the actions used to share one undifferentiated `Modules` heading and the
+/// bullet was the only place the module could appear. Under a
+/// `<module> / <section>` heading it repeats what the reader just read.
+///
+/// A script's `postApply:`/`preReconcile:` prefix survives — one section covers
+/// both the apply and the reconcile hook, so that word is not redundant.
+///
+/// Display only, like the helper it wraps: the raw `desc` is the
+/// `managed_resources` id, the journal `resource_id`, `ActionResult.description`
+/// and the `-o json` payload, all of which stay byte-identical to the plan's.
+pub fn display_action_desc_in_phase(
+    action: &Action,
+    desc: &str,
+    scope: Option<&ModuleScope>,
+) -> String {
+    let condensed = condense_action_desc_for_display(action, desc);
+    let Some(scope) = scope else {
+        return condensed;
+    };
+    condensed
+        .strip_prefix(&format!("[{}] ", scope.module))
+        .map_or(condensed.clone(), ToString::to_string)
 }
 
 /// Format plan phase items for display.

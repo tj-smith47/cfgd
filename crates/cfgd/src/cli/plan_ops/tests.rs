@@ -1529,3 +1529,58 @@ fn shell_env_reminder_absent_under_structured_output() {
         "structured output auto-quiets; the reminder must not corrupt it: {out}"
     );
 }
+
+#[test]
+fn scoped_phase_bullet_drops_the_module_name_its_heading_already_carries() {
+    let phase = scoped_phase(
+        "dev-tools",
+        ModuleSection::PostScripts,
+        vec![module_run_script()],
+    );
+    let items = reconciler::format_plan_items(&phase);
+    assert!(
+        items[0].starts_with("[dev-tools] "),
+        "fixture must carry the prefix under test; got: {:?}",
+        items[0]
+    );
+
+    let shown = reconciler::display_action_desc_in_phase(
+        &phase.actions[0],
+        &items[0],
+        phase.scope.as_ref(),
+    );
+    assert_eq!(shown, "postApply: install.sh");
+}
+
+#[test]
+fn unscoped_phase_bullet_keeps_the_module_name() {
+    let phase = Phase {
+        name: PhaseName::Modules,
+        actions: vec![module_install()],
+        scope: None,
+    };
+    let items = reconciler::format_plan_items(&phase);
+    let shown = reconciler::display_action_desc_in_phase(&phase.actions[0], &items[0], None);
+    assert_eq!(shown, items[0], "an unscoped heading names no module");
+    assert!(shown.starts_with("[dev-tools] "));
+}
+
+#[test]
+fn a_bullet_for_a_different_module_keeps_its_own_prefix() {
+    // Splitting is by consecutive run, so a phase's scope and an action's
+    // module always agree today. Stripping by exact match rather than by
+    // "leading bracket group" keeps a future mismatch visible instead of
+    // silently erasing the one word that would explain it.
+    let phase = scoped_phase(
+        "other-module",
+        ModuleSection::Packages,
+        vec![module_install()],
+    );
+    let items = reconciler::format_plan_items(&phase);
+    let shown = reconciler::display_action_desc_in_phase(
+        &phase.actions[0],
+        &items[0],
+        phase.scope.as_ref(),
+    );
+    assert_eq!(shown, items[0]);
+}

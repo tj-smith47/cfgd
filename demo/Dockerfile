@@ -65,6 +65,12 @@ ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
 # what the recording demonstrates.
 ENV CFGD_NO_UPDATE_CHECK=1
 
+# `docker run -t` forwards TERM and nothing else, so COLORTERM never reaches the
+# container and cfgd quantizes its theme to the 256-colour cube — a visibly
+# duller dracula than the terminal recording this can actually display. The
+# capability is the recording terminal's, and it is 24-bit.
+ENV COLORTERM=truecolor
+
 # cfgd enters as a prebuilt host binary, never built in-container: building
 # Rust here would add a toolchain and minutes of compile time the demo has no
 # use for. Staged at demo/bin/cfgd before `docker build` runs (see

@@ -410,7 +410,11 @@ pub(in crate::cli) fn display_plan_table(
                 {
                     phase.status_simple(Role::Warn, item);
                 } else {
-                    phase.bullet(reconciler::condense_action_desc_for_display(action, item));
+                    phase.bullet(reconciler::display_action_desc_in_phase(
+                        action,
+                        item,
+                        phase_item.scope.as_ref(),
+                    ));
                 }
             }
         }
