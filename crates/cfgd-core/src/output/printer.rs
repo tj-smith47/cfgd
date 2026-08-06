@@ -348,9 +348,9 @@ impl Printer {
         &self.multi_progress
     }
 
-    /// Run an external command at top-level (depth 0) with live output.
-    /// TTY+non-quiet → spinner with tailing ring; otherwise → streaming lines.
-    /// Either path captures full stdout/stderr in the returned `CommandOutput`.
+    /// Run an external command at top-level (depth 0), displaying its output
+    /// through an `OutputWindow` and capturing the full stdout/stderr in the
+    /// returned `CommandOutput`.
     pub fn run(
         &self,
         cmd: &mut std::process::Command,
@@ -358,14 +358,7 @@ impl Printer {
     ) -> std::io::Result<super::process::CommandOutput> {
         // run is depth-0 only; the clamp would still return 0, so the value is discarded.
         let _ = self.renderer.enforce_top_level_emit(0);
-        super::process::run_command(
-            &self.renderer,
-            self.sink_stderr.as_ref(),
-            &self.multi_progress,
-            0,
-            cmd,
-            &label.into(),
-        )
+        super::process::run_command(self, 0, cmd, &label.into())
     }
 
     /// Final flush — call at the end of a streaming command to ensure any

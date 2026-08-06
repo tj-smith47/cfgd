@@ -500,11 +500,13 @@ pub(crate) fn execute_script(
         }
     })?;
 
-    // The script's own output is streamed line-by-line rather than repainted
-    // inside a spinner window: a fixed window erases and rewrites the lines
-    // above it every tick, which reads as the screen resetting. Announce the
-    // step, let its output scroll, then close it with a status line.
-    printer.status_simple(Role::Running, &label);
+    // A script's output is not the answer to anything the user asked, so it
+    // goes through the same bounded window every other child-process surface
+    // uses: a five-line tail under the label, collapsed to one status line the
+    // moment the script exits. The window sanitizes each line itself — a child
+    // like `nvim --headless` emits screen-reset and cursor-move sequences that
+    // would otherwise execute against the real terminal.
+    let mut window = printer.output_window_at(0, &label);
 
     // Channel for live display + Arc buffers for final capture.
     // Reader threads feed both so we get live scrolling output AND full capture.
@@ -531,14 +533,7 @@ pub(crate) fn execute_script(
     loop {
         // Drain pending output and stream it, one line at a time, in order.
         while let Ok(line) = rx.try_recv() {
-            // A child like `nvim --headless` emits its own ANSI screen-reset and
-            // cursor-move sequences; written through verbatim they execute on the
-            // real terminal. Strip full ANSI, then escape residual control bytes.
-            let clean = crate::escape_control_chars(&crate::output::strip_ansi(&line));
-            let trimmed = clean.trim_end();
-            if !trimmed.is_empty() {
-                printer.stream_line(trimmed);
-            }
+            window.push_line(&line);
         }
 
         match child.try_wait()? {
@@ -560,8 +555,12 @@ pub(crate) fn execute_script(
 
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
-                    printer
-                        .status_simple(Role::Fail, format!("{} (exit {})", run_label, exit_code));
+                    drop(
+                        window
+                            .finish_fail(&run_label)
+                            .detail(format!("exit {exit_code}"))
+                            .duration(start.elapsed()),
+                    );
                     let base = format!("script '{}' failed (exit {})", run_label, exit_code);
                     let message = match captured.as_deref().filter(|s| !s.is_empty()) {
                         Some(c) => format!("{base}\n{c}"),
@@ -570,8 +569,7 @@ pub(crate) fn execute_script(
                     return Err(CfgdError::Config(ConfigError::Invalid { message }));
                 }
 
-                let elapsed = start.elapsed();
-                printer.status_simple(Role::Ok, format!("{} ({}s)", run_label, elapsed.as_secs()));
+                drop(window.finish_ok(&run_label).duration(start.elapsed()));
                 return Ok((resource_desc, true, captured));
             }
             None => {
@@ -596,7 +594,12 @@ pub(crate) fn execute_script(
                     && let Some(a) = abort
                     && a.aborted().is_some()
                 {
-                    printer.status_simple(Role::Fail, format!("{} interrupted", run_label));
+                    drop(
+                        window
+                            .finish_fail(&run_label)
+                            .detail("interrupted")
+                            .duration(elapsed),
+                    );
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
@@ -605,9 +608,11 @@ pub(crate) fn execute_script(
                     }));
                 }
                 if let Some((reason, duration)) = kill_reason {
-                    printer.status_simple(
-                        Role::Fail,
-                        format!("{} {} after {}s", run_label, reason, duration.as_secs()),
+                    drop(
+                        window
+                            .finish_fail(&run_label)
+                            .detail(format!("{reason} after {}s", duration.as_secs()))
+                            .duration(elapsed),
                     );
                     kill_script_child(&mut child, true);
                     // Join reader threads so we capture partial output

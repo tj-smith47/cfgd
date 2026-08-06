@@ -28,6 +28,9 @@ pub use status_builder::StatusBuilder;
 pub mod spinner;
 pub use spinner::{ProgressBar, Spinner};
 
+pub mod window;
+pub use window::OutputWindow;
+
 pub mod process;
 pub use process::CommandOutput;
 
@@ -47,25 +50,53 @@ pub use doc::{Doc, SectionBuilder, StatusFields};
 /// the role styling of the subject; foreign color escapes would paint
 /// subsequent terminal output until the next reset.
 ///
-/// Walks `char`s (ANSI CSI sequences are all ASCII, so this is safe across
-/// multi-byte UTF-8 glyphs like `✓ ✗ — →`). Treats `\x1b[` followed by
-/// anything up to the next `m` (inclusive) as a single escape — incomplete
-/// escapes that never reach `m` are swallowed to end-of-string, which is the
-/// safer outcome at a sanitization boundary (a malicious unterminated escape
-/// shouldn't paint anything).
+/// Walks `char`s (escape sequences are all ASCII, so this is safe across
+/// multi-byte UTF-8 glyphs like `✓ ✗ — →`). Recognizes the three shapes a
+/// child process actually emits:
+///
+/// - **CSI** — `ESC [`, parameter and intermediate bytes, then a final byte in
+///   `0x40..=0x7E`. Ending a CSI on `m` alone is not a partial implementation
+///   but a swallowing one: `ESC [ 2 J` (clear screen) and `ESC [ H` (home)
+///   carry no `m`, so an SGR-only stripper consumes the whole remainder of the
+///   line as if it were part of the escape. `nvim --headless` emits both.
+/// - **OSC** — `ESC ]`, a payload, then `BEL` or the two-char ST (`ESC \`).
+/// - **Two-byte escapes** — `ESC 7`, `ESC =`, and the charset selectors
+///   (`ESC ( B`), which carry one further byte.
+///
+/// An unterminated escape is swallowed to end-of-string, which is the safer
+/// outcome at a sanitization boundary — a malicious unterminated escape
+/// shouldn't paint anything.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next(); // consume '['
-            for inner in chars.by_ref() {
-                if inner == 'm' {
-                    break;
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for inner in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&inner) {
+                        break;
+                    }
                 }
             }
-        } else {
-            out.push(c);
+            Some(']') => {
+                while let Some(inner) = chars.next() {
+                    if inner == '\u{07}' {
+                        break;
+                    }
+                    if inner == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some('(') | Some(')') | Some('*') | Some('+') => {
+                chars.next();
+            }
+            _ => {}
         }
     }
     out
@@ -345,7 +376,30 @@ mod strip_ansi_tests {
     }
 
     #[test]
-    fn bare_escape_without_bracket_passes_through() {
-        assert_eq!(strip_ansi("a\x1bX"), "a\x1bX");
+    fn two_byte_escape_consumed_leaving_no_raw_escape_byte() {
+        // A raw `\x1b` surviving sanitization is the thing this function
+        // exists to prevent, so a two-byte escape is consumed, not passed on.
+        assert_eq!(strip_ansi("a\x1bXb"), "ab");
+        assert_eq!(strip_ansi("a\x1b7b"), "ab");
+    }
+
+    #[test]
+    fn charset_selector_consumes_its_trailing_byte() {
+        assert_eq!(strip_ansi("\x1b(Bplain"), "plain");
+    }
+
+    #[test]
+    fn non_sgr_csi_does_not_swallow_the_rest_of_the_line() {
+        // `nvim --headless` emits clear-screen and cursor-home; neither ends
+        // in `m`, and an SGR-only stripper ate everything that followed.
+        assert_eq!(strip_ansi("\x1b[2J\x1b[Hcleared"), "cleared");
+        assert_eq!(strip_ansi("\x1b[1;1Hhome"), "home");
+        assert_eq!(strip_ansi("before\x1b[Kafter"), "beforeafter");
+    }
+
+    #[test]
+    fn osc_title_sequence_stripped_at_bel_and_at_st() {
+        assert_eq!(strip_ansi("\x1b]0;window title\x07kept"), "kept");
+        assert_eq!(strip_ansi("\x1b]0;window title\x1b\\kept"), "kept");
     }
 }

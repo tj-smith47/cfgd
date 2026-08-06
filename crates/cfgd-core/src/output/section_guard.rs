@@ -188,22 +188,15 @@ impl<'p> SectionGuard<'p> {
         }
     }
 
-    /// Run an external command at this section's depth with live output.
-    /// TTY+non-quiet → spinner with tailing ring indented under the section;
-    /// otherwise → streaming lines. Either path captures full stdout/stderr.
+    /// Run an external command at this section's depth, displaying its output
+    /// through an `OutputWindow` indented under the section and capturing the
+    /// full stdout/stderr.
     pub fn run(
         &self,
         cmd: &mut std::process::Command,
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
-        super::process::run_command(
-            &self.renderer,
-            self.sink.as_ref(),
-            &self.printer.multi_progress,
-            self.depth,
-            cmd,
-            &label.into(),
-        )
+        super::process::run_command(self.printer, self.depth, cmd, &label.into())
     }
 
     /// Manually close (alternative to drop). Useful when the caller needs the
