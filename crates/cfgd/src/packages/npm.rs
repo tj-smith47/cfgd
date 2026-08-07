@@ -437,7 +437,12 @@ pub(super) fn apply_prefix_flag(cmd: &mut Command, decision: &NpmPrefixDecision)
 /// to bypass that branch to exercise the mapping below it. Production
 /// `path_dirs` deliberately routes through the cached `resolve_npm_prefix`
 /// instead (see its doc comment), so this has no production caller.
-#[cfg(test)]
+///
+/// `unix` as well as `test`: every caller lives in `mod npm_shim`, which
+/// drives npm through a `/bin/sh` shim and is itself `#[cfg(unix)]`. Gating
+/// on `test` alone leaves this uncallable on the Windows test job, which
+/// builds with `-D warnings` and turns that into a dead-code error.
+#[cfg(all(test, unix))]
 pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
     match resolve_npm_prefix_for(elevated) {
         Ok(NpmPrefixDecision {

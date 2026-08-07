@@ -102,7 +102,10 @@ impl<'p> OutputWindow<'p> {
         if text.is_empty() {
             return;
         }
-        let clamped = clamp_line(text, available_width(self.body_depth));
+        let clamped = clamp_line(
+            text,
+            available_width(self.spinner.sink.as_ref(), self.body_depth),
+        );
         if !self.windowed {
             self.spinner.renderer.render_stream_line(
                 self.spinner.sink.as_ref(),
@@ -166,7 +169,7 @@ impl<'p> OutputWindow<'p> {
         depth: usize,
         lines: impl IntoIterator<Item = impl AsRef<str>>,
     ) {
-        let width = available_width(depth + 1);
+        let width = available_width(printer.sink_stderr.as_ref(), depth + 1);
         for line in lines {
             let clean = sanitize(line.as_ref());
             let text = clean.trim_end();
@@ -367,7 +370,11 @@ mod tests {
 
     #[test]
     fn available_width_shrinks_with_depth() {
-        assert!(available_width(3) < available_width(0));
-        assert!(available_width(40) >= 24, "clamped below a usable floor");
+        let sink = StringSink(Arc::new(Mutex::new(String::new())));
+        assert!(available_width(&sink, 3) < available_width(&sink, 0));
+        assert!(
+            available_width(&sink, 40) >= 24,
+            "clamped below a usable floor"
+        );
     }
 }
