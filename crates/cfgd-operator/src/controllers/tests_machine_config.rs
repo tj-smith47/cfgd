@@ -361,7 +361,7 @@ async fn reconcile_machine_config_when_status_patch_fails_emits_reconcile_error_
 }
 
 // -----------------------------------------------------------------------
-// Existing-Compliant condition preservation (C1 fix verification)
+// Existing-Compliant condition preservation
 // -----------------------------------------------------------------------
 
 #[tokio::test]

@@ -332,11 +332,24 @@ mod tests {
 
     /// Unset the systemd `$*_DIRECTORY` vars so a user-scope default resolves to
     /// the XDG/platform root rather than a systemd-injected override.
+    /// Clears every ambient directory override a resolved path can come from.
+    ///
+    /// `#[serial]` excludes other serial tests but not the non-serial majority,
+    /// and `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` are clap env fallbacks: a
+    /// concurrent test pointing one at its tempdir made this file's absolute-root
+    /// assertions read that tempdir instead of the FHS path. Clearing them here
+    /// covers every caller rather than each test remembering the full set.
     fn unset_systemd_dir_vars() -> Vec<EnvVarGuard> {
-        ["STATE_DIRECTORY", "CACHE_DIRECTORY", "RUNTIME_DIRECTORY"]
-            .into_iter()
-            .map(EnvVarGuard::unset)
-            .collect()
+        [
+            "STATE_DIRECTORY",
+            "CACHE_DIRECTORY",
+            "RUNTIME_DIRECTORY",
+            "CFGD_STATE_DIR",
+            "CFGD_CACHE_DIR",
+        ]
+        .into_iter()
+        .map(EnvVarGuard::unset)
+        .collect()
     }
 
     #[test]
@@ -489,7 +502,7 @@ mod tests {
         assert_eq!(output.runtime.socket, "/custom/cfgd.sock");
     }
 
-    // B1 regression: under `--config <dir>/cfgd.yaml` the reported config.dir
+    // Under `--config <dir>/cfgd.yaml` the reported config.dir
     // must be the directory that actually holds the file (its parent), and the
     // config source reflects the override (flag), not a re-resolved root.
     #[test]
@@ -515,7 +528,7 @@ mod tests {
         assert_eq!(output.config.source, DirSource::Flag);
     }
 
-    // B2/S2 regression: with no home and no override, the socket must be the
+    // With no home and no override, the socket must be the
     // daemon's `/tmp/cfgd.sock` last-ditch fallback — matching what the daemon
     // actually binds — never null or a phantom `<runtime>/cfgd.sock`.
     #[cfg(unix)]

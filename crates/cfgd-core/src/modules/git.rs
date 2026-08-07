@@ -247,8 +247,6 @@ pub(super) fn clone_repo(
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Cloning module '{}'", module_name);
     let cli_result = printer.run(&mut cmd, &label);
@@ -301,8 +299,6 @@ pub(super) fn fetch_existing_repo(
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Fetching module '{}'", module_name);
     let cli_result = printer.run(&mut cmd, &label);
@@ -757,7 +753,11 @@ mod tests {
 
     // --- default_module_cache_dir ---
 
+    // `default_module_cache_dir` reads the process-global `CFGD_CACHE_DIR` above
+    // the `with_test_home_guard` thread-local, so a concurrent setter hands this
+    // test another test's tempdir.
     #[test]
+    #[serial_test::serial]
     fn default_module_cache_dir_with_test_home() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::with_test_home_guard(dir.path());

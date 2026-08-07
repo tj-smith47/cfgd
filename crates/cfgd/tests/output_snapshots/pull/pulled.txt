@@ -1,3 +1,2 @@
 Pull
-
 ✓ Pulled new changes from remote

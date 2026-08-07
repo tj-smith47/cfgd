@@ -28,6 +28,9 @@ pub use status_builder::StatusBuilder;
 pub mod spinner;
 pub use spinner::{ProgressBar, Spinner};
 
+pub mod window;
+pub use window::OutputWindow;
+
 pub mod process;
 pub use process::CommandOutput;
 
@@ -47,25 +50,53 @@ pub use doc::{Doc, SectionBuilder, StatusFields};
 /// the role styling of the subject; foreign color escapes would paint
 /// subsequent terminal output until the next reset.
 ///
-/// Walks `char`s (ANSI CSI sequences are all ASCII, so this is safe across
-/// multi-byte UTF-8 glyphs like `✓ ✗ — →`). Treats `\x1b[` followed by
-/// anything up to the next `m` (inclusive) as a single escape — incomplete
-/// escapes that never reach `m` are swallowed to end-of-string, which is the
-/// safer outcome at a sanitization boundary (a malicious unterminated escape
-/// shouldn't paint anything).
+/// Walks `char`s (escape sequences are all ASCII, so this is safe across
+/// multi-byte UTF-8 glyphs like `✓ ✗ — →`). Recognizes the three shapes a
+/// child process actually emits:
+///
+/// - **CSI** — `ESC [`, parameter and intermediate bytes, then a final byte in
+///   `0x40..=0x7E`. Ending a CSI on `m` alone is not a partial implementation
+///   but a swallowing one: `ESC [ 2 J` (clear screen) and `ESC [ H` (home)
+///   carry no `m`, so an SGR-only stripper consumes the whole remainder of the
+///   line as if it were part of the escape. `nvim --headless` emits both.
+/// - **OSC** — `ESC ]`, a payload, then `BEL` or the two-char ST (`ESC \`).
+/// - **Two-byte escapes** — `ESC 7`, `ESC =`, and the charset selectors
+///   (`ESC ( B`), which carry one further byte.
+///
+/// An unterminated escape is swallowed to end-of-string, which is the safer
+/// outcome at a sanitization boundary — a malicious unterminated escape
+/// shouldn't paint anything.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next(); // consume '['
-            for inner in chars.by_ref() {
-                if inner == 'm' {
-                    break;
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for inner in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&inner) {
+                        break;
+                    }
                 }
             }
-        } else {
-            out.push(c);
+            Some(']') => {
+                while let Some(inner) = chars.next() {
+                    if inner == '\u{07}' {
+                        break;
+                    }
+                    if inner == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some('(') | Some(')') | Some('*') | Some('+') => {
+                chars.next();
+            }
+            _ => {}
         }
     }
     out
@@ -93,6 +124,50 @@ pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {
         out.push_str(line.trim());
     }
     out
+}
+
+/// Rendered width cap for [`condense_script_label`], in `char`s.
+///
+/// Eighty columns is the terminal width a status subject can assume without
+/// wrapping on a standard, unresized terminal; `render_status_immediate`
+/// still appends a role glyph and an optional `(Ns)` duration suffix after
+/// the subject, so the cap leaves that trailing room rather than filling the
+/// full width with script text alone.
+const SCRIPT_LABEL_MAX_CHARS: usize = 80;
+
+/// Condense a `ScriptEntry::run_str()` body into a single-line, width-bounded
+/// label for status subjects and error messages.
+///
+/// An inline multi-line `run:` script handed straight to a status subject
+/// (spinner label, `status_simple`, `finish_ok`/`finish_fail`) trips
+/// `Renderer::write_line`'s `!body.contains('\n')` debug_assert; a release
+/// build instead prints the whole body down the terminal as if it were one
+/// status line. Takes the first non-empty, trimmed line and appends an
+/// ellipsis marker when either that line was truncated to fit
+/// `SCRIPT_LABEL_MAX_CHARS`, or further non-empty content follows it.
+///
+/// `str::lines()` only recognizes `\n` and `\r\n` as terminators, so a lone
+/// `\r` (a classic-Mac line ending, or any other stray carriage return) would
+/// otherwise ride along inside the "first line" untouched; it is scrubbed
+/// explicitly so the result can never carry a `\r` forward.
+pub fn condense_script_label(body: &str) -> String {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first_raw) = lines.next() else {
+        return String::new();
+    };
+    let first: String = first_raw.chars().filter(|&c| c != '\r').collect();
+    let more_lines = lines.next().is_some();
+
+    if first.chars().count() <= SCRIPT_LABEL_MAX_CHARS {
+        if more_lines {
+            format!("{first} …")
+        } else {
+            first
+        }
+    } else {
+        let truncated: String = first.chars().take(SCRIPT_LABEL_MAX_CHARS).collect();
+        format!("{truncated}…")
+    }
 }
 
 /// Build a stable-shaped error Doc for `bail!`-on-emit-then-fail sites.
@@ -193,6 +268,79 @@ mod collapse_tests {
 }
 
 #[cfg(test)]
+mod condense_script_label_tests {
+    use super::condense_script_label;
+
+    #[test]
+    fn multi_line_keeps_only_first_line_plus_ellipsis() {
+        let script = "echo start\napt-get update\napt-get install -y neovim\necho done";
+        assert_eq!(condense_script_label(script), "echo start …");
+    }
+
+    #[test]
+    fn leading_blank_lines_skipped() {
+        let script = "\n\n   \necho hello\necho world";
+        assert_eq!(condense_script_label(script), "echo hello …");
+    }
+
+    #[test]
+    fn single_line_no_trailing_ellipsis() {
+        assert_eq!(condense_script_label("echo hello"), "echo hello");
+    }
+
+    #[test]
+    fn whitespace_only_input_returns_empty() {
+        assert_eq!(condense_script_label("   \n\t\n   "), "");
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(condense_script_label(""), "");
+    }
+
+    #[test]
+    fn long_single_line_truncated_at_cap() {
+        let long = "x".repeat(200);
+        let label = condense_script_label(&long);
+        assert_eq!(label.chars().count(), super::SCRIPT_LABEL_MAX_CHARS + 1); // +1 for the appended `…`
+        assert!(label.ends_with('…'));
+        assert!(!label.contains('\n') && !label.contains('\r'));
+    }
+
+    #[test]
+    fn multibyte_utf8_truncated_without_panic() {
+        // Every char is 3 bytes in UTF-8 (☃ U+2603); a byte-index truncation
+        // at SCRIPT_LABEL_MAX_CHARS would land mid-character and panic.
+        let long = "☃".repeat(200);
+        let label = condense_script_label(&long);
+        assert_eq!(label.chars().count(), super::SCRIPT_LABEL_MAX_CHARS + 1);
+        assert!(label.ends_with('…'));
+    }
+
+    #[test]
+    fn lone_carriage_return_never_survives() {
+        // A bare `\r` (no following `\n`) is not a line terminator to
+        // `str::lines()`, so it stays embedded in the "first line" unless
+        // scrubbed explicitly.
+        let script = "echo hi\rthere\nnext line";
+        let label = condense_script_label(script);
+        assert!(!label.contains('\r'));
+        assert!(!label.contains('\n'));
+    }
+
+    #[test]
+    fn never_contains_newline_or_carriage_return() {
+        for input in ["a\nb\nc", "\r\n\r\n", "line\r\n", "\r", "a", ""] {
+            let label = condense_script_label(input);
+            assert!(
+                !label.contains('\n') && !label.contains('\r'),
+                "condense_script_label({input:?}) = {label:?} carried a line terminator"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod strip_ansi_tests {
     use super::strip_ansi;
 
@@ -228,7 +376,30 @@ mod strip_ansi_tests {
     }
 
     #[test]
-    fn bare_escape_without_bracket_passes_through() {
-        assert_eq!(strip_ansi("a\x1bX"), "a\x1bX");
+    fn two_byte_escape_consumed_leaving_no_raw_escape_byte() {
+        // A raw `\x1b` surviving sanitization is the thing this function
+        // exists to prevent, so a two-byte escape is consumed, not passed on.
+        assert_eq!(strip_ansi("a\x1bXb"), "ab");
+        assert_eq!(strip_ansi("a\x1b7b"), "ab");
+    }
+
+    #[test]
+    fn charset_selector_consumes_its_trailing_byte() {
+        assert_eq!(strip_ansi("\x1b(Bplain"), "plain");
+    }
+
+    #[test]
+    fn non_sgr_csi_does_not_swallow_the_rest_of_the_line() {
+        // `nvim --headless` emits clear-screen and cursor-home; neither ends
+        // in `m`, and an SGR-only stripper ate everything that followed.
+        assert_eq!(strip_ansi("\x1b[2J\x1b[Hcleared"), "cleared");
+        assert_eq!(strip_ansi("\x1b[1;1Hhome"), "home");
+        assert_eq!(strip_ansi("before\x1b[Kafter"), "beforeafter");
+    }
+
+    #[test]
+    fn osc_title_sequence_stripped_at_bel_and_at_st() {
+        assert_eq!(strip_ansi("\x1b]0;window title\x07kept"), "kept");
+        assert_eq!(strip_ansi("\x1b]0;window title\x1b\\kept"), "kept");
     }
 }

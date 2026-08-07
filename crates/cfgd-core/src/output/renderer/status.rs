@@ -54,8 +54,9 @@ impl Renderer {
             self.flush_pending_section_headers(w);
             return;
         }
+        self.open_top_group(super::TopGroup::Status);
         self.render_status_immediate(w, depth, f);
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(super::TopGroup::Status);
     }
 
     /// Actually emit a Status line, without buffering. Used by the immediate
@@ -170,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn info_role_has_no_icon() {
+    fn info_role_uses_its_theme_icon() {
         let (r, sink, buf) = capture();
         r.render_status(
             &sink,
@@ -184,7 +185,7 @@ mod tests {
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
-        assert_eq!(out.trim_end(), "note");
+        assert_eq!(out.trim_end(), "⊙ note");
     }
 
     #[test]
@@ -342,17 +343,21 @@ mod tests {
             visible.contains("sync failed — upstream: red text bold"),
             "visible composition mismatch; got: {visible:?}"
         );
-        // The renderer's own SGR styles the Fail glyph + subject (bold red),
-        // so a blanket `!raw.contains("\\x1b[")` is too strict. Pick a SGR
-        // code the renderer would never emit for Fail (foreground red `31`)
-        // to prove the detail's escapes were sanitized away.
-        assert!(
-            !raw.contains("\x1b[31m"),
-            "detail's red SGR must be stripped before push_str; got raw: {raw:?}"
-        );
-        // And the stray `\x1b[0m` mid-detail must not survive — it would
-        // otherwise close the renderer's subject styling prematurely.
+        // Scope the escape check to the segment the detail was pushed into. The
+        // renderer's own styling of the glyph and subject is process-global
+        // state — whether it emits colour, bold, or nothing at all depends on
+        // terminal detection and on whatever else in the binary last touched
+        // the colour flags — so asserting over the whole buffer measures that
+        // instead of the sanitization. After the em-dash there is only the
+        // detail, and it must carry no escape at all: a surviving `\x1b[0m`
+        // would close the subject styling early, and a colour code would paint
+        // every later line the terminal prints.
         let detail_segment = raw.rsplit(" — ").next().unwrap_or("");
+        assert_eq!(
+            detail_segment.trim_end_matches('\n'),
+            "upstream: red text bold",
+            "detail must reach the buffer fully sanitized; got raw: {raw:?}"
+        );
         assert!(
             !detail_segment.contains('\u{1b}'),
             "detail segment must contain no ANSI escapes; got: {detail_segment:?}"

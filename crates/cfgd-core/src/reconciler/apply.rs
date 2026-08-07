@@ -3,16 +3,17 @@ use crate::PathDisplayExt;
 use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::{Printer, Role};
+use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::state::ApplyStatus;
 
 use super::format::{
-    format_action_description, parse_package_description, parse_resource_from_description,
+    condense_action_desc_for_display, format_action_description, parse_package_description,
+    parse_resource_from_description,
 };
 use super::restore::action_target_path;
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, effective_continue_on_error,
-    execute_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, build_script_env,
+    effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
     Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, PhaseName, Plan,
@@ -47,6 +48,58 @@ pub fn action_matches_phase_filter(
         PhaseName::PreScripts => is_pre_apply_script(action),
         _ => false,
     }
+}
+
+/// Suffix `apply_env_action` appends to a description when the surface was
+/// already correct and nothing was written.
+///
+/// Reading it back out of a description is not a general description sniff: the
+/// suffix is confined to env-action descriptions, and every reader below gets
+/// its string straight from `apply_env_action`, so the shape is the producer's
+/// own data. A converged surface also has to be stripped of it before the
+/// description becomes a `managed_resources` id, or one resource owns two rows
+/// that alternate by run and neither matches the id the planner derives.
+pub(super) const ENV_SKIPPED_SUFFIX: &str = ":skipped";
+
+fn env_result_key(description: &str) -> &str {
+    description
+        .strip_suffix(ENV_SKIPPED_SUFFIX)
+        .unwrap_or(description)
+}
+
+/// Fold a late env regeneration into the result the Env phase already recorded
+/// for the same surface.
+///
+/// The regeneration rewrites files the Env phase may have written earlier in the
+/// same apply. Appending a second result would report one `~/.cfgd.env` twice and
+/// push `results.len()` past the planned-action count every caller compares it
+/// against. A prior *failure* is left standing as its own row: a failed attempt
+/// and a later successful one are distinct events and collapsing them would hide
+/// the error.
+fn merge_env_result(results: &mut Vec<ActionResult>, description: String, changed: bool) {
+    let key = env_result_key(&description);
+    if let Some(prev) = results
+        .iter_mut()
+        .find(|r| r.success && env_result_key(&r.description) == key)
+    {
+        prev.changed = prev.changed || changed;
+        prev.description = if prev.changed {
+            key.to_string()
+        } else {
+            description
+        };
+        return;
+    }
+    results.push(ActionResult {
+        // These are env actions no matter which late input triggered them, and a
+        // caller filtering results by phase must find them where every other
+        // `env:write:`/`env:inject:` result sits.
+        phase: PhaseName::Env.as_str().to_string(),
+        description,
+        success: true,
+        error: None,
+        changed,
+    });
 }
 
 fn is_post_apply_script(action: &Action) -> bool {
@@ -202,7 +255,12 @@ impl<'a> super::Reconciler<'a> {
         let mut results = Vec::new();
         let mut action_index: usize = 0;
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
-        // Set when a signal requested cooperative cancellation. We stop BEFORE
+        // The PATH directories the Env phase's planned content was built from.
+        // Compared against the post-run set below to detect a manager this run
+        // bootstrapped, whose directories could not have been known that early.
+        let path_dirs_at_plan =
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
+        // Set when a signal requested cooperative cancellation. Stopping happens BEFORE
         // the next action — the previous one already completed atomically, so no
         // file is left torn.
         let mut aborted_code: Option<u8> = None;
@@ -228,7 +286,7 @@ impl<'a> super::Reconciler<'a> {
             let total = filtered.len();
             for (action_idx, action) in filtered.iter().copied().enumerate() {
                 // Cooperative cancellation: a signal flips the abort flag, and
-                // we stop before beginning the next atomic action.
+                // the loop stops before beginning the next atomic action.
                 if let Some(code) = abort.aborted() {
                     aborted_code = Some(code);
                     break 'phases;
@@ -241,9 +299,20 @@ impl<'a> super::Reconciler<'a> {
                 // that does not yet exist (a CREATE) gets an absent marker so
                 // rollback removes it rather than restoring a later apply's
                 // post-apply snapshot.
-                if let Some(ref path) = action_target_path(action) {
-                    let path_str = path.display().to_string();
-                    match crate::capture_file_state(path) {
+                if let Some(backup) = action_target_path(action) {
+                    let path = &backup.path;
+                    // Backup key, not display: every writer of
+                    // `file_backups.file_path` folds with `to_posix_fs_key` so a
+                    // rollback lookup finds the row a Windows apply wrote — and
+                    // so the row a rollback reopens still names the file that
+                    // was backed up.
+                    let path_str = crate::to_posix_fs_key(path);
+                    let captured = if backup.follow_symlink {
+                        crate::capture_file_resolved_state(path)
+                    } else {
+                        crate::capture_file_state(path)
+                    };
+                    match captured {
                         Ok(Some(file_state)) => {
                             if let Err(e) =
                                 self.state
@@ -327,6 +396,8 @@ impl<'a> super::Reconciler<'a> {
                             false
                         };
 
+                        let display_desc = condense_action_desc_for_display(action, &desc);
+                        let display_err = collapse_to_subject_line(&e);
                         if continue_on_err {
                             printer.status_simple(
                                 Role::Warn,
@@ -334,14 +405,20 @@ impl<'a> super::Reconciler<'a> {
                                     "[{}/{}] Script failed (continueOnError): {} — {}",
                                     action_idx + 1,
                                     total,
-                                    desc,
-                                    e
+                                    display_desc,
+                                    display_err
                                 ),
                             );
                         } else {
                             printer.status_simple(
                                 Role::Fail,
-                                format!("[{}/{}] Failed: {} — {}", action_idx + 1, total, desc, e),
+                                format!(
+                                    "[{}/{}] Failed: {} — {}",
+                                    action_idx + 1,
+                                    total,
+                                    display_desc,
+                                    display_err
+                                ),
                             );
                         }
                         if let Some(jid) = journal_id
@@ -385,8 +462,9 @@ impl<'a> super::Reconciler<'a> {
                     }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
                 );
                 if should_abort && is_pre_script {
+                    let display_desc = condense_action_desc_for_display(action, &desc);
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message: format!("pre-script failed, aborting apply: {}", desc),
+                        message: format!("pre-script failed, aborting apply: {}", display_desc),
                     }));
                 }
             }
@@ -419,42 +497,45 @@ impl<'a> super::Reconciler<'a> {
             });
         }
 
-        // --- Secret env injection: re-generate env files with resolved secret env vars ---
-        if !secret_env_collector.is_empty() {
-            let (env_actions, _) = Self::plan_env(
+        // --- Env regeneration: fold in inputs that only exist once the phases ran ---
+        // Two inputs land too late for the Env phase, which by `PhaseName` order
+        // runs before both Modules and Packages: a secret's resolved value, and
+        // the PATH directories of a manager bootstrapped during this very run.
+        // Regenerating once here, with both present, converges the file inside
+        // the same apply instead of leaving it right only from the next one on.
+        let path_dirs_now =
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
+        // A phase-scoped run must stay inside the phase the caller asked for.
+        // `--phase modules` bootstrapping a manager would otherwise reach out
+        // and rewrite `~/.cfgd.env` plus the source lines in `~/.bashrc` —
+        // surfaces the Env phase owns. The bootstrap record is durable either
+        // way, so the next unfiltered apply still converges the file.
+        let path_dirs_changed = phase_filter.is_none() && path_dirs_now != path_dirs_at_plan;
+        if !secret_env_collector.is_empty() || path_dirs_changed {
+            let (env_actions, _) = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
                 resolved.merged.env_scope,
                 module_actions,
                 &secret_env_collector,
+                &path_dirs_now,
+                &super::env::recorded_managed_env_files(self.state),
             );
             for env_action in &env_actions {
                 if let Action::Env(ea) = env_action {
                     match Self::apply_env_action(ea, printer) {
                         Ok(desc) => {
-                            // The `:skipped` substring convention is confined to
-                            // env-action descriptions, where it is the actual
-                            // data shape produced by `apply_env_action` (a no-op
-                            // write marks itself skipped). This path calls
-                            // `apply_env_action` directly, so it reads the same
-                            // shape — it is not a general description sniff.
-                            let changed = !desc.contains(":skipped");
-                            results.push(ActionResult {
-                                phase: PhaseName::Secrets.as_str().to_string(),
-                                description: desc,
-                                success: true,
-                                error: None,
-                                changed,
-                            });
+                            let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
+                            merge_env_result(&mut results, desc, changed);
                         }
                         Err(e) => {
                             printer.status_simple(
                                 Role::Fail,
-                                format!("Failed to write secret env vars: {}", e),
+                                format!("Failed to regenerate shell env files: {}", e),
                             );
                             results.push(ActionResult {
-                                phase: PhaseName::Secrets.as_str().to_string(),
-                                description: "env:write:secret-envs".to_string(),
+                                phase: PhaseName::Env.as_str().to_string(),
+                                description: "env:write:regenerate".to_string(),
                                 success: false,
                                 error: Some(e.to_string()),
                                 changed: false,
@@ -473,14 +554,15 @@ impl<'a> super::Reconciler<'a> {
                 .last()
                 .map(|l| l.profile_name.as_str())
                 .unwrap_or("unknown");
-            let env_vars = build_script_env(
+            let env_vars = build_script_env(&ScriptEnvContext {
                 config_dir,
                 profile_name,
                 context,
-                &ScriptPhase::OnChange,
-                None,
-                None,
-            );
+                phase: &ScriptPhase::OnChange,
+                module_name: None,
+                module_dir: None,
+                path_dirs: &super::all_recorded_path_dirs(self.state),
+            });
             let working = script_default_workdir(config_dir);
             for entry in &resolved.merged.scripts.on_change {
                 match execute_script(
@@ -527,6 +609,7 @@ impl<'a> super::Reconciler<'a> {
                 .last()
                 .map(|l| l.profile_name.as_str())
                 .unwrap_or("unknown");
+            let path_dirs = super::all_recorded_path_dirs(self.state);
             for module in module_actions {
                 if module.on_change_scripts.is_empty() {
                     continue;
@@ -539,12 +622,15 @@ impl<'a> super::Reconciler<'a> {
                     continue;
                 }
                 let env_vars = build_module_script_env(
-                    config_dir,
-                    profile_name,
-                    context,
-                    &ScriptPhase::OnChange,
-                    Some(&module.name),
-                    Some(&module.dir),
+                    &ScriptEnvContext {
+                        config_dir,
+                        profile_name,
+                        context,
+                        phase: &ScriptPhase::OnChange,
+                        module_name: Some(&module.name),
+                        module_dir: Some(&module.dir),
+                        path_dirs: &path_dirs,
+                    },
                     &module.env,
                 );
                 let working = script_default_workdir(config_dir);
@@ -623,7 +709,7 @@ impl<'a> super::Reconciler<'a> {
         let mut snapshot_paths = std::collections::HashSet::new();
         for managed in &resolved.merged.files.managed {
             let target = crate::expand_tilde(&managed.target);
-            let key = target.display().to_string();
+            let key = crate::to_posix_fs_key(&target);
             if snapshot_paths.contains(&key) {
                 continue;
             }
@@ -637,7 +723,7 @@ impl<'a> super::Reconciler<'a> {
         for module in module_actions {
             for file in &module.files {
                 let target = crate::expand_tilde(&file.target);
-                let key = target.display().to_string();
+                let key = crate::to_posix_fs_key(&target);
                 if snapshot_paths.contains(&key) {
                     continue;
                 }
@@ -706,7 +792,11 @@ impl<'a> super::Reconciler<'a> {
                 continue;
             }
 
-            let (rtype, rid) = parse_resource_from_description(&result.description);
+            let description = result
+                .description
+                .strip_suffix(ENV_SKIPPED_SUFFIX)
+                .unwrap_or(&result.description);
+            let (rtype, rid) = parse_resource_from_description(description);
             self.state
                 .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
@@ -763,11 +853,8 @@ impl<'a> super::Reconciler<'a> {
                     abort,
                 )
                 .map(|(d, c)| (d, c, None)),
-            // The `:skipped` substring convention is confined to env-action
-            // descriptions, where it is the actual data shape produced by
-            // `apply_env_action` (no-op writes mark themselves skipped).
             Action::Env(env) => Self::apply_env_action(env, printer).map(|d| {
-                let changed = !d.contains(":skipped");
+                let changed = !d.contains(ENV_SKIPPED_SUFFIX);
                 (d, changed, None)
             }),
         }

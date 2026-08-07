@@ -2,6 +2,23 @@ use super::*;
 use crate::test_helpers::test_printer;
 use serial_test::serial;
 
+/// libgit2's local transport rejects a shallow fetch, so the depth=1 the remote
+/// path wants must not be requested for a `file://` or filesystem-path URL —
+/// otherwise the libgit2 fallback can never clone a local repo, and `init --from`
+/// fails outright whenever the git CLI is unavailable or loses a PATH race.
+#[test]
+fn local_git_urls_are_recognized_so_shallow_depth_is_skipped() {
+    assert!(is_local_git_url("file:///tmp/upstream.git"));
+    assert!(is_local_git_url("/tmp/upstream.git"));
+    assert!(is_local_git_url("./relative/repo.git"));
+
+    assert!(!is_local_git_url("https://github.com/tj-smith47/cfgd.git"));
+    assert!(!is_local_git_url(
+        "ssh://git@github.com/tj-smith47/cfgd.git"
+    ));
+    assert!(!is_local_git_url("git@github.com:tj-smith47/cfgd.git"));
+}
+
 #[test]
 fn normalize_tilde_pin() {
     // ~N -> ^N.0.0 (any version N.x.x)
@@ -590,7 +607,11 @@ fn load_source_profile_nonexistent_source() {
     );
 }
 
+// `default_cache_dir` reads the process-global `CFGD_CACHE_DIR` above the
+// `with_test_home_guard` thread-local, so a concurrent setter hands this test
+// another test's tempdir.
 #[test]
+#[serial_test::serial]
 fn default_cache_dir_returns_path() {
     // This test may fail in environments without a home directory,
     // but in normal test environments it should work.
@@ -1324,6 +1345,39 @@ fn git_clone_with_fallback_invalid_url() {
 }
 
 #[test]
+fn git_clone_with_fallback_refuses_a_populated_destination_without_deleting_it() {
+    // The cleanup between the CLI and libgit2 attempts is an unconditional
+    // remove_dir_all. Cloning into a populated destination CANNOT succeed, so
+    // the only thing the attempt could ever accomplish there is deleting the
+    // content that made it fail — `cfgd init --from <repo>` re-run against an
+    // already-initialized config dir wiped cfgd.yaml, profiles/, and files/.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("existing-config");
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    let keeper = target.join("cfgd.yaml");
+    let body = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: mine\nspec: {}\n";
+    std::fs::write(&keeper, body).unwrap();
+
+    let printer = test_printer();
+    let err =
+        git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer).unwrap_err();
+
+    assert!(
+        err.contains("not empty"),
+        "refusal must name the non-empty destination as the cause, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&keeper).unwrap(),
+        body,
+        "the pre-existing config must survive the refused clone byte-for-byte"
+    );
+    assert!(
+        target.join("profiles").is_dir(),
+        "sibling content of the destination must survive too"
+    );
+}
+
+#[test]
 fn remove_source_cleans_up_directory() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("removable");
@@ -1997,11 +2051,15 @@ fn load_source_profile_no_profiles_directory() {
 fn verify_head_signature_with_no_git_on_path_returns_clear_error() {
     use crate::test_helpers::EnvVarGuard;
     // Empty PATH → command_available("git") returns false → verify_head_signature
-    // short-circuits with the L565-570 "git CLI is required" error. Marked
+    // short-circuits with the "git CLI is required" error. Marked
     // #[serial] to avoid racing with parallel tests that shell out to git.
     // Declared before the PATH override so it drops last, bracketing the whole
     // empty-PATH window against concurrent script-interpreter spawns.
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
+    // Emptying PATH is not on its own enough to make git unresolvable: the
+    // bootstrapped-dir registry is searched after PATH, and it holds whatever a
+    // fixture registered earlier in this binary.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _path = EnvVarGuard::set("PATH", "");
     let dir = tempfile::tempdir().unwrap();
     let err = super::verify_head_signature("nogit", dir.path())
@@ -2586,6 +2644,7 @@ mod local_source_fixture {
 
             // Create + push a `-x` tag (git2 rejects the name; use git CLI refs).
             let src = tmp.path().join("pin-dash-src");
+            let _spawn = crate::test_helpers::path_env_read_guard();
             let mut tag_cmd = crate::git_cmd_local();
             tag_cmd.args([
                 "-C",
@@ -3448,8 +3507,8 @@ mod bare_repo_load {
     fn load_source_fetch_errors_when_remote_disappears() {
         // After a successful clone, drop the bare repo on disk and call
         // load_source again — fetch_source's CLI + libgit2 fallback both
-        // fail, surfacing the FetchFailed error path (sources/mod.rs
-        // L195-205 spinner + return Err arm).
+        // fail, surfacing the FetchFailed error path (sources/mod.rs's
+        // spinner + return Err arm).
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let bare = make_bare_with_manifest("missing1", None);
             let branch = bare.head_branch().to_string();
@@ -3567,6 +3626,7 @@ fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
     // Local git runner with a fixed identity so `commit` never depends on the
     // host's git config.
     let git = |args: &[&str]| -> String {
+        let _spawn = crate::test_helpers::path_env_read_guard();
         let mut cmd = crate::git_cmd_local();
         cmd.current_dir(&repo)
             .env("GIT_AUTHOR_NAME", "t")
@@ -3605,6 +3665,7 @@ fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
         "HEAD must resolve to the tagged commit after pinning"
     );
     // A detached HEAD has no symbolic ref.
+    let _sref_spawn = crate::test_helpers::path_env_read_guard();
     let mut sref = crate::git_cmd_local();
     sref.current_dir(&repo).args(["symbolic-ref", "-q", "HEAD"]);
     assert!(

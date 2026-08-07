@@ -83,6 +83,11 @@ cfgd init --from <source> --apply --yes --install-daemon  # full one-liner boots
 | `--install-daemon` | Install daemon service after init |
 | `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, minimal) |
 
+`init` never writes over a config directory that already has a `cfgd.yaml`: it
+reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With
+`--from`, the run continues to the `--apply` / `--apply-module` step against the
+existing config; `--name` / `--theme` are applied as overrides.
+
 See [bootstrap.md](bootstrap.md) for the full init flow.
 
 ### `cfgd apply`
@@ -136,17 +141,42 @@ just like source-delivered files and packages: the human plan line ends with
 ` <- <source>`, and each action in the `-o json`/`-o yaml` payload carries an
 `origin` field (omitted for consumer-local modules).
 
+Modules get the same per-section breakdown a profile does: one heading per
+`<module> / <section>`, in the order the work runs, rather than a single
+`Modules` bucket. Sections are `Pre-Scripts`, `Packages`, `Files`,
+`Post-Scripts`, and `Skipped`.
+
+A module-scoped heading already names its module, so the bullets under it drop
+the `[<module>]` tag they carry in the payload. `dev-tools` below is delivered
+by the source `team`; `localmod` is consumer-local and carries no origin.
+
 ```sh
 $ cfgd plan
-Phase: Modules
-  - [dev-tools] brew install ripgrep, fd <- team   # delivered by source 'team'
-  - [localmod] brew install jq                     # consumer-local, no tag
+Phase: dev-tools / Packages
+  - brew install ripgrep, fd <- team
+Phase: localmod / Packages
+  - brew install jq
+Phase: localmod / Post-Scripts
+  - postApply: jq --version
 ```
 
+`--phase modules` still selects every one of these — the section split is a
+display and payload refinement, not a new filter key.
+
 ```jsonc
-// cfgd plan -o json  →  phases[].actions[]
-{ "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
-{ "type": "install", "description": "[localmod] brew install jq" }   // no "origin" key
+// cfgd plan -o json  →  phases[]
+{
+  "phase": "Modules",           // unchanged; the filter identity
+  "module": "dev-tools",        // module-scoped phases only
+  "section": "packages",        // module-scoped phases only
+  "actions": [
+    { "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
+  ]
+}
+{
+  "phase": "Environment",       // non-module phases carry no module/section keys
+  "actions": [ /* … */ ]
+}
 ```
 
 ### `cfgd status`
@@ -871,6 +901,8 @@ cfgd workflow generate --force   # overwrite existing
 
 Profiles whose YAML fails to parse are skipped with a warning naming the file and the parse error; the remaining valid profiles still generate.
 
+Tags are immutable. A changed module is tagged `<name>/v<version>` from its [`metadata.version`](spec/module.md#metadataversion) — read through `cfgd module show`, never guessed — and the job fails if the module declares no version or if that tag already exists (bump `metadata.version`). A changed profile is tagged `profile/<name>/<UTC timestamp>` in `%Y%m%dT%H%M%SZ` form, so a second release on the same day gets its own tag. Nothing is force-pushed. The job installs the same cfgd version that generated the workflow, pinned in the job's `CFGD_VERSION` environment variable; re-run `cfgd workflow generate --force` after upgrading cfgd to move the pin.
+
 The generated workflow's change detection covers both profile manifest forms — the flat file (`profiles/<name>.yaml`) and the bundle directory (`profiles/<name>/**`) — so a push touching either layout tags a release. Names containing regex metacharacters (e.g. `web.app`) are matched literally, and matching is exact — a change to a sibling profile whose name extends another (`profiles/work.app.yaml`) does not flag `work`. Generation fails if two names would fold to the same job-output key (`web.app` and `web-app` both fold to `profile_web_app`); rename one so they stay distinct.
 
 ### `cfgd checkin`
@@ -944,7 +976,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
 | `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
-| `7` | `apply` ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply` when one or more actions fail. |
+| `7` | An apply ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module add --apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
 

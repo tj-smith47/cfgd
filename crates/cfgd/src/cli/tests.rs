@@ -32,6 +32,20 @@ spec:
       - exa
 "#;
 
+// `DEFAULT_PROFILE_YAML` declares `cargo: [bat]`, so whether its Packages phase
+// plans anything depends on the host's own cargo install list. A test asserting
+// that a phase plans NOTHING has to declare no packages at all, or it only holds
+// on machines that already have the package.
+const ENV_ONLY_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  env:
+    - name: editor
+      value: vim
+"#;
+
 const SIMPLE_MODULE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n";
 
 const RICH_CONFIG_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
@@ -93,9 +107,15 @@ impl CliTestHarnessBuilder {
         self.config(RICH_CONFIG_YAML)
     }
 
+    /// Add a profile, or replace the built-in one of the same name — a test that
+    /// needs a narrower `default` than [`DEFAULT_PROFILE_YAML`] says so here
+    /// rather than relying on a second file write landing last.
     fn profile(mut self, name: &str, content: &str) -> Self {
-        self.profiles
-            .push((format!("{name}.yaml"), content.to_string()));
+        let file = format!("{name}.yaml");
+        match self.profiles.iter_mut().find(|(n, _)| *n == file) {
+            Some(existing) => existing.1 = content.to_string(),
+            None => self.profiles.push((file, content.to_string())),
+        }
         self
     }
 
@@ -1496,6 +1516,7 @@ fn apply_module_sets_rejects_invalid_format() {
         metadata: config::ModuleMetadata {
             name: "test".to_string(),
             description: None,
+            version: None,
         },
         spec: config::ModuleSpec::default(),
     };
@@ -3535,6 +3556,156 @@ fn generate_release_workflow_with_profiles() {
     assert!(yaml.contains("tag-profiles:"));
 }
 
+/// Slice one job out of the generated workflow: from `  <job>:` up to the blank
+/// line that precedes the next job (or end of document). Assertions about a job
+/// must not accidentally read another job's steps.
+fn workflow_job_block(yaml: &str, job: &str) -> String {
+    let header = format!("  {job}:\n");
+    let start = yaml
+        .find(&header)
+        .unwrap_or_else(|| panic!("workflow must contain job '{job}', got:\n{yaml}"));
+    let rest = &yaml[start..];
+    match rest[header.len()..].find("\n\n  ") {
+        Some(end) => rest[..header.len() + end].to_string(),
+        None => rest.to_string(),
+    }
+}
+
+#[test]
+fn generate_release_workflow_module_tag_steps_never_guess_or_force() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-modules");
+    for banned in ["grep -oP", "|| echo", "tag -f", "--force"] {
+        assert!(
+            !job.contains(banned),
+            "tag-modules must not contain '{banned}', got:\n{job}"
+        );
+    }
+    assert!(
+        job.contains("git tag \"$TAG\"") && job.contains("git push origin \"$TAG\"\n"),
+        "tag-modules must tag and push without force, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_module_tag_reads_version_through_cfgd() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-modules");
+    assert!(
+        job.contains("cfgd module show \"$MODULE\""),
+        "version must come from cfgd, not a YAML grep, got:\n{job}"
+    );
+    assert!(
+        job.contains("-o jsonpath='{.metadata.version}'"),
+        "version must be read from the metadata.version payload field, got:\n{job}"
+    );
+    assert!(
+        job.contains("Install cfgd"),
+        "the job must obtain the cfgd binary before invoking it, got:\n{job}"
+    );
+    assert!(
+        job.contains("if [ -z \"$VERSION\" ]; then") && job.contains("exit 1"),
+        "an absent version must fail the job, got:\n{job}"
+    );
+    assert!(
+        job.contains("add 'version: <semver>' under metadata"),
+        "the failure must tell the author what to add, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_pins_the_cfgd_it_installs() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["nvim".into()], &[], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-modules");
+    let expected = format!("CFGD_VERSION: v{}\n", env!("CARGO_PKG_VERSION"));
+    assert!(
+        job.contains(&expected),
+        "the job must pin the generating cfgd version, got:\n{job}"
+    );
+    assert!(
+        !job.contains("releases/latest/download"),
+        "the install must not float to latest, got:\n{job}"
+    );
+    assert!(
+        job.contains(
+            "curl -fsSL \"https://github.com/tj-smith47/cfgd/releases/download/$CFGD_VERSION/install.sh\""
+        ),
+        "the installer URL must use the pin, got:\n{job}"
+    );
+    assert!(
+        job.contains("set -o pipefail"),
+        "a failed download must not be swallowed by the pipe, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_never_interpolates_expressions_into_shell() {
+    let yaml = super::workflow::generate_release_workflow_yaml(
+        &["nvim".into()],
+        &["work".into()],
+        "master",
+    )
+    .unwrap();
+    // Every GitHub expression must land in an `env:` binding or a workflow key,
+    // never inside a `run:` script where it is substituted as raw text before
+    // the shell ever sees it.
+    let mut script_indent: Option<usize> = None;
+    for line in yaml.lines() {
+        let indent = line.len() - line.trim_start().len();
+        match script_indent {
+            Some(open) if !line.trim().is_empty() && indent <= open => script_indent = None,
+            Some(_) => {
+                assert!(
+                    !line.contains("${{"),
+                    "expression interpolated into a run script: '{}' in:\n{yaml}",
+                    line.trim()
+                );
+                continue;
+            }
+            None => {}
+        }
+        if line.trim_end().ends_with("run: |") {
+            script_indent = Some(indent);
+        }
+    }
+}
+
+#[test]
+fn generate_release_workflow_profile_tag_steps_never_force() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-profiles");
+    for banned in ["tag -f", "--force"] {
+        assert!(
+            !job.contains(banned),
+            "tag-profiles must not contain '{banned}', got:\n{job}"
+        );
+    }
+    assert!(
+        job.contains("git ls-remote --exit-code --tags origin \"refs/tags/$TAG\"")
+            && job.contains("exit 1"),
+        "a retag must fail rather than overwrite, got:\n{job}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_profile_tag_stamps_to_the_second() {
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
+    let job = workflow_job_block(&yaml, "tag-profiles");
+    assert!(
+        job.contains("STAMP=$(date -u +%Y%m%dT%H%M%SZ)"),
+        "a day-granular stamp makes a second same-day release unshippable, got:\n{job}"
+    );
+    assert!(
+        job.contains("TAG=\"profile/$PROFILE/$STAMP\""),
+        "the tag must be built from the stamp and the env-bound profile, got:\n{job}"
+    );
+}
+
 #[test]
 fn generate_release_workflow_detect_grep_covers_flat_and_bundle_forms() {
     let yaml =
@@ -4117,6 +4288,10 @@ fn cmd_doctor_with_valid_config() {
 
 #[test]
 fn cmd_doctor_without_config() {
+    // The verdict ANDs in `output.git` from a live `command_available("git")`
+    // read; a concurrent test emptying PATH to drive a command-not-found
+    // branch would otherwise flip this fresh-machine pass to a fail.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("nonexistent.yaml");
 
@@ -4130,7 +4305,7 @@ fn cmd_doctor_without_config() {
 
     let result = super::doctor::run_doctor(&cli, &printer);
     // Missing at the DEFAULT path is the fresh-machine state: the verdict
-    // must pass (exit 0) — pinned by S18.4-doctor in acceptance.
+    // must pass (exit 0), or `cfgd doctor` fails before a config can exist.
     assert!(
         result.as_ref().is_ok_and(|passed| *passed),
         "fresh-machine doctor verdict should pass, got: {result:?}"
@@ -4446,7 +4621,12 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
 
 #[test]
 fn cmd_apply_dry_run_with_phase_filter() {
-    let h = CliTestHarness::builder().build();
+    // No packages declared, so the filtered-for Packages phase is empty on every
+    // host — the shared default profile's `cargo: [bat]` would otherwise plan an
+    // install anywhere `bat` is not already cargo-installed.
+    let h = CliTestHarness::builder()
+        .profile("default", ENV_ONLY_PROFILE_YAML)
+        .build();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -4462,9 +4642,16 @@ fn cmd_apply_dry_run_with_phase_filter() {
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
+    // The requested phase planned no actions, so it is not among the plan's
+    // phases at all; the empty-plan line stands in for it, and the warning below
+    // it names the phases that do have work.
     assert!(
-        output.contains("Nothing to do") || output.contains("Packages"),
-        "should mention nothing-to-do or the filtered phase, got: {output}"
+        output.contains("(nothing to do)"),
+        "a filter matching no planned actions must still say so, got: {output}"
+    );
+    assert!(
+        output.contains("actions exist in phase(s): Environment"),
+        "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
 
@@ -4491,7 +4678,7 @@ fn cmd_apply_dry_run_with_skip() {
     h.assert_header("Plan");
     let output = h.output();
     assert!(
-        output.contains("Nothing to do") || output.contains("Phase:"),
+        output.contains("nothing to do") || output.contains("Phase:"),
         "should mention plan or nothing to do, got: {output}"
     );
 }
@@ -4514,8 +4701,14 @@ fn cmd_apply_dry_run_with_only() {
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
+    // The default fixture profile only plans Environment actions, so
+    // `--only files` excludes every one of them. Post-fix, the now-empty
+    // Environment phase is dropped entirely rather than surviving as a
+    // phantom "Phase: Environment (nothing to do)" — the correct signal is
+    // the top-level empty-plan state plus the "filter excluded everything"
+    // warning, not a per-phase header.
     assert!(
-        output.contains("Nothing to do") || output.contains("Phase:"),
+        output.contains("nothing to do") || output.contains("No actions in scope"),
         "should mention plan or nothing to do, got: {output}"
     );
 }
@@ -9379,6 +9572,7 @@ fn build_plan_output_with_actions() {
     let plan = reconciler::Plan {
         phases: vec![reconciler::Phase {
             name: reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![reconciler::Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
@@ -9400,6 +9594,7 @@ fn build_plan_output_with_phase_filter() {
         phases: vec![
             reconciler::Phase {
                 name: reconciler::PhaseName::Packages,
+                scope: None,
                 actions: vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
@@ -9408,6 +9603,7 @@ fn build_plan_output_with_phase_filter() {
             },
             reconciler::Phase {
                 name: reconciler::PhaseName::Files,
+                scope: None,
                 actions: vec![reconciler::Action::File(FileAction::Create {
                     source: "/a".into(),
                     target: "/b".into(),
@@ -9437,6 +9633,7 @@ fn strip_scripts_removes_script_phases() {
         phases: vec![
             Phase {
                 name: PhaseName::PreScripts,
+                scope: None,
                 actions: vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo pre".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PreApply,
@@ -9445,6 +9642,7 @@ fn strip_scripts_removes_script_phases() {
             },
             Phase {
                 name: PhaseName::Packages,
+                scope: None,
                 actions: vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
@@ -9453,6 +9651,7 @@ fn strip_scripts_removes_script_phases() {
             },
             Phase {
                 name: PhaseName::PostScripts,
+                scope: None,
                 actions: vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo post".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PostApply,
@@ -9472,39 +9671,75 @@ fn strip_scripts_removes_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    use cfgd_core::reconciler::{ModuleAction, ModuleActionKind, Phase, PhaseName, Plan};
+    use cfgd_core::reconciler::{
+        ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase, PhaseName, Plan,
+    };
 
+    // Realistic post-split shape: one Phase per (module, section) run, never
+    // one combined "Modules" phase holding install + run_script + deploy_files
+    // together — `split_module_phases` can never produce that shape.
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![
-                reconciler::Action::Module(ModuleAction {
+        phases: vec![
+            Phase {
+                name: PhaseName::Modules,
+                scope: Some(ModuleScope {
+                    module: "m".into(),
+                    section: ModuleSection::Packages,
+                }),
+                actions: vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::InstallPackages { resolved: vec![] },
                     origin: None,
+                })],
+            },
+            Phase {
+                name: PhaseName::Modules,
+                scope: Some(ModuleScope {
+                    module: "m".into(),
+                    section: ModuleSection::PostScripts,
                 }),
-                reconciler::Action::Module(ModuleAction {
+                actions: vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::RunScript {
                         script: cfgd_core::config::ScriptEntry::Simple("echo hello".into()),
                         phase: cfgd_core::reconciler::ScriptPhase::PostApply,
                     },
                     origin: None,
+                })],
+            },
+            Phase {
+                name: PhaseName::Modules,
+                scope: Some(ModuleScope {
+                    module: "m".into(),
+                    section: ModuleSection::Files,
                 }),
-                reconciler::Action::Module(ModuleAction {
+                actions: vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::DeployFiles { files: vec![] },
                     origin: None,
-                }),
-            ],
-        }],
+                })],
+            },
+        ],
         warnings: vec![],
     };
 
     super::strip_scripts_from_plan(&mut plan);
 
-    // RunScript should be removed, other actions kept
-    assert_eq!(plan.phases[0].actions.len(), 2);
+    // The Post-Scripts phase held only a RunScript action, so it must be
+    // dropped entirely rather than surviving as an empty phase.
+    assert_eq!(
+        plan.phases.len(),
+        2,
+        "only the Packages and Files phases should remain: {:?}",
+        plan.phases
+    );
+    assert!(plan.phases.iter().all(|p| !matches!(
+        &p.scope,
+        Some(ModuleScope {
+            section: ModuleSection::PostScripts,
+            ..
+        })
+    )));
 }
 
 // --- filter_plan edge cases ---
@@ -9516,6 +9751,7 @@ fn filter_plan_skip_file_by_target() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Files,
+            scope: None,
             actions: vec![
                 Action::File(FileAction::Create {
                     source: "/tmp/a".into(),
@@ -9549,6 +9785,7 @@ fn filter_plan_empty_skip_and_only_noop() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
@@ -9569,6 +9806,7 @@ fn filter_plan_skip_uninstall_packages() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Uninstall {
                 manager: "brew".into(),
                 packages: vec!["old-tool".into(), "keep-me".into()],
@@ -9595,6 +9833,7 @@ fn filter_plan_only_with_uninstall() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Uninstall {
                 manager: "apt".into(),
                 packages: vec!["vim".into(), "nano".into()],
@@ -12015,6 +12254,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: false,
             unfiltered_total: 0,
             phases_with_work: vec![],
+            modules_have_work: false,
             module_miss: None,
         };
         report_no_in_scope_actions(&printer, &scope, None);
@@ -12033,7 +12273,8 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         let scope = ScopeReport {
             filter_active: true,
             unfiltered_total: 3,
-            phases_with_work: vec!["Modules".to_string()],
+            phases_with_work: vec!["nvim / Files".to_string()],
+            modules_have_work: true,
             module_miss: None,
         };
         report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
@@ -12060,6 +12301,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
+            modules_have_work: false,
             module_miss: None,
         };
         report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
@@ -12078,6 +12320,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
+            modules_have_work: false,
             module_miss: Some("nvm".to_string()),
         };
         report_no_in_scope_actions(&printer, &scope, None);
@@ -14323,6 +14566,7 @@ fn filter_plan_skip_removes_matching_packages() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![
                 Action::Package(PackageAction::Install {
                     manager: "brew".into(),
@@ -14373,6 +14617,7 @@ fn filter_plan_only_keeps_matching_phase() {
         phases: vec![
             Phase {
                 name: PhaseName::Packages,
+                scope: None,
                 actions: vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
@@ -14381,6 +14626,7 @@ fn filter_plan_only_keeps_matching_phase() {
             },
             Phase {
                 name: PhaseName::Files,
+                scope: None,
                 actions: vec![Action::File(FileAction::Create {
                     source: PathBuf::from("/src"),
                     target: PathBuf::from("/dst"),
@@ -14402,12 +14648,15 @@ fn filter_plan_only_keeps_matching_phase() {
         1,
         "packages phase should retain action"
     );
-    // Files phase should have its action removed by only filter
+    // Files phase's only action fell outside --only=packages, so the phase
+    // itself must be dropped entirely rather than surviving with zero actions.
     assert_eq!(
-        plan.phases[1].actions.len(),
-        0,
-        "files phase should be empty after only=packages"
+        plan.phases.len(),
+        1,
+        "the emptied Files phase should be dropped: {:?}",
+        plan.phases
     );
+    assert_eq!(plan.phases[0].name, PhaseName::Packages);
 }
 
 #[test]
@@ -14417,6 +14666,7 @@ fn filter_plan_skip_uninstall_packages_env() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Uninstall {
                 manager: "npm".into(),
                 packages: vec!["left-pad".into(), "is-odd".into()],
@@ -14443,6 +14693,7 @@ fn filter_plan_empty_filters_is_noop() {
     let mut plan = Plan {
         phases: vec![Phase {
             name: PhaseName::Packages,
+            scope: None,
             actions: vec![Action::Package(PackageAction::Install {
                 manager: "apt".into(),
                 packages: vec!["vim".into()],
@@ -14473,10 +14724,12 @@ fn strip_scripts_from_plan_removes_script_phases() {
         phases: vec![
             Phase {
                 name: PhaseName::PreScripts,
+                scope: None,
                 actions: vec![],
             },
             Phase {
                 name: PhaseName::Packages,
+                scope: None,
                 actions: vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
@@ -14485,6 +14738,7 @@ fn strip_scripts_from_plan_removes_script_phases() {
             },
             Phase {
                 name: PhaseName::PostScripts,
+                scope: None,
                 actions: vec![],
             },
         ],
@@ -16859,6 +17113,7 @@ fn build_doctor_doc_system_state_store_inaccessible_emits_warn() {
         }),
         profiles_dir: None,
         config_sources: vec![],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(
@@ -16879,11 +17134,44 @@ fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
             error: None,
         }),
         config_sources: vec![],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains("Profiles directory not found") && text.contains("/etc/cfgd/profiles"),
         "should warn about missing profiles directory, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_update_optout_active_names_the_variable() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: None,
+        config_sources: vec![],
+        update_optout: Some("DO_NOT_TRACK"),
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Automatic update check: suppressed by DO_NOT_TRACK"),
+        "should name the active opt-out variable, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_no_update_optout_emits_nothing() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: None,
+        config_sources: vec![],
+        update_optout: None,
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        !text.contains("update check"),
+        "no opt-out active should emit no update-check line, got: {text}"
     );
 }
 
@@ -16897,6 +17185,7 @@ fn build_doctor_doc_source_cached_emits_ok() {
             name: "team-config".into(),
             cached_path: Some("/home/user/.cache/cfgd/sources/team-config".into()),
         }],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(
@@ -19584,6 +19873,7 @@ fn build_doctor_doc_unscannable_profiles_dir_fails() {
             error: Some("failed to read /etc/cfgd/profiles: permission denied".into()),
         }),
         config_sources: vec![],
+        update_optout: None,
     };
     let text = emit_doc(&output, &extras);
     assert!(

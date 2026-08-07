@@ -68,7 +68,10 @@ impl PackageManager for GoInstallManager {
         bootstrap_via_system_manager(printer, "golang", "go")
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         // Scan $GOPATH/bin (or ~/go/bin) for installed binaries
         let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
             cfgd_core::expand_tilde(std::path::Path::new("~/go"))
@@ -80,13 +83,17 @@ impl PackageManager for GoInstallManager {
         ))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             // `go install` requires a full module path with @version
             let install_path = go_install_path(pkg);
             let label = format!("go install {}", install_path);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "go",
                 go_cmd().args(["install", &install_path]),
                 &label,
@@ -96,7 +103,11 @@ impl PackageManager for GoInstallManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         // Go has no uninstall command; remove binaries from $GOPATH/bin
         let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
             cfgd_core::expand_tilde(std::path::Path::new("~/go"))
@@ -119,7 +130,8 @@ impl PackageManager for GoInstallManager {
                 })?;
             let bin_path = bin_dir.join(bin_name);
             if bin_path.exists() {
-                printer.status_simple(Role::Info, format!("removing {}", bin_path.posix()));
+                cx.printer
+                    .status_simple(Role::Info, format!("removing {}", bin_path.posix()));
                 std::fs::remove_file(&bin_path).map_err(|e| PackageError::UninstallFailed {
                     manager: "go".into(),
                     message: format!("failed to remove {}: {}", bin_path.posix(), e),
@@ -129,7 +141,7 @@ impl PackageManager for GoInstallManager {
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // go install pkg@latest re-installs to update; no separate update command
         Ok(())
     }
@@ -223,7 +235,9 @@ mod tests {
     fn go_install_manager_update_is_noop() {
         let mgr = GoInstallManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        mgr.update(&printer).unwrap();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        mgr.update(&cx).unwrap();
     }
 
     #[test]
@@ -310,7 +324,9 @@ mod tests {
     fn go_update_returns_ok() {
         let mgr = GoInstallManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        mgr.update(&printer).unwrap();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        mgr.update(&cx).unwrap();
     }
 
     // --- scan_go_bin_dir ---
@@ -426,7 +442,7 @@ mod tests {
     #[cfg(unix)]
     mod go_shim {
         use super::*;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_GO_BIN";
@@ -436,8 +452,10 @@ mod tests {
         fn go_install_appends_at_latest_to_unversioned_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             GoInstallManager
-                .install(&["github.com/example/tool".into()], &p)
+                .install(&["github.com/example/tool".into()], &cx)
                 .expect("Ok");
             assert!(
                 s.argv_log()
@@ -452,8 +470,10 @@ mod tests {
         fn go_install_passes_through_pre_pinned_version() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             GoInstallManager
-                .install(&["github.com/example/tool@v1.2.3".into()], &p)
+                .install(&["github.com/example/tool@v1.2.3".into()], &cx)
                 .expect("Ok");
             assert!(
                 s.argv_log()
@@ -468,8 +488,10 @@ mod tests {
         fn go_install_runs_one_install_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             GoInstallManager
-                .install(&["a.com/x".into(), "b.com/y".into()], &p)
+                .install(&["a.com/x".into(), "b.com/y".into()], &cx)
                 .expect("Ok");
             assert_eq!(s.invocation_count(), 2);
         }
@@ -479,7 +501,9 @@ mod tests {
         fn go_update_is_noop_no_command_spawned() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            GoInstallManager.update(&p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            GoInstallManager.update(&cx).expect("Ok");
             assert_eq!(
                 s.invocation_count(),
                 0,
@@ -541,8 +565,10 @@ mod tests {
             let _guard =
                 cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             GoInstallManager
-                .uninstall(&["golang.org/x/tools/gopls".into()], &p)
+                .uninstall(&["golang.org/x/tools/gopls".into()], &cx)
                 .expect("uninstall succeeds");
             assert!(
                 !bin_dir.join("gopls").exists(),
@@ -560,8 +586,10 @@ mod tests {
             let _guard =
                 cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             GoInstallManager
-                .uninstall(&["github.com/nonexistent/tool".into()], &p)
+                .uninstall(&["github.com/nonexistent/tool".into()], &cx)
                 .expect("uninstall of missing binary is a no-op");
         }
 
@@ -577,13 +605,15 @@ mod tests {
             let _guard =
                 cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             GoInstallManager
                 .uninstall(
                     &[
                         "golang.org/x/tools/gopls".into(),
                         "honnef.co/go/tools/cmd/staticcheck".into(),
                     ],
-                    &p,
+                    &cx,
                 )
                 .expect("multi-uninstall succeeds");
             assert!(!bin_dir.join("gopls").exists());
@@ -601,7 +631,10 @@ mod tests {
 
             let _guard =
                 cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
-            let pkgs = GoInstallManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = GoInstallManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("gopls"));
             assert!(pkgs.contains("dlv"));
@@ -613,7 +646,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let _guard =
                 cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
-            let pkgs = GoInstallManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = GoInstallManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.is_empty());
         }
 

@@ -1,7 +1,7 @@
 //! The provider-agnostic skill body — the markdown each provider wraps in its
 //! native envelope.
 //!
-//! [`render_skill_body`] composes the §7 thoroughness protocol (steps 0–6) from
+//! [`render_skill_body`] composes the thoroughness protocol (steps 0–6) from
 //! a [`SkillModel`]'s already-structured fields: the version stamp and runtime
 //! guard, the field-walk and validate commands, the rubric and research loop,
 //! the embedded fallback schema, the worked exemplar, and the ground-truth
@@ -15,7 +15,7 @@ use crate::generate::SkillModel;
 
 /// Render the provider-agnostic skill body for `model`.
 ///
-/// The returned markdown carries the §7 protocol scaffold (precondition →
+/// The returned markdown carries the protocol scaffold (precondition →
 /// enumerate → research → decide+justify → draft → validate → self-critique),
 /// the body-level `<!-- cfgd-version: … · cfgd-min-version: … -->` stamp read by
 /// step 0, a fenced `## Fallback schema (if cfgd is unavailable)` block, the

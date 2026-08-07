@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
-use crate::output::{Printer, Role};
+use crate::output::{Printer, Role, condense_script_label};
 
 use super::types::{ReconcileContext, ScriptPhase};
 
@@ -38,36 +38,104 @@ fn interactive_disposition(interactive: bool, stdin_is_tty: bool) -> Interactive
     }
 }
 
+/// Prepend PATH directories cfgd recorded when it bootstrapped a package
+/// manager onto a script's process environment.
+///
+/// A manager cfgd installed this run put its binaries somewhere no ancestor of
+/// this process had on PATH, and the generated env file that carries them is
+/// only read by a shell started later — so without this a `postApply` script
+/// that calls the very binary the module just asked for dies with
+/// `command not found`.
+///
+/// Prepending (rather than appending) matches `generate_env_file_content`: a
+/// script and the login shell that follows it must resolve a command the same
+/// way, and cfgd installed the manager's copy on purpose.
+fn prepend_bootstrapped_path_dirs(env: &mut Vec<(String, String)>, path_dirs: &[String]) {
+    if path_dirs.is_empty() {
+        return;
+    }
+    let current = env
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
+
+    let mut merged: Vec<std::path::PathBuf> = Vec::new();
+    for dir in path_dirs {
+        let dir = std::path::PathBuf::from(dir);
+        if !existing.contains(&dir) && !merged.contains(&dir) {
+            merged.push(dir);
+        }
+    }
+    if merged.is_empty() {
+        return;
+    }
+    merged.extend(existing);
+
+    // `join_paths` rejects a directory containing the platform separator, which
+    // would otherwise silently split into two bogus entries. Keeping the
+    // original PATH is the safe answer.
+    let joined = match std::env::join_paths(&merged) {
+        Ok(joined) => joined.to_string_lossy().into_owned(),
+        Err(e) => {
+            tracing::warn!("cannot add bootstrapped PATH directories to script env: {e}");
+            return;
+        }
+    };
+    match env.iter_mut().rev().find(|(k, _)| k == "PATH") {
+        Some(slot) => slot.1 = joined,
+        None => env.push(("PATH".to_string(), joined)),
+    }
+}
+
+/// Everything a lifecycle script's environment is derived from.
+///
+/// A struct rather than a positional argument list: six of the seven fields are
+/// a path, an optional path, or a string, so a transposed pair would compile and
+/// silently mislabel `CFGD_MODULE_DIR` or the profile name.
+pub(crate) struct ScriptEnvContext<'a> {
+    pub config_dir: &'a std::path::Path,
+    pub profile_name: &'a str,
+    pub context: ReconcileContext,
+    pub phase: &'a ScriptPhase,
+    pub module_name: Option<&'a str>,
+    pub module_dir: Option<&'a std::path::Path>,
+    /// PATH entries of package managers cfgd bootstrapped; they land ahead of
+    /// the inherited PATH so a script can reach a binary the same apply just
+    /// installed.
+    pub path_dirs: &'a [String],
+}
+
 /// Build environment variables injected into every script invocation.
-pub(crate) fn build_script_env(
-    config_dir: &std::path::Path,
-    profile_name: &str,
-    context: ReconcileContext,
-    phase: &ScriptPhase,
-    module_name: Option<&str>,
-    module_dir: Option<&std::path::Path>,
-) -> Vec<(String, String)> {
+pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, String)> {
     let mut env = vec![
         (
             "CFGD_CONFIG_DIR".to_string(),
-            config_dir.display().to_string(),
+            ctx.config_dir.display().to_string(),
         ),
-        ("CFGD_PROFILE".to_string(), profile_name.to_string()),
+        ("CFGD_PROFILE".to_string(), ctx.profile_name.to_string()),
         (
             "CFGD_CONTEXT".to_string(),
-            match context {
+            match ctx.context {
                 ReconcileContext::Apply => "apply".to_string(),
                 ReconcileContext::Reconcile => "reconcile".to_string(),
             },
         ),
-        ("CFGD_PHASE".to_string(), phase.display_name().to_string()),
+        (
+            "CFGD_PHASE".to_string(),
+            ctx.phase.display_name().to_string(),
+        ),
     ];
-    if let Some(name) = module_name {
+    if let Some(name) = ctx.module_name {
         env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
     }
-    if let Some(dir) = module_dir {
+    if let Some(dir) = ctx.module_dir {
         env.push(("CFGD_MODULE_DIR".to_string(), dir.display().to_string()));
     }
+    prepend_bootstrapped_path_dirs(&mut env, ctx.path_dirs);
     env
 }
 
@@ -77,22 +145,10 @@ pub(crate) fn build_script_env(
 /// CFGD_* names in `spec.env` are silently dropped: runtime-injected metadata
 /// must not be shadowed by user-supplied values.
 pub(crate) fn build_module_script_env(
-    config_dir: &std::path::Path,
-    profile_name: &str,
-    context: ReconcileContext,
-    phase: &ScriptPhase,
-    module_name: Option<&str>,
-    module_dir: Option<&std::path::Path>,
+    ctx: &ScriptEnvContext<'_>,
     module_env: &[crate::config::EnvVar],
 ) -> Vec<(String, String)> {
-    let mut env = build_script_env(
-        config_dir,
-        profile_name,
-        context,
-        phase,
-        module_name,
-        module_dir,
-    );
+    let mut env = build_script_env(ctx);
     // Expand `$VAR`/`${VAR}` in each declared value before injecting it into the
     // process environment: no shell is present here to do it, so a literal
     // `PATH: ...:$PATH` would overwrite PATH with garbage and the interpreter
@@ -161,13 +217,17 @@ pub(crate) fn execute_script(
     abort: Option<&crate::AbortFlag>,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
+    // Single-line, width-bounded stand-in for `run_str` in every status
+    // subject / error message below — `run_str` itself may be a multi-line
+    // inline script body, which a status subject must never carry.
+    let run_label = condense_script_label(run_str);
 
     // Hold the PATH read-lock across interpreter resolution + spawn: a
     // concurrent test emptying `PATH` (command-not-found paths) is a data race
     // on `environ` that surfaces here as a spurious ENOENT. Compiled out of
     // release builds.
     #[cfg(any(test, feature = "test-helpers"))]
-    let _path_guard = crate::test_helpers::script_spawn_path_guard();
+    let _path_guard = crate::test_helpers::path_env_read_guard();
 
     // `script_dir` is where the script's bundled files live (the module / config
     // source tree); a relative file-path `run:` resolves against it. `working_dir`
@@ -184,9 +244,20 @@ pub(crate) fn execute_script(
     };
     let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
 
-    ensure_working_dir(run_str, working_dir)?;
+    ensure_working_dir(&run_label, working_dir)?;
 
-    let label = format!("Running script: {}", run_str);
+    let label = format!("Running script: {}", run_label);
+    // Resource-id / state-matching key, NOT a display string: the onChange /
+    // module-onChange callers in `apply.rs` push this return value straight
+    // into `ActionResult.description`, which `parse_resource_from_description`
+    // parses back into a `managed_resource` id. `label` (built from the
+    // condensed `run_label`) is correct for the spinner text below but must
+    // never be returned — that would reshape the id and orphan every
+    // already-recorded state row for a module with a multi-line inline
+    // script. Mirrors `format_action_description` in `format.rs` and
+    // `apply_script_action` in `scripts_apply.rs`, which already return the
+    // raw body for this same reason.
+    let resource_desc = format!("Running script: {}", run_str);
 
     // Idempotency guards run BEFORE the body: `creates` (path existence),
     // then `onlyIf` (run only on zero exit), then `unless` (run only on
@@ -208,11 +279,11 @@ pub(crate) fn execute_script(
                 printer.status_simple(
                     Role::Skipped,
                     format!(
-                        "{run_str} — creates path already exists: {}",
+                        "{run_label} — creates path already exists: {}",
                         resolved_creates.posix()
                     ),
                 );
-                return Ok((label, false, None));
+                return Ok((resource_desc, false, None));
             }
         }
 
@@ -222,9 +293,9 @@ pub(crate) fn execute_script(
             if !success {
                 printer.status_simple(
                     Role::Skipped,
-                    format!("{run_str} — onlyIf condition not met: {cmd}"),
+                    format!("{run_label} — onlyIf condition not met: {cmd}"),
                 );
-                return Ok((label, false, None));
+                return Ok((resource_desc, false, None));
             }
         }
 
@@ -234,9 +305,9 @@ pub(crate) fn execute_script(
             if success {
                 printer.status_simple(
                     Role::Skipped,
-                    format!("{run_str} — unless condition already holds: {cmd}"),
+                    format!("{run_label} — unless condition already holds: {cmd}"),
                 );
-                return Ok((label, false, None));
+                return Ok((resource_desc, false, None));
             }
         }
     }
@@ -354,19 +425,19 @@ pub(crate) fn execute_script(
             if !status.success() {
                 let exit_code = status.code().unwrap_or(-1);
                 return Err(CfgdError::Config(ConfigError::Invalid {
-                    message: format!("script '{}' failed (exit {})", run_str, exit_code),
+                    message: format!("script '{}' failed (exit {})", run_label, exit_code),
                 }));
             }
-            return Ok((label, true, None));
+            return Ok((resource_desc, true, None));
         }
         InteractiveDisposition::SkipNoTty => {
             // No TTY (CI, piped stdin, or any daemon-run phase): skip rather than
             // hang on instant EOF. changed=false records this as a clean no-op.
             printer.status_simple(
                 Role::Warn,
-                format!("{run_str} — interactive script skipped: no TTY available"),
+                format!("{run_label} — interactive script skipped: no TTY available"),
             );
-            return Ok((label, false, None));
+            return Ok((resource_desc, false, None));
         }
         InteractiveDisposition::NotInteractive => {}
     }
@@ -394,8 +465,13 @@ pub(crate) fn execute_script(
         }
     })?;
 
-    // Spinner with live output display (same pattern as Printer::run_with_progress)
-    let pb = printer.spinner(&label);
+    // A script's output is not the answer to anything the user asked, so it
+    // goes through the same bounded window every other child-process surface
+    // uses: a five-line tail under the label, collapsed to one status line the
+    // moment the script exits. The window sanitizes each line itself — a child
+    // like `nvim --headless` emits screen-reset and cursor-move sequences that
+    // would otherwise execute against the real terminal.
+    let mut window = printer.output_window_at(0, &label);
 
     // Channel for live display + Arc buffers for final capture.
     // Reader threads feed both so we get live scrolling output AND full capture.
@@ -418,30 +494,11 @@ pub(crate) fn execute_script(
     );
     drop(tx);
 
-    const VISIBLE_LINES: usize = 5;
-    let mut ring: std::collections::VecDeque<String> =
-        std::collections::VecDeque::with_capacity(VISIBLE_LINES);
-
     let start = std::time::Instant::now();
     loop {
-        // Drain any pending output lines and update the spinner display
+        // Drain pending output and stream it, one line at a time, in order.
         while let Ok(line) = rx.try_recv() {
-            if ring.len() >= VISIBLE_LINES {
-                ring.pop_front();
-            }
-            ring.push_back(line);
-        }
-        if !ring.is_empty() {
-            let mut msg = label.clone();
-            for l in &ring {
-                let display = if l.len() > 120 {
-                    l.get(..120).unwrap_or(l)
-                } else {
-                    l.as_str()
-                };
-                msg.push_str(&format!("\n  {}", display));
-            }
-            pb.set_message(msg);
+            window.push_line(&line);
         }
 
         match child.try_wait()? {
@@ -463,8 +520,13 @@ pub(crate) fn execute_script(
 
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
-                    pb.finish_fail(format!("{} (exit {})", run_str, exit_code));
-                    let base = format!("script '{}' failed (exit {})", run_str, exit_code);
+                    drop(
+                        window
+                            .finish_fail(&run_label)
+                            .detail(format!("exit {exit_code}"))
+                            .duration(start.elapsed()),
+                    );
+                    let base = format!("script '{}' failed (exit {})", run_label, exit_code);
                     let message = match captured.as_deref().filter(|s| !s.is_empty()) {
                         Some(c) => format!("{base}\n{c}"),
                         None => base,
@@ -472,9 +534,8 @@ pub(crate) fn execute_script(
                     return Err(CfgdError::Config(ConfigError::Invalid { message }));
                 }
 
-                let elapsed = start.elapsed();
-                pb.finish_ok(format!("{} ({}s)", run_str, elapsed.as_secs()));
-                return Ok((label, true, captured));
+                drop(window.finish_ok(&run_label).duration(start.elapsed()));
+                return Ok((resource_desc, true, captured));
             }
             None => {
                 let elapsed = start.elapsed();
@@ -498,21 +559,26 @@ pub(crate) fn execute_script(
                     && let Some(a) = abort
                     && a.aborted().is_some()
                 {
-                    pb.finish_fail(format!("{} interrupted", run_str));
+                    drop(
+                        window
+                            .finish_fail(&run_label)
+                            .detail("interrupted")
+                            .duration(elapsed),
+                    );
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
                     return Err(CfgdError::Config(ConfigError::Invalid {
-                        message: format!("script '{}' interrupted by signal", run_str),
+                        message: format!("script '{}' interrupted by signal", run_label),
                     }));
                 }
                 if let Some((reason, duration)) = kill_reason {
-                    pb.finish_fail(format!(
-                        "{} {} after {}s",
-                        run_str,
-                        reason,
-                        duration.as_secs()
-                    ));
+                    drop(
+                        window
+                            .finish_fail(&run_label)
+                            .detail(format!("{reason} after {}s", duration.as_secs()))
+                            .duration(elapsed),
+                    );
                     kill_script_child(&mut child, true);
                     // Join reader threads so we capture partial output
                     let _ = stdout_handle.join();
@@ -528,7 +594,7 @@ pub(crate) fn execute_script(
                     let captured = combine_script_output(&stdout_str, &stderr_str);
                     let base = format!(
                         "script '{}' {} after {}s",
-                        run_str,
+                        run_label,
                         reason,
                         duration.as_secs()
                     );
@@ -638,7 +704,7 @@ pub(crate) fn run_filter_script(
     // Same `environ` race as `execute_script`: hold the read lock across
     // interpreter resolution and spawn. Compiled out of release builds.
     #[cfg(any(test, feature = "test-helpers"))]
-    let _path_guard = crate::test_helpers::script_spawn_path_guard();
+    let _path_guard = crate::test_helpers::path_env_read_guard();
 
     ensure_working_dir(run_str, working_dir)?;
 
@@ -885,7 +951,6 @@ fn run_guard_command(
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-    cmd.stdin(std::process::Stdio::null());
     let outcome = crate::command_output_with_timeout_outcome(&mut cmd, timeout)?;
     if outcome.timed_out {
         return Err(CfgdError::Config(ConfigError::Invalid {

@@ -206,6 +206,44 @@ fn update_script_list_remove_nonexistent() {
     assert_eq!(changes, 0);
 }
 
+// The "not found" message must echo the user's raw `--remove-*-script`
+// argument, not a condensed/truncated view — condensing would hide the exact
+// text that failed to match. Uses a multi-line raw argument to prove the raw
+// string wins over `condense_script_label`'s first-line-only output, while
+// still not tripping `Renderer::write_line`'s no-embedded-newline assert (via
+// `collapse_to_subject_line`).
+#[test]
+fn update_script_list_remove_nonexistent_reports_raw_argument_not_condensed() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut scripts = Some(config::ScriptSpec {
+        pre_apply: vec![config::ScriptEntry::Simple("a.sh".to_string())],
+        ..Default::default()
+    });
+    let raw_arg = "line-one\nline-two";
+    let remove = vec![raw_arg.to_string()];
+    let changes = update_script_list(
+        &mut scripts,
+        &[],
+        &remove,
+        "preApply",
+        |s| &mut s.pre_apply,
+        &printer,
+    );
+    drop(printer);
+    assert_eq!(changes, 0);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("line-two"),
+        "not-found message must echo the full raw argument, got: {out}"
+    );
+    assert!(
+        out.contains("line-one — line-two"),
+        "raw argument must be joined via collapse_to_subject_line (all lines preserved, \
+         no truncation), not condensed to just the first line, got: {out}"
+    );
+}
+
 #[test]
 fn update_script_list_remove_from_none() {
     let printer = make_printer();

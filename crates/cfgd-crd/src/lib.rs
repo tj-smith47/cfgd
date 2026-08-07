@@ -668,6 +668,32 @@ impl Validatable for ModuleSpec {
     }
 }
 
+/// Reject a Module whose `spec.oci_artifact` is set but carries no verifiable
+/// signature, when `disallow_unsigned` is true.
+///
+/// This is the operator admission webhook's `disallowUnsigned` rule, which
+/// calls straight into here, hoisted into this crate so any consumer of
+/// `ModuleSpec` — the webhook, the CLI's `module push --apply` construction
+/// tests — exercises the exact same predicate instead of an approximation, with
+/// no dependency on the operator's server/gateway code.
+pub fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
+    if disallow_unsigned && spec.oci_artifact.is_some() {
+        let has_signing = spec
+            .signature
+            .as_ref()
+            .and_then(|s| s.cosign.as_ref())
+            .map(|c| c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty()))
+            .unwrap_or(false);
+        if !has_signing {
+            return Err(
+                "unsigned modules are not allowed: configure spec.signature.cosign with publicKey or keyless"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Validate the syntactic shape of an OCI artifact reference.
 ///
 /// This is a self-contained validity predicate — the full parser that extracts

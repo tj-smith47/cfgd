@@ -1,5 +1,5 @@
 Scanning dotfiles
-  No dotfiles found
+  ⊙ No dotfiles found
 
 Scanning zsh config
   (none)

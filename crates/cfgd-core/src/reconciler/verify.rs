@@ -39,10 +39,11 @@ pub fn verify(
     resolved: &ResolvedProfile,
     registry: &ProviderRegistry,
     state: &StateStore,
-    _printer: &Printer,
+    printer: &Printer,
     modules: &[ResolvedModule],
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
+    let cx = crate::providers::PackageContext { printer, state };
 
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the
@@ -72,7 +73,7 @@ pub fn verify(
         };
 
         if !installed_cache.contains_key(&ep.manager) {
-            installed_cache.insert(ep.manager.clone(), mgr.installed_packages()?);
+            installed_cache.insert(ep.manager.clone(), mgr.installed_packages(&cx)?);
         }
         let installed = &installed_cache[&ep.manager];
         // Compare through package_identity so case-insensitive managers (choco/scoop/
@@ -156,11 +157,13 @@ pub fn verify(
     // caller rather than computed here as a presence-only check.
 
     // Verify env: re-derive the same targets the planner wrote and check each.
+    let path_dirs = super::env::recorded_manager_path_dirs(state, &resolved.merged, modules);
     verify_env(
         &resolved.merged.env,
         &resolved.merged.aliases,
         resolved.merged.env_scope,
         modules,
+        &path_dirs,
         state,
         &mut results,
     );
@@ -203,12 +206,13 @@ pub(super) fn verify_env(
     profile_aliases: &[crate::config::ShellAlias],
     scope: EnvScope,
     modules: &[ResolvedModule],
+    path_dirs: &[String],
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
     let (merged, merged_aliases) = merge_module_env_aliases(profile_env, profile_aliases, modules);
 
-    if merged.is_empty() && merged_aliases.is_empty() {
+    if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
         return;
     }
 
@@ -217,7 +221,15 @@ pub(super) fn verify_env(
     let home = expand_tilde(std::path::Path::new("~"));
     let probe = EnvHostProbe::detect(&home);
     let platform = EnvPlatform::current();
-    for target in env_targets(&merged, &merged_aliases, scope, &home, &probe, platform) {
+    for target in env_targets(
+        &merged,
+        &merged_aliases,
+        path_dirs,
+        scope,
+        &home,
+        &probe,
+        platform,
+    ) {
         match target {
             EnvTarget::ManagedFile { path, content } => {
                 verify_env_file(&path, &content, state, results);

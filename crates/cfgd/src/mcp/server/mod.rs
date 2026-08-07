@@ -67,15 +67,29 @@ pub struct McpServer {
     session: GenerateSession,
     home: PathBuf,
     managers: Vec<Box<dyn PackageManager>>,
+    // Quiet: MCP tool dispatch answers over the JSON-RPC channel, never the
+    // terminal, but `PackageManager` methods still require a `PackageContext`.
+    printer: cfgd_core::output::Printer,
+    state: cfgd_core::state::StateStore,
 }
 
 impl McpServer {
-    pub fn new(repo_root: PathBuf, home: PathBuf) -> Self {
-        Self {
+    pub fn new(
+        repo_root: PathBuf,
+        home: PathBuf,
+        state_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        let state = match state_dir {
+            Some(dir) => cfgd_core::state::StateStore::open_in_dir(dir)?,
+            None => cfgd_core::state::StateStore::open_default()?,
+        };
+        Ok(Self {
             session: GenerateSession::new(repo_root, env!("CARGO_PKG_VERSION")),
             home,
             managers: packages::all_package_managers(),
-        }
+            printer: cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet),
+            state,
+        })
     }
 
     /// Run the MCP server, reading JSON-RPC messages from stdin and writing responses to stdout.
@@ -230,12 +244,17 @@ impl McpServer {
                     );
                 }
 
+                let pkg_cx = cfgd_core::providers::PackageContext {
+                    printer: &self.printer,
+                    state: &self.state,
+                };
                 let result = crate::ai::tools::dispatch_tool_call(
                     dispatch_name,
                     &arguments,
                     &mut self.session,
                     &self.home,
                     &self.managers,
+                    &pkg_cx,
                 );
                 let mcp_result = serde_json::json!({
                     "content": [{
@@ -299,7 +318,10 @@ impl McpServer {
 }
 
 /// Entry point for `cfgd mcp-server` command.
-pub fn run_mcp_server(config_path: &std::path::Path) -> anyhow::Result<()> {
+pub fn run_mcp_server(
+    config_path: &std::path::Path,
+    state_dir: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     let repo_root = config_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
@@ -309,7 +331,7 @@ pub fn run_mcp_server(config_path: &std::path::Path) -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
 
-    let mut server = McpServer::new(repo_root, home);
+    let mut server = McpServer::new(repo_root, home, state_dir)?;
     server.run()
 }
 

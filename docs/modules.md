@@ -21,6 +21,7 @@ apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: nvim
+  version: 1.4.0        # optional; strict semver, the module's own release version
 spec:
   depends: [node, python]
 
@@ -64,6 +65,22 @@ spec:
       - nvim --headless "+Lazy! sync" +qa
       - nvim --headless -c "MasonInstallAll" -c "qa"
 ```
+
+### Module Version
+
+`metadata.version` is the module's own release version — strict semver (`1.4.0`, `2.0.0-rc.1`),
+never a `v` prefix and never a two-part `0.10`. It is optional; modules without it load unchanged.
+
+Declare it on any module you release: the workflow written by `cfgd workflow generate` cuts the tag
+`<name>/v<version>` when the module changes, fails the job when the version is missing rather than
+guessing one, and fails it again if that tag already exists (bump the version — published tags are
+never rewritten). Read it back with:
+
+```sh
+cfgd module show nvim -o jsonpath='{.metadata.version}'
+```
+
+New modules from `cfgd module create` start at `0.1.0`.
 
 ### Module-Level Platform Filter
 
@@ -123,6 +140,34 @@ spec:
       value: nvim
 ```
 
+#### What expands in a value
+
+cfgd quotes every value it writes into a shell startup file, so a value can hold
+quotes, backslashes, spaces, `#`, and even newlines without breaking the file or
+running anything. What each shell still expands at startup differs:
+
+| Declared value | bash / zsh | fish | PowerShell | `environment.d` (Linux `envScope: All`) |
+|---|---|---|---|---|
+| `$HOME/bin` | expands | literal | literal | expands |
+| `${EDITOR}` | expands | literal | literal | expands |
+| `$env:USERPROFILE` | literal | literal | expands | literal |
+| `$(id)` | literal | literal | literal | literal |
+| `` `id` `` | literal | literal | literal | literal |
+
+A declared reference like `PATH: /opt/bin:$PATH` therefore picks up the surrounding
+environment on bash/zsh and under systemd, and is a literal string on fish and
+PowerShell — write the full path there, or declare a per-platform value. Command
+substitution never runs, on any platform: cfgd is not a place to compute a value.
+
+```yaml
+spec:
+  env:
+    # /opt/bin prepended to the inherited PATH on bash/zsh and systemd;
+    # the literal text "/opt/bin:$PATH" on fish and PowerShell.
+    - name: PATH
+      value: /opt/bin:$PATH
+```
+
 ### Aliases
 
 Modules can declare shell aliases. These are merged with profile aliases using the same conflict rules as env vars — module wins on conflict by name.
@@ -135,6 +180,9 @@ spec:
     - name: vimdiff
       command: nvim -d
 ```
+
+An alias `command` is quoted the same way and follows the same table: it runs when
+you invoke the alias, never while the shell is loading its startup files.
 
 ## Cross-Platform Package Resolution
 
@@ -644,6 +692,13 @@ with [cosign](https://github.com/sigstore/cosign). cfgd uses two distinct trust 
   cfgd module push ./mymod --artifact ghcr.io/org/mymod:v1 --sign --key ./keys/cosign.key
   cfgd module pull ghcr.io/org/mymod:v1 --dir ./out --require-signature --key ./keys/cosign.pub
   ```
+  `--key` also accepts a KMS URI (`awskms://`, `azurekms://`, `gcpkms://`, `hashivault://`,
+  `k8s://`) or a PKCS#11 URI (`pkcs11:token=...;object=...`, RFC 7512 — HSM-backed keys); both
+  are passed straight through to cosign. cfgd cannot derive a public key from a sibling
+  `cosign.pub` file for these (there is no filesystem path to look next to), so `cfgd module push
+  --sign --key <kms-or-pkcs11-uri>` warns and leaves `spec.signature.cosign.publicKey` unset —
+  run `cosign public-key --key <uri>` and set it manually if the operator enforces
+  `disallowUnsigned`.
 - **Keyless (Fulcio/Rekor).** Omit `--key` to sign with a short-lived certificate from the public
   Sigstore infrastructure; the signature is recorded in the Rekor transparency log. Verify with
   certificate identity/issuer constraints:

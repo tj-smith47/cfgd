@@ -426,7 +426,7 @@ mod seam_tests {
     use serial_test::serial;
 
     use cfgd_core::providers::PackageManager;
-    use cfgd_core::test_helpers::{ToolShim, test_printer};
+    use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
 
     use super::super::{
         APK_BIN_ENV, APT_GET_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV,
@@ -438,8 +438,11 @@ mod seam_tests {
     #[serial]
     fn apt_manager_installed_packages_honors_dpkg_query_seam() {
         let _shim = ToolShim::install(DPKG_QUERY_BIN_ENV, 0, "curl\nwget\nbash\n", "");
+        let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
         let pkgs = apt_manager()
-            .installed_packages()
+            .installed_packages(&cx)
             .expect("installed_packages should succeed with shim");
         assert!(pkgs.contains("curl"));
         assert!(pkgs.contains("wget"));
@@ -454,7 +457,9 @@ mod seam_tests {
         // with no packages, which apt-get treats as success but is wasteful.
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        apt_manager().install(&[], &printer).unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        apt_manager().install(&[], &cx).unwrap();
         assert_eq!(shim.invocation_count(), 0, "shim must not be invoked");
     }
 
@@ -463,7 +468,9 @@ mod seam_tests {
     fn uninstall_empty_package_list_is_noop_and_does_not_invoke_shim() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        apt_manager().uninstall(&[], &printer).unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        apt_manager().uninstall(&[], &cx).unwrap();
         assert_eq!(shim.invocation_count(), 0, "shim must not be invoked");
     }
 
@@ -477,8 +484,10 @@ mod seam_tests {
     fn apt_install_invokes_apt_get_shim_with_package_args() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
         apt_manager()
-            .install(&["curl".into(), "wget".into()], &printer)
+            .install(&["curl".into(), "wget".into()], &cx)
             .unwrap();
         let log = shim.argv_log();
         assert_eq!(shim.invocation_count(), 1, "single install invocation");
@@ -493,9 +502,9 @@ mod seam_tests {
     fn apt_uninstall_invokes_apt_get_shim_with_remove_subcommand() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        apt_manager()
-            .uninstall(&["nginx".into()], &printer)
-            .unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        apt_manager().uninstall(&["nginx".into()], &cx).unwrap();
         let log = shim.argv_log();
         assert_eq!(shim.invocation_count(), 1);
         assert!(log.contains("remove"), "must invoke remove subcmd: {log}");
@@ -508,9 +517,9 @@ mod seam_tests {
     fn apt_install_failure_propagates_command_failed_error() {
         let _shim = ToolShim::install(APT_GET_BIN_ENV, 7, "", "E: Could not get lock\n");
         let printer = test_printer();
-        let err = apt_manager()
-            .install(&["curl".into()], &printer)
-            .unwrap_err();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        let err = apt_manager().install(&["curl".into()], &cx).unwrap_err();
         // Failed exit must surface as PackageError::InstallFailed (via
         // run_pkg_cmd_live's tag arg "install"), not silent success.
         let msg = err.to_string();
@@ -525,7 +534,9 @@ mod seam_tests {
     fn apt_update_invokes_apt_get_update() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        apt_manager().update(&printer).unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        apt_manager().update(&cx).unwrap();
         let log = shim.argv_log();
         assert_eq!(shim.invocation_count(), 1);
         assert!(
@@ -543,8 +554,10 @@ mod seam_tests {
         // non-zero exit instead of mapping to UpdateFailed.
         let shim = ToolShim::install(DNF_BIN_ENV, 100, "Updates available\n", "");
         let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
         dnf_manager()
-            .update(&printer)
+            .update(&cx)
             .expect("dnf update must tolerate exit 100");
         assert_eq!(shim.invocation_count(), 1);
     }
@@ -556,7 +569,9 @@ mod seam_tests {
         // and the seam routes through APK_BIN_ENV directly.
         let shim = ToolShim::install(APK_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        apk_manager().install(&["curl".into()], &printer).unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        apk_manager().install(&["curl".into()], &cx).unwrap();
         let log = shim.argv_log();
         assert!(log.contains("add"), "apk install uses 'add': {log}");
         assert!(log.contains("curl"), "package must appear: {log}");
@@ -567,7 +582,9 @@ mod seam_tests {
     fn pacman_install_passes_noconfirm_through_shim() {
         let shim = ToolShim::install(PACMAN_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        pacman_manager().install(&["vim".into()], &printer).unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        pacman_manager().install(&["vim".into()], &cx).unwrap();
         let log = shim.argv_log();
         assert!(
             log.contains("--noconfirm"),
@@ -581,7 +598,9 @@ mod seam_tests {
     fn pkg_install_invokes_pkg_install() {
         let shim = ToolShim::install(PKG_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        pkg_manager().install(&["bash".into()], &printer).unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        pkg_manager().install(&["bash".into()], &cx).unwrap();
         let log = shim.argv_log();
         assert!(log.contains("install"));
         assert!(log.contains("bash"));
@@ -593,9 +612,9 @@ mod seam_tests {
     fn zypper_uninstall_invokes_zypper_remove() {
         let shim = ToolShim::install(ZYPPER_BIN_ENV, 0, "", "");
         let printer = test_printer();
-        zypper_manager()
-            .uninstall(&["vim".into()], &printer)
-            .unwrap();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        zypper_manager().uninstall(&["vim".into()], &cx).unwrap();
         let log = shim.argv_log();
         assert!(log.contains("remove"), "zypper uninstall: {log}");
         assert!(log.contains("vim"));
@@ -613,7 +632,10 @@ mod seam_tests {
             "curl\t7.88.1-1\nwget\t1.21.3-1ubuntu1\n",
             "",
         );
-        let pkgs = apt_manager().installed_packages_with_versions().unwrap();
+        let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        let pkgs = apt_manager().installed_packages_with_versions(&cx).unwrap();
         assert_eq!(pkgs.len(), 2);
         let curl = pkgs.iter().find(|p| p.name == "curl").unwrap();
         assert_eq!(curl.version, "7.88.1-1");
@@ -627,7 +649,10 @@ mod seam_tests {
         // apk_manager has `list_with_versions: None`; the default trait path
         // wraps `installed_packages` with `version: "unknown"`.
         let _shim = ToolShim::install(APK_BIN_ENV, 0, "curl-7.88.1-r1\nwget-1.21.3-r2\n", "");
-        let pkgs = apk_manager().installed_packages_with_versions().unwrap();
+        let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        let pkgs = apk_manager().installed_packages_with_versions(&cx).unwrap();
         assert!(!pkgs.is_empty(), "shim output should produce packages");
         for p in &pkgs {
             assert_eq!(

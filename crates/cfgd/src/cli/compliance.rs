@@ -53,6 +53,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
+    let state = open_state_store(cli.state_dir.as_deref())?;
     let mut snapshot = cfgd_core::compliance::collect_snapshot(
         profile_name,
         &resolved.merged,
@@ -61,6 +62,8 @@ pub(super) fn collect_and_store_compliance_snapshot(
         &registry,
         &scope,
         &sources,
+        &printer,
+        &state,
     )?;
 
     // Fold the Report-mode source-constraint violations into the snapshot as
@@ -68,7 +71,6 @@ pub(super) fn collect_and_store_compliance_snapshot(
     // `summary.violation`, then recompute the summary over the combined set.
     append_constraint_violation_checks(&mut snapshot, &constraint_violations);
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
     let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
     let hash = cfgd_core::sha256_hex(json.as_bytes());
     state.store_compliance_snapshot(&snapshot, &hash)?;

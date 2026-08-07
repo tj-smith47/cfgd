@@ -305,7 +305,7 @@ pub(super) fn build_condition(
 }
 
 // ---------------------------------------------------------------------------
-// DriftAlert condition builder (DRY helper for M1)
+// DriftAlert condition builder
 // ---------------------------------------------------------------------------
 
 pub(super) fn build_drift_alert_conditions(

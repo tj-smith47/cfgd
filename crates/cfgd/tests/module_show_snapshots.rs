@@ -17,7 +17,7 @@ use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module::list_show::{
     PackageDisplay, build_module_list_doc, build_module_not_found_error, build_module_show_doc,
 };
-use cfgd::cli::module::{ModuleListEntry, ModuleShowOutput};
+use cfgd::cli::module::{ModuleListEntry, ModuleShowMetadata, ModuleShowOutput};
 use cfgd_core::config::{EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ShellAlias};
 use cfgd_core::output::Printer;
 use cfgd_core::state::ModuleStateRecord;
@@ -60,6 +60,9 @@ fn happy_entries() -> Vec<ModuleListEntry> {
 fn happy_show_output() -> ModuleShowOutput {
     ModuleShowOutput {
         name: "dev-tools".into(),
+        metadata: ModuleShowMetadata {
+            version: Some("1.4.0".into()),
+        },
         directory: "/etc/cfgd/modules/dev-tools".into(),
         source: "remote".into(),
         depends: vec!["base".into()],

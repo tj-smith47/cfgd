@@ -43,7 +43,8 @@ pub(super) async fn reconcile_drift_alert(
 
     match machines.get(mc_name).await {
         Ok(mc) => {
-            // Require valid UID for owner reference (H7 fix)
+            // An owner reference without a UID is silently dropped by the
+            // API server, so a missing UID must fail loudly instead.
             let mc_uid = mc.metadata.uid.clone().ok_or_else(|| {
                 OperatorError::Reconciliation(format!(
                     "MachineConfig {} has no UID — cannot set owner reference",
@@ -246,7 +247,8 @@ pub(super) async fn reconcile_drift_alert(
                 machine_config = %mc_name,
                 "driftAlert references non-existent MachineConfig"
             );
-            // Record as error, not success (H6 fix)
+            // A dangling MachineConfig reference is a reconcile error, not a
+            // successful no-op — success here would hide it from the metrics.
             record_reconcile_metrics(&ctx, "drift_alert", "error", start);
             return Ok(Action::requeue(std::time::Duration::from_secs(60)));
         }

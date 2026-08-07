@@ -332,9 +332,6 @@ impl SourceManager {
             "origin",
             &spec.origin.branch,
         ]);
-        // Ensure stderr is captured (git progress goes to stderr)
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
 
         let label = format!("Fetching source '{}'", spec.name);
         let cli_result = printer.run(&mut cmd, &label);
@@ -427,8 +424,6 @@ impl SourceManager {
             &spec.origin.url,
             &source_dir.display().to_string(),
         ]);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
 
         let label = format!("Cloning source '{}'", spec.name);
         let cli_result = printer.run(&mut cmd, &label);
@@ -1411,12 +1406,53 @@ fn available_tags_hint(tags: &[RemoteTag]) -> Option<String> {
 }
 
 /// Clone a git repo with git CLI (with live progress), falling back to libgit2.
-/// Returns Ok(()) on success, Err with description on failure.
+///
+/// The destination must be absent or empty. Returns Ok(()) on success, Err with
+/// description on failure.
+/// Whether a clone URL resolves through git's local transport — a `file://` URL
+/// or a plain filesystem path. Anything carrying a `scheme://` other than `file`,
+/// or an `scp`-style `user@host:path`, is remote.
+fn is_local_git_url(url: &str) -> bool {
+    if let Some(rest) = url.split_once("://") {
+        return rest.0 == "file";
+    }
+    // `user@host:path` is scp syntax; a bare path may still contain '@'.
+    !url.contains(':') || Path::new(url).exists()
+}
+
 pub fn git_clone_with_fallback(
     url: &str,
     target: &Path,
     printer: &Printer,
 ) -> std::result::Result<(), String> {
+    // Establishing an empty destination up front is what makes the cleanup
+    // between the two clone attempts safe: everything under `target` at that
+    // point was put there by the attempt being undone. Without this gate, a CLI
+    // clone that failed *because* the destination was populated took the
+    // populated content with it — `cfgd init --from <repo>` re-run against an
+    // already-initialized `~/.config/cfgd` deleted the user's cfgd.yaml,
+    // profiles/, and files/ on its way to reporting the clone failure.
+    let destination_is_empty = match std::fs::read_dir(target) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        // Undecidable emptiness is treated as non-empty: refusing costs a
+        // clone, deleting costs the directory's contents.
+        Err(e) => {
+            return Err(format!(
+                // native-ok: human-facing error message
+                "Cannot inspect clone destination {}: {e}",
+                target.display()
+            ));
+        }
+    };
+    if !destination_is_empty {
+        return Err(format!(
+            // native-ok: human-facing error message
+            "Refusing to clone {url} into {}: directory is not empty",
+            target.display()
+        ));
+    }
+
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
     cmd.args([
@@ -1456,7 +1492,15 @@ pub fn git_clone_with_fallback(
     let spinner = printer.spinner("Cloning (libgit2)...");
 
     let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.depth(1);
+    // libgit2 rejects a shallow fetch over the local transport outright ("shallow
+    // fetch is not supported by the local transport"), so asking for depth=1 on a
+    // `file://` or bare-path URL turns the fallback into a guaranteed failure —
+    // `cfgd init --from /path/to/repo.git` cannot clone at all on a host without
+    // the git CLI. Depth is a transfer-size guard for remotes; a local clone has
+    // no transfer to bound.
+    if !is_local_git_url(url) {
+        fetch_opts.depth(1);
+    }
     if url.starts_with("git@") || url.starts_with("ssh://") {
         let mut callbacks = git2::RemoteCallbacks::new();
         callbacks.credentials(crate::git_ssh_credentials);

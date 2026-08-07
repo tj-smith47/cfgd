@@ -160,7 +160,11 @@ else
         run $RB06_C rollback "$RB06_ID" --yes
         if assert_ok; then
             if [ -f "$RB06_TGT/rb06-file" ]; then
-                RB06_PERMS=$(stat -c '%a' "$RB06_TGT/rb06-file")
+                # Symlink is the default file strategy, so the deployed target is
+                # a symlink cfgd keeps intact across rollback; a symlink's own
+                # mode is always 0777 on Linux, so dereference to read the mode
+                # of the file the content and permissions actually live in.
+                RB06_PERMS=$(stat -Lc '%a' "$RB06_TGT/rb06-file")
                 if [ "$RB06_PERMS" = "600" ]; then
                     pass_test "RB06"
                 else

@@ -142,6 +142,32 @@ cfgd injects these read-only variables into every lifecycle script's environment
 The same variables reach a [`strategy: Patch` filter script](configuration.md#script--pipe-the-file-through-a-command),
 which runs with `CFGD_PHASE=patch`.
 
+## PATH for a Manager cfgd Just Installed
+
+When cfgd bootstraps a package manager (Homebrew, an npm global prefix), that manager's
+`bin` directory is not on the PATH of the shell that launched `cfgd` — it did not exist
+when the shell started. cfgd prepends the recorded directories to every lifecycle
+script's PATH, so a `postApply` step can call a binary the same apply just installed:
+
+```yaml
+spec:
+  packages:
+  - name: neovim
+    prefer: [brew]           # brew installs to /home/linuxbrew/.linuxbrew/bin
+  scripts:
+    postApply:
+    - run: nvim --headless "+Lazy! restore" +qa!   # resolves without any export
+```
+
+The directories land *ahead* of the inherited PATH, matching what the generated
+`~/.cfgd.env` writes for the login shell that follows, so a script and the shell resolve
+a command the same way. A module's own `spec.env` PATH is layered on top of that merged
+value, so `PATH: $HOME/.local/bin:$PATH` keeps the bootstrapped entries rather than
+dropping them.
+
+Only a manager **cfgd itself bootstrapped** contributes here. A Homebrew the user
+installed is already on their PATH and is recorded nowhere.
+
 ## File Scripts vs Inline
 
 | Aspect | Inline (`run:` string) | File (path to script) |

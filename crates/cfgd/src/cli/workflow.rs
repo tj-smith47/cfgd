@@ -281,15 +281,22 @@ pub(super) fn generate_release_workflow_yaml(
 
     // Tag modules job
     if !modules.is_empty() {
-        yaml.push_str(
+        // Pin the cfgd the job installs to the version that generated the file.
+        // An older cfgd has no `metadata.version` in its `module show` payload
+        // and returns an empty jsonpath match, which would surface as "declares
+        // no metadata.version" against an author who did declare one.
+        yaml.push_str(&format!(
             "\n\
              \x20 tag-modules:\n\
              \x20   runs-on: ubuntu-latest\n\
              \x20   needs: detect-changes\n\
+             \x20   env:\n\
+             \x20     CFGD_VERSION: v{}\n\
              \x20   strategy:\n\
              \x20     matrix:\n\
              \x20       include:\n",
-        );
+            env!("CARGO_PKG_VERSION")
+        ));
         for m in modules {
             let safe = output_key(m);
             yaml.push_str(&format!(
@@ -304,18 +311,41 @@ pub(super) fn generate_release_workflow_yaml(
              \x20       if: matrix.changed == 'true'\n\
              \x20       with:\n\
              \x20         fetch-depth: 0\n\
+             \x20     - name: Install cfgd\n\
+             \x20       if: matrix.changed == 'true'\n\
+             \x20       run: |\n\
+             \x20         set -o pipefail\n\
+             \x20         mkdir -p \"$RUNNER_TEMP/bin\"\n\
+             \x20         curl -fsSL \"https://github.com/tj-smith47/cfgd/releases/download/$CFGD_VERSION/install.sh\" \\\n\
+             \x20           | CFGD_INSTALL_DIR=\"$RUNNER_TEMP/bin\" sh\n\
+             \x20         echo \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n\
              \x20     - name: Read module version\n\
              \x20       if: matrix.changed == 'true'\n\
              \x20       id: version\n\
+             \x20       env:\n\
+             \x20         MODULE: ${{ matrix.name }}\n\
              \x20       run: |\n\
-             \x20         VERSION=$(grep -oP 'version:\\s*\"?\\K[^\"\\s]+' \"modules/${{ matrix.name }}/module.yaml\" || echo \"0.1.0\")\n\
-             \x20         echo \"version=$VERSION\" >> $GITHUB_OUTPUT\n\
+             \x20         VERSION=$(cfgd module show \"$MODULE\" \\\n\
+             \x20           --config-dir \"$GITHUB_WORKSPACE\" \\\n\
+             \x20           -o jsonpath='{.metadata.version}')\n\
+             \x20         if [ -z \"$VERSION\" ]; then\n\
+             \x20           echo \"::error::module '$MODULE' declares no metadata.version — add 'version: <semver>' under metadata in modules/$MODULE/module.yaml\"\n\
+             \x20           exit 1\n\
+             \x20         fi\n\
+             \x20         echo \"version=$VERSION\" >> \"$GITHUB_OUTPUT\"\n\
              \x20     - name: Tag module release\n\
              \x20       if: matrix.changed == 'true'\n\
+             \x20       env:\n\
+             \x20         MODULE: ${{ matrix.name }}\n\
+             \x20         VERSION: ${{ steps.version.outputs.version }}\n\
              \x20       run: |\n\
-             \x20         TAG=\"${{ matrix.name }}/v${{ steps.version.outputs.version }}\"\n\
-             \x20         git tag -f \"$TAG\"\n\
-             \x20         git push origin \"$TAG\" --force\n",
+             \x20         TAG=\"$MODULE/v$VERSION\"\n\
+             \x20         if git ls-remote --exit-code --tags origin \"refs/tags/$TAG\" >/dev/null 2>&1; then\n\
+             \x20           echo \"::error::tag '$TAG' already exists — bump metadata.version in modules/$MODULE/module.yaml; published tags are never rewritten\"\n\
+             \x20           exit 1\n\
+             \x20         fi\n\
+             \x20         git tag \"$TAG\"\n\
+             \x20         git push origin \"$TAG\"\n",
         );
     }
 
@@ -338,6 +368,9 @@ pub(super) fn generate_release_workflow_yaml(
                 p, safe
             ));
         }
+        // Second granularity (cfgd's own `BACKUP_TIMESTAMP_FORMAT` shape), not
+        // date: a day-stamped tag makes the second legitimate profile change of
+        // the day unshippable, since a profile has no version field to bump.
         yaml.push_str(
             "\x20   steps:\n\
              \x20     - uses: actions/checkout@v4\n\
@@ -346,11 +379,17 @@ pub(super) fn generate_release_workflow_yaml(
              \x20         fetch-depth: 0\n\
              \x20     - name: Tag profile release\n\
              \x20       if: matrix.changed == 'true'\n\
+             \x20       env:\n\
+             \x20         PROFILE: ${{ matrix.name }}\n\
              \x20       run: |\n\
-             \x20         DATE=$(date +%Y%m%d)\n\
-             \x20         TAG=\"profile/${{ matrix.name }}/${DATE}\"\n\
-             \x20         git tag -f \"$TAG\"\n\
-             \x20         git push origin \"$TAG\" --force\n",
+             \x20         STAMP=$(date -u +%Y%m%dT%H%M%SZ)\n\
+             \x20         TAG=\"profile/$PROFILE/$STAMP\"\n\
+             \x20         if git ls-remote --exit-code --tags origin \"refs/tags/$TAG\" >/dev/null 2>&1; then\n\
+             \x20           echo \"::error::tag '$TAG' already exists — published tags are never rewritten; re-run the job to stamp a new release\"\n\
+             \x20           exit 1\n\
+             \x20         fi\n\
+             \x20         git tag \"$TAG\"\n\
+             \x20         git push origin \"$TAG\"\n",
         );
     }
 

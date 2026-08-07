@@ -179,6 +179,9 @@ pub struct LoadedModule {
     pub name: String,
     pub spec: ModuleSpec,
     pub dir: PathBuf,
+    /// `metadata.version` as authored, when the module declares one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Provenance: `None` = consumer-local (or locked/registry) module;
     /// `Some(source_name)` = body delivered by the named ConfigSource.
     pub origin: Option<String>,

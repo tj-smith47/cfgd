@@ -63,6 +63,121 @@ pub(in crate::cli) fn print_apply_result(
     result.status.clone()
 }
 
+/// Basename of the bash/zsh managed env file the reconciler writes.
+const UNIX_ENV_FILE: &str = ".cfgd.env";
+/// Basename of the PowerShell managed env file the reconciler writes.
+const PS_ENV_FILE: &str = ".cfgd-env.ps1";
+
+/// Tell the user their already-running shell predates the env file this apply
+/// wrote, so the freshly bootstrapped PATH entries are one command away instead
+/// of requiring a re-login nobody thinks to try.
+///
+/// Gated purely on the descriptions `apply_env_action` returns — it suffixes
+/// `:skipped` when the on-disk bytes already matched — so nothing here re-stats
+/// the filesystem and races whatever ran after the Env phase.
+pub(in crate::cli) fn print_shell_env_reminder(
+    result: &cfgd_core::reconciler::ApplyResult,
+    printer: &Printer,
+) {
+    let mut wrote_env = false;
+    let mut candidates: Vec<&str> = Vec::new();
+    for action in &result.action_results {
+        if !action.success || action.description.ends_with(":skipped") {
+            continue;
+        }
+        let desc = action.description.as_str();
+        let Some(path) = desc
+            .strip_prefix("env:write:")
+            .or_else(|| desc.strip_prefix("env:inject:"))
+        else {
+            continue;
+        };
+        wrote_env = true;
+        // The env phase writes several managed files (fish conf.d, systemd
+        // environment.d, a LaunchAgent); only the shell env file is something a
+        // running shell can usefully source, so the rest never name the command.
+        if path.ends_with(UNIX_ENV_FILE) || path.ends_with(PS_ENV_FILE) {
+            candidates.push(path);
+        }
+    }
+    if !wrote_env {
+        return;
+    }
+
+    // Windows can produce BOTH files in one apply, so the command is chosen by
+    // the shell the user is standing in, never by which target was emitted
+    // first. A run whose only env change was a source-line injection (or the
+    // secret-env regeneration, whose id carries no path) still needs a command
+    // to name, so the same choice supplies the fallback location.
+    let preferred = current_shell_env_file();
+    let shown = match candidates
+        .iter()
+        .find(|p| p.ends_with(preferred))
+        .or_else(|| candidates.first())
+    {
+        Some(path) => fold_home_to_tilde(path),
+        None => format!("~/{preferred}"),
+    };
+    let command = if shown.ends_with(PS_ENV_FILE) {
+        format!(". {shown}")
+    } else {
+        format!("source {shown}")
+    };
+
+    let section = printer.section("Shell environment changed");
+    section.bullet(format!("run: {command}"));
+    section.bullet("or open a new shell");
+}
+
+/// The env file the shell the user is *standing in* can actually source.
+///
+/// On Windows both files can exist after a single apply: the env engine always
+/// writes `.cfgd-env.ps1`, and additionally writes `.cfgd.env` when Git Bash is
+/// installed. Naming whichever one was emitted first tells a Git Bash user to
+/// run `. ~/.cfgd-env.ps1`, which their shell cannot read. `MSYSTEM` is exported
+/// by every MSYS2 / Git Bash shell (`MINGW64`, `MINGW32`, `MSYS`, `CLANG64`, …)
+/// and is the marker for that environment; `SHELL` is the secondary signal for
+/// a POSIX shell launched some other way.
+fn preferred_env_file(windows: bool, msystem: Option<&str>, shell: Option<&str>) -> &'static str {
+    if !windows {
+        return UNIX_ENV_FILE;
+    }
+    let in_msys = msystem.is_some_and(|v| !v.trim().is_empty());
+    let posix_shell = shell.is_some_and(|s| {
+        let normalized = cfgd_core::posixify_text(s);
+        let file = normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let stem = file.strip_suffix(".exe").unwrap_or(file.as_str());
+        matches!(stem, "bash" | "sh" | "zsh" | "dash" | "fish" | "ksh")
+    });
+    if in_msys || posix_shell {
+        UNIX_ENV_FILE
+    } else {
+        PS_ENV_FILE
+    }
+}
+
+fn current_shell_env_file() -> &'static str {
+    preferred_env_file(
+        cfg!(windows),
+        std::env::var("MSYSTEM").ok().as_deref(),
+        std::env::var("SHELL").ok().as_deref(),
+    )
+}
+
+/// Render an absolute env-file path as `~/…` when it sits under the current
+/// home, so the reminder shows a command the user can retype verbatim.
+fn fold_home_to_tilde(path: &str) -> String {
+    let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
+    match path.strip_prefix(&format!("{}/", home.trim_end_matches('/'))) {
+        Some(rest) if !home.is_empty() => format!("~/{rest}"),
+        _ => path.to_string(),
+    }
+}
+
 /// Derive a short action type string from a reconciler Action.
 pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static str {
     match action {
@@ -218,6 +333,11 @@ pub(in crate::cli) fn build_plan_output(
             .collect();
         phases.push(PlanPhaseOutput {
             phase: phase_item.name.display_name().to_string(),
+            module: phase_item.scope.as_ref().map(|s| s.module.clone()),
+            section: phase_item
+                .scope
+                .as_ref()
+                .map(|s| s.section.as_str().to_string()),
             actions,
         });
     }
@@ -252,6 +372,13 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
             });
         }
     }
+    // Each (module, section) run is its own Phase since the module-plan split, so
+    // a section made entirely of the filtered-out kind (e.g. a module's
+    // Post-Scripts section holding only RunScript actions) survives the retain
+    // above with zero actions. Drop it here, the same way `Reconciler::plan`
+    // drops an action-less phase at construction, so it never reaches display
+    // or `-o json`.
+    plan.phases.retain(|p| !p.actions.is_empty());
 }
 
 pub(in crate::cli) fn display_plan_table(
@@ -259,6 +386,10 @@ pub(in crate::cli) fn display_plan_table(
     printer: &Printer,
     phase_filter: Option<&PhaseName>,
 ) {
+    // `Reconciler::plan`, `strip_scripts_from_plan`, and `filter_plan` all drop
+    // any phase left with zero actions, so anything reaching here has work; a
+    // wholly empty plan yields no phases at all and gets one line below.
+    let mut printed_any = false;
     for phase_item in &plan.phases {
         if let Some(pf) = phase_filter
             && &phase_item.name != pf
@@ -266,7 +397,8 @@ pub(in crate::cli) fn display_plan_table(
             continue;
         }
         let items = reconciler::format_plan_items(phase_item);
-        let phase = printer.section(format!("Phase: {}", phase_item.name.display_name()));
+        printed_any = true;
+        let phase = printer.section(format!("Phase: {}", phase_item.display_label()));
         if items.is_empty() {
             phase.empty_state("(nothing to do)");
         } else {
@@ -281,10 +413,18 @@ pub(in crate::cli) fn display_plan_table(
                 {
                     phase.status_simple(Role::Warn, item);
                 } else {
-                    phase.bullet(item);
+                    phase.bullet(reconciler::display_action_desc_in_phase(
+                        action,
+                        item,
+                        phase_item.scope.as_ref(),
+                    ));
                 }
             }
         }
+    }
+    if !printed_any {
+        let phase = printer.section("Plan");
+        phase.empty_state("(nothing to do)");
     }
 }
 
@@ -299,8 +439,14 @@ pub(in crate::cli) struct ScopeReport {
     pub filter_active: bool,
     /// Total actions the plan held before `--skip`/`--only` pruning.
     pub unfiltered_total: usize,
-    /// Display names of the phases that held actions before pruning.
+    /// Display labels of the phases that held actions before pruning (module-
+    /// scoped phases render as `"{module} / {section}"`, e.g. "nvim / Files").
     pub phases_with_work: Vec<String>,
+    /// Whether any `PhaseName::Modules` phase held actions before pruning,
+    /// independent of `phases_with_work`'s per-section split — the hint
+    /// below needs to detect "module work exists" without string-matching
+    /// against the "{module} / {section}" labels.
+    pub modules_have_work: bool,
     /// Set to the requested module name when `--module <name>` resolved to
     /// nothing (typo / not found / unreadable) rather than to real actions.
     pub module_miss: Option<String>,
@@ -319,8 +465,12 @@ impl ScopeReport {
                 .phases
                 .iter()
                 .filter(|p| !p.actions.is_empty())
-                .map(|p| p.name.display_name().to_string())
+                .map(|p| p.display_label())
                 .collect(),
+            modules_have_work: plan
+                .phases
+                .iter()
+                .any(|p| p.name == PhaseName::Modules && !p.actions.is_empty()),
             module_miss,
         }
     }
@@ -366,12 +516,7 @@ pub(in crate::cli) fn report_no_in_scope_actions(
     // The most common scoping mistake: `--phase files` against a config whose
     // files come from modules (those deploy in the Modules phase to keep each
     // module's files+packages+scripts atomic and dependency-ordered).
-    if phase_filter == Some(&PhaseName::Files)
-        && scope
-            .phases_with_work
-            .iter()
-            .any(|p| p.as_str() == PhaseName::Modules.display_name())
-    {
+    if phase_filter == Some(&PhaseName::Files) && scope.modules_have_work {
         printer.hint(
             "module-sourced files apply in the 'modules' phase — try `--phase modules` or `--module <name>`",
         );
@@ -860,6 +1005,12 @@ pub(in crate::cli) fn filter_plan(plan: &mut reconciler::Plan, skip: &[String], 
 
         phase.actions = filtered_actions;
     }
+
+    // A `--skip`/`--only` pattern can exclude every action in a (module,
+    // section) Phase without touching a sibling section of the same module, so
+    // the phase must be re-checked here rather than assumed empty-safe from
+    // `Reconciler::plan` alone.
+    plan.phases.retain(|p| !p.actions.is_empty());
 }
 
 /// Filter individual packages from an install/uninstall list based on skip/only patterns.

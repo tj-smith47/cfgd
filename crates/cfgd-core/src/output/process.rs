@@ -1,29 +1,27 @@
 //! Process execution with live output display.
 //!
-//! `run_command` is the single entry point. It picks between two strategies
-//! based on TTY + verbosity:
+//! `run_command` is the single entry point, and it has a single strategy: the
+//! child's stdout and stderr both feed an [`OutputWindow`], which owns the
+//! decision between a bounded repainting tail (TTY, non-quiet) and plain
+//! streaming (everything else). On exit the window collapses to one Status
+//! line; a failure additionally dumps the captured stderr beneath it when the
+//! tail lived in the repainting window ([`OutputWindow::tail_needs_replay`]) —
+//! the only diagnostic surface a user gets for a spawned command that died. In
+//! the streaming degradation the lines are already in the scrollback, so no
+//! replay is needed.
 //!
-//! - **TTY + non-quiet** → `run_with_progress`: a spinner with a bounded
-//!   tailing ring (last N lines of stdout/stderr render under the spinner;
-//!   muted, indented to `depth + 1`). On exit, the spinner clears and a
-//!   single Status line replaces it.
-//! - **Non-TTY or quiet** → `run_streaming`: each child line streams to the
-//!   sink as it arrives. A leading Status(Running) opens the activity and a
-//!   final Status(Ok|Fail) closes it.
-//!
-//! Either path captures full stdout + stderr into the returned
-//! `CommandOutput` so callers can post-process even when output was muted.
+//! Either way the full stdout + stderr are captured into the returned
+//! `CommandOutput`, so callers can post-process even when the display muted or
+//! truncated what was on screen.
 //!
 //! This is the controlled `std::process::Command` execution layer for
 //! `output`; see `module-boundaries.md`.
-use std::collections::VecDeque;
 use std::io::BufRead;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use super::renderer::{Renderer, StatusFields, Writer};
-use super::spinner::stderr_is_terminal;
-use super::{Role, Verbosity, strip_ansi};
+use super::Printer;
+use super::window::OutputWindow;
 
 pub struct CommandOutput {
     pub status: std::process::ExitStatus,
@@ -35,33 +33,6 @@ pub struct CommandOutput {
 enum Captured {
     Stdout(String),
     Stderr(String),
-}
-
-/// Run `cmd` with live output display. TTY mode: bounded scrolling region with
-/// spinner. Non-TTY / quiet: stream lines as they arrive. Either way, captures
-/// stdout+stderr for the return value.
-pub(crate) fn run_command(
-    renderer: &Renderer,
-    sink: &dyn Writer,
-    multi: &indicatif::MultiProgress,
-    depth: usize,
-    cmd: &mut std::process::Command,
-    label: &str,
-) -> std::io::Result<CommandOutput> {
-    // Held for the whole run, not just the spawn: the child resolves its
-    // program through `PATH` and reads its inherited working directory after
-    // exec, so both must stay stable until it exits. Compiled out of release
-    // builds.
-    #[cfg(any(test, feature = "test-helpers"))]
-    let _spawn_guard = crate::test_helpers::script_spawn_path_guard();
-
-    let start = Instant::now();
-    cmd.stdin(std::process::Stdio::null());
-    if stderr_is_terminal() && renderer.verbosity != Verbosity::Quiet {
-        run_with_progress(renderer, sink, multi, depth, cmd, label, start)
-    } else {
-        run_streaming(renderer, sink, depth, cmd, label, start)
-    }
 }
 
 fn make_output(
@@ -76,16 +47,6 @@ fn make_output(
         stderr: all_stderr.join("\n"),
         duration,
     }
-}
-
-/// Sanitize a captured external-tool line and wrap it in the renderer's
-/// `muted` style. Strips foreign ANSI BEFORE the style is applied so a
-/// stray `\x1b[0m` in the tool output cannot prematurely close the muted
-/// styling, and foreign color escapes cannot paint past the spinner /
-/// post-failure dump.
-fn sanitize_and_mute(renderer: &Renderer, line: &str) -> String {
-    let clean = strip_ansi(line);
-    renderer.theme.muted.apply_to(clean).to_string()
 }
 
 fn spawn_readers(child: &mut std::process::Child) -> mpsc::Receiver<Captured> {
@@ -116,156 +77,84 @@ fn spawn_readers(child: &mut std::process::Child) -> mpsc::Receiver<Captured> {
     rx
 }
 
-fn run_with_progress(
-    renderer: &Renderer,
-    sink: &dyn Writer,
-    multi: &indicatif::MultiProgress,
+/// Run `cmd` with live output displayed through an [`OutputWindow`], capturing
+/// stdout and stderr for the returned `CommandOutput`.
+pub(crate) fn run_command(
+    printer: &Printer,
     depth: usize,
     cmd: &mut std::process::Command,
     label: &str,
-    start: Instant,
 ) -> std::io::Result<CommandOutput> {
-    const VISIBLE_LINES: usize = 5;
+    // Held for the whole run, not just the spawn: the child resolves its
+    // program through `PATH` and reads its inherited working directory after
+    // exec, so both must stay stable until it exits. Re-entrant, so a caller
+    // that already holds the guard is unaffected. Compiled out of release
+    // builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _spawn_guard = crate::test_helpers::path_env_read_guard();
+
+    let start = Instant::now();
     let mut child = cmd
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
-    let pb = super::spinner::build_spinner(multi, renderer, label);
+
     let rx = spawn_readers(&mut child);
-    let mut ring: VecDeque<String> = VecDeque::with_capacity(VISIBLE_LINES);
+    let mut window = printer.output_window_at(depth, label);
     let mut all_stdout = Vec::new();
     let mut all_stderr = Vec::new();
     // Blocking recv: the spinner's steady tick redraws independently of message
     // updates, so a poll loop adds no value. Iteration ends when all tx clones
     // drop (reader threads finish).
     for line in rx {
-        let text = match &line {
+        match line {
             Captured::Stdout(s) => {
-                all_stdout.push(s.clone());
-                s
+                window.push_line(&s);
+                all_stdout.push(s);
             }
             Captured::Stderr(s) => {
-                all_stderr.push(s.clone());
-                s
+                window.push_line(&s);
+                all_stderr.push(s);
             }
-        };
-        if ring.len() >= VISIBLE_LINES {
-            ring.pop_front();
         }
-        ring.push_back(text.clone());
-        let mut msg = label.to_string();
-        for l in &ring {
-            let display = if l.len() > 120 {
-                l.get(..120).unwrap_or(l)
-            } else {
-                l
-            };
-            msg.push_str(&format!(
-                "\n{}{}",
-                "  ".repeat(depth + 1),
-                sanitize_and_mute(renderer, display)
-            ));
-        }
-        pb.set_message(msg);
     }
+
     let status = child.wait()?;
     let duration = start.elapsed();
-    pb.finish_and_clear();
     if status.success() {
-        renderer.render_status(
-            sink,
-            depth,
-            &StatusFields {
-                role: Role::Ok,
-                subject: label,
-                detail: None,
-                duration: Some(duration),
-                target: None,
-            },
-        );
+        drop(window.finish_ok(label).duration(duration));
     } else {
-        renderer.render_status(
-            sink,
-            depth,
-            &StatusFields {
-                role: Role::Fail,
-                subject: label,
-                detail: Some("failed"),
-                duration: Some(duration),
-                target: None,
-            },
+        let needs_replay = window.tail_needs_replay();
+        drop(
+            window
+                .finish_fail(label)
+                .detail(failure_detail(&status))
+                .duration(duration),
         );
-        for line in &all_stderr {
-            let dim = sanitize_and_mute(renderer, line);
-            renderer.write_line(sink, depth + 1, &dim);
+        // Streaming already left every line in the scrollback; replaying them
+        // here would print the whole of stderr a second time.
+        if needs_replay {
+            OutputWindow::dump_below(printer, depth, &all_stderr);
         }
     }
     Ok(make_output(status, all_stdout, all_stderr, duration))
 }
 
-fn run_streaming(
-    renderer: &Renderer,
-    sink: &dyn Writer,
-    depth: usize,
-    cmd: &mut std::process::Command,
-    label: &str,
-    start: Instant,
-) -> std::io::Result<CommandOutput> {
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    if renderer.verbosity != Verbosity::Quiet {
-        renderer.render_status(
-            sink,
-            depth,
-            &StatusFields {
-                role: Role::Running,
-                subject: label,
-                detail: None,
-                duration: None,
-                target: None,
-            },
-        );
+/// Render a failed child's exit status as a status-line detail: `exit <code>`,
+/// or `signal <n>` when it was killed rather than exiting on its own.
+fn failure_detail(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit {code}");
     }
-    let rx = spawn_readers(&mut child);
-    let mut all_stdout = Vec::new();
-    let mut all_stderr = Vec::new();
-    for line in rx {
-        match &line {
-            Captured::Stdout(s) => {
-                if renderer.verbosity != Verbosity::Quiet {
-                    renderer.write_line(sink, depth + 1, s);
-                }
-                all_stdout.push(s.clone());
-            }
-            Captured::Stderr(s) => {
-                if renderer.verbosity != Verbosity::Quiet {
-                    renderer.write_line(sink, depth + 1, s);
-                }
-                all_stderr.push(s.clone());
-            }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return format!("signal {sig}");
         }
     }
-    let status = child.wait()?;
-    let duration = start.elapsed();
-    let role = if status.success() {
-        Role::Ok
-    } else {
-        Role::Fail
-    };
-    renderer.render_status(
-        sink,
-        depth,
-        &StatusFields {
-            role,
-            subject: label,
-            detail: None,
-            duration: Some(duration),
-            target: None,
-        },
-    );
-    Ok(make_output(status, all_stdout, all_stderr, duration))
+    "failed".to_string()
 }
 
 #[cfg(test)]
@@ -273,7 +162,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use super::super::Theme;
+    use super::super::Verbosity;
     use super::super::renderer::StringSink;
     use super::*;
 
@@ -287,75 +176,18 @@ mod tests {
         rx.recv_timeout(d).expect("test exceeded deadline")
     }
 
-    /// Foreign ANSI carried in a captured external-tool stdout/stderr line
-    /// must be stripped BEFORE the renderer's `muted` style wraps it. A stray
-    /// `\x1b[0m` in the tool output would otherwise prematurely close the
-    /// muted styling on the spinner display line (or the post-failure dump),
-    /// and foreign color escapes would paint past the spinner. `Printer::run`
-    /// hands captured lines through `sanitize_and_mute` for that reason.
-    #[test]
-    #[serial_test::serial]
-    fn run_spinner_strips_ansi_from_external_tool_output() {
-        let _restore_no_color = std::env::var("NO_COLOR").ok();
-        // SAFETY: single-threaded under serial_test::serial; restored below.
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-        }
-        let _guard = crate::output::test_support::ColorsEnabledGuard::set(true);
-
-        let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-        let foreign = "tool: \x1b[31mred\x1b[0m text \x1b[1mbold\x1b[0m";
-        let out = sanitize_and_mute(&renderer, foreign);
-        // The visible payload survives sanitation.
-        let visible = crate::output::strip_ansi(&out);
-        assert!(
-            visible.contains("tool: red text bold"),
-            "visible payload mismatch; got: {visible:?}"
-        );
-        // None of the foreign SGRs survive. The renderer's `muted` style is a
-        // dim grey foreground; the foreign red foreground `31` would never be
-        // emitted by the renderer itself, so its absence proves sanitation.
-        assert!(
-            !out.contains("\x1b[31m"),
-            "foreign red SGR must be stripped before muted wrap; got: {out:?}"
-        );
-        assert!(
-            !out.contains("\x1b[1m"),
-            "foreign bold SGR must be stripped before muted wrap; got: {out:?}"
-        );
-
-        unsafe {
-            match _restore_no_color {
-                Some(v) => std::env::set_var("NO_COLOR", v),
-                None => std::env::remove_var("NO_COLOR"),
-            }
-        }
+    /// A Printer whose stderr sink is a capture buffer.
+    fn capturing_printer(verbosity: Verbosity) -> (Printer, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let mut p = Printer::new(verbosity);
+        p.sink_stderr = Arc::new(StringSink(buf.clone()));
+        (p, buf)
     }
 
-    // serial_test::serial because the test mutates the process's stdio inheritance
-    // tracking implicitly via `Command::spawn`; running concurrently with another
-    // process-spawning test can cause stderr_is_terminal() to flip mid-test.
-    #[test]
-    #[serial_test::serial]
-    fn run_streaming_captures_stdout_and_emits_status() {
-        with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let multi = indicatif::MultiProgress::new();
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'hello\nworld\n'");
-            // Streaming path: in CI, stderr is not a TTY → run_streaming fires.
-            // Locally in a terminal you'll hit run_with_progress instead — both
-            // paths satisfy this test's assertions, but if you see flakes
-            // locally, run with `TERM=dumb cargo test ...`.
-            let out = run_command(&renderer, &sink, &multi, 0, &mut cmd, "say hi").unwrap();
-            assert!(out.status.success());
-            assert!(out.stdout.contains("hello"));
-            assert!(out.stdout.contains("world"));
-            let s = buf.lock().unwrap();
-            assert!(s.contains("say hi"));
-        });
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd
     }
 
     #[test]
@@ -378,49 +210,34 @@ mod tests {
         assert!(out.stderr.is_empty());
     }
 
+    // serial_test::serial because the test mutates the process's stdio inheritance
+    // tracking implicitly via `Command::spawn`; running concurrently with another
+    // process-spawning test can cause the TTY probe to flip mid-test.
     #[test]
     #[serial_test::serial]
-    fn run_streaming_emits_running_status_then_ok_on_success() {
+    fn captures_stdout_and_surfaces_the_label() {
         with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'line-one\nline-two\n'");
-            let out =
-                run_streaming(&renderer, &sink, 0, &mut cmd, "stream-job", Instant::now()).unwrap();
-
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(&p, 0, &mut sh("printf 'hello\nworld\n'"), "say hi").unwrap();
             assert!(out.status.success());
-            assert_eq!(out.stdout, "line-one\nline-two");
-            assert!(out.stderr.is_empty());
-
+            assert_eq!(out.stdout, "hello\nworld");
             let captured = crate::output::strip_ansi(&buf.lock().unwrap());
-            assert!(
-                captured.contains("stream-job"),
-                "label must appear in sink output; got: {captured:?}"
-            );
-            assert!(
-                captured.contains("line-one"),
-                "stdout line must be streamed to sink; got: {captured:?}"
-            );
-            assert!(
-                captured.contains("line-two"),
-                "stdout line must be streamed to sink; got: {captured:?}"
-            );
+            assert!(captured.contains("say hi"), "got: {captured:?}");
         });
     }
 
     #[test]
     #[serial_test::serial]
-    fn run_streaming_captures_stderr_separately() {
+    fn captures_stderr_separately_from_stdout() {
         with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'out\n'; printf 'err\n' 1>&2");
-            let out =
-                run_streaming(&renderer, &sink, 0, &mut cmd, "split", Instant::now()).unwrap();
+            let (p, _buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'out\n'; printf 'err\n' 1>&2"),
+                "split",
+            )
+            .unwrap();
             assert!(out.status.success());
             assert_eq!(out.stdout, "out");
             assert_eq!(out.stderr, "err");
@@ -429,22 +246,17 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn run_streaming_failure_emits_fail_role_and_propagates_exit_code() {
+    fn failure_emits_fail_status_and_propagates_exit_code() {
         with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'partial\n'; exit 7");
+            let (p, buf) = capturing_printer(Verbosity::Normal);
             let out =
-                run_streaming(&renderer, &sink, 0, &mut cmd, "fail-job", Instant::now()).unwrap();
+                run_command(&p, 0, &mut sh("printf 'partial\n'; exit 7"), "fail-job").unwrap();
 
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(7));
             assert_eq!(out.stdout, "partial");
 
             let captured = crate::output::strip_ansi(&buf.lock().unwrap());
-            // Failure renders the configured fail icon (✗ by default).
             assert!(
                 captured.contains("✗") || captured.contains("fail-job"),
                 "fail status must surface in sink; got: {captured:?}"
@@ -454,96 +266,16 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn run_streaming_quiet_verbosity_suppresses_running_and_per_line_output() {
+    fn failure_dumps_every_captured_stderr_line_below_the_status() {
+        // The dump is the only diagnostic surface left once the window
+        // collapses, so it must carry the whole of stderr — not the ring's tail.
         with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Quiet);
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'q1\nq2\n'");
-            let out =
-                run_streaming(&renderer, &sink, 0, &mut cmd, "quiet-job", Instant::now()).unwrap();
-
-            assert!(out.status.success());
-            // Capture is independent of verbosity — the caller still sees both lines.
-            assert_eq!(out.stdout, "q1\nq2");
-
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
-            // Quiet verbosity: no Running status, no per-line passthrough. The
-            // final Ok status is rendered unconditionally (render_status is
-            // routed regardless of verbosity in this path so callers know the
-            // process finished).
-            assert!(
-                !captured.contains("q1"),
-                "quiet should not stream stdout lines; got: {captured:?}"
-            );
-            assert!(
-                !captured.contains("q2"),
-                "quiet should not stream stdout lines; got: {captured:?}"
-            );
-        });
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn run_with_progress_captures_both_streams_and_renders_label() {
-        // Force the spinner path by calling `run_with_progress` directly; the
-        // public `run_command` would route to `run_streaming` in this test env
-        // because stderr is not a TTY.
-        with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let multi = indicatif::MultiProgress::new();
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'p-out\n'; printf 'p-err\n' 1>&2");
-
-            let out = run_with_progress(
-                &renderer,
-                &sink,
-                &multi,
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(
+                &p,
                 0,
-                &mut cmd,
-                "spin-ok",
-                Instant::now(),
-            )
-            .unwrap();
-
-            assert!(out.status.success());
-            assert_eq!(out.stdout, "p-out");
-            assert_eq!(out.stderr, "p-err");
-
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
-            assert!(
-                captured.contains("spin-ok"),
-                "success status must surface label; got: {captured:?}"
-            );
-        });
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn run_with_progress_dumps_stderr_under_fail_status() {
-        // Failure path emits a Fail status followed by every captured stderr
-        // line dumped at depth+1 under the muted style — this is the diagnostic
-        // surface a user sees when a spawned build/lint command fails.
-        with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let multi = indicatif::MultiProgress::new();
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c")
-                .arg("printf 'boom-1\n' 1>&2; printf 'boom-2\n' 1>&2; exit 9");
-
-            let out = run_with_progress(
-                &renderer,
-                &sink,
-                &multi,
-                0,
-                &mut cmd,
+                &mut sh("printf 'boom-1\n' 1>&2; printf 'boom-2\n' 1>&2; exit 9"),
                 "spin-fail",
-                Instant::now(),
             )
             .unwrap();
 
@@ -552,49 +284,98 @@ mod tests {
             assert_eq!(out.stderr, "boom-1\nboom-2");
 
             let captured = crate::output::strip_ansi(&buf.lock().unwrap());
-            assert!(
-                captured.contains("spin-fail"),
-                "fail status must surface label; got: {captured:?}"
-            );
-            assert!(
-                captured.contains("boom-1"),
-                "failed run must dump captured stderr; got: {captured:?}"
-            );
-            assert!(
-                captured.contains("boom-2"),
-                "failed run must dump every stderr line; got: {captured:?}"
+            assert!(captured.contains("spin-fail"), "got: {captured:?}");
+            assert!(captured.contains("boom-1"), "got: {captured:?}");
+            assert!(captured.contains("boom-2"), "got: {captured:?}");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn failure_does_not_duplicate_streamed_stderr() {
+        // The test harness has no TTY, so `OutputWindow` takes the streaming
+        // branch: every stderr line lands in the scrollback as it arrives.
+        // A failure that unconditionally replayed the capture below the
+        // status would print each line twice.
+        with_deadline(Duration::from_secs(10), || {
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'MARKER-LINE\n' 1>&2; exit 3"),
+                "dup-check",
+            )
+            .unwrap();
+
+            assert!(!out.status.success());
+            assert_eq!(out.status.code(), Some(3));
+
+            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            assert_eq!(
+                captured.matches("MARKER-LINE").count(),
+                1,
+                "stderr line duplicated in streaming mode: {captured:?}"
             );
         });
     }
 
     #[test]
     #[serial_test::serial]
-    fn run_with_progress_caps_ring_to_visible_lines_but_captures_everything() {
-        // The spinner ring only shows the last 5 lines, but the captured
-        // `stdout` collection must still hold every single line the child
-        // emitted — callers post-process this collection.
-        with_deadline(Duration::from_secs(15), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let multi = indicatif::MultiProgress::new();
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c")
-                .arg("for i in $(seq 1 12); do printf 'line-%02d\n' $i; done");
+    fn failure_detail_carries_the_exit_code() {
+        with_deadline(Duration::from_secs(10), || {
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(&p, 0, &mut sh("exit 42"), "exit-code-job").unwrap();
 
-            let out = run_with_progress(
-                &renderer,
-                &sink,
-                &multi,
+            assert!(!out.status.success());
+            assert_eq!(out.status.code(), Some(42));
+
+            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            assert!(
+                captured.contains("exit 42"),
+                "failure detail must carry the exit code; got: {captured:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn quiet_suppresses_display_but_still_captures() {
+        with_deadline(Duration::from_secs(10), || {
+            let (p, buf) = capturing_printer(Verbosity::Quiet);
+            let out = run_command(&p, 0, &mut sh("printf 'q1\nq2\n'"), "quiet-job").unwrap();
+
+            assert!(out.status.success());
+            // Capture is independent of verbosity — the caller still sees both lines.
+            assert_eq!(out.stdout, "q1\nq2");
+
+            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            assert!(
+                !captured.contains("q1"),
+                "quiet leaked stdout: {captured:?}"
+            );
+            assert!(
+                !captured.contains("q2"),
+                "quiet leaked stdout: {captured:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn capture_holds_every_line_the_display_trimmed() {
+        // The window shows at most five lines; the capture the caller
+        // post-processes must still hold all twelve.
+        with_deadline(Duration::from_secs(15), || {
+            let (p, _buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(
+                &p,
                 0,
-                &mut cmd,
+                &mut sh("for i in $(seq 1 12); do printf 'line-%02d\n' $i; done"),
                 "many-lines",
-                Instant::now(),
             )
             .unwrap();
 
             assert!(out.status.success());
-            // Every emitted line is captured (ring trimming is purely visual).
             let captured_lines: Vec<&str> = out.stdout.split('\n').collect();
             assert_eq!(captured_lines.len(), 12);
             assert_eq!(captured_lines.first().copied(), Some("line-01"));
@@ -604,84 +385,44 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn run_with_progress_truncates_long_lines_in_ring_display() {
-        // Lines longer than 120 chars are truncated on the spinner display,
-        // but full content is preserved in the captured `stdout`. We verify
-        // capture preserves the full line — the spinner display path is
-        // exercised but not directly observable from the StringSink.
+    fn capture_holds_the_full_line_the_display_clamped() {
         with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let multi = indicatif::MultiProgress::new();
+            let (p, _buf) = capturing_printer(Verbosity::Normal);
             let payload = "x".repeat(250);
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg(format!("printf '%s\n' {}", payload));
-
-            let out = run_with_progress(
-                &renderer,
-                &sink,
-                &multi,
+            let out = run_command(
+                &p,
                 0,
-                &mut cmd,
+                &mut sh(&format!("printf '%s\n' {payload}")),
                 "long-line",
-                Instant::now(),
             )
             .unwrap();
 
             assert!(out.status.success());
-            assert_eq!(out.stdout.len(), 250);
             assert_eq!(out.stdout, payload);
         });
     }
 
     #[test]
     #[serial_test::serial]
-    fn run_command_dispatches_to_streaming_when_stderr_not_tty() {
-        // In CI / under `cargo test`, stderr is never a TTY, so `run_command`
-        // routes to `run_streaming`. Verify the public entry point produces
-        // the same CommandOutput shape as a direct `run_streaming` call.
+    fn foreign_ansi_never_reaches_the_sink() {
+        // A child's own SGR escapes would otherwise close the renderer's muted
+        // styling early and paint past the window.
         with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-            let multi = indicatif::MultiProgress::new();
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'dispatch-ok\n'; exit 0");
-            let out = run_command(&renderer, &sink, &multi, 0, &mut cmd, "dispatch").unwrap();
+            let (p, buf) = capturing_printer(Verbosity::Normal);
+            let out = run_command(
+                &p,
+                0,
+                &mut sh(r"printf 'tool: \033[31mred\033[0m text\n'"),
+                "ansi-job",
+            )
+            .unwrap();
             assert!(out.status.success());
-            assert_eq!(out.stdout, "dispatch-ok");
+            let raw = buf.lock().unwrap();
+            assert!(
+                !raw.contains("\x1b[31m"),
+                "foreign red SGR reached the sink; got: {raw:?}"
+            );
         });
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn run_command_quiet_verbosity_takes_streaming_path() {
-        // Even when stderr IS a TTY, Quiet verbosity forces the streaming
-        // path. We can't fake a TTY easily, but Quiet should always work
-        // and still capture output.
-        with_deadline(Duration::from_secs(10), || {
-            let buf = Arc::new(Mutex::new(String::new()));
-            let sink = StringSink(buf.clone());
-            let renderer = Renderer::new(Theme::default(), Verbosity::Quiet);
-            let multi = indicatif::MultiProgress::new();
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg("printf 'quiet-cap\n'");
-            let out = run_command(&renderer, &sink, &multi, 0, &mut cmd, "qcmd").unwrap();
-            assert!(out.status.success());
-            assert_eq!(out.stdout, "quiet-cap");
-        });
-    }
-
-    #[test]
-    fn sanitize_and_mute_preserves_text_when_no_foreign_ansi() {
-        let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
-        let out = sanitize_and_mute(&renderer, "plain text");
-        // Without ColorsEnabledGuard the wrapped style may or may not emit
-        // escape codes depending on the suite's prior state. Strip ANSI and
-        // confirm the payload survives.
-        let visible = crate::output::strip_ansi(&out);
-        assert_eq!(visible, "plain text");
     }
 
     /// Build an `ExitStatus` with the given exit code, portable across Unix

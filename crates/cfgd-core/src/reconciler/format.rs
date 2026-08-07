@@ -5,8 +5,15 @@ use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
 use super::types::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, Phase, ScriptAction, SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, ModuleScope, Phase, ScriptAction,
+    SystemAction,
 };
+
+/// Resource id of the live-session env refresh. The planner and
+/// `apply_env_action` must both emit it verbatim: it is the only env surface
+/// with no path to key on, so a divergence between the two makes the applied
+/// result unmatchable against the action that planned it.
+pub(super) const LIVE_SESSION_RESOURCE_ID: &str = "env:session:refresh";
 
 /// Append source provenance suffix for non-local origins.
 pub(super) fn provenance_suffix(origin: &str) -> String {
@@ -86,6 +93,12 @@ pub fn format_action_description(action: &Action) -> String {
             }
         },
         Action::Script(sa) => match sa {
+            // Resource-id / state-matching key, NOT a display string: this
+            // return value is the SQLite `managed_resource` id and the
+            // `ActionResult.description` JSON field. Condensing `run_str()`
+            // here would reshape the id and break drift matching against
+            // every already-recorded state row for a module with a
+            // multi-line inline script — leave it byte-identical.
             ScriptAction::Run { entry, phase, .. } => {
                 format!("script:{}:{}", phase.display_name(), entry.run_str())
             }
@@ -112,9 +125,63 @@ pub fn format_action_description(action: &Action) -> String {
             EnvAction::InjectSourceLine { rc_path, .. } => {
                 format!("env:inject:{}", path_str(rc_path))
             }
-            EnvAction::RefreshLiveSession { .. } => "env:session:refresh".to_string(),
+            EnvAction::RefreshLiveSession { .. } => LIVE_SESSION_RESOURCE_ID.to_string(),
         },
     }
+}
+
+/// Condense `desc` for a status-subject/error-message/bullet display only
+/// when `action` can embed a raw, potentially multi-line script body:
+/// `format_action_description`'s `Action::Script` arm and
+/// `format_module_action_body`'s `ModuleActionKind::RunScript` arm both embed
+/// `entry.run_str()`/`script.run_str()` verbatim so `-o json` payloads and
+/// `ActionResult.description` stay byte-identical to the source body. Every
+/// other action kind's description is already condensed/newline-free.
+/// Callers must keep the raw `desc` for `ActionResult.description` / journal
+/// persistence / the `-o json` plan payload — this helper is display-only.
+pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
+    let embeds_raw_script = matches!(action, Action::Script(_))
+        || matches!(
+            action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::RunScript { .. },
+                ..
+            })
+        );
+    if embeds_raw_script {
+        crate::output::condense_script_label(desc)
+    } else {
+        desc.to_string()
+    }
+}
+
+/// Condense `desc` as [`condense_action_desc_for_display`] does, then drop the
+/// `[module]` prefix when the enclosing phase heading already names that
+/// module.
+///
+/// `format_module_action` stamps every module action with `[module]` because
+/// the actions used to share one undifferentiated `Modules` heading and the
+/// bullet was the only place the module could appear. Under a
+/// `<module> / <section>` heading it repeats what the reader just read.
+///
+/// A script's `postApply:`/`preReconcile:` prefix survives — one section covers
+/// both the apply and the reconcile hook, so that word is not redundant.
+///
+/// Display only, like the helper it wraps: the raw `desc` is the
+/// `managed_resources` id, the journal `resource_id`, `ActionResult.description`
+/// and the `-o json` payload, all of which stay byte-identical to the plan's.
+pub fn display_action_desc_in_phase(
+    action: &Action,
+    desc: &str,
+    scope: Option<&ModuleScope>,
+) -> String {
+    let condensed = condense_action_desc_for_display(action, desc);
+    let Some(scope) = scope else {
+        return condensed;
+    };
+    condensed
+        .strip_prefix(&format!("[{}] ", scope.module))
+        .map_or(condensed.clone(), ToString::to_string)
 }
 
 /// Format plan phase items for display.
@@ -283,6 +350,13 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     origin,
                     ..
                 } => {
+                    // Raw body: this same `Vec<String>` feeds both
+                    // `display_plan_table`/`cli/apply.rs`'s dry-run preview
+                    // (human bullets) AND `build_plan_output`'s
+                    // `PlanActionOutput.description` (the `-o json` plan
+                    // payload). Condensing here would truncate the JSON
+                    // payload too — display sites condense for themselves via
+                    // `condense_action_desc_for_display`.
                     format!(
                         "run {} script: {}{}",
                         phase.display_name(),
@@ -360,6 +434,13 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             }
         }
         ModuleActionKind::RunScript { script, phase } => {
+            // Raw body: this same string feeds both
+            // `display_plan_table`/`cli/apply.rs`'s dry-run preview (human
+            // bullets) AND `build_plan_output`'s `PlanActionOutput.description`
+            // (the `-o json` plan payload) via `format_plan_items` ->
+            // `format_module_action_item`. Condensing here would truncate the
+            // JSON payload too — display sites condense for themselves via
+            // `condense_action_desc_for_display`.
             format!(
                 "[{}] {}: {}",
                 action.module_name,
@@ -373,14 +454,43 @@ fn format_module_action_body(action: &ModuleAction) -> String {
     }
 }
 
+/// Prefixes whose `format_action_description`/`execute_script` output has a
+/// structural-colon count fixed at TWO (`type:subtype:body`) for every variant
+/// of that action kind. Only for those is the second segment safely droppable:
+/// it names the verb/phase that produced the row (`create`/`update`/`delete`
+/// for `file`, `pre`/`post` for `script`), never an identity, and drift/state
+/// matching keys on `(type, body)` so two verbs touching the same target share
+/// one id.
+///
+/// Excluded prefixes either vary their structural-colon count or carry an
+/// identity in the second segment, so no fixed split is correct for them:
+/// - `module` names the MODULE in its second segment (`module:{name}:{verb}`),
+///   not a verb — dropping it would collapse every module onto one
+///   `UNIQUE(resource_type, resource_id)` row.
+/// - `package` names the MANAGER (`package:{manager}:{verb}`) — same collapse:
+///   `package:brew:skip` and `package:apt:skip` would share one row. Only
+///   `bootstrap` and `skip` reach here; `install`/`uninstall` are handled
+///   ahead of this parser, per-package, by `parse_package_description`.
+/// - `system` stamps `system:{configurator}.{key}` (one colon) but
+///   `system:{configurator}:skip` (two).
+/// - `execute_script`'s `"Running script: {body}"` has one.
+///
+/// A blind `splitn(3, ':')` cannot tell "2 structural colons" apart from
+/// "1 structural colon + a colon embedded in the body" — both consume 2 colons
+/// and yield 3 pieces. Dispatching on the known prefix (rather than counting
+/// colons) keeps the body intact either way: a `run:` script or `-o json` value
+/// containing its own `:` no longer gets silently truncated mid-body.
+const TWO_COLON_PREFIXES: &[&str] = &["file", "secret", "script", "env"];
+
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
-    let parts: Vec<&str> = desc.splitn(3, ':').collect();
-    if parts.len() >= 3 {
-        (parts[0].to_string(), parts[2..].join(":"))
-    } else if parts.len() == 2 {
-        (parts[0].to_string(), parts[1].to_string())
+    let Some((prefix, rest)) = desc.split_once(':') else {
+        return ("unknown".to_string(), desc.to_string());
+    };
+    if TWO_COLON_PREFIXES.contains(&prefix) {
+        let id = rest.split_once(':').map_or(rest, |(_, id)| id);
+        (prefix.to_string(), id.to_string())
     } else {
-        ("unknown".to_string(), desc.to_string())
+        (prefix.to_string(), rest.to_string())
     }
 }
 

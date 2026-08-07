@@ -15,7 +15,6 @@ If you need to shell out, it must go through a controlled execution layer, not s
 | `system/` | `SystemConfigurator` trait implementations |
 | `reconciler/` | pre/post-reconcile script execution |
 | `platform/` | OS detection (`sw_vers`, `freebsd-version`) |
-| `sources/` | `git` signature verification + clone fallback |
 | `gateway/` | `ssh-keygen`, `gpg` for enrollment signature verification |
 | `output/` | `Printer::run_with_output` — the controlled execution layer for buffered progress display |
 | `generate/` | tool inspection (`--version` checks), system settings scanning |

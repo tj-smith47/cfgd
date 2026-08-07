@@ -8,8 +8,10 @@ use crate::config::{ComplianceExport, ComplianceFormat, ComplianceScope, MergedP
 use crate::effective::{Origin, effective_files};
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
+use crate::output::Printer;
 use crate::platform::Platform;
-use crate::providers::ProviderRegistry;
+use crate::providers::{PackageContext, ProviderRegistry};
+use crate::state::StateStore;
 use crate::to_posix_string;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +90,7 @@ pub struct ComplianceSummary {
 /// file present on disk but whose bytes drifted from its rendered source is a
 /// violation, matching the live drift paths. When no file manager is wired, file
 /// checks degrade to existence + permissions only.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_snapshot(
     profile_name: &str,
     profile: &MergedProfile,
@@ -96,6 +99,8 @@ pub fn collect_snapshot(
     registry: &ProviderRegistry,
     scope: &ComplianceScope,
     sources: &[String],
+    printer: &Printer,
+    state: &StateStore,
 ) -> Result<ComplianceSnapshot> {
     let platform = Platform::detect();
     let hostname = crate::hostname_string();
@@ -105,6 +110,8 @@ pub fn collect_snapshot(
         os: platform.os.as_str().to_owned(),
         arch: platform.arch.as_str().to_owned(),
     };
+
+    let cx = PackageContext { printer, state };
 
     let mut checks = Vec::new();
 
@@ -118,7 +125,7 @@ pub fn collect_snapshot(
         ));
     }
     if scope.packages {
-        checks.extend(collect_package_checks(profile, modules, registry)?);
+        checks.extend(collect_package_checks(profile, modules, registry, &cx)?);
     }
     if scope.system {
         checks.extend(collect_system_checks(profile, modules, registry)?);
@@ -133,6 +140,7 @@ pub fn collect_snapshot(
         checks.extend(collect_watched_package_manager_checks(
             manager_name,
             registry,
+            &cx,
         )?);
     }
 
@@ -441,6 +449,7 @@ pub fn collect_package_checks(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
     registry: &ProviderRegistry,
+    cx: &PackageContext<'_>,
 ) -> Result<Vec<ComplianceCheck>> {
     use std::collections::HashMap;
 
@@ -463,7 +472,7 @@ pub fn collect_package_checks(
             continue;
         }
 
-        let installed = match pm.installed_packages() {
+        let installed = match pm.installed_packages(cx) {
             Ok(set) => set,
             Err(e) => {
                 // Cannot query this manager — report as warning
@@ -680,6 +689,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
 fn collect_watched_package_manager_checks(
     manager_name: &str,
     registry: &ProviderRegistry,
+    cx: &PackageContext<'_>,
 ) -> Result<Vec<ComplianceCheck>> {
     let pm = registry
         .available_package_managers()
@@ -696,7 +706,7 @@ fn collect_watched_package_manager_checks(
         }]);
     };
 
-    let installed = match pm.installed_packages() {
+    let installed = match pm.installed_packages(cx) {
         Ok(set) => set,
         Err(e) => {
             return Ok(vec![ComplianceCheck {

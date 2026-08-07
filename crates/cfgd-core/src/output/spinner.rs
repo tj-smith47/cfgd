@@ -14,11 +14,28 @@ use std::time::Duration;
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
 use super::Role;
-use super::renderer::{Renderer, Writer};
+use super::renderer::{Renderer, Writer, wrap};
 use super::status_builder::StatusBuilder;
 
 pub(crate) fn stderr_is_terminal() -> bool {
     std::io::stderr().is_terminal()
+}
+
+/// Truncate a spinner message's own line to what `sink` can hold at `depth`,
+/// leaving any lines below it alone.
+///
+/// indicatif repaints a spinner in place by rewinding a fixed number of rows.
+/// A label the terminal has to hard-wrap occupies one row more than the
+/// repaint accounts for, so the overflow is stranded in the scrollback on
+/// every tick and again at the collapse — the wrap this can't be handed to
+/// `wrap_body`, because there is no second row to wrap onto. The lines that
+/// follow are an `OutputWindow` tail, already clamped at their own indent.
+fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> String {
+    let width = wrap::available_width(sink, depth);
+    match message.split_once('\n') {
+        Some((head, rest)) => format!("{}\n{}", wrap::clamp(head, width), rest),
+        None => wrap::clamp(message, width),
+    }
 }
 
 /// Live spinner. Drop without `finish_*()` emits a `Status(Info)` with the
@@ -36,7 +53,8 @@ pub struct Spinner<'p> {
 
 impl<'p> Spinner<'p> {
     pub fn set_message(&self, text: impl Into<String>) {
-        self.bar.set_message(text.into());
+        self.bar
+            .set_message(clamp_label(self.sink.as_ref(), &text.into(), self.depth));
     }
 
     pub fn finish_ok(self, final_text: impl Into<String>) -> StatusBuilder<'p> {
@@ -126,12 +144,24 @@ pub(crate) fn make_spinner_bar(
     multi: &indicatif::MultiProgress,
     renderer: &Renderer,
     verbosity: super::Verbosity,
+    depth: usize,
     message: &str,
 ) -> IndProgressBar {
     if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
         IndProgressBar::hidden()
     } else {
-        build_spinner(multi, renderer, message)
+        // No `Spinner` (and so no sink) exists yet at this point in
+        // construction — this measures `console::Term::stderr()` directly,
+        // which is exactly the sink `Printer` wires into every `Spinner` in
+        // production (see `sink_stderr` in printer.rs). Reachable only when
+        // `stderr_is_terminal()` just returned true, and a captured-output
+        // test always trips the `IndProgressBar::hidden()` branch above
+        // instead, so this can never influence a `StringSink` capture.
+        build_spinner(
+            multi,
+            renderer,
+            &clamp_label(&console::Term::stderr(), message, depth),
+        )
     }
 }
 
@@ -203,6 +233,26 @@ mod tests {
 
     fn sink_for(buf: &Arc<Mutex<String>>) -> Arc<dyn Writer> {
         Arc::new(StringSink(buf.clone()))
+    }
+
+    #[test]
+    fn clamp_label_keeps_the_spinner_on_one_row() {
+        let sink = sink_for(&Arc::new(Mutex::new(String::new())));
+        let long = "sudo apt-get install -y ".repeat(20);
+        let out = clamp_label(sink.as_ref(), &long, 0);
+        assert!(!out.contains('\n'), "label gained a row: {out:?}");
+        assert!(out.len() < long.len(), "label was not clamped");
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn clamp_label_leaves_the_window_tail_below_it_alone() {
+        // Only the spinner's own row is unwrappable; the tail beneath it was
+        // already clamped at its own indent and must survive byte for byte.
+        let sink = sink_for(&Arc::new(Mutex::new(String::new())));
+        let tail = "  first tail line\n  second tail line";
+        let out = clamp_label(sink.as_ref(), &format!("short label\n{tail}"), 0);
+        assert_eq!(out, format!("short label\n{tail}"));
     }
 
     #[test]

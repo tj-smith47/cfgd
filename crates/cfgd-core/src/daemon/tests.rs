@@ -71,6 +71,7 @@ fn module_drift_plan(action: crate::reconciler::Action) -> crate::reconciler::Pl
     crate::reconciler::Plan {
         phases: vec![crate::reconciler::Phase {
             name: crate::reconciler::PhaseName::Modules,
+            scope: None,
             actions: vec![action],
         }],
         warnings: Vec::new(),
@@ -5550,6 +5551,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             // Return a package install action to create drift
             Ok(vec![PackageAction::Install {
@@ -5654,6 +5656,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![PackageAction::Install {
                 manager: "cargo".into(),
@@ -5743,6 +5746,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -5847,6 +5851,7 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -6005,6 +6010,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![
                 PackageAction::Install {
@@ -6107,6 +6113,7 @@ impl DaemonHooks for DriftingFileHooks {
         _: &MergedProfile,
         _: &[&dyn PackageManager],
         _: &std::collections::HashSet<String>,
+        _: &PackageContext<'_>,
     ) -> crate::errors::Result<Vec<PackageAction>> {
         Ok(vec![])
     }
@@ -6381,6 +6388,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![PackageAction::Install {
                 manager: "cargo".into(),
@@ -6446,17 +6454,13 @@ impl PackageManager for RecordingUninstallManager {
     fn bootstrap(&self, _: &crate::output::Printer) -> crate::errors::Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> crate::errors::Result<HashSet<String>> {
+    fn installed_packages(&self, _: &PackageContext<'_>) -> crate::errors::Result<HashSet<String>> {
         Ok(self.installed.clone())
     }
-    fn install(&self, _: &[String], _: &crate::output::Printer) -> crate::errors::Result<()> {
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
-    fn uninstall(
-        &self,
-        packages: &[String],
-        _: &crate::output::Printer,
-    ) -> crate::errors::Result<()> {
+    fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
         // blocking_lock is safe: reconcile apply runs on spawn_blocking, off the
         // async runtime worker.
         self.uninstalled
@@ -6464,7 +6468,7 @@ impl PackageManager for RecordingUninstallManager {
             .extend(packages.iter().cloned());
         Ok(())
     }
-    fn update(&self, _: &crate::output::Printer) -> crate::errors::Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
@@ -6541,6 +6545,7 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             cfgd_installed: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             self.seen
                 .blocking_lock()
@@ -6681,6 +6686,7 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             // Emit one (idempotent) action so the reconcile enters the Auto-apply
             // branch where GC runs; the GC is what this test asserts on.
@@ -6776,6 +6782,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![PackageAction::Install {
                 manager: "cargo".into(),
@@ -8349,6 +8356,7 @@ mod harness {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -8384,6 +8392,7 @@ mod harness {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -8716,6 +8725,7 @@ mod harness {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -9923,8 +9933,8 @@ mod harness {
     #[test]
     #[serial_test::serial]
     fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
-        // Regression guard for MEDIUM #10: the daemon used to only emit a
-        // `tracing::warn!` when state-dir resolution failed, leaving the
+        // The daemon used to only emit a `tracing::warn!` when state-dir
+        // resolution failed, leaving the
         // /drift endpoint silently disabled. The variant exposes a banner
         // message so the startup banner can surface it.
         //
@@ -11522,6 +11532,7 @@ impl DaemonHooks for DiscoverTestHooks {
         _: &MergedProfile,
         _: &[&dyn PackageManager],
         _: &std::collections::HashSet<String>,
+        _: &PackageContext<'_>,
     ) -> crate::errors::Result<Vec<PackageAction>> {
         Ok(vec![])
     }
@@ -11625,6 +11636,7 @@ impl DaemonHooks for EmptyPlanHooks {
         _: &MergedProfile,
         _: &[&dyn PackageManager],
         _: &std::collections::HashSet<String>,
+        _: &PackageContext<'_>,
     ) -> crate::errors::Result<Vec<PackageAction>> {
         Ok(vec![])
     }
@@ -11906,6 +11918,7 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             cfgd_installed: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             let mut actions = Vec::new();
             if cfgd_installed.contains("cargo/source-pkg") {
@@ -12121,6 +12134,7 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             cfgd_installed: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             let mut actions = Vec::new();
             if cfgd_installed.contains("cargo/source-pkg") {
@@ -12983,6 +12997,7 @@ mod discover_managed_paths_extra {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -13057,7 +13072,9 @@ mod tests_run_daemon_wrapper {
     use crate::daemon::run_daemon;
     use crate::daemon::{MergedProfile, ResolvedProfile};
     use crate::errors::Result as CfgdResult;
-    use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
+    use crate::providers::{
+        FileAction, PackageAction, PackageContext, PackageManager, ProviderRegistry,
+    };
     use crate::test_helpers::test_printer;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -13075,6 +13092,7 @@ mod tests_run_daemon_wrapper {
             _: &MergedProfile,
             _: &[&dyn PackageManager],
             _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
         ) -> CfgdResult<Vec<PackageAction>> {
             Ok(vec![])
         }

@@ -670,9 +670,9 @@ mod tests {
     #[test]
     #[serial]
     fn rotate_happy_path_without_old_pub_skips_pub_backup() {
-        // Drives the `old_pub.exists()` branch (L185 in keys.rs) where the
-        // rename of the public key is skipped because there's no .pub on
-        // disk before rotation. Also exercises the L314 `old_pub.exists() ||
+        // Drives the `old_pub.exists()` branch where the rename of the
+        // public key is skipped because there's no .pub on disk before
+        // rotation. Also exercises the `old_pub.exists() ||
         // backup_pub.exists()` arm where the new keygen reports the path.
         use cfgd_core::test_helpers::CosignTestShim;
         let _shim = CosignTestShim::builder().with_keygen(true).install();

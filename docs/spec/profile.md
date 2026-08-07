@@ -261,6 +261,20 @@ your `~/.profile`.
 > classic X11 display managers that don't import the systemd user environment won't see it. File
 > targets take effect in new sessions; the live-session refresh applies immediately.
 
+`~/.cfgd.env` is written even when `spec.env` and `spec.aliases` are both empty, as long as cfgd
+**itself bootstrapped** a package manager the profile still names. When a bootstrap succeeds, cfgd
+records the `PATH` directories that install contributed and exports them from `~/.cfgd.env`. A
+manager you installed yourself contributes nothing here — cfgd never claims ownership of a machine
+change it did not make, so your rc files are left alone. Drop the manager from the profile and its
+directories age out of the file.
+
+Those directories are exported **first**, ahead of your own variables, so a `spec.env` value may
+reference a binary the manager just installed. The first apply on a bare machine converges inside
+that same run: the `Env` phase runs before `Modules`, so cfgd regenerates the file once the phases
+finish and the bootstrap is recorded. cfgd prints a reminder after any apply that wrote the file or
+injected a source line — your already-running shell does not pick either up until you
+`source ~/.cfgd.env` or open a new one.
+
 **Example:**
 ```yaml
 spec:

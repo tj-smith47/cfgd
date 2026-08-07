@@ -20,9 +20,41 @@ pub mod kv;
 pub mod section;
 pub mod status;
 pub mod table;
+pub(crate) mod wrap;
 pub(crate) use glyphs::{finalize_subject, role_glyph};
 pub use status::StatusFields;
 pub use table::Table;
+
+/// The kind of a top-level (outside any section) group emission.
+///
+/// Blank lines separate GROUPS, not the lines inside one. Three rules follow
+/// from that and are enforced in `open_top_group`:
+///
+///   - consecutive emissions of a kind whose `runs_contiguously` is true
+///     (statuses, hints) are one group and render with no blank between them
+///   - a heading binds to whatever it introduces, so nothing directly after a
+///     top-level heading is preceded by a blank
+///   - the streaming → buffered seam always separates: a streamed line and a
+///     buffered `Doc`'s line never join into one group
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TopGroup {
+    Heading,
+    Status,
+    Hint,
+    Bullet,
+    CodeBlock,
+    Note,
+    KvBlock,
+    Table,
+}
+
+impl TopGroup {
+    /// True for single-line kinds that read as a list when repeated — a run of
+    /// `✓ Created …` lines is one block, not seven blocks of one line.
+    fn runs_contiguously(self) -> bool {
+        matches!(self, TopGroup::Status | TopGroup::Hint | TopGroup::Bullet)
+    }
+}
 
 /// Per-Printer rendering state. Held inside `Mutex` because multiple
 /// `SectionGuard`s may share the same `&Printer` and write concurrently
@@ -45,6 +77,18 @@ pub(crate) struct RenderState {
     /// heading. Reset by any other emission (status, section header, bullet,
     /// etc.).
     pub(crate) last_was_top_heading: bool,
+    /// Kind of the most recent top-level group emission, or `None` when the
+    /// last thing written was not one (a section body, a section close).
+    /// Consumed by the next top-level emit to decide whether it continues that
+    /// group or starts a new one.
+    pub(crate) last_top_group: Option<TopGroup>,
+    /// Nesting depth of buffered `Doc` rendering; 0 while output is streaming.
+    /// A streamed line and a buffered Doc's line are never the same group even
+    /// when they are the same kind — the seam between them always separates.
+    doc_depth: usize,
+    /// Whether the most recent top-level emission came from inside a `Doc`.
+    /// Compared against the current side of the seam in `open_top_group`.
+    last_top_in_doc: bool,
 }
 
 impl RenderState {
@@ -56,6 +100,9 @@ impl RenderState {
             kv_buffer: Vec::new(),
             section_stack: Vec::new(),
             last_was_top_heading: false,
+            last_top_group: None,
+            doc_depth: 0,
+            last_top_in_doc: false,
         }
     }
 
@@ -134,11 +181,22 @@ impl Renderer {
 /// Sink for one rendered line. Production = stderr Term; tests = string buffer.
 pub trait Writer: Send + Sync {
     fn write_line(&self, text: &str);
+
+    /// Columns at which this sink hard-wraps, or `None` when it does not wrap
+    /// at all. Only a terminal answers; a buffer or a redirected stream keeps
+    /// the default so its physical lines are exactly what the renderer emitted.
+    fn wrap_columns(&self) -> Option<usize> {
+        None
+    }
 }
 
 impl Writer for console::Term {
     fn write_line(&self, text: &str) {
         let _ = console::Term::write_line(self, text);
+    }
+
+    fn wrap_columns(&self) -> Option<usize> {
+        self.size_checked().map(|(_, cols)| cols as usize)
     }
 }
 
@@ -160,21 +218,14 @@ impl Renderer {
     /// recursing back into `flush_kv_buffer_internal`.
     pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
         self.flush_kv_buffer_internal(w);
-        debug_assert!(
-            !body.contains('\n'),
-            "Renderer::write_line received body with embedded newline: {body:?}. \
-             Callers must pre-split multi-line content (see render_note for the canonical pattern)."
-        );
-        // Callers must pre-split multi-line content; we normalize embedded \n
-        // defensively to keep blank-line accounting honest if they don't. The
-        // sink appends its own trailing newline per call; any newlines
-        // already in `body` would smuggle physical line breaks past the
-        // blank-line accounting (e.g. a Status subject ending with `\n` would
+        // The sink appends its own trailing newline per call, so a trailing
+        // newline already in `body` would smuggle a physical line break past
+        // the blank-line accounting (a Status subject ending with `\n` would
         // produce a stray blank between this emission and the next, breaking
-        // the one-blank-between-siblings invariant). Strip trailing newlines
-        // and split internal ones into separate sink writes at the same
-        // depth — `render_note` is the only intentional multi-line path and
-        // pre-splits before calling here.
+        // the one-blank-between-siblings invariant). Internal newlines are a
+        // supported shape — a brew caveat is genuinely two sentences — and
+        // `wrap_body` lays them out as continuations of this line rather than
+        // as unmarked lines of their own.
         let trimmed = body.trim_end_matches(['\n', '\r']);
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.leading {
@@ -188,8 +239,8 @@ impl Renderer {
         // sets the flag back true after this call returns.
         s.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
-        for line in trimmed.split('\n') {
-            w.write_line(&format!("{}{}", prefix, line));
+        for physical in wrap::wrap_body(trimmed, &prefix, w.wrap_columns()) {
+            w.write_line(&physical);
         }
     }
 
@@ -212,16 +263,64 @@ impl Renderer {
     pub(crate) fn mark_blank_pending(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.blank_pending = true;
+        // A section boundary always separates: whatever follows starts a new
+        // group even if it is the same kind as what preceded the section.
+        s.last_top_group = None;
     }
 
     /// Set blank-pending iff we're at the root group level (no open section).
     /// Called at the end of every top-level group emission (heading, kv_block,
     /// status, hint, note, table) so the next top-level emit gets one blank.
-    /// One blank line precedes every top-level group after the first.
-    pub(crate) fn mark_top_level_blank_if_at_root(&self) {
+    /// One blank line precedes every top-level GROUP after the first —
+    /// `open_top_group` decides what continues a group rather than starting one.
+    pub(crate) fn mark_top_level_group(&self, kind: TopGroup) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.section_stack.is_empty() {
             s.blank_pending = true;
+            s.last_top_group = Some(kind);
+            s.last_top_in_doc = s.doc_depth > 0;
+        } else {
+            s.last_top_group = None;
+        }
+    }
+
+    /// Enter buffered `Doc` rendering. Paired with `exit_doc`; nests because a
+    /// Doc may render a nested Doc through a component.
+    pub(crate) fn enter_doc(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.doc_depth += 1;
+    }
+
+    /// Leave buffered `Doc` rendering.
+    pub(crate) fn exit_doc(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.doc_depth = s.doc_depth.saturating_sub(1);
+    }
+
+    /// Drop the pending blank when this emission continues the previous group
+    /// rather than starting a new one. Call before writing, from every
+    /// top-level emitter.
+    pub(crate) fn open_top_group(&self, kind: TopGroup) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !s.section_stack.is_empty() || !s.blank_pending {
+            return;
+        }
+        let continues = match kind {
+            // A heading introduces what follows it, so it never binds to the
+            // heading above: two consecutive headings are two groups.
+            TopGroup::Heading => false,
+            _ => {
+                s.last_was_top_heading
+                    || (kind.runs_contiguously()
+                        && s.last_top_group == Some(kind)
+                        // Streamed lines and a buffered Doc's lines are
+                        // different groups even when the kind matches: the
+                        // seam between them keeps its one blank line.
+                        && (s.doc_depth > 0) == s.last_top_in_doc)
+            }
+        };
+        if continues {
+            s.blank_pending = false;
         }
     }
 
@@ -231,6 +330,7 @@ impl Renderer {
             return;
         }
         let styled = self.theme.header.apply_to(text).to_string();
+        self.open_top_group(TopGroup::Heading);
         self.write_line(w, 0, &styled);
         // Set the heading-just-emitted flag AFTER write_line (which clears
         // it). The next top-level kv_block consumes this to re-anchor itself
@@ -241,7 +341,7 @@ impl Renderer {
                 s.last_was_top_heading = true;
             }
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::Heading);
     }
 
     /// Bullet: glyph `-`, then space, then text. Uncolored. The renderer's only
@@ -251,7 +351,35 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
-        self.write_line(w, depth, &format!("- {}", text));
+        // The marker is structure, the text is content: muting the dash gives
+        // a run of bullets a scan column instead of leaving every character on
+        // the line at the terminal's default with nothing to read against.
+        let marker = self.theme.muted.apply_to("- ");
+        self.open_top_group(TopGroup::Bullet);
+        self.write_line(w, depth, &format!("{marker}{text}"));
+        self.mark_top_level_group(TopGroup::Bullet);
+    }
+
+    /// One line of live output from a child process, rendered dim and indented.
+    /// Unlike a spinner message — which repaints a fixed window in place and so
+    /// erases and rewrites the lines above it — this appends, letting output
+    /// scroll exactly as it would in a bare terminal with the cursor resting on
+    /// the last line. Claims no `TopGroup`: interleaving child output must not
+    /// insert group-boundary blank lines between consecutive lines.
+    pub fn render_stream_line(&self, w: &dyn Writer, depth: usize, text: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        self.flush_pending_section_headers(w);
+        // Streamed output is the body of the line that just announced the
+        // command, so it continues that group rather than starting one: without
+        // this the status line's pending blank lands between the announcement
+        // and the first line of its own output.
+        {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.blank_pending = false;
+        }
+        self.write_line(w, depth, &self.theme.muted.apply_to(text).to_string());
     }
 
     /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
@@ -266,8 +394,9 @@ impl Renderer {
             .muted
             .apply_to(format!("{} ", self.theme.icon_arrow));
         let body = self.theme.muted.apply_to(text);
+        self.open_top_group(TopGroup::Hint);
         self.write_line(w, depth, &format!("{}{}", arrow, body));
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::Hint);
     }
 
     /// Code block: a tight run of verbatim lines (e.g. a copy-pasteable YAML
@@ -282,10 +411,11 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        self.open_top_group(TopGroup::CodeBlock);
         for line in lines {
             self.write_line(w, depth, &self.theme.muted.apply_to(line).to_string());
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::CodeBlock);
     }
 
     /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
@@ -294,11 +424,12 @@ impl Renderer {
             return;
         }
         self.flush_pending_section_headers(w);
+        self.open_top_group(TopGroup::Note);
         for line in text.lines() {
             let dim = self.theme.muted.apply_to(line);
             self.write_line(w, depth, &dim.to_string());
         }
-        self.mark_top_level_blank_if_at_root();
+        self.mark_top_level_group(TopGroup::Note);
     }
 }
 
@@ -339,6 +470,86 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         (r, sink, buf)
+    }
+
+    /// The design system is only real if every free-text emitter routes its
+    /// line through a theme slot. "All output goes through `Printer`" checks
+    /// routing, not visual identity — which is how a notice reached the
+    /// terminal as bare default-coloured text sitting among themed output while
+    /// passing that gate cleanly. Table body cells are the one deliberate
+    /// exception: they carry caller data and take a `Role` per cell, opt-in.
+    #[test]
+    #[serial_test::serial]
+    fn every_free_text_emitter_applies_a_theme_style() {
+        use crate::output::Role;
+        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+
+        fn assert_styled(name: &str, emit: impl Fn(&Renderer, &StringSink)) {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = StringSink(buf.clone());
+            // Verbose so `note`, which is Verbose-only, still emits.
+            let r = Renderer::new(Theme::from_preset("dracula"), Verbosity::Verbose);
+            emit(&r, &sink);
+            let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            assert!(
+                out.contains('\u{1b}'),
+                "{name} emitted unstyled text: {out:?}"
+            );
+        }
+
+        assert_styled("heading", |r, s| r.render_heading(s, "h"));
+        assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b"));
+        assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
+        assert_styled("hint", |r, s| r.render_hint(s, 0, "h"));
+        assert_styled("code_block", |r, s| {
+            r.render_code_block(s, 0, &["c".to_string()])
+        });
+        assert_styled("note", |r, s| r.render_note(s, 0, "n"));
+        assert_styled("status", |r, s| {
+            r.render_status(
+                s,
+                0,
+                &status::StatusFields {
+                    role: Role::Info,
+                    subject: "s",
+                    detail: None,
+                    duration: None,
+                    target: None,
+                },
+            )
+        });
+        assert_styled("deprecation", |r, s| r.render_deprecation(s, 0, "d"));
+        assert_styled("table header", |r, s| {
+            r.render_table(s, 0, &Table::new(["col"]))
+        });
+    }
+
+    /// Streamed child output is the body of the announcement above it. A blank
+    /// line between the two reads as the command producing nothing and some
+    /// unrelated block following, which is exactly the seam a spinner used to
+    /// hide.
+    #[test]
+    fn streamed_lines_bind_to_the_status_that_announced_them() {
+        use crate::output::Role;
+        let status = |role: Role, subject: &'static str| status::StatusFields {
+            role,
+            subject,
+            detail: None,
+            duration: None,
+            target: None,
+        };
+
+        let (r, sink, buf) = capture();
+        r.render_status(&sink, 0, &status(Role::Running, "running a script"));
+        r.render_stream_line(&sink, 1, "first line of output");
+        r.render_stream_line(&sink, 1, "second line of output");
+        r.render_status(&sink, 0, &status(Role::Ok, "running a script"));
+
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(
+            !out.contains("\n\n"),
+            "blank line inside a streamed block: {out:?}"
+        );
     }
 
     #[test]
@@ -396,7 +607,7 @@ mod tests {
     fn bullet_uses_dash_glyph() {
         let (r, sink, buf) = capture();
         r.render_bullet(&sink, 1, "foo");
-        let s = buf.lock().unwrap();
+        let s = strip_ansi(&buf.lock().unwrap());
         assert!(s.contains("  - foo"), "got: {s:?}");
     }
 

@@ -66,7 +66,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_records_error_metric_
         .get();
     assert_eq!(
         count, 1,
-        "404-on-MC must record an error metric (H6 fix), not success"
+        "404-on-MC must record an error metric, not success"
     );
 
     let success_count = ctx
@@ -328,7 +328,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_uid_returns_error() {
     ]);
 
     let result = reconcile_drift_alert(Arc::new(alert), ctx).await;
-    let err = result.expect_err("missing UID must short-circuit (H7 fix)");
+    let err = result.expect_err("missing UID must short-circuit");
     let msg = err.to_string();
     assert!(
         msg.contains("has no UID"),

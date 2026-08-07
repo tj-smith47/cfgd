@@ -119,6 +119,7 @@ spec:
       iconRunning: string
       iconSkipped: string
       iconArrow: string
+      iconInfo: string
 
   ai:
     provider: string
@@ -543,6 +544,7 @@ strings. An omitted field inherits the value from the active theme.
 | `iconRunning` | string | Icon character for running state. |
 | `iconSkipped` | string | Icon character for skipped state. |
 | `iconArrow` | string | Icon character for directional arrows (e.g. plan output). |
+| `iconInfo` | string | Icon character for informational notices. Defaults to `⊙`; pick a glyph your terminal font carries, or the line renders with a tofu box in the icon column. |
 
 ---
 
@@ -635,6 +637,14 @@ skills (`cfgd skill update`).
 | `Manual` | Disable automatic update checks; the user runs `cfgd upgrade` themselves. |
 
 Values are matched case-insensitively.
+
+#### Suppressing the automatic check via environment
+
+Any of `CFGD_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER` (npm's `update-notifier`
+convention), or `DO_NOT_TRACK` (consoledonottrack.com) silences the automatic
+check regardless of `policy` — see
+[configuration.md](../configuration.md#suppressing-the-automatic-check) for
+the full precedence and value rules. `cfgd upgrade` (explicit) is unaffected.
 
 ---
 

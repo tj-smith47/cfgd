@@ -11,7 +11,7 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageContext, PackageManager};
 use cfgd_core::{command_available, command_available_with_seam, tool_cmd};
 
 use super::parsers::{
@@ -129,14 +129,14 @@ impl PackageManager for SimpleManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         let (prog, args) = self.list_cmd.split_first().unwrap_or((&"true", &[]));
         let output = run_pkg_cmd(self.mgr_name, cmd_with_seam(prog).args(args), "list")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok((self.parse_list)(&stdout))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         if packages.is_empty() {
             return Ok(());
         }
@@ -144,7 +144,7 @@ impl PackageManager for SimpleManager {
         let label = self.display_cmd(self.install_cmd, packages);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             self.mgr_name,
             cmd_with_seam(prog).args(args).args(packages),
             &label,
@@ -153,7 +153,7 @@ impl PackageManager for SimpleManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         if packages.is_empty() {
             return Ok(());
         }
@@ -161,7 +161,7 @@ impl PackageManager for SimpleManager {
         let label = self.display_cmd(self.uninstall_cmd, packages);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             self.mgr_name,
             cmd_with_seam(prog).args(args).args(packages),
             &label,
@@ -170,7 +170,7 @@ impl PackageManager for SimpleManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };
@@ -179,7 +179,8 @@ impl PackageManager for SimpleManager {
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         if self.ignore_update_exit {
             // dnf/yum check-update returns 100 when updates are available
-            let _ = printer
+            let _ = cx
+                .printer
                 .run(cmd_with_seam(prog).args(args), &label)
                 .map_err(|e| PackageError::CommandFailed {
                     manager: self.mgr_name.into(),
@@ -187,7 +188,7 @@ impl PackageManager for SimpleManager {
                 })?;
         } else {
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 self.mgr_name,
                 cmd_with_seam(prog).args(args),
                 &label,
@@ -201,13 +202,16 @@ impl PackageManager for SimpleManager {
         (self.query_version)(self.mgr_name, package)
     }
 
-    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        cx: &PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
         if let Some(f) = self.list_with_versions {
             f(self.mgr_name)
         } else {
             // Default: wrap installed_packages with "unknown"
             Ok(self
-                .installed_packages()?
+                .installed_packages(cx)?
                 .into_iter()
                 .map(|name| cfgd_core::providers::PackageInfo {
                     name,

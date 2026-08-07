@@ -1,7 +1,23 @@
 use super::constants::GIT_NETWORK_TIMEOUT;
 use super::paths::home_dir_var;
-use super::process::{command_output_with_timeout, stderr_lossy_trimmed, stdout_lossy_trimmed};
+use super::process::{
+    command_output_with_timeout, command_path, stderr_lossy_trimmed, stdout_lossy_trimmed,
+};
 use crate::config;
+
+/// Resolve the `git` program both factories below spawn.
+///
+/// `command_available("git")` answers from `$PATH` *plus* the directories of a
+/// package manager cfgd bootstrapped this run, but a bare `Command::new("git")`
+/// only walks `$PATH`. Resolving through the same lookup keeps availability and
+/// spawn from disagreeing — otherwise a git installed by a manager bootstrapped
+/// moments ago reports as present and then fails to spawn. Falls back to the
+/// bare name so the OS still performs its own lookup when resolution misses.
+fn git_program() -> std::ffi::OsString {
+    command_path("git")
+        .map(std::path::PathBuf::into_os_string)
+        .unwrap_or_else(|| std::ffi::OsString::from("git"))
+}
 
 /// Prepare a `git` CLI command with SSH hang protection.
 ///
@@ -20,11 +36,12 @@ pub fn git_cmd_safe(
     url: Option<&str>,
     ssh_policy: Option<config::SshHostKeyPolicy>,
 ) -> std::process::Command {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = std::process::Command::new(git_program());
     // git spawns credential-helper grandchildren (osxkeychain on macOS,
-    // git-credential-manager-core on Windows) that inherit stdout/stderr pipes
-    // and outlive the watchdog's SIGKILL of the immediate `git`, leaving
-    // `wait_with_output` blocked on the still-open pipes. `-c credential.helper=`
+    // git-credential-manager-core on Windows) that inherit the child's stderr
+    // pipe and outlive the watchdog's SIGKILL of the immediate `git`, so the
+    // captured stderr this function's callers report on is whatever the pipe
+    // readers managed to drain before they were abandoned. `-c credential.helper=`
     // resets the accumulated helper list (system + global + local) to empty so no
     // such grandchild launches — without discarding the rest of the user's git
     // config the way nulling GIT_CONFIG_GLOBAL/GIT_CONFIG_NOSYSTEM would, which
@@ -57,7 +74,7 @@ pub fn git_cmd_safe(
 /// network is involved. Use [`git_cmd_safe`] for any operation that talks to
 /// a remote.
 pub fn git_cmd_local() -> std::process::Command {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = std::process::Command::new(git_program());
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd
 }
@@ -70,6 +87,12 @@ pub fn try_git_cmd(
     label: &str,
     ssh_policy: Option<config::SshHostKeyPolicy>,
 ) -> bool {
+    // Hold the PATH read-lock across resolution + spawn: a concurrent test
+    // emptying `PATH` is a data race on `environ` that surfaces here as a git
+    // child that mysteriously fails to run. Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+
     let mut cmd = git_cmd_safe(url, ssh_policy);
     cmd.args(args);
     match command_output_with_timeout(&mut cmd, GIT_NETWORK_TIMEOUT) {
@@ -125,6 +148,12 @@ pub fn require_cosign() -> std::result::Result<(), String> {
 ///
 /// Callers should supply their own fallback (cfgd convention: `"master"`).
 pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
+    // Hold the PATH read-lock across resolution + spawn: a concurrent test
+    // emptying `PATH` is a data race on `environ` that surfaces here as a git
+    // child that mysteriously fails to run. Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+
     let dir = repo_dir.display().to_string();
 
     let mut cmd = git_cmd_safe(None, None);
@@ -164,6 +193,12 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
 /// Run a local git command in the current working directory and return its
 /// trimmed stdout, or `None` if git is missing or the command exits non-zero.
 fn git_output_cwd(args: &[&str]) -> Option<String> {
+    // Hold the PATH read-lock across resolution + spawn: a concurrent test
+    // emptying `PATH` is a data race on `environ` that surfaces here as a git
+    // child that mysteriously fails to run. Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+
     let output = git_cmd_local().args(args).output().ok()?;
     if output.status.success() {
         Some(stdout_lossy_trimmed(&output))
@@ -272,8 +307,10 @@ mod tests {
     #[test]
     fn git_cmd_local_sets_terminal_prompt_zero_and_no_ssh_env() {
         let cmd = git_cmd_local();
+        // `file_stem`, not `file_name`: the program is a resolved absolute path
+        // whenever `git` is on PATH, and carries `.exe` on Windows.
         let prog = std::path::Path::new(cmd.get_program())
-            .file_name()
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
         assert_eq!(prog, "git", "program must resolve to `git`");
@@ -293,6 +330,50 @@ mod tests {
             !envs.contains_key(std::ffi::OsStr::new("GIT_SSH_COMMAND")),
             "git_cmd_local is for local-only ops and must not configure GIT_SSH_COMMAND"
         );
+    }
+
+    #[test]
+    fn both_factories_spawn_the_program_command_path_resolves() {
+        // `command_available("git")` answers from `$PATH` plus the directories of
+        // a manager cfgd bootstrapped this run, but a bare `Command::new("git")`
+        // walks only `$PATH` — so a git installed by a just-bootstrapped manager
+        // reports present and then fails to spawn. Both factories must therefore
+        // carry whatever `command_path` resolved, never the bare name.
+        //
+        // Deliberately reads the ambient `$PATH` rather than emptying it: `PATH`
+        // is process-global, and the git-spawning tests in this workspace are not
+        // serialized, so an empty-`PATH` window here breaks them under
+        // `cargo test`'s thread-per-test model (it is invisible under nextest's
+        // process-per-test model). The registry-fallback half of `command_path`
+        // is pinned by `util::process::tests` against a tool name nothing else
+        // spawns.
+        //
+        // One read guard brackets every resolution below, so the baseline and
+        // the two factory resolutions all observe the same `PATH`; without it a
+        // writer landing between them flips the answer mid-comparison. Safe to
+        // hold: `command_path` and the factories read `PATH` directly and never
+        // re-take this lock, and nothing here spawns.
+        let _path = crate::test_helpers::path_env_read_guard();
+
+        let Some(resolved) = command_path("git") else {
+            // No git on this host: the factories must still hand the OS the bare
+            // name so it can perform its own lookup.
+            for cmd in [git_cmd_local(), git_cmd_safe(None, None)] {
+                assert_eq!(
+                    cmd.get_program(),
+                    std::ffi::OsStr::new("git"),
+                    "with no resolution the factories must fall back to the bare name"
+                );
+            }
+            return;
+        };
+        for cmd in [git_cmd_local(), git_cmd_safe(None, None)] {
+            assert_eq!(
+                std::path::Path::new(cmd.get_program()),
+                resolved.as_path(),
+                "factory must spawn the git that command_path resolved, not the bare name"
+            );
+        }
     }
 
     #[test]
@@ -377,6 +458,9 @@ mod tests {
         // must be run in a work tree" once the inherited cwd is deleted.
         let anchor = tmp.path().to_path_buf();
         let git = move |args: &[&str]| {
+            // `git` resolves through `PATH` at spawn time, so this child must not
+            // overlap a concurrent test's empty-`PATH` window.
+            let _spawn = crate::test_helpers::path_env_read_guard();
             let ok = super::git_cmd_local()
                 .current_dir(&anchor)
                 .args(["-c", "commit.gpgsign=false"])
@@ -449,6 +533,7 @@ mod tests {
         use crate::test_helpers::CwdGuard;
 
         fn git(dir: &std::path::Path, args: &[&str]) {
+            let _spawn = crate::test_helpers::path_env_read_guard();
             let status = super::super::git_cmd_local()
                 .args(args)
                 .current_dir(dir)

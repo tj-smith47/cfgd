@@ -226,11 +226,71 @@ impl ScriptPhase {
     }
 }
 
+/// Sub-phase within a module's own slice of the Modules phase — gives a
+/// per-module apply per-section headings (`nvim / Packages`, `nvim / Files`,
+/// ...) instead of lumping every module step under one "Modules" heading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ModuleSection {
+    PreScripts,
+    Packages,
+    Files,
+    PostScripts,
+    Skipped,
+}
+
+impl ModuleSection {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ModuleSection::PreScripts => "pre-scripts",
+            ModuleSection::Packages => "packages",
+            ModuleSection::Files => "files",
+            ModuleSection::PostScripts => "post-scripts",
+            ModuleSection::Skipped => "skipped",
+        }
+    }
+
+    pub fn display_name(&self) -> &str {
+        match self {
+            ModuleSection::PreScripts => "Pre-Scripts",
+            ModuleSection::Packages => "Packages",
+            ModuleSection::Files => "Files",
+            ModuleSection::PostScripts => "Post-Scripts",
+            ModuleSection::Skipped => "Skipped",
+        }
+    }
+}
+
+/// Which module and section a split `Phase` (always `name ==
+/// PhaseName::Modules`) belongs to. `None` on every phase outside the
+/// Modules phase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModuleScope {
+    pub module: String,
+    pub section: ModuleSection,
+}
+
 /// A phase in the reconciliation plan.
 #[derive(Debug, Serialize)]
 pub struct Phase {
     pub name: PhaseName,
     pub actions: Vec<Action>,
+    /// `Some` only for `PhaseName::Modules` phases, which are split per
+    /// (module, section) run. `None` for every other phase.
+    pub scope: Option<ModuleScope>,
+}
+
+impl Phase {
+    /// The heading string for this phase — the ONE place it is built. Every
+    /// display call site (plan table, apply preview, scope report) must use
+    /// this instead of `name.display_name()` directly, or a module-scoped
+    /// phase renders as the bare "Modules" heading instead of `"{module} /
+    /// {section}"`.
+    pub fn display_label(&self) -> String {
+        match &self.scope {
+            Some(scope) => format!("{} / {}", scope.module, scope.section.display_name()),
+            None => self.name.display_name().to_string(),
+        }
+    }
 }
 
 /// A complete reconciliation plan.
@@ -302,8 +362,12 @@ pub struct ApplyResult {
 pub struct RollbackResult {
     pub files_restored: usize,
     pub files_removed: usize,
-    /// Non-file actions that were not rolled back (require manual review).
-    pub non_file_actions: Vec<String>,
+    /// Non-file actions that were not rolled back (require manual review),
+    /// as (action_type, resource_id) pairs. `resource_id` for a "script"
+    /// entry is the raw journal-recorded run_str body — kept alongside its
+    /// type so a display site (`cli/rollback.rs`) can condense it without
+    /// mistaking an unrelated resource_id (e.g. a package name) for one.
+    pub non_file_actions: Vec<(String, String)>,
 }
 
 impl ApplyResult {

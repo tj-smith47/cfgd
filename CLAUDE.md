@@ -17,15 +17,17 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 - `.claude/rules/module-boundaries.md` — `std::process::Command` allow-list
 - `.claude/rules/path-handling.md` — fold paths to `/` at every cross-OS string boundary (`posix()` / `to_posix_string`; native only for logs and human-facing errors)
 - `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
+- `.claude/rules/structured-output-coverage.md` — `cmd_*` → `has_data_payload?` table (loads for `crates/cfgd/src/cli/**`)
 - `.claude/rules/database.md` — SQLite conventions (WAL, foreign_keys, versioned migrations)
 - `.claude/rules/style.md` — formatting, linting, naming, serde
 - `.claude/rules/patterns.md` — builder, trait objects, tracing
 - `.claude/rules/testing.md` — `cargo test` gating and test placement
-- `.claude/rules/module-map.md` — full crate/module layout
 - `.claude/rules/workflows.md` — GitHub Actions SSOT map + job invariants (loads for `.github/**`)
-- `.claude/rules/user-layer-notes.md` — how user-level hooks layer on top of project hooks
 
 ## Reference docs (load on demand)
+- `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
+- `.claude/rules/module-map.md` — full crate/module layout
+- `.claude/rules/user-layer-notes.md` — how user-level hooks layer on top of project hooks
 - `docs/` — user-facing documentation (`configuration.md` has the YAML schema reference)
 - `.claude/kubernetes-first-class.md` — Kubernetes ecosystem engineering spec (CRDs, controllers, webhooks, CSI, OCI, multi-tenancy, Crossplane)
 

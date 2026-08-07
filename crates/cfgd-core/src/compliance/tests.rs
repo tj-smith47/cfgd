@@ -372,7 +372,13 @@ fn watch_path_nonexistent() {
 #[test]
 fn watch_package_manager_not_available() {
     let registry = ProviderRegistry::new();
-    let checks = collect_watched_package_manager_checks("nonexistent-pm", &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_watched_package_manager_checks("nonexistent-pm", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "watchPackage");
     assert_eq!(checks[0].status, ComplianceStatus::Warning);
@@ -394,7 +400,13 @@ fn watch_package_manager_returns_installed() {
         StubPackageManager::new("mock").with_installed(&["ripgrep", "fd"]),
     ));
 
-    let checks = collect_watched_package_manager_checks("mock", &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_watched_package_manager_checks("mock", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 2);
     assert!(checks.iter().all(|c| c.category == "watchPackage"));
     assert!(
@@ -498,7 +510,13 @@ fn collect_package_checks_installed_package_compliant() {
         StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
     ));
 
-    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
     assert_eq!(checks[0].name.as_deref(), Some("ripgrep"));
@@ -525,7 +543,13 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
             .with_installed(&["wget"]),
     ));
 
-    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(
         checks[0].status,
@@ -547,7 +571,13 @@ fn collect_package_checks_missing_package_violation() {
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
 
-    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
     assert!(
@@ -570,7 +600,13 @@ fn collect_package_checks_empty_desired_skips_manager() {
         StubPackageManager::new("pipx").with_installed(&["curl"]),
     ));
 
-    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert!(checks.is_empty(), "no desired packages = no checks");
 }
 
@@ -589,7 +625,13 @@ fn collect_package_checks_manager_query_error_emits_warning_and_skips_packages()
         StubPackageManager::new("pipx").with_installed_error("permission denied: /var/lib/pipx"),
     ));
 
-    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1, "single Warning per unqueryable manager");
     assert_eq!(checks[0].category, "package");
     assert_eq!(checks[0].manager.as_deref(), Some("pipx"));
@@ -620,7 +662,13 @@ fn watch_package_manager_query_error_emits_warning() {
             .with_installed_error("snapd not responding (no such file or directory)"),
     ));
 
-    let checks = collect_watched_package_manager_checks("snap", &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_watched_package_manager_checks("snap", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "watchPackage");
     assert_eq!(checks[0].manager.as_deref(), Some("snap"));
@@ -653,7 +701,13 @@ fn collect_package_checks_multiple_managers() {
         .package_managers
         .push(Box::new(StubPackageManager::new("dnf").with_installed(&[])));
 
-    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 2);
     let pipx_check = checks
         .iter()
@@ -1345,7 +1399,13 @@ fn collect_package_checks_includes_module_only_package() {
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
 
-    let checks = collect_package_checks(&profile, &[m], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[m], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].name.as_deref(), Some("ripgrep"));
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
@@ -1373,7 +1433,13 @@ fn collect_package_checks_skips_unavailable_manager() {
     }];
 
     let registry = ProviderRegistry::new();
-    let checks = collect_package_checks(&profile, &[m], &registry).unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext {
+        printer: &printer,
+        state: &state,
+    };
+    let checks = collect_package_checks(&profile, &[m], &registry, &cx).unwrap();
     assert!(
         checks.is_empty(),
         "package for an unavailable manager must be skipped: {checks:?}"
@@ -1469,6 +1535,8 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
             }],
         )));
 
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
     let snapshot = collect_snapshot(
         "default",
         &profile,
@@ -1477,6 +1545,8 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         &registry,
         &ComplianceScope::default(),
         &["local".to_string()],
+        &printer,
+        &state,
     )
     .unwrap();
 

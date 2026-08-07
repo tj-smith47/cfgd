@@ -3,7 +3,7 @@
 //! Before this module, the same `MAX_RETRIES = 3` and `500ms * 2^n` backoff
 //! math was inlined at `server_client::post_with_retry` (sync/ureq) and
 //! `gateway::api::create_drift_alert_crd` (async/kube). Three timeouts had
-//! already drifted when the dedup audit flagged it.
+//! already drifted apart between those copies.
 //!
 //! Call sites retain their own error classification — the sync site retries
 //! on `ureq::Error::Transport` and 5xx, the async site retries on any kube

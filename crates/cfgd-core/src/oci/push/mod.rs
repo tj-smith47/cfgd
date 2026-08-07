@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OciError;
-use crate::output::Printer;
+use crate::output::{Printer, collapse_to_subject_line};
 
 use super::archive::create_tar_gz;
 use super::auth::RegistryAuth;
@@ -34,11 +34,22 @@ pub fn push_module(
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
     let spinner = printer.map(|p| p.spinner(format!("Pushing module to {artifact_ref}...")));
-    let (digest, _size) = push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)?;
-    if let Some(s) = spinner {
-        let _ = s.finish_ok(format!("Pushed module to {artifact_ref}"));
+    match push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform) {
+        Ok((digest, _size)) => {
+            if let Some(s) = spinner {
+                let _ = s.finish_ok(format!("Pushed module to {artifact_ref}"));
+            }
+            Ok(digest)
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_fail(format!("Failed to push module to {artifact_ref}"))
+                    .detail(collapse_to_subject_line(&e));
+            }
+            Err(e)
+        }
     }
-    Ok(digest)
 }
 
 /// Inner push logic shared by single-platform and multi-platform push.
@@ -214,6 +225,43 @@ pub fn push_module_multiplatform(
         ))
     });
 
+    let result = push_multiplatform_manifests_and_index(&agent, builds, &oci_ref, auth.as_ref());
+
+    match &result {
+        Ok(index_digest) => {
+            if let Some(s) = spinner {
+                let _ = s.finish_ok(format!("Pushed multi-platform module to {artifact_ref}"));
+            }
+            tracing::info!(
+                reference = %oci_ref,
+                digest = %index_digest,
+                platforms = builds.len(),
+                "multi-platform module pushed"
+            );
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_fail(format!(
+                        "Failed to push multi-platform module to {artifact_ref}"
+                    ))
+                    .detail(collapse_to_subject_line(e));
+            }
+        }
+    }
+
+    result
+}
+
+/// Push each platform's manifest, then the OCI index tying them together.
+/// Factored out of [`push_module_multiplatform`] so every fallible step runs
+/// under one `Result` the caller can pattern-match once to drive the spinner.
+fn push_multiplatform_manifests_and_index(
+    agent: &ureq::Agent,
+    builds: &[(&Path, &str)],
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+) -> Result<String, OciError> {
     let mut platform_manifests = Vec::new();
 
     for (dir, platform) in builds {
@@ -227,8 +275,7 @@ pub fn push_module_multiplatform(
             reference: ReferenceKind::Tag(platform_tag),
         };
 
-        let (digest, size) =
-            push_module_inner(&agent, dir, &platform_ref, auth.as_ref(), Some(platform))?;
+        let (digest, size) = push_module_inner(agent, dir, &platform_ref, auth, Some(platform))?;
 
         platform_manifests.push(OciPlatformManifest {
             media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
@@ -257,10 +304,10 @@ pub fn push_module_multiplatform(
     );
 
     let index_resp = authenticated_request(
-        &agent,
+        agent,
         "PUT",
         &index_url,
-        auth.as_ref(),
+        auth,
         None,
         Some(MEDIA_TYPE_OCI_INDEX),
         Some(&index_json),
@@ -269,20 +316,7 @@ pub fn push_module_multiplatform(
         message: format!("index push failed: {e}"),
     })?;
 
-    let index_digest = resolve_pushed_digest(&index_resp, &index_json);
-
-    if let Some(s) = spinner {
-        let _ = s.finish_ok(format!("Pushed multi-platform module to {artifact_ref}"));
-    }
-
-    tracing::info!(
-        reference = %oci_ref,
-        digest = %index_digest,
-        platforms = builds.len(),
-        "multi-platform module pushed"
-    );
-
-    Ok(index_digest)
+    Ok(resolve_pushed_digest(&index_resp, &index_json))
 }
 
 #[cfg(test)]

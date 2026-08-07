@@ -19,10 +19,22 @@ pub struct ModuleListEntry {
     pub depends: usize,
 }
 
+/// The manifest-derived `metadata` of the `module show` payload — so
+/// `-o jsonpath='{.metadata.version}'` answers "what version is this module?"
+/// without anything parsing YAML. The module's name is not repeated here; the
+/// payload's top-level `name` is the one selector for that fact.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleShowMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleShowOutput {
     pub name: String,
+    pub metadata: ModuleShowMetadata,
     pub directory: String,
     pub source: String,
     pub depends: Vec<String>,

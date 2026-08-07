@@ -1,3 +1,2 @@
 Remove Module Registry
-
 ✗ Registry 'ghost' not found

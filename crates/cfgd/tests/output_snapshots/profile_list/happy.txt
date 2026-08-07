@@ -1,5 +1,3 @@
 Available Profiles
-
 ✓ default (active)
-
-work
+⊙ work

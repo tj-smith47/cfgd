@@ -5,7 +5,7 @@ use std::process::Command;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageContext, PackageManager};
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
 
@@ -86,6 +86,14 @@ impl ScriptedManager {
         if packages.is_empty() {
             return Ok(());
         }
+        // Held across every invocation below: a concurrent test narrowing PATH
+        // races the shell (and, transitively, the coreutils it pipes to) this
+        // spawns. `cfg(test)` rather than a feature gate because cfgd-core's
+        // `test-helpers` is enabled only through cfgd's dev-dependencies, so the
+        // module does not exist in a release build and cfgd declares no feature
+        // of its own to test for.
+        #[cfg(test)]
+        let _path_guard = cfgd_core::test_helpers::path_env_read_guard();
         let invocations = build_template_invocations(template, packages);
         if template.contains("{package}") {
             // One-at-a-time mode — each package emitted as its own command,
@@ -147,6 +155,8 @@ impl PackageManager for ScriptedManager {
     }
 
     fn is_available(&self) -> bool {
+        #[cfg(test)]
+        let _path_guard = cfgd_core::test_helpers::path_env_read_guard();
         shell_command(&self.check_cmd)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -163,7 +173,9 @@ impl PackageManager for ScriptedManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        #[cfg(test)]
+        let _path_guard = cfgd_core::test_helpers::path_env_read_guard();
         let output = run_pkg_cmd(&self.mgr_name, &mut shell_command(&self.list_cmd), "list")?;
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -172,17 +184,19 @@ impl PackageManager for ScriptedManager {
             .collect())
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
-        self.run_template(&self.install_cmd, packages, printer, "install")
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        self.run_template(&self.install_cmd, packages, cx.printer, "install")
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
-        self.run_template(&self.uninstall_cmd, packages, printer, "uninstall")
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        self.run_template(&self.uninstall_cmd, packages, cx.printer, "uninstall")
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         if let Some(ref cmd) = self.update_cmd {
-            printer.status_simple(Role::Info, cmd.as_str());
+            #[cfg(test)]
+            let _path_guard = cfgd_core::test_helpers::path_env_read_guard();
+            cx.printer.status_simple(Role::Info, cmd.as_str());
             run_pkg_cmd_msg(
                 &self.mgr_name,
                 &mut shell_command(cmd),

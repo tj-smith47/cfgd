@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -120,6 +120,9 @@ pub fn build_module_show_doc(
 ) -> Doc {
     let mut doc = Doc::new().heading(format!("Module: {}", output.name));
 
+    if let Some(version) = &output.metadata.version {
+        doc = doc.kv("Version", version);
+    }
     if !output.depends.is_empty() {
         doc = doc.kv("Dependencies", output.depends.join(", "));
     }
@@ -278,8 +281,19 @@ pub(crate) fn cmd_module_show(
     show_values: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let cache_base = module_cache_dir(cli)?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
+
+    // Showing a LOCAL module must not drag every locked remote module through a
+    // git fetch: `load_all_modules` clones each lockfile entry, so one private
+    // module without a usable credential would fail a read of an unrelated
+    // local one. Local modules win the merge either way, so a local hit here is
+    // the same module the full load would have returned.
+    let local_modules = modules::load_modules(&config_dir)?;
+    let all_modules = if local_modules.contains_key(name) {
+        local_modules
+    } else {
+        let cache_base = module_cache_dir(cli)?;
+        modules::load_all_modules(&config_dir, &cache_base, &[], printer)?
+    };
 
     let module = match all_modules.get(name) {
         Some(m) => m,
@@ -303,7 +317,10 @@ pub(crate) fn cmd_module_show(
 
     let output = ModuleShowOutput {
         name: name.to_string(),
-        directory: module.dir.display().to_string(),
+        metadata: ModuleShowMetadata {
+            version: module.version.clone(),
+        },
+        directory: cfgd_core::to_posix_string(&module.dir),
         source: source_type.to_string(),
         depends: module.spec.depends.clone(),
         state: state_rec,
@@ -377,7 +394,9 @@ pub(crate) fn cmd_module_show(
         .map(|s| {
             s.post_apply
                 .iter()
-                .map(|e| e.run_str().to_string())
+                // Each entry renders as its own `.status()` subject below,
+                // which must never carry a multi-line inline script body raw.
+                .map(|e| condense_script_label(e.run_str()))
                 .collect()
         })
         .unwrap_or_default();

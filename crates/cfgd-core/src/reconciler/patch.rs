@@ -22,7 +22,8 @@ use crate::errors::{FileError, Result};
 use crate::modules::ResolvedModule;
 
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, build_module_script_env, run_filter_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, run_filter_script,
+    script_default_workdir,
 };
 use super::types::{ReconcileContext, ScriptPhase};
 
@@ -100,15 +101,22 @@ impl PatchBinding {
     /// scripts resolve against the config directory and see the standard
     /// `CFGD_*` metadata with no module attribution.
     pub fn profile(config_dir: &Path, profile_name: &str, context: ReconcileContext) -> Self {
+        let path_dirs: Vec<String> = crate::bootstrapped_path_dirs()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         Self {
             script_dir: config_dir.to_path_buf(),
             env: build_module_script_env(
-                config_dir,
-                profile_name,
-                context,
-                &ScriptPhase::Patch,
-                None,
-                None,
+                &ScriptEnvContext {
+                    config_dir,
+                    profile_name,
+                    context,
+                    phase: &ScriptPhase::Patch,
+                    module_name: None,
+                    module_dir: None,
+                    path_dirs: &path_dirs,
+                },
                 &[],
             ),
         }
@@ -123,15 +131,22 @@ impl PatchBinding {
         context: ReconcileContext,
         module: &ResolvedModule,
     ) -> Self {
+        let path_dirs: Vec<String> = crate::bootstrapped_path_dirs()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         Self {
             script_dir: module.dir.clone(),
             env: build_module_script_env(
-                config_dir,
-                profile_name,
-                context,
-                &ScriptPhase::Patch,
-                Some(&module.name),
-                Some(&module.dir),
+                &ScriptEnvContext {
+                    config_dir,
+                    profile_name,
+                    context,
+                    phase: &ScriptPhase::Patch,
+                    module_name: Some(&module.name),
+                    module_dir: Some(&module.dir),
+                    path_dirs: &path_dirs,
+                },
                 &module.env,
             ),
         }

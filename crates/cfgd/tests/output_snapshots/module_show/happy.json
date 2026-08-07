@@ -3,6 +3,9 @@
     "base"
   ],
   "directory": "/etc/cfgd/modules/dev-tools",
+  "metadata": {
+    "version": "1.4.0"
+  },
   "name": "dev-tools",
   "source": "remote",
   "spec": {

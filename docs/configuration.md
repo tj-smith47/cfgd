@@ -177,6 +177,33 @@ same four values **plus** `Inherit`, which is its default:
 | `Inherit` *(default)* | use the binary `spec.update.policy` value |
 | `Auto` / `Prompt` / `Notify` / `Manual` | as above, but for skill refresh only |
 
+### Suppressing the automatic check
+
+Three environment variables silence the *automatic* update check (CLI startup
+and the daemon sync loop) regardless of `spec.update.policy`, checked in this
+order:
+
+| Variable | Convention |
+|---|---|
+| `CFGD_NO_UPDATE_CHECK` | cfgd's own, most specific |
+| `NO_UPDATE_NOTIFIER` | shared with npm's `update-notifier` |
+| `DO_NOT_TRACK` | [consoledonottrack.com](https://consoledonottrack.com) |
+
+A variable counts as "set" when it is present and, after lowercasing and
+trimming, is not one of `""`, `"0"`, or `"false"` — so `DO_NOT_TRACK=0` means
+"do track", not "opt out". The same rule applies to all three; there is no
+per-variable special case.
+
+```sh
+DO_NOT_TRACK=1 cfgd status   # no "Update available" line, ever
+DO_NOT_TRACK=0 cfgd status   # NOT an opt-out — checks run as normal
+```
+
+**Explicit `cfgd upgrade` (and `cfgd upgrade --check`) is never suppressed** —
+the opt-out silences the automatic check only; a user who asks for an update
+check always gets one. `cfgd doctor` reports which variable, if any, is
+currently suppressing the automatic check.
+
 ### At most one update surface, ever
 
 Skill staleness is a *consequence* of a binary version change (a skill is stale
@@ -247,6 +274,25 @@ my-config/
     ├── pre-setup.sh
     └── post-setup.sh
 ```
+
+Each `modules/<name>/module.yaml` may declare its own release version under
+`metadata.version` (strict semver, optional) — the value `cfgd workflow generate`'s
+release job tags and `cfgd module show <name> -o jsonpath='{.metadata.version}'` reports:
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  version: 1.4.0
+
+spec:
+  packages:
+    - name: neovim
+```
+
+`1.4.0`, `2.0.0-rc.1`, and `1.0.0+build.5` are accepted; `0.10`, `v1.2.3`, and `latest`
+are rejected at parse time. See the [Module spec reference](spec/module.md#metadataversion).
 
 Each profile is a self-contained bundle: a fixed-name `profiles/<name>/profile.yaml`
 manifest alongside its own `files/` payload directory (mirroring the
@@ -710,6 +756,7 @@ On Linux, cfgd supports desktop environment-specific system configurators in add
 | Desktop configurators | `gsettings` (GNOME/GTK), `kdeConfig` (KDE Plasma), `xfconf` (XFCE) — each active only when its CLI tool is installed |
 | System configurators | `systemdUnits`, `environment`; plus node-level configurators (`sysctl`, `kernelModules`, `containerd`, `kubelet`, `apparmor`, `seccomp`, `certificates`) |
 | `spec.env` reach | `envScope: All` (default) writes `~/.config/environment.d/cfgd.conf` (read by `systemd --user` + Wayland GUI sessions) and refreshes the live session via `systemctl --user set-environment` |
+| Bootstrapped `PATH` | An apply that bootstraps Homebrew records `/home/linuxbrew/.linuxbrew/{bin,sbin}` and exports them from `~/.cfgd.env`, sourced by `~/.bashrc`/`~/.zshrc` — no `brew shellenv` line to add by hand. A brew you installed yourself is left untouched |
 | Daemon service | Registered as a systemd user service; starts at login |
 
 ## Windows
@@ -721,6 +768,7 @@ On Windows, cfgd supports the same configuration structure with these platform-s
 | Package managers | `winget`, `chocolatey`, `scoop` (in addition to cross-platform managers like `cargo`, `npm`, `pipx`) |
 | System configurators | `windowsRegistry`, `windowsServices`; `shell` targets Windows Terminal; `environment` writes to `HKCU\Environment` via `setx` |
 | `spec.env` reach | Writes `~/.cfgd-env.ps1` dot-sourced from the PowerShell profiles (and Git Bash rc when present); `envScope: All` (default) also persists vars to `HKCU\Environment` via `setx` |
+| Reload reminder | After an apply changes your env, cfgd names the file your current shell can read — `. ~/.cfgd-env.ps1` under PowerShell, `source ~/.cfgd.env` under Git Bash / MSYS2 (detected via `MSYSTEM`, falling back to `SHELL`) |
 | File strategy | `Symlink` requires Developer Mode or an elevated prompt; `Copy` is a safe default |
 | Daemon service | Registered as a Windows Service via `sc.exe`; starts at boot; logs to `%LOCALAPPDATA%\cfgd\daemon.log` |
 | Config directory | `%APPDATA%\cfgd` (equivalent to `~/.config/cfgd` on Unix) |
@@ -777,10 +825,16 @@ These flags work with any subcommand:
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
+| | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
+| | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
+| | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
 
 Boolean env vars accept shell-truthy spellings, not just `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)
-enable, `0`/`n`/`no`/`f`/`false`/`off` disable.
+enable, `0`/`n`/`no`/`f`/`false`/`off` disable. The three update-check opt-out
+variables above are the exception — they follow the npm/consoledonottrack
+rule instead (anything except `""`/`"0"`/`"false"` opts out); see
+[Suppressing the automatic check](#suppressing-the-automatic-check).
 
 ```sh
 CFGD_QUIET=1   cfgd profile list -o name   # same as -q

@@ -1,5 +1,4 @@
 Compliance Export
-
 ✓ Compliance snapshot written to /var/log/compliance/snapshot-2026-05-17-1234567.json
 
 Summary

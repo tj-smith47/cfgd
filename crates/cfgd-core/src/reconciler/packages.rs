@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::errors::Result;
 use crate::output::{Printer, Role};
-use crate::providers::{PackageAction, PackageManager};
+use crate::providers::{PackageAction, PackageContext, PackageManager};
 
 /// Compute stale package-tracking rows to garbage-collect: cfgd-tracked packages
 /// whose identity is no longer reported by their manager's `installed_packages`.
@@ -18,6 +18,7 @@ use crate::providers::{PackageAction, PackageManager};
 pub fn stale_tracked_packages(
     managers: &[&dyn PackageManager],
     cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
 ) -> Result<Vec<(String, String)>> {
     let mut stale = Vec::new();
     for manager in managers {
@@ -32,7 +33,7 @@ pub fn stale_tracked_packages(
         if tracked.is_empty() {
             continue;
         }
-        let installed = manager.installed_packages()?;
+        let installed = manager.installed_packages(cx)?;
         for id in tracked {
             if !installed.contains(id) {
                 stale.push((manager.name().to_string(), id.to_string()));
@@ -48,12 +49,25 @@ impl<'a> super::Reconciler<'a> {
         action: &PackageAction,
         printer: &Printer,
     ) -> Result<String> {
+        let cx = PackageContext {
+            printer,
+            state: self.state,
+        };
         match action {
             PackageAction::Bootstrap { manager, .. } => {
                 // Find in ALL managers (not just available — it isn't available yet)
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
                         pm.bootstrap(printer)?;
+                        // Profile-level packages reach bootstrap through here
+                        // rather than through the Modules phase, so this site
+                        // owes the same record — without it a profile that names
+                        // only `spec.packages` never gets the manager on PATH.
+                        // It precedes the availability check because that check
+                        // resolves the binary, and a manager installed into a
+                        // prefix this process never inherited only becomes
+                        // resolvable once its directories are registered.
+                        self.record_bootstrap_path_dirs(pm.as_ref(), printer);
                         if !pm.is_available() {
                             return Err(crate::errors::PackageError::BootstrapFailed {
                                 manager: manager.clone(),
@@ -78,7 +92,7 @@ impl<'a> super::Reconciler<'a> {
                         // module path), but build the tracking description from
                         // IDENTITIES so the tracked key matches what prune later
                         // compares against (`go/2fa`, not `go/rsc.io/2fa`).
-                        pm.install(packages, printer)?;
+                        pm.install(packages, &cx)?;
                         let identities: Vec<String> =
                             packages.iter().map(|p| pm.package_identity(p)).collect();
                         return Ok(format!(
@@ -98,7 +112,7 @@ impl<'a> super::Reconciler<'a> {
             } => {
                 for pm in self.registry.available_package_managers() {
                     if pm.name() == manager {
-                        pm.uninstall(packages, printer)?;
+                        pm.uninstall(packages, &cx)?;
                         return Ok(format!(
                             "package:{}:uninstall:{}",
                             manager,

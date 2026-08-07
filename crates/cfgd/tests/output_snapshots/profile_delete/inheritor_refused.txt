@@ -1,3 +1,2 @@
 Delete Profile: work
-
 ✗ Cannot delete 'work' — inherited by: child

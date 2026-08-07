@@ -1,8 +1,8 @@
 //! Walk a `Doc` tree and dispatch each `Component` to the matching `Renderer`
 //! method. Pure dispatcher — no layout, theming, or verbosity logic lives here.
 //!
-//! `Printer::render` is the force-human-render entry; `Printer::emit` (T24)
-//! will route by `OutputFormat` and fall back to `render` for human formats.
+//! `Printer::render` is the force-human-render entry; `Printer::emit` routes
+//! by `OutputFormat` and falls back to `render` for human formats.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,6 +12,7 @@ use super::doc::Doc;
 use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
+    renderer.enter_doc();
     if let Some(h) = &doc.heading {
         renderer.render_heading(sink, h);
     }
@@ -19,6 +20,7 @@ pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
         render_component(renderer, sink, child, /*depth=*/ 0);
     }
     renderer.flush_kv_buffer(sink);
+    renderer.exit_doc();
 }
 
 fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth: usize) {
@@ -112,7 +114,9 @@ mod row_roles_round_trip_tests {
 
     use super::*;
     use crate::output::renderer::Renderer;
+    use crate::output::test_support::ColorsEnabledGuard;
     use crate::output::{Role, Theme, Verbosity};
+    use crate::test_helpers::EnvVarGuard;
     use std::sync::{Arc, Mutex};
 
     struct StringSink(Arc<Mutex<String>>);
@@ -124,17 +128,15 @@ mod row_roles_round_trip_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn doc_table_row_roles_reach_renderer_with_truecolor_escapes() {
-        let _restore_no_color = std::env::var("NO_COLOR").ok();
-        let _restore_colorterm = std::env::var("COLORTERM").ok();
-        // SAFETY: setting env in a test process; restored in best-effort fashion
-        // below. Single-threaded test enforced by serial_test in callers that need it.
-        unsafe {
-            std::env::set_var("COLORTERM", "truecolor");
-            std::env::remove_var("NO_COLOR");
-        }
-        let was_enabled = console::colors_enabled();
-        console::set_colors_enabled(true);
+        // `NO_COLOR`/`COLORTERM` and the `console` colour flags are all
+        // process-global; every guard below restores on unwind. The colour
+        // guard also pins the flags, so a concurrent structured-output
+        // `Printer` construction cannot clear them mid-render.
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _colorterm = EnvVarGuard::set("COLORTERM", "truecolor");
+        let _colors = ColorsEnabledGuard::set(true);
 
         let theme = Theme::from_preset("dracula");
         let renderer = Renderer::new(theme, Verbosity::Normal);
@@ -161,17 +163,5 @@ mod row_roles_round_trip_tests {
             out.contains(dracula_orange),
             "accent (orange) must reach renderer; got:\n{out:?}"
         );
-
-        console::set_colors_enabled(was_enabled);
-        unsafe {
-            match _restore_no_color {
-                Some(v) => std::env::set_var("NO_COLOR", v),
-                None => std::env::remove_var("NO_COLOR"),
-            }
-            match _restore_colorterm {
-                Some(v) => std::env::set_var("COLORTERM", v),
-                None => std::env::remove_var("COLORTERM"),
-            }
-        }
     }
 }

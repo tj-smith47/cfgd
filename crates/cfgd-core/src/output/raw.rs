@@ -90,6 +90,22 @@ impl super::Printer {
     pub fn data_line(&self, text: &str) {
         self.sink_stdout.write_line(text);
     }
+
+    /// One line of live child-process output, dim and rendered at `depth`.
+    ///
+    /// This is the un-windowed fallback, not a general-purpose surface: it
+    /// appends and never reclaims the line. Reach for
+    /// [`super::Printer::output_window_at`] instead — it owns the decision
+    /// between a bounded repainting tail and this, and callers that pick
+    /// streaming by hand are how a step's whole output ends up in the
+    /// scrollback on a terminal that could have collapsed it.
+    ///
+    /// The caller sanitizes each line first (child ANSI would otherwise
+    /// execute against the real terminal).
+    pub(crate) fn stream_line_at(&self, depth: usize, text: &str) {
+        self.renderer
+            .render_stream_line(self.sink_stderr.as_ref(), depth, text);
+    }
 }
 
 #[cfg(test)]

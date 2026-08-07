@@ -650,3 +650,31 @@ fn copy_dir_mode_failure_never_fails_the_copy() {
     let src = tempfile::TempDir::new().unwrap();
     super::carry_dir_mode(src.path(), &src.path().join("does-not-exist"));
 }
+
+#[test]
+fn fs_key_folding_is_reversible_or_absent() {
+    // The two `file_path` columns are reopened as real paths, so this key must
+    // round-trip. Windows cannot spell a filename containing a backslash, which
+    // is exactly why folding is safe there and wrong anywhere else.
+    let native = std::path::Path::new("dir").join("nested.conf");
+    assert_eq!(
+        crate::to_posix_fs_key(&native),
+        "dir/nested.conf",
+        "a native separator must reach the database as `/` on every host"
+    );
+
+    #[cfg(not(windows))]
+    {
+        let odd = std::path::Path::new(r"/home/me/od\d.conf");
+        assert_eq!(
+            crate::to_posix_fs_key(odd),
+            r"/home/me/od\d.conf",
+            "a POSIX filename containing a backslash names a different file once folded"
+        );
+        assert_eq!(
+            crate::to_posix_string(odd),
+            "/home/me/od/d.conf",
+            "to_posix_string still folds unconditionally; it is for compare-only keys"
+        );
+    }
+}

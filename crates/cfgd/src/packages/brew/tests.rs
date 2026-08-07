@@ -96,7 +96,9 @@ fn brew_cask_manager_name_and_bootstrap() {
 fn brew_tap_manager_update_is_noop() {
     let mgr = BrewTapManager;
     let printer = cfgd_core::test_helpers::test_printer();
-    mgr.update(&printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    mgr.update(&cx).unwrap();
 }
 
 #[test]
@@ -109,13 +111,18 @@ fn brew_tap_manager_available_version_is_none() {
 fn brew_cask_manager_update_is_noop() {
     let mgr = BrewCaskManager;
     let printer = cfgd_core::test_helpers::test_printer();
-    mgr.update(&printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    mgr.update(&cx).unwrap();
 }
 
 #[test]
 fn brew_manager_path_dirs_returns_vec() {
     let mgr = BrewManager;
-    let dirs = mgr.path_dirs();
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    let dirs = mgr.path_dirs(&cx);
     // On Linux CI, should return linuxbrew paths
     // On macOS, should return /opt/homebrew or /usr/local paths
     // On Windows, should return empty
@@ -152,7 +159,10 @@ fn brew_manager_path_dirs_non_empty_on_linux_macos() {
     // assertion to the two platforms where brew is a real manager.
     if cfg!(any(target_os = "linux", target_os = "macos")) {
         let mgr = BrewManager;
-        let dirs = mgr.path_dirs();
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let dirs = mgr.path_dirs(&cx);
         assert!(!dirs.is_empty());
     }
 }
@@ -233,8 +243,10 @@ fn brew_cask_manager_is_available_checks_brew() {
 fn brew_cask_update_returns_ok() {
     let mgr = BrewCaskManager;
     let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // brew-cask update is a no-op, should always succeed
-    mgr.update(&printer).unwrap();
+    mgr.update(&cx).unwrap();
 }
 
 #[test]
@@ -364,7 +376,7 @@ fn parse_brew_info_version_errors_attribute_correct_manager() {
 mod brew_shim {
     use super::*;
     use cfgd_core::providers::PackageManager;
-    use cfgd_core::test_helpers::{ToolShim, test_printer};
+    use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
     use serial_test::serial;
 
     const SHIM_ENV: &str = "CFGD_BREW_BIN";
@@ -376,8 +388,10 @@ mod brew_shim {
     fn brew_install_passes_install_subcommand_with_each_package() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         BrewManager
-            .install(&["git".into(), "vim".into()], &p)
+            .install(&["git".into(), "vim".into()], &cx)
             .expect("install Ok");
         let argv = shim.argv_log();
         assert!(
@@ -391,7 +405,9 @@ mod brew_shim {
     fn brew_install_skips_command_when_package_list_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
-        BrewManager.install(&[], &p).expect("empty install Ok");
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewManager.install(&[], &cx).expect("empty install Ok");
         assert_eq!(
             shim.invocation_count(),
             0,
@@ -410,8 +426,10 @@ mod brew_shim {
             "Error: No available formula with the name \"jira\".",
         );
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewManager
-            .install(&["jq".into(), "jira".into(), "yq".into()], &p)
+            .install(&["jq".into(), "jira".into(), "yq".into()], &cx)
             .expect_err("a bad formula in the batch must surface as an error");
 
         let msg = err.to_string();
@@ -450,8 +468,10 @@ mod brew_shim {
     fn brew_install_single_invalid_package_surfaces_original_error_without_retry() {
         let shim = ToolShim::install_failing_on(SHIM_ENV, "jira", "no such formula");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewManager
-            .install(&["jira".into()], &p)
+            .install(&["jira".into()], &cx)
             .expect_err("single invalid package must fail");
         assert!(
             err.to_string().contains("no such formula"),
@@ -474,8 +494,10 @@ mod brew_shim {
             "Error: Cask 'notacask' is unavailable.",
         );
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewCaskManager
-            .install(&["firefox".into(), "notacask".into()], &p)
+            .install(&["firefox".into(), "notacask".into()], &cx)
             .expect_err("a bad cask in the batch must surface as an error");
         assert!(
             err.to_string().contains("notacask"),
@@ -497,8 +519,10 @@ mod brew_shim {
     fn brew_uninstall_passes_uninstall_subcommand_with_each_package() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         BrewManager
-            .uninstall(&["git".into()], &p)
+            .uninstall(&["git".into()], &cx)
             .expect("uninstall Ok");
         assert!(shim.argv_log().contains("uninstall git"));
     }
@@ -508,7 +532,9 @@ mod brew_shim {
     fn brew_uninstall_skips_command_when_package_list_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
-        BrewManager.uninstall(&[], &p).expect("empty uninstall Ok");
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewManager.uninstall(&[], &cx).expect("empty uninstall Ok");
         assert_eq!(shim.invocation_count(), 0);
     }
 
@@ -517,7 +543,9 @@ mod brew_shim {
     fn brew_update_runs_update_subcommand() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
-        BrewManager.update(&p).expect("update Ok");
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewManager.update(&cx).expect("update Ok");
         assert!(shim.argv_log().contains("update"));
     }
 
@@ -526,8 +554,10 @@ mod brew_shim {
     fn brew_install_translates_nonzero_exit_into_install_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: package not found");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewManager
-            .install(&["nonexistent".into()], &p)
+            .install(&["nonexistent".into()], &cx)
             .expect_err("non-zero → Err");
         let msg = err.to_string();
         assert!(
@@ -540,8 +570,11 @@ mod brew_shim {
     #[serial]
     fn brew_installed_packages_parses_newline_list_into_set() {
         let _shim = ToolShim::install(SHIM_ENV, 0, "git\nvim\n\nripgrep\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let installed = BrewManager
-            .installed_packages()
+            .installed_packages(&cx)
             .expect("installed_packages Ok");
         assert_eq!(installed.len(), 3, "3 non-empty lines: {:?}", installed);
         assert!(installed.contains("git"));
@@ -575,7 +608,12 @@ mod brew_shim {
     fn brew_installed_packages_with_versions_uses_last_token_as_version() {
         // brew list --versions output: "name v1 v2" → version = last token.
         let _shim = ToolShim::install(SHIM_ENV, 0, "git 2.40.1\nvim 9.0.1234\n", "");
-        let pkgs = BrewManager.installed_packages_with_versions().expect("Ok");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        let pkgs = BrewManager
+            .installed_packages_with_versions(&cx)
+            .expect("Ok");
         let git = pkgs.iter().find(|p| p.name == "git").expect("git present");
         assert_eq!(git.version, "2.40.1");
     }
@@ -587,8 +625,10 @@ mod brew_shim {
     fn brew_tap_install_runs_one_tap_subcommand_per_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         BrewTapManager
-            .install(&["org/foo".into(), "org/bar".into()], &p)
+            .install(&["org/foo".into(), "org/bar".into()], &cx)
             .expect("Ok");
         assert_eq!(shim.invocation_count(), 2, "one brew invocation per tap");
         let argv = shim.argv_log();
@@ -601,8 +641,10 @@ mod brew_shim {
     fn brew_tap_uninstall_runs_one_untap_subcommand_per_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         BrewTapManager
-            .uninstall(&["org/foo".into()], &p)
+            .uninstall(&["org/foo".into()], &cx)
             .expect("Ok");
         assert!(shim.argv_log().contains("untap org/foo"));
     }
@@ -612,7 +654,9 @@ mod brew_shim {
     fn brew_tap_update_is_noop_no_command_spawned() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
-        BrewTapManager.update(&p).expect("Ok");
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewTapManager.update(&cx).expect("Ok");
         assert_eq!(
             shim.invocation_count(),
             0,
@@ -640,8 +684,10 @@ mod brew_shim {
     fn brew_cask_install_passes_cask_flag_with_packages() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         BrewCaskManager
-            .install(&["firefox".into(), "vlc".into()], &p)
+            .install(&["firefox".into(), "vlc".into()], &cx)
             .expect("Ok");
         let argv = shim.argv_log();
         assert!(argv.contains("install --cask firefox vlc"), "argv: {argv}");
@@ -652,8 +698,10 @@ mod brew_shim {
     fn brew_cask_uninstall_passes_cask_flag_with_packages() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         BrewCaskManager
-            .uninstall(&["firefox".into()], &p)
+            .uninstall(&["firefox".into()], &cx)
             .expect("Ok");
         assert!(shim.argv_log().contains("uninstall --cask firefox"));
     }
@@ -663,7 +711,9 @@ mod brew_shim {
     fn brew_cask_install_skips_command_when_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
-        BrewCaskManager.install(&[], &p).expect("Ok");
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewCaskManager.install(&[], &cx).expect("Ok");
         assert_eq!(shim.invocation_count(), 0);
     }
 
@@ -681,8 +731,10 @@ mod brew_shim {
     fn brew_uninstall_translates_nonzero_exit_into_uninstall_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: no such formula");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewManager
-            .uninstall(&["nosuchpkg".into()], &p)
+            .uninstall(&["nosuchpkg".into()], &cx)
             .expect_err("non-zero → Err");
         let msg = err.to_string();
         assert!(
@@ -710,8 +762,10 @@ mod brew_shim {
     fn brew_tap_install_translates_nonzero_exit_into_install_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "already tapped");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewTapManager
-            .install(&["org/badtap".into()], &p)
+            .install(&["org/badtap".into()], &cx)
             .expect_err("non-zero → Err");
         let msg = err.to_string();
         assert!(
@@ -725,8 +779,10 @@ mod brew_shim {
     fn brew_tap_uninstall_translates_nonzero_exit_into_uninstall_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "tap not found");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewTapManager
-            .uninstall(&["org/missing".into()], &p)
+            .uninstall(&["org/missing".into()], &cx)
             .expect_err("non-zero → Err");
         let msg = err.to_string();
         assert!(
@@ -739,8 +795,11 @@ mod brew_shim {
     #[serial]
     fn brew_tap_installed_packages_parses_tap_list() {
         let _shim = ToolShim::install(SHIM_ENV, 0, "homebrew/core\norg/mytap\n\norg/other\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let installed = BrewTapManager
-            .installed_packages()
+            .installed_packages(&cx)
             .expect("installed_packages Ok");
         assert_eq!(installed.len(), 3, "3 non-empty tap lines: {:?}", installed);
         assert!(installed.contains("homebrew/core"));
@@ -753,7 +812,9 @@ mod brew_shim {
     fn brew_cask_uninstall_skips_command_when_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
-        BrewCaskManager.uninstall(&[], &p).expect("Ok");
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewCaskManager.uninstall(&[], &cx).expect("Ok");
         assert_eq!(shim.invocation_count(), 0);
     }
 
@@ -762,8 +823,10 @@ mod brew_shim {
     fn brew_cask_uninstall_translates_nonzero_exit_into_uninstall_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: cask not installed");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewCaskManager
-            .uninstall(&["vlc".into()], &p)
+            .uninstall(&["vlc".into()], &cx)
             .expect_err("non-zero → Err");
         let msg = err.to_string();
         assert!(
@@ -777,8 +840,10 @@ mod brew_shim {
     fn brew_cask_install_translates_nonzero_exit_into_install_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: no cask named vlc");
         let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let err = BrewCaskManager
-            .install(&["vlc".into()], &p)
+            .install(&["vlc".into()], &cx)
             .expect_err("non-zero → Err");
         let msg = err.to_string();
         assert!(
@@ -791,8 +856,11 @@ mod brew_shim {
     #[serial]
     fn brew_cask_installed_packages_parses_cask_list() {
         let _shim = ToolShim::install(SHIM_ENV, 0, "firefox\nvlc\n\nalacritty\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
         let installed = BrewCaskManager
-            .installed_packages()
+            .installed_packages(&cx)
             .expect("installed_packages Ok");
         assert_eq!(
             installed.len(),
@@ -989,8 +1057,10 @@ mod bridge {
         let _shim = ToolShim::install(SHIM_ENV, 0, "", "");
 
         let (printer, cap) = Printer::for_test_doc();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
         BrewManager
-            .install(&["git".to_string()], &printer)
+            .install(&["git".to_string()], &cx)
             .expect("install ok");
 
         let summary = BrewInstallSummary {
@@ -1030,8 +1100,10 @@ mod bridge {
         let _shim = ToolShim::install(SHIM_ENV, 0, caveat_stdout, "");
 
         let (printer, cap) = Printer::for_test_doc();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
         BrewManager
-            .install(&["git".to_string()], &printer)
+            .install(&["git".to_string()], &cx)
             .expect("install ok with caveats");
 
         let summary = BrewInstallSummary {

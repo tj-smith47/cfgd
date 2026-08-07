@@ -97,6 +97,31 @@ jobs:
         shell: bash
         run: task test:ci
 
+  test-thread-model:
+    name: Tests (thread model)
+    runs-on: ubuntu-latest
+    # Plain `cargo test` (unlike the nextest `test` job above) has no
+    # per-test timeout or process isolation, so a regression in the race
+    # class this leg guards can hang the whole job instead of just one
+    # test — cap it instead of billing a 6-hour hang.
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          task-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # nextest (the `test` job above) runs one process per test, so it
+      # structurally cannot observe a race on process-global state shared
+      # across tests. Plain `cargo test` runs tests as threads inside one
+      # process and can, so this leg — one platform is enough, the race
+      # class isn't OS-specific — is the regression gate for that class.
+      - name: Tests (cargo test, threaded)
+        run: task test:threads
+
   test-freebsd:
     name: Tests (freebsd)
     runs-on: ubuntu-latest
@@ -184,7 +209,7 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2

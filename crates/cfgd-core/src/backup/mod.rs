@@ -16,8 +16,8 @@ use crate::config::{BackupSpec, ScriptEntry, render_backup_name_pattern};
 use crate::errors::{BackupError, Result};
 use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{
-    ReconcileContext, ScriptPhase, build_script_env, effective_continue_on_error, execute_script,
-    script_default_workdir,
+    ReconcileContext, ScriptEnvContext, ScriptPhase, build_script_env, effective_continue_on_error,
+    execute_script, script_default_workdir,
 };
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
@@ -383,14 +383,19 @@ fn run_hooks(
     if entries.is_empty() {
         return Ok(());
     }
-    let mut env = build_script_env(
-        unit.config_dir,
-        unit.profile_name,
-        unit.context,
-        &phase,
-        None,
-        None,
-    );
+    let path_dirs: Vec<String> = crate::bootstrapped_path_dirs()
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut env = build_script_env(&ScriptEnvContext {
+        config_dir: unit.config_dir,
+        profile_name: unit.profile_name,
+        context: unit.context,
+        phase: &phase,
+        module_name: None,
+        module_dir: None,
+        path_dirs: &path_dirs,
+    });
     // `CFGD_PHASE` names the hook list (`preBackup`/`postBackup`) and is the
     // same for both operations — the list is declared once and reused. A hook
     // that must quiesce for a snapshot but drop-and-recreate for a restore can

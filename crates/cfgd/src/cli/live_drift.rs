@@ -97,6 +97,7 @@ pub(super) fn live_drift_results(
     registry: &ProviderRegistry,
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let mut drift = Vec::new();
 
@@ -120,7 +121,8 @@ pub(super) fn live_drift_results(
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    for action in packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed)?
+    for action in
+        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?
     {
         if let Some(result) = package_action_drift(&action) {
             drift.push(result);
@@ -198,6 +200,7 @@ mod tests {
         FileStrategy, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile, ProfileLayer,
         ProfileSpec, ResolvedProfile,
     };
+    use cfgd_core::output::Printer;
 
     use super::*;
 
@@ -288,12 +291,19 @@ mod tests {
 
         let resolved = resolved_with_file(target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext {
+            printer: &printer,
+            state: &state,
+        };
         let drift = live_drift_results(
             dir.path(),
             &resolved,
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            &cx,
         )
         .unwrap();
         assert!(
@@ -311,12 +321,19 @@ mod tests {
 
         let resolved = resolved_with_file(target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext {
+            printer: &printer,
+            state: &state,
+        };
         let drift = live_drift_results(
             dir.path(),
             &resolved,
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            &cx,
         )
         .unwrap();
         assert!(
@@ -493,12 +510,19 @@ mod tests {
         let resolved = resolved_with_file(profile_target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
         let modules = vec![module_with_file("accmod", mod_source, mod_target)];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext {
+            printer: &printer,
+            state: &state,
+        };
         let drift = live_drift_results(
             dir.path(),
             &resolved,
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &cx,
         )
         .unwrap();
         assert_eq!(drift.len(), 1, "only the module file drifts: {drift:?}");
@@ -566,12 +590,19 @@ mod tests {
         ));
 
         let modules = vec![module_with_package("dev", "brew", "ripgrep")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext {
+            printer: &printer,
+            state: &state,
+        };
         let drift = live_drift_results(
             dir.path(),
             &resolved,
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &cx,
         )
         .unwrap();
 
@@ -610,12 +641,19 @@ mod tests {
             serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
         );
 
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext {
+            printer: &printer,
+            state: &state,
+        };
         let drift = live_drift_results(
             dir.path(),
             &resolved,
             &registry,
             &[module],
             &std::collections::HashSet::new(),
+            &cx,
         )
         .unwrap();
 
@@ -642,12 +680,19 @@ mod tests {
         let resolved = resolved_with_file(profile_target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
         let modules = vec![module_with_file("accmod", mod_source, mod_target)];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext {
+            printer: &printer,
+            state: &state,
+        };
         let drift = live_drift_results(
             dir.path(),
             &resolved,
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &cx,
         )
         .unwrap();
         assert!(

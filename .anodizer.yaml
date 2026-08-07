@@ -225,6 +225,13 @@ workspaces:
         # lockstep with the cfgd crate version at tag time. Plain old→new string
         # rewrite of the cfgd crate version: the chart's own `version:` (0.1.0)
         # has a separate cadence and never matches, so it is left untouched.
+        #
+        # The rewrite is whole-file and unscoped, which cuts both ways. A version
+        # literal that ever drifts off the current version stops matching and can
+        # never rejoin the sweep, so every semver in an enrolled file must be
+        # either the current version or deliberately frozen. The one frozen case
+        # — the historical cosign-identity note in docs/installation.md — opts out
+        # by backslash-escaping its digits, and carries the reason inline.
         version_files:
           - docs/installation.md
           - docs/bootstrap.md

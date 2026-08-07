@@ -265,7 +265,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
 
     let outcome = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
 
-    // §9 consolidated skill-stale surface. The binary surface (above) and this
+    // Consolidated skill-stale surface. The binary surface (above) and this
     // skill surface are deduped to AT MOST ONE: `compute_update_surfaces`
     // suppresses skills whenever a binary update is pending (rule 1), and when
     // the binary is current it yields exactly ONE consolidated skill notice
@@ -276,13 +276,14 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
     }
 }
 
-/// Render the §9 consolidated skill-stale surface for the CLI startup check.
+/// Render the consolidated skill-stale surface for the CLI startup check.
 ///
-/// The §9 decision + effectful orchestration (rule 1 suppression, the scope
-/// table, `Auto` refresh → re-aggregate → project-only remainder) is single-
-/// sourced in [`run_standalone_skill_action`]; this function only renders the
-/// returned [`StandaloneSkillOutcome`] as a `Printer` Doc. It returns that
-/// outcome so tests assert the decision SHAPE, not rendered text.
+/// The decision + effectful orchestration (rule 1 suppression, the
+/// policy→action mapping, `Auto` refresh → re-aggregate → project-only
+/// remainder) is single-sourced in [`run_standalone_skill_action`]; this
+/// function only renders the returned [`StandaloneSkillOutcome`] as a
+/// `Printer` Doc. It returns that outcome so tests assert the decision SHAPE,
+/// not rendered text.
 ///
 /// Only [`StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
 /// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
@@ -590,6 +591,52 @@ mod tests {
             human.contains("up to date") || human.contains(current_version_str()),
             "human output must confirm up-to-date status, got: {human}"
         );
+    }
+
+    /// An explicit `cfgd upgrade --check` must perform the check even with
+    /// every automatic-check opt-out variable set: `cmd_upgrade` never routes
+    /// through `should_check`, so the opt-out (which only gates the two
+    /// automatic paths) cannot suppress a user-requested check.
+    #[test]
+    #[serial]
+    fn cmd_upgrade_check_only_ignores_optout_vars() {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(release_json_current_version())
+            .create();
+        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _no_update_check = EnvVarGuard::set("CFGD_NO_UPDATE_CHECK", "1");
+        let _no_update_notifier = EnvVarGuard::set("NO_UPDATE_NOTIFIER", "1");
+        let _do_not_track = EnvVarGuard::set("DO_NOT_TRACK", "1");
+        assert!(
+            cfgd_core::upgrade::update_optout_var().is_some(),
+            "sanity: an opt-out must actually be active for this test to prove anything"
+        );
+
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        );
+
+        assert!(
+            result.is_ok(),
+            "explicit --check must run even with every opt-out var set: {result:?}"
+        );
+        let json = cap
+            .json()
+            .expect("Doc must be emitted; the check must have actually run");
+        assert_eq!(
+            json["currentVersion"].as_str(),
+            Some(current_version_str()),
+            "the network check must have run and reported the current version: {json}"
+        );
+        _mock.assert();
     }
 
     /// `--check` with an available update: subprocess test because cmd_upgrade calls
@@ -932,7 +979,8 @@ mod tests {
         );
     }
 
-    // ----- §9 wired skill surface (rule 1 / rule 3 / Auto refresh) -----
+    // ----- Wired skill surface (rule 1 / rule 3 / Auto refresh) -----
+    // Rule numbering per `cfgd_core::upgrade::dedup`'s module docs.
 
     use cfgd_core::config::{SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig, UpdatePolicy};
     use cfgd_core::generate::{SkillKind, skill_model_for};

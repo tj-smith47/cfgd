@@ -92,8 +92,8 @@ fn checkin_drift_reported_human() {
     );
 }
 
-/// Drift count zero — the no-drift branch emits `Role::Info`, not `Role::Ok`
-/// (T6 Info-on-zero pattern).
+/// Drift count zero — the no-drift branch emits `Role::Info`, not `Role::Ok`:
+/// nothing was reconciled, so nothing succeeded.
 #[test]
 fn checkin_no_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
@@ -109,7 +109,7 @@ fn checkin_no_drift_human() {
 }
 
 /// Server pushed a desired config — `Role::Warn` status precedes the nested
-/// "Server config" section so the urgency carries (T6 manual-review pattern).
+/// "Server config" section so the urgency carries.
 #[test]
 fn checkin_server_pushed_config_human() {
     let (printer, cap) = Printer::for_test_doc();

@@ -218,11 +218,16 @@ pub fn run_apply(
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
+        let pkg_cx = cfgd_core::providers::PackageContext {
+            printer,
+            state: &state,
+        };
         let pkg = packages::plan_packages(
             &effective_resolved.merged,
             &[],
             &all_managers,
             &cfgd_installed,
+            &pkg_cx,
         )?;
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
@@ -327,7 +332,7 @@ pub fn run_apply(
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        gc_stale_package_tracking(&state, &all_managers);
+        gc_stale_package_tracking(&state, &all_managers, printer);
         gc_orphaned_custom_packages(&state, &registry, printer);
     }
 
@@ -368,25 +373,29 @@ pub fn run_apply(
             let preview = printer.section("Plan preview");
             for phase_item in &plan.phases {
                 let items = reconciler::format_plan_items(phase_item);
-                let displayed: Vec<&String> = if let Some(ref pf) = phase_filter {
-                    phase_item
-                        .actions
-                        .iter()
-                        .zip(items.iter())
-                        .filter_map(|(a, item)| {
-                            reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
-                                .then_some(item)
-                        })
-                        .collect()
-                } else {
-                    items.iter().collect()
-                };
+                let displayed: Vec<(&reconciler::Action, &String)> =
+                    if let Some(ref pf) = phase_filter {
+                        phase_item
+                            .actions
+                            .iter()
+                            .zip(items.iter())
+                            .filter(|(a, _)| {
+                                reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
+                            })
+                            .collect()
+                    } else {
+                        phase_item.actions.iter().zip(items.iter()).collect()
+                    };
                 if displayed.is_empty() {
                     continue;
                 }
-                let phase_sec = preview.section(phase_item.name.display_name());
-                for item in displayed {
-                    phase_sec.bullet(item);
+                let phase_sec = preview.section(phase_item.display_label());
+                for (action, item) in displayed {
+                    phase_sec.bullet(reconciler::display_action_desc_in_phase(
+                        action,
+                        item,
+                        phase_item.scope.as_ref(),
+                    ));
                 }
             }
             for w in &plan.warnings {
@@ -457,6 +466,9 @@ pub fn run_apply(
                     total,
                 }),
         );
+        // An aborted run can still have completed the Env phase, so the user's
+        // shell is just as stale as after a full apply.
+        print_shell_env_reminder(&result, printer);
         return Ok(ApplyOutcome {
             status: result.status,
             aborted_code: Some(code),
@@ -464,6 +476,7 @@ pub fn run_apply(
     }
 
     let mut status = print_apply_result(&result, printer, Some(start.elapsed()));
+    print_shell_env_reminder(&result, printer);
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {
@@ -686,6 +699,7 @@ fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
 fn gc_stale_package_tracking(
     state: &cfgd_core::state::StateStore,
     managers: &[&dyn cfgd_core::providers::PackageManager],
+    printer: &cfgd_core::output::Printer,
 ) {
     let tracked = match cfgd_installed_packages(state) {
         Ok(t) => t,
@@ -694,7 +708,8 @@ fn gc_stale_package_tracking(
             return;
         }
     };
-    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked) {
+    let cx = cfgd_core::providers::PackageContext { printer, state };
+    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, &cx) {
         Ok(stale) => {
             for (mgr, id) in stale {
                 let rid = format!("{mgr}/{id}");
@@ -727,7 +742,8 @@ fn gc_orphaned_custom_packages(
     if orphans.is_empty() {
         return;
     }
-    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, printer) {
+    let cx = cfgd_core::providers::PackageContext { printer, state };
+    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
         let rid = format!("{mgr}/{pkg}");
         if let Err(e) = state.remove_managed_resource("package", &rid) {
             tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");

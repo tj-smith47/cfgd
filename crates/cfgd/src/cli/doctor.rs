@@ -34,6 +34,10 @@ pub struct DoctorExtras {
     pub state_store: Option<DoctorStateStore>,
     pub profiles_dir: Option<DoctorProfilesDir>,
     pub config_sources: Vec<DoctorConfigSource>,
+    /// The env var currently suppressing the automatic update check
+    /// (`CFGD_NO_UPDATE_CHECK` / `NO_UPDATE_NOTIFIER` / `DO_NOT_TRACK`), or
+    /// `None` when no opt-out is active.
+    pub update_optout: Option<&'static str>,
 }
 
 pub struct DoctorStateStore {
@@ -251,6 +255,10 @@ fn collect_doctor_output(
     let modules_registry = build_registry();
     let mgr_map = managers_map(&modules_registry);
     let platform = Platform::detect();
+    let doctor_state = open_state_store(cli.state_dir.as_deref()).ok();
+    let doctor_cx = doctor_state
+        .as_ref()
+        .map(|state| cfgd_core::providers::PackageContext { printer, state });
 
     let module_checks: Vec<DoctorModuleCheck> = module_list
         .iter()
@@ -263,9 +271,13 @@ fn collect_doctor_output(
                     .map(|entry| {
                         match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
                             Ok(Some(resolved)) => {
-                                let installed = mgr_map
-                                    .get(&resolved.manager)
-                                    .and_then(|m| m.installed_packages().ok())
+                                let installed = doctor_cx
+                                    .as_ref()
+                                    .and_then(|cx| {
+                                        mgr_map
+                                            .get(&resolved.manager)
+                                            .and_then(|m| m.installed_packages(cx).ok())
+                                    })
                                     .map(|pkgs| pkgs.contains(&resolved.resolved_name))
                                     .unwrap_or(false);
                                 DoctorModulePackageCheck {
@@ -440,6 +452,7 @@ fn collect_doctor_output(
         state_store: Some(state_store),
         profiles_dir: Some(profiles_dir_extra),
         config_sources,
+        update_optout: cfgd_core::upgrade::update_optout_var(),
     };
 
     Ok((output, extras))
@@ -717,6 +730,12 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
                 format!("Profiles directory not found: {}", pd.path),
             )
         };
+    }
+    if let Some(var) = extras.update_optout {
+        s = s.status(
+            Role::Info,
+            format!("Automatic update check: suppressed by {var}"),
+        );
     }
     s
 }

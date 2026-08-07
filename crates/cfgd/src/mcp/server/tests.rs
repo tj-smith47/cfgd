@@ -69,7 +69,12 @@ fn test_json_rpc_response_error_without_id() {
 #[test]
 fn test_handle_initialize() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(1)),
@@ -90,7 +95,12 @@ fn test_handle_initialize() {
 #[test]
 fn test_handle_ping() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(42)),
@@ -106,7 +116,12 @@ fn test_handle_ping() {
 #[test]
 fn test_handle_tools_call_missing_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(3)),
@@ -121,7 +136,12 @@ fn test_handle_tools_call_missing_name() {
 #[test]
 fn test_handle_tools_call_unknown_tool() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(4)),
@@ -137,7 +157,12 @@ fn test_handle_tools_call_unknown_tool() {
 #[test]
 fn test_handle_tools_call_detect_platform() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     // Without cfgd_ prefix
     let req = JsonRpcRequest {
@@ -173,7 +198,12 @@ fn test_handle_tools_call_detect_platform() {
 #[test]
 fn test_handle_resources_list() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(6)),
@@ -189,7 +219,12 @@ fn test_handle_resources_list() {
 #[test]
 fn test_handle_resources_read_missing_uri() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(7)),
@@ -204,7 +239,12 @@ fn test_handle_resources_read_missing_uri() {
 #[test]
 fn test_handle_resources_read_unknown_uri_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(77)),
@@ -219,7 +259,12 @@ fn test_handle_resources_read_unknown_uri_returns_error() {
 #[test]
 fn test_handle_prompts_list() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(8)),
@@ -235,7 +280,12 @@ fn test_handle_prompts_list() {
 #[test]
 fn test_handle_prompts_get_missing_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(9)),
@@ -250,7 +300,12 @@ fn test_handle_prompts_get_missing_name() {
 #[test]
 fn test_unknown_method_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(10)),
@@ -278,7 +333,12 @@ fn test_response_serialization_skips_none_fields() {
 #[test]
 fn test_id_preserved_across_request_response() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     // Integer id
     let req = JsonRpcRequest {
@@ -304,7 +364,12 @@ fn test_id_preserved_across_request_response() {
 #[test]
 fn test_mcp_tools_list_returns_all_tools() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -328,7 +393,12 @@ fn test_mcp_tools_list_returns_all_tools() {
 #[test]
 fn test_mcp_tools_call_get_schema() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -345,7 +415,12 @@ fn test_mcp_tools_call_get_schema() {
 #[test]
 fn test_mcp_resources_read_skill() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -362,7 +437,12 @@ fn test_mcp_resources_read_skill() {
 #[test]
 fn test_mcp_prompts_get_generate() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -379,7 +459,12 @@ fn test_mcp_prompts_get_generate() {
 #[test]
 fn test_mcp_full_pipeline_write_module() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
 
     let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test\nspec:\n  packages:\n    - name: git\n";
 
@@ -410,7 +495,12 @@ fn test_mcp_full_pipeline_write_module() {
 #[test]
 fn test_invalid_jsonrpc_version_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "1.0".into(),
         id: Some(serde_json::json!(1)),
@@ -425,7 +515,12 @@ fn test_invalid_jsonrpc_version_returns_error() {
 #[test]
 fn test_present_yaml_mcp_returns_formatted_content() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -456,7 +551,12 @@ fn test_present_yaml_mcp_returns_formatted_content() {
 fn test_present_yaml_without_cfgd_prefix_also_works() {
     // When strip_prefix returns "present_yaml" (no prefix in name)
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(101)),
@@ -487,7 +587,12 @@ fn test_present_yaml_without_cfgd_prefix_also_works() {
 #[test]
 fn test_handle_notification_initialized_does_not_panic() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: None,
@@ -500,7 +605,12 @@ fn test_handle_notification_initialized_does_not_panic() {
 #[test]
 fn test_handle_notification_cancelled_does_not_panic() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: None,
@@ -513,7 +623,12 @@ fn test_handle_notification_cancelled_does_not_panic() {
 #[test]
 fn test_handle_notification_unknown_method_does_not_panic() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: None,
@@ -532,7 +647,12 @@ fn test_present_yaml_invalid_arguments_returns_invalid_params_error() {
     // PresentYamlRequest requires content/kind/description. Send a non-object
     // arguments field so serde_json::from_value fails and the -32602 arm fires.
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(200)),
@@ -592,7 +712,12 @@ fn test_json_rpc_error_data_is_none_for_helper_constructor() {
 #[test]
 fn test_handle_resources_list_returns_resources_field() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(300)),
@@ -612,7 +737,12 @@ fn test_handle_prompts_get_unknown_name_still_succeeds_with_empty_messages() {
     // prompts::get for an unknown prompt returns an empty messages array
     // rather than an error — this matches MCP's tolerant prompt-discovery model.
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(serde_json::json!(301)),
@@ -628,7 +758,12 @@ fn test_handle_prompts_get_unknown_name_still_succeeds_with_empty_messages() {
 fn test_jsonrpc_invalid_version_2_5_returns_invalid_request() {
     // "2.5" is not "2.0" — should fail the jsonrpc-version gate.
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let mut server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        Some(tmp.path()),
+    )
+    .unwrap();
     let req = JsonRpcRequest {
         jsonrpc: "2.5".into(),
         id: Some(serde_json::json!(302)),

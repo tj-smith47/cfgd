@@ -153,7 +153,6 @@ check_pattern error \
     'output/'
 
 log_section "Controlled Shell Execution"
-# sources/ allowed for git SSH fallback (git2 doesn't support all SSH configs)
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run (controlled execution layer for progress UI)
 # generate/ allowed for tool inspection (--version checks) and system settings scanning
@@ -165,9 +164,9 @@ log_section "Controlled Shell Execution"
 # test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
 # submodules and doc comments).
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|test_helpers\.rs:|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|test_helpers\.rs:|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -305,6 +304,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "available_version" && \
         $2 != "load_module" && \
         $2 != "installed_packages_with_versions" && $2 != "success" && \
+        $2 != "version_meets_minimum" && \
+        $2 != "resolved_prefix" && $2 != "record_resolved_prefix" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
         $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
@@ -312,7 +313,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "terminate_process" && $2 != "set_file_permissions" && \
         $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
         $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "read" && \
+        $2 != "read" && $2 != "write" && \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
@@ -525,7 +526,7 @@ if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(Pr
 fi
 
 # 5. Structured-output coverage table — every cmd_* function in cli/ must
-#    appear in .claude/rules/output-module.md's coverage table.
+#    appear in .claude/rules/structured-output-coverage.md's table.
 #    Only match file-scope definitions (no leading whitespace) to avoid
 #    matching test helper functions inside #[cfg(test)] blocks.
 # LC_ALL=C: comm requires both inputs in the same collation as the sort that
@@ -536,15 +537,20 @@ cmds_in_code=$(rg --type rust --color never -n \
       crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
       2>/dev/null \
       | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | LC_ALL=C sort -u)
-rule_file=".claude/rules/output-module.md"
+rule_file=".claude/rules/structured-output-coverage.md"
 if [ -f "$rule_file" ]; then
-    cmds_in_table=$(awk '/^## Structured-output coverage/,0' "$rule_file" \
-        | grep -E '^\| [a-z]' | awk -F'|' '{print $2}' | tr -d ' ' | LC_ALL=C sort -u)
+    # The whole file is the table; row cells are lowercase, the header cell is not.
+    # `|| true` keeps an empty match from tripping pipefail into aborting the run —
+    # an empty table must be reported as total coverage loss, not swallowed.
+    cmds_in_table=$(grep -E '^\| [a-z]' "$rule_file" \
+        | awk -F'|' '{print $2}' | tr -d ' ' | LC_ALL=C sort -u) || cmds_in_table=""
     missing=$(LC_ALL=C comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
     if [ -n "$missing" ]; then
         log_error "Commands missing from structured-output coverage table in $rule_file:"
         echo "$missing"
     fi
+else
+    log_error "Structured-output coverage table missing: $rule_file"
 fi
 # --- end output audit block -------------------------------------------------
 
