@@ -1,0 +1,5 @@
+✓ Applied 4 of 4 actions (0.8s)
+
+Shell environment changed
+  - run: source ~/.cfgd.env
+  - or open a new shell

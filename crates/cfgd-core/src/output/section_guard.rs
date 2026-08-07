@@ -62,6 +62,24 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
+    /// Append a tight, copy-pasteable block of verbatim lines (e.g. the full
+    /// body of a security-review script preview, one entry per source line).
+    /// Mirrors `Doc::code_block`: each entry must already be one physical
+    /// line (`render_code_block`'s `write_line` calls debug_assert on `\n`),
+    /// but a stray `\r` — which `str::lines()` upstream wouldn't have
+    /// stripped unless paired with `\n` — is scrubbed here regardless, so
+    /// unlike `bullet` this stays the correct sink for content whose line
+    /// count isn't controlled by the caller.
+    pub fn code_block(&self, lines: impl IntoIterator<Item = impl Into<String>>) -> &Self {
+        let lines: Vec<String> = lines
+            .into_iter()
+            .map(|l| l.into().chars().filter(|&c| c != '\r').collect())
+            .collect();
+        self.renderer
+            .render_code_block(self.sink.as_ref(), self.depth, &lines);
+        self
+    }
+
     /// Set the empty-state placeholder for this section (overrides the default
     /// "(none)"). Only meaningful for sections opened with `section()` (not
     /// `section_or_collapse()`).
@@ -138,6 +156,7 @@ impl<'p> SectionGuard<'p> {
             &self.printer.multi_progress,
             &self.renderer,
             self.printer.verbosity(),
+            self.depth,
             &message,
         );
         super::spinner::Spinner {
@@ -170,22 +189,15 @@ impl<'p> SectionGuard<'p> {
         }
     }
 
-    /// Run an external command at this section's depth with live output.
-    /// TTY+non-quiet → spinner with tailing ring indented under the section;
-    /// otherwise → streaming lines. Either path captures full stdout/stderr.
+    /// Run an external command at this section's depth, displaying its output
+    /// through an `OutputWindow` indented under the section and capturing the
+    /// full stdout/stderr.
     pub fn run(
         &self,
         cmd: &mut std::process::Command,
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
-        super::process::run_command(
-            &self.renderer,
-            self.sink.as_ref(),
-            &self.printer.multi_progress,
-            self.depth,
-            cmd,
-            &label.into(),
-        )
+        super::process::run_command(self.printer, self.depth, cmd, &label.into())
     }
 
     /// Manually close (alternative to drop). Useful when the caller needs the

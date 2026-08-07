@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
 
 pub fn cmd_log(
     printer: &Printer,
@@ -54,9 +54,18 @@ fn cmd_log_show_output(
         for entry in &entries {
             if let Some(ref output) = entry.script_output {
                 found_output = true;
+                // `entry.resource_id` for a "script" journal row is the raw
+                // run_str body (see `format_action_description`'s
+                // `Action::Script` arm) — condense only in this section
+                // header, never the persisted/payload copy below.
+                let display_id = if entry.action_type == "script" {
+                    condense_script_label(&entry.resource_id)
+                } else {
+                    entry.resource_id.clone()
+                };
                 let entry_sec = entries_sec.section(format!(
                     "[{}] {} ({})",
-                    entry.phase, entry.resource_id, entry.action_type,
+                    entry.phase, display_id, entry.action_type,
                 ));
                 for line in output.lines() {
                     entry_sec.status_simple(Role::Info, line);
@@ -168,6 +177,40 @@ mod tests {
         assert_eq!(
             json["entries"][0]["status"],
             serde_json::json!("inProgress")
+        );
+    }
+
+    // `cmd_log_show_output`'s per-entry section header embeds
+    // `entry.resource_id` raw — for a "script" journal row that is the raw
+    // run_str body, which for a multi-line inline script trips
+    // `Renderer::write_line`'s no-embedded-newline assert.
+    #[test]
+    fn log_show_output_condenses_multiline_script_resource_id_in_section_header() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let state = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+        let apply_id = state
+            .record_apply("test", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+        let raw_body = "echo line-one\necho line-two";
+        let jid = state
+            .journal_begin(apply_id, 0, "PostScripts", "script", raw_body, None)
+            .unwrap();
+        state
+            .journal_complete(jid, None, Some("captured output"))
+            .unwrap();
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cmd_log_show_output(&printer, &state, apply_id).unwrap();
+        drop(printer);
+
+        let out = buf.lock().unwrap();
+        assert!(
+            !out.contains("line-two"),
+            "section header must condense away subsequent lines, got: {out}"
+        );
+        assert!(
+            out.contains("echo line-one"),
+            "condensed header should reference the first line, got: {out}"
         );
     }
 }

@@ -6,8 +6,8 @@ use cfgd_core::providers::{FileAction, PackageAction, SecretAction};
 use cfgd_core::reconciler::ActionResult;
 use cfgd_core::reconciler::ApplyResult;
 use cfgd_core::reconciler::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ScriptAction,
-    ScriptPhase, SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase,
+    PhaseName, Plan, ScriptAction, ScriptPhase, SystemAction,
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
@@ -206,8 +206,33 @@ fn make_plan(phases: Vec<(PhaseName, Vec<Action>)>) -> Plan {
     Plan {
         phases: phases
             .into_iter()
-            .map(|(name, actions)| Phase { name, actions })
+            .map(|(name, actions)| Phase {
+                name,
+                actions,
+                scope: None,
+            })
             .collect(),
+        warnings: vec![],
+    }
+}
+
+/// A single (module, section) Phase, the shape `Reconciler::split_module_phases`
+/// really produces — one Phase per consecutive module/section run, never one
+/// combined "Modules" phase holding every kind of module action together.
+fn scoped_phase(module: &str, section: ModuleSection, actions: Vec<Action>) -> Phase {
+    Phase {
+        name: PhaseName::Modules,
+        actions,
+        scope: Some(ModuleScope {
+            module: module.to_string(),
+            section,
+        }),
+    }
+}
+
+fn make_plan_from_phases(phases: Vec<Phase>) -> Plan {
+    Plan {
+        phases,
         warnings: vec![],
     }
 }
@@ -477,15 +502,12 @@ fn filter_plan_skip_removes_matching_file_actions() {
     ]);
     filter_plan(&mut plan, &["files".to_string()], &[]);
 
-    let file_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Files)
-        .unwrap();
-    assert_eq!(
-        file_phase.actions.len(),
-        0,
-        "all file actions should be skipped"
+    // Every action in the Files phase was skipped, so the phase itself must
+    // not survive with zero actions.
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Files),
+        "the Files phase should be dropped entirely once emptied: {:?}",
+        plan.phases
     );
     let pkg_phase = plan
         .phases
@@ -510,15 +532,12 @@ fn filter_plan_only_keeps_matching_actions() {
     ]);
     filter_plan(&mut plan, &[], &["packages".to_string()]);
 
-    let file_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Files)
-        .unwrap();
-    assert_eq!(
-        file_phase.actions.len(),
-        0,
-        "file actions outside --only scope should be removed"
+    // Every file action fell outside the --only scope, so the Files phase
+    // itself must not survive with zero actions.
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Files),
+        "the Files phase should be dropped entirely once emptied: {:?}",
+        plan.phases
     );
     let pkg_phase = plan
         .phases
@@ -650,33 +669,108 @@ fn strip_scripts_removes_pre_post_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    let mut plan = make_plan(vec![(
-        PhaseName::Modules,
-        vec![module_install(), module_run_script(), module_deploy_files()],
+    // Realistic post-split shape: one Phase per (module, section) run, never
+    // one combined "Modules" phase holding install + run_script + deploy_files
+    // together — `split_module_phases` can never produce that shape.
+    let mut plan = make_plan_from_phases(vec![
+        scoped_phase("dev-tools", ModuleSection::Packages, vec![module_install()]),
+        scoped_phase(
+            "dev-tools",
+            ModuleSection::PostScripts,
+            vec![module_run_script()],
+        ),
+        scoped_phase(
+            "dotfiles",
+            ModuleSection::Files,
+            vec![module_deploy_files()],
+        ),
+    ]);
+    strip_scripts_from_plan(&mut plan);
+
+    assert!(
+        plan.phases.iter().all(|p| !matches!(
+            &p.scope,
+            Some(ModuleScope {
+                section: ModuleSection::PostScripts,
+                ..
+            })
+        )),
+        "the dev-tools/Post-Scripts phase held only a RunScript action, so it \
+         must be dropped entirely, not left as an empty phase"
+    );
+    assert_eq!(
+        plan.phases.len(),
+        2,
+        "only the Packages and Files phases should remain"
+    );
+    for phase in &plan.phases {
+        assert!(
+            phase.actions.iter().all(|a| {
+                !matches!(
+                    a,
+                    Action::Module(ModuleAction {
+                        kind: ModuleActionKind::RunScript { .. },
+                        ..
+                    })
+                )
+            }),
+            "no RunScript actions should remain"
+        );
+    }
+}
+
+// Item 1 regression: before the module-plan split, `strip_scripts_from_plan`
+// only ever emptied an existing Modules phase's actions, never dropped it, so
+// the missing final `plan.phases.retain(...)` never showed up. Now every
+// module section is its own Phase, so a section made entirely of RunScript
+// actions (`nvim / Post-Scripts` on a plain `--skip-scripts` run) must vanish
+// completely instead of surviving with zero actions.
+//
+// Without the trailing `plan.phases.retain(|p| !p.actions.is_empty())` in
+// `strip_scripts_from_plan`, this phase's `actions` empties out (its only
+// action is a RunScript) but the `Phase` itself stays in `plan.phases`, so
+// `plan.phases.is_empty()` is false and this assertion fails.
+#[test]
+fn strip_scripts_drops_a_phase_left_entirely_empty() {
+    let mut plan = make_plan_from_phases(vec![scoped_phase(
+        "nvim",
+        ModuleSection::PostScripts,
+        vec![module_run_script()],
     )]);
     strip_scripts_from_plan(&mut plan);
 
-    let modules_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == PhaseName::Modules)
-        .unwrap();
-    assert_eq!(
-        modules_phase.actions.len(),
-        2,
-        "RunScript action should be removed, others kept"
-    );
     assert!(
-        modules_phase.actions.iter().all(|a| {
-            !matches!(
-                a,
-                Action::Module(ModuleAction {
-                    kind: ModuleActionKind::RunScript { .. },
-                    ..
-                })
-            )
-        }),
-        "no RunScript actions should remain"
+        plan.phases.is_empty(),
+        "a phase whose only action was stripped must not survive empty: {:?}",
+        plan.phases
+    );
+}
+
+// Item 1 regression, `filter_plan` side: a `--skip` pattern can exclude every
+// action in one (module, section) Phase without touching a sibling section of
+// the same module. Without the trailing
+// `plan.phases.retain(|p| !p.actions.is_empty())` in `filter_plan`, the
+// `nvim / Packages` phase's `actions` empties out but the `Phase` itself
+// stays in `plan.phases`, so `plan.phases.is_empty()` is false and this
+// assertion fails.
+#[test]
+fn filter_plan_drops_a_phase_left_entirely_empty() {
+    let module_pkg_install = Action::Module(ModuleAction {
+        module_name: "nvim".to_string(),
+        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+        origin: None,
+    });
+    let mut plan = make_plan_from_phases(vec![scoped_phase(
+        "nvim",
+        ModuleSection::Packages,
+        vec![module_pkg_install],
+    )]);
+    filter_plan(&mut plan, &["modules.nvim".to_string()], &[]);
+
+    assert!(
+        plan.phases.is_empty(),
+        "a phase whose only action was skipped must not survive empty: {:?}",
+        plan.phases
     );
 }
 
@@ -723,6 +817,52 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
     assert_eq!(output.total_actions, 1);
+}
+
+#[test]
+fn build_plan_output_scoped_phase_carries_module_and_kebab_section() {
+    let plan = make_plan_from_phases(vec![scoped_phase(
+        "nvim",
+        ModuleSection::PostScripts,
+        vec![module_run_script()],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    assert_eq!(output.phases.len(), 1);
+    assert_eq!(output.phases[0].phase, "Modules");
+    assert_eq!(output.phases[0].module.as_deref(), Some("nvim"));
+    assert_eq!(
+        output.phases[0].section.as_deref(),
+        Some("post-scripts"),
+        "section must serialize in kebab form, matching ModuleSection::as_str"
+    );
+
+    let json = serde_json::to_value(&output).unwrap();
+    let phase = &json["phases"][0];
+    assert_eq!(phase["module"], serde_json::json!("nvim"));
+    assert_eq!(phase["section"], serde_json::json!("post-scripts"));
+}
+
+#[test]
+fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
+    let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    assert_eq!(output.phases[0].module, None);
+    assert_eq!(output.phases[0].section, None);
+
+    // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
+    // form carries no `module`/`section` keys at all, not `null` values.
+    let json = serde_json::to_value(&output).unwrap();
+    let phase = &json["phases"][0];
+    assert!(
+        phase.get("module").is_none(),
+        "non-module phase must omit the module key entirely: {phase}"
+    );
+    assert!(
+        phase.get("section").is_none(),
+        "non-module phase must omit the section key entirely: {phase}"
+    );
 }
 
 fn module_install_from_source(source: &str) -> Action {
@@ -803,6 +943,53 @@ fn build_plan_output_empty_plan_has_zero_actions() {
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
+}
+
+// `build_plan_output`'s `PlanActionOutput.description` is the
+// `-o json` plan payload — it must preserve a multi-line inline script's
+// run_str body byte-identical, never condensed. Condensing belongs solely to
+// human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
+#[test]
+fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let action = Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple(raw_body.to_string()),
+        phase: ScriptPhase::PreApply,
+        origin: "test".to_string(),
+    });
+    let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    let desc = &output.phases[0].actions[0].description;
+    assert!(
+        desc.contains(raw_body),
+        "PlanActionOutput.description must preserve the raw multi-line body byte-identical, got: {desc}"
+    );
+}
+
+// Mirrors the phase-script case above but for a MODULE script:
+// `format_module_action_body`'s `ModuleActionKind::RunScript` arm used to
+// condense the body inline, truncating it in the `-o json` plan payload too
+// (it shares the same `format_plan_items` -> `build_plan_output` zip).
+#[test]
+fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
+    let raw_body = "echo module-line-one\necho module-line-two\necho module-line-three";
+    let action = Action::Module(ModuleAction {
+        module_name: "dev-tools".to_string(),
+        kind: ModuleActionKind::RunScript {
+            script: ScriptEntry::Simple(raw_body.to_string()),
+            phase: ScriptPhase::PostApply,
+        },
+        origin: None,
+    });
+    let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
+    let output = build_plan_output(&plan, "ctx", None);
+
+    let desc = &output.phases[0].actions[0].description;
+    assert!(
+        desc.contains(raw_body),
+        "PlanActionOutput.description must preserve a MODULE script's raw multi-line body byte-identical, got: {desc}"
+    );
 }
 
 #[test]
@@ -974,6 +1161,33 @@ fn display_plan_table_phase_filter_omits_other_phases() {
     assert!(
         !out.contains("Packages"),
         "Packages phase should be filtered out, got: {out}"
+    );
+}
+
+// `display_plan_table` must condense a multi-line inline
+// script's `format_plan_items` line before handing it to `bullet()` — the
+// raw string returned by `format_plan_items` embeds `\n`, which would trip
+// `Renderer::write_line`'s no-embedded-newline assert.
+#[test]
+fn display_plan_table_condenses_multiline_script_bullet() {
+    let raw_body = "echo line-one\necho line-two\necho line-three";
+    let action = Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple(raw_body.to_string()),
+        phase: ScriptPhase::PreApply,
+        origin: "test".to_string(),
+    });
+    let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    display_plan_table(&plan, &printer, None);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        !out.contains("line-three"),
+        "human bullet must condense away subsequent lines, got: {out}"
+    );
+    assert!(
+        out.contains("line-one"),
+        "condensed bullet should reference the first line, got: {out}"
     );
 }
 
@@ -1153,4 +1367,220 @@ fn apply_backup_choice_adopt_leaves_action_unchanged() {
         matches!(action, Action::File(FileAction::Create { .. })),
         "action should remain Create after Adopt choice"
     );
+}
+
+// --- Shell environment reminder ---
+
+fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
+    ApplyResult {
+        action_results: descriptions
+            .iter()
+            .map(|d| ActionResult {
+                phase: "env".to_string(),
+                description: (*d).to_string(),
+                success: true,
+                error: None,
+                changed: !d.ends_with(":skipped"),
+            })
+            .collect(),
+        status: ApplyStatus::Success,
+        apply_id: 0,
+        aborted: None,
+        planned_total: descriptions.len(),
+    }
+}
+
+#[test]
+fn shell_env_reminder_silent_when_all_env_actions_skipped() {
+    let result = env_apply_result(&[
+        "env:write:/home/u/.cfgd.env:skipped",
+        "env:inject:/home/u/.bashrc:skipped",
+        "env:session:refresh:skipped",
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.is_empty(),
+        "an apply that changed no env surface must not nag: {out}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn shell_env_reminder_names_the_written_env_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (out, home) = cfgd_core::with_test_home(tmp.path(), || {
+        let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
+        let result = env_apply_result(&[
+            format!("env:write:{home}/.cfgd.env").as_str(),
+            "env:inject:/home/u/.bashrc:skipped",
+        ]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        print_shell_env_reminder(&result, &printer);
+        let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+        (out, home)
+    });
+
+    assert!(
+        !home.is_empty() && home != "~",
+        "the test home must resolve to a real sandbox path, got: {home}"
+    );
+    assert!(
+        out.contains("Shell environment changed"),
+        "expected reminder heading, got: {out}"
+    );
+    assert!(
+        out.contains("- run: source ~/.cfgd.env"),
+        "expected a retypeable source command, got: {out}"
+    );
+    assert!(
+        out.contains("- or open a new shell"),
+        "expected the new-shell alternative, got: {out}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
+    // The env engine emits the PowerShell file BEFORE the Git Bash one, so a
+    // first-match-wins pick would name `.cfgd-env.ps1` here. The shell is pinned
+    // rather than inherited: the pick reads ambient MSYSTEM/SHELL, so on Windows
+    // the same property holds or fails purely on how the runner was launched —
+    // Git Bash in CI, `cmd /c` on a bare console.
+    let _msys = cfgd_core::test_helpers::EnvVarGuard::set("MSYSTEM", "MINGW64");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = cfgd_core::with_test_home(tmp.path(), || {
+        let result = env_apply_result(&[
+            "env:write:/home/u/.cfgd-env.ps1",
+            "env:write:/home/u/.cfgd.env",
+        ]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        print_shell_env_reminder(&result, &printer);
+        cfgd_core::output::strip_ansi(&buf.lock().unwrap())
+    });
+
+    assert!(
+        out.contains("- run: source /home/u/.cfgd.env"),
+        "expected the shell-matching file, got: {out}"
+    );
+    assert!(
+        !out.contains(".cfgd-env.ps1"),
+        "must not name a file this shell cannot source: {out}"
+    );
+}
+
+#[test]
+fn preferred_env_file_follows_the_running_shell_on_windows() {
+    let cases: [(bool, Option<&str>, Option<&str>, &str); 7] = [
+        // POSIX hosts have exactly one env file, whatever `SHELL` says.
+        (false, None, Some("/bin/bash"), ".cfgd.env"),
+        (false, None, None, ".cfgd.env"),
+        // Windows with no POSIX-shell marker: PowerShell is the shell in use.
+        (true, None, None, ".cfgd-env.ps1"),
+        (true, Some(""), Some("cmd.exe"), ".cfgd-env.ps1"),
+        // MSYSTEM is exported by every MSYS2 / Git Bash shell.
+        (true, Some("MINGW64"), None, ".cfgd.env"),
+        (true, Some("CLANG64"), Some("powershell.exe"), ".cfgd.env"),
+        // A POSIX shell reached some other way still reads SHELL.
+        (
+            true,
+            None,
+            Some(r"C:\Program Files\Git\usr\bin\bash.exe"),
+            ".cfgd.env",
+        ),
+    ];
+    for (windows, msystem, shell, want) in cases {
+        let got = preferred_env_file(windows, msystem, shell);
+        assert_eq!(
+            got, want,
+            "windows={windows} msystem={msystem:?} shell={shell:?}"
+        );
+    }
+}
+
+#[test]
+fn shell_env_reminder_fires_for_source_line_injection_alone() {
+    let result = env_apply_result(&[
+        "env:write:/home/u/.cfgd.env:skipped",
+        "env:inject:/home/u/.bashrc",
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Shell environment changed"),
+        "an rc file that only just learned to source the env file still leaves \
+         the running shell stale: {out}"
+    );
+}
+
+#[test]
+fn shell_env_reminder_absent_under_structured_output() {
+    let result = env_apply_result(&["env:write:/home/u/.cfgd.env"]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
+    print_shell_env_reminder(&result, &printer);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.is_empty(),
+        "structured output auto-quiets; the reminder must not corrupt it: {out}"
+    );
+}
+
+#[test]
+fn scoped_phase_bullet_drops_the_module_name_its_heading_already_carries() {
+    let phase = scoped_phase(
+        "dev-tools",
+        ModuleSection::PostScripts,
+        vec![module_run_script()],
+    );
+    let items = reconciler::format_plan_items(&phase);
+    assert!(
+        items[0].starts_with("[dev-tools] "),
+        "fixture must carry the prefix under test; got: {:?}",
+        items[0]
+    );
+
+    let shown = reconciler::display_action_desc_in_phase(
+        &phase.actions[0],
+        &items[0],
+        phase.scope.as_ref(),
+    );
+    assert_eq!(shown, "postApply: install.sh");
+}
+
+#[test]
+fn unscoped_phase_bullet_keeps_the_module_name() {
+    let phase = Phase {
+        name: PhaseName::Modules,
+        actions: vec![module_install()],
+        scope: None,
+    };
+    let items = reconciler::format_plan_items(&phase);
+    let shown = reconciler::display_action_desc_in_phase(&phase.actions[0], &items[0], None);
+    assert_eq!(shown, items[0], "an unscoped heading names no module");
+    assert!(shown.starts_with("[dev-tools] "));
+}
+
+#[test]
+fn a_bullet_for_a_different_module_keeps_its_own_prefix() {
+    // Splitting is by consecutive run, so a phase's scope and an action's
+    // module always agree today. Stripping by exact match rather than by
+    // "leading bracket group" keeps a future mismatch visible instead of
+    // silently erasing the one word that would explain it.
+    let phase = scoped_phase(
+        "other-module",
+        ModuleSection::Packages,
+        vec![module_install()],
+    );
+    let items = reconciler::format_plan_items(&phase);
+    let shown = reconciler::display_action_desc_in_phase(
+        &phase.actions[0],
+        &items[0],
+        phase.scope.as_ref(),
+    );
+    assert_eq!(shown, items[0]);
 }

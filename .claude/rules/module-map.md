@@ -1,6 +1,3 @@
----
-paths: ["**/*.rs"]
----
 # cfgd Module Map
 
 ```

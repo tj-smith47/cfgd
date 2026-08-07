@@ -10,8 +10,8 @@ use crate::providers::{FileAction, PackageAction, SecretAction};
 
 use super::restore::content_hash_if_exists;
 use super::types::{
-    Action, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ReconcileContext, ScriptAction,
-    ScriptPhase, SystemAction,
+    Action, ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase, PhaseName, Plan,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
 
 impl<'a> super::Reconciler<'a> {
@@ -35,22 +35,28 @@ impl<'a> super::Reconciler<'a> {
         phases.push(Phase {
             name: PhaseName::PreScripts,
             actions: pre_script_actions,
+            scope: None,
         });
 
         // Env: write ~/.cfgd.env and inject shell rc source line.
         // Runs early so that env vars (including PATH for bootstrapped managers)
         // are available to all subsequent phases.
-        let (env_actions, warnings) = Self::plan_env(
+        let path_dirs =
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
+        let (env_actions, warnings) = self.plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
             resolved.merged.env_scope,
             &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are
-                 // injected during the apply phase after ResolveEnv actions run.
+            // injected during the apply phase after ResolveEnv actions run.
+            &path_dirs,
+            &super::env::recorded_managed_env_files(self.state),
         );
         phases.push(Phase {
             name: PhaseName::Env,
             actions: env_actions,
+            scope: None,
         });
 
         // Modules: module packages, files, and post-apply scripts.
@@ -65,10 +71,12 @@ impl<'a> super::Reconciler<'a> {
         // package present; among modules the earlier one wins (module-order walk).
         let claimed = Self::dedup_module_packages(&mut module_phase_actions);
 
-        phases.push(Phase {
-            name: PhaseName::Modules,
-            actions: module_phase_actions,
-        });
+        // Split the flat module-phase actions into one Phase per consecutive
+        // (module, section) run, so a single-module apply renders
+        // "nvim / Packages", "nvim / Files", "nvim / Post-Scripts" instead of
+        // one "Modules" heading. Splitting on consecutive runs (not
+        // grouping/sorting) preserves plan_modules's own ordering.
+        phases.extend(Self::split_module_phases(module_phase_actions));
 
         // Packages: profile-level packages, installed after modules
         // so module deps are available. Profile entries already claimed by a
@@ -80,6 +88,7 @@ impl<'a> super::Reconciler<'a> {
         phases.push(Phase {
             name: PhaseName::Packages,
             actions: package_actions,
+            scope: None,
         });
 
         // System: runs after packages so required binaries exist.
@@ -87,6 +96,7 @@ impl<'a> super::Reconciler<'a> {
         phases.push(Phase {
             name: PhaseName::System,
             actions: system_actions,
+            scope: None,
         });
 
         // Files.
@@ -94,6 +104,7 @@ impl<'a> super::Reconciler<'a> {
         phases.push(Phase {
             name: PhaseName::Files,
             actions: fa,
+            scope: None,
         });
 
         // Secrets.
@@ -101,13 +112,23 @@ impl<'a> super::Reconciler<'a> {
         phases.push(Phase {
             name: PhaseName::Secrets,
             actions: secret_actions,
+            scope: None,
         });
 
         // PostScripts: post-apply or post-reconcile hooks.
         phases.push(Phase {
             name: PhaseName::PostScripts,
             actions: post_script_actions,
+            scope: None,
         });
+
+        // A phase with no actions is not a step the run will take — it is an
+        // artifact of every phase being constructed unconditionally. Applying a
+        // module with no profile (`init --apply-module`) resolves an empty
+        // profile, so files/packages/system materialized as empty phases that
+        // rendered "(nothing to do)" beside phases doing real work. Drop them
+        // here, at the source, so display, `-o json`, and apply all agree.
+        phases.retain(|p| !p.actions.is_empty());
 
         Ok(Plan { phases, warnings })
     }
@@ -551,6 +572,66 @@ impl<'a> super::Reconciler<'a> {
         }
 
         actions
+    }
+
+    /// Split a flat vec of module-phase actions into one `Phase` per
+    /// consecutive `(module, section)` run. Consecutive-run splitting (rather
+    /// than grouping/sorting by key) is what preserves `plan_modules`'s own
+    /// ordering: module order, and within a module, pre-scripts / packages /
+    /// files / post-scripts.
+    pub(super) fn split_module_phases(actions: Vec<Action>) -> Vec<Phase> {
+        let mut phases: Vec<Phase> = Vec::new();
+
+        for action in actions {
+            let scope = Self::module_action_scope(&action);
+            let is_new_run = match phases.last() {
+                Some(phase) => phase.scope != scope,
+                None => true,
+            };
+            if is_new_run {
+                phases.push(Phase {
+                    name: PhaseName::Modules,
+                    actions: Vec::new(),
+                    scope,
+                });
+            }
+            if let Some(phase) = phases.last_mut() {
+                phase.actions.push(action);
+            }
+        }
+
+        phases
+    }
+
+    /// The `(module, section)` scope a module-phase action belongs to.
+    /// `None` for anything that is not `Action::Module` — never produced by
+    /// `plan_modules`, but the pattern must stay total.
+    fn module_action_scope(action: &Action) -> Option<ModuleScope> {
+        match action {
+            Action::Module(ModuleAction {
+                module_name, kind, ..
+            }) => Some(ModuleScope {
+                module: module_name.clone(),
+                section: Self::module_section_for_kind(kind),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Map every `ModuleActionKind` variant to the section it renders under.
+    fn module_section_for_kind(kind: &ModuleActionKind) -> ModuleSection {
+        match kind {
+            ModuleActionKind::RunScript { phase, .. } => match phase {
+                ScriptPhase::PreApply | ScriptPhase::PreReconcile => ModuleSection::PreScripts,
+                ScriptPhase::PostApply
+                | ScriptPhase::PostReconcile
+                | ScriptPhase::OnDrift
+                | ScriptPhase::OnChange => ModuleSection::PostScripts,
+            },
+            ModuleActionKind::InstallPackages { .. } => ModuleSection::Packages,
+            ModuleActionKind::DeployFiles { .. } => ModuleSection::Files,
+            ModuleActionKind::Skip { .. } => ModuleSection::Skipped,
+        }
     }
 
     /// Dedupe module `InstallPackages` actions in place, keeping the first-seen

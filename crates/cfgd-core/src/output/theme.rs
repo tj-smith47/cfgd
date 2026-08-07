@@ -9,6 +9,11 @@ const ICON_PENDING: &str = "○";
 const ICON_RUNNING: &str = "◐";
 const ICON_SKIPPED: &str = "—";
 const ICON_ARROW: &str = "→";
+// A circled mark, matching the ○/● family the rest of the set draws from.
+// The enclosed-alphanumeric `ⓘ` reads better in prose but is absent from
+// JetBrains Mono, DejaVu and every other common terminal font, so it renders
+// as a tofu box — including in cfgd's own recorded demo.
+const ICON_INFO: &str = "⊙";
 
 /// Single style slot held by `Theme`. Wraps `console::Style` (used for the
 /// 256-color fallback path and for non-color attributes like bold/dim) and
@@ -243,7 +248,7 @@ pub struct Theme {
     /// `Role::Secondary`.
     pub secondary: ThemedStyle,
 
-    // Icon slots (7)
+    // Icon slots (8)
     pub icon_ok: String,
     pub icon_warn: String,
     pub icon_fail: String,
@@ -251,6 +256,7 @@ pub struct Theme {
     pub icon_running: String,
     pub icon_skipped: String,
     pub icon_arrow: String,
+    pub icon_info: String,
 }
 
 impl Default for Theme {
@@ -278,6 +284,7 @@ impl Default for Theme {
             icon_running: ICON_RUNNING.into(),
             icon_skipped: ICON_SKIPPED.into(),
             icon_arrow: ICON_ARROW.into(),
+            icon_info: ICON_INFO.into(),
         }
     }
 }
@@ -412,6 +419,9 @@ impl Theme {
         if let Some(v) = &ov.icon_arrow {
             t.icon_arrow = v.clone();
         }
+        if let Some(v) = &ov.icon_info {
+            t.icon_info = v.clone();
+        }
         t
     }
 
@@ -439,6 +449,7 @@ impl Theme {
             icon_running: ".".into(),
             icon_skipped: "-".into(),
             icon_arrow: ">".into(),
+            icon_info: "i".into(),
         }
     }
 }
@@ -471,22 +482,57 @@ pub(super) fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// Quantize an RGB triple to the closest ANSI 256-color slot. Used for the
+/// The six values xterm's 6×6×6 colour cube actually uses per channel. They
+/// are not evenly spaced — the gap from 0 to 95 is nearly three times the gap
+/// between any later pair — so a channel cannot be mapped onto them by
+/// division.
+const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+/// Cube index whose level is closest to `v`.
+fn nearest_cube_index(v: u8) -> usize {
+    CUBE_LEVELS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, level)| v.abs_diff(**level))
+        .map_or(0, |(i, _)| i)
+}
+
+/// Squared euclidean distance between two RGB triples.
+fn rgb_dist2(a: (u8, u8, u8), b: (u8, u8, u8)) -> u32 {
+    let d = |x: u8, y: u8| {
+        let d = u32::from(x.abs_diff(y));
+        d * d
+    };
+    d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2)
+}
+
 /// 256-color fallback path when the terminal does not advertise truecolor
-/// support. Algorithm matches xterm's 6×6×6 cube + 24-step grayscale ramp.
+/// support. Quantizes to the nearer of xterm's 6×6×6 cube and its 24-step
+/// grayscale ramp.
 pub(super) fn ansi256_from_rgb(r: u8, g: u8, b: u8) -> u8 {
-    if r == g && g == b {
-        if r < 8 {
-            return 16;
-        }
-        if r > 248 {
-            return 231;
-        }
-        return (((r as u16 - 8) * 24 / 247) as u8) + 232;
+    let (ri, gi, bi) = (
+        nearest_cube_index(r),
+        nearest_cube_index(g),
+        nearest_cube_index(b),
+    );
+    let cube_rgb = (CUBE_LEVELS[ri], CUBE_LEVELS[gi], CUBE_LEVELS[bi]);
+    let cube_idx = (16 + 36 * ri + 6 * gi + bi) as u8;
+
+    // Both candidates are measured rather than branching on `r == g == b`: the
+    // ramp's 10-unit steps beat the cube's coarse levels for anything merely
+    // near-grey, not just exactly grey.
+    let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+    let ramp_i = u8::try_from(avg.saturating_sub(3) / 10)
+        .unwrap_or(23)
+        .min(23);
+    let ramp_level = 8 + 10 * ramp_i;
+    let ramp_rgb = (ramp_level, ramp_level, ramp_level);
+
+    if rgb_dist2(ramp_rgb, (r, g, b)) < rgb_dist2(cube_rgb, (r, g, b)) {
+        232 + ramp_i
+    } else {
+        cube_idx
     }
-    let ri = (r as u16 * 5 / 255) as u8;
-    let gi = (g as u16 * 5 / 255) as u8;
-    let bi = (b as u16 * 5 / 255) as u8;
-    16 + 36 * ri + 6 * gi + bi
 }
 
 fn hex(s: &str) -> ThemedStyle {
@@ -522,6 +568,57 @@ mod tests {
         assert_eq!(t.icon_running, "◐");
         assert_eq!(t.icon_skipped, "—");
         assert_eq!(t.icon_arrow, "→");
+        assert_eq!(t.icon_info, "⊙");
+    }
+
+    /// Every default glyph must be text-presentation AND drawn from a block the
+    /// fonts terminals actually ship. An emoji-presentation character renders
+    /// double-width and color-substituted; a character outside these blocks
+    /// renders as a tofu box, which is how `ⓘ` (U+24D8, Enclosed
+    /// Alphanumerics — absent from JetBrains Mono, DejaVu and Noto Sans Mono
+    /// alike) reached a recorded demo. Either way the status-line glyph column
+    /// that the whole icon set exists to align is broken.
+    #[test]
+    fn default_icons_are_all_text_presentation_single_glyphs() {
+        // Latin-1 Supplement, General Punctuation, Arrows, Mathematical
+        // Operators, Geometric Shapes, Miscellaneous Symbols, Dingbats — the
+        // ranges with near-universal coverage in monospaced terminal fonts.
+        const COVERED_BLOCKS: &[std::ops::RangeInclusive<u32>] = &[
+            0x00A0..=0x00FF,
+            0x2000..=0x206F,
+            0x2190..=0x21FF,
+            0x2200..=0x22FF,
+            0x25A0..=0x25FF,
+            0x2600..=0x26FF,
+            0x2700..=0x27BF,
+        ];
+
+        let t = Theme::default();
+        for icon in [
+            &t.icon_ok,
+            &t.icon_warn,
+            &t.icon_fail,
+            &t.icon_pending,
+            &t.icon_running,
+            &t.icon_skipped,
+            &t.icon_arrow,
+            &t.icon_info,
+        ] {
+            assert_eq!(icon.chars().count(), 1, "{icon:?} is not a single glyph");
+            let c = icon.chars().next().unwrap_or('\0') as u32;
+            // U+FE0F would force emoji presentation; the emoji-source blocks
+            // (Misc Symbols & Pictographs onward) are excluded outright.
+            assert!(
+                !icon.contains('\u{FE0F}'),
+                "{icon:?} forces emoji presentation"
+            );
+            assert!(c < 0x1F300, "{icon:?} is from an emoji block");
+            assert!(
+                COVERED_BLOCKS.iter().any(|r| r.contains(&c)),
+                "{icon:?} (U+{c:04X}) is outside the blocks terminal fonts cover \
+                 and will render as a tofu box"
+            );
+        }
     }
 
     #[test]
@@ -754,36 +851,69 @@ mod tests {
         assert!(s.attrs.underline);
     }
 
+    /// The RGB a terminal actually paints for one of the 240 addressable
+    /// slots: 16..=231 is the 6×6×6 cube, 232..=255 the grayscale ramp.
+    fn slot_rgb(slot: u8) -> (u8, u8, u8) {
+        if slot >= 232 {
+            let level = 8 + 10 * (slot - 232);
+            return (level, level, level);
+        }
+        let i = usize::from(slot - 16);
+        (
+            CUBE_LEVELS[i / 36],
+            CUBE_LEVELS[(i / 6) % 6],
+            CUBE_LEVELS[i % 6],
+        )
+    }
+
+    /// The property that matters, asserted directly rather than through the
+    /// algorithm that satisfies it: no addressable slot is closer to the
+    /// requested colour than the one chosen. An earlier implementation divided
+    /// each channel by 51 to index the cube, which systematically rounded down
+    /// — #50fa7b's green landed on 215 with 255 available — and no
+    /// membership-style assertion could see it.
+    fn assert_nearest_slot(r: u8, g: u8, b: u8) {
+        let chosen = ansi256_from_rgb(r, g, b);
+        let chosen_dist = rgb_dist2(slot_rgb(chosen), (r, g, b));
+        for slot in 16..=255u8 {
+            let d = rgb_dist2(slot_rgb(slot), (r, g, b));
+            assert!(
+                d >= chosen_dist,
+                "slot {slot} ({:?}) is nearer to ({r},{g},{b}) than chosen {chosen} ({:?})",
+                slot_rgb(slot),
+                slot_rgb(chosen),
+            );
+        }
+    }
+
     #[test]
-    fn ansi256_grayscale_low_clamps_to_pure_black() {
-        // r == g == b, with r < 8 → ANSI slot 16 (pure black).
+    fn ansi256_always_picks_the_nearest_addressable_slot() {
+        for (r, g, b) in [
+            (0, 0, 0),
+            (7, 7, 7),
+            (8, 8, 8),
+            (128, 128, 128),
+            (248, 248, 248),
+            (249, 249, 249),
+            (255, 255, 255),
+            // Every dracula slot — the preset this is most visible on.
+            (0xbd, 0x93, 0xf9),
+            (0x50, 0xfa, 0x7b),
+            (0xf1, 0xfa, 0x8c),
+            (0xff, 0x55, 0x55),
+            (0x8b, 0xe9, 0xfd),
+            (0x62, 0x72, 0xa4),
+            (0xff, 0xb8, 0x6c),
+            (0xff, 0x79, 0xc6),
+        ] {
+            assert_nearest_slot(r, g, b);
+        }
+    }
+
+    #[test]
+    fn ansi256_pure_black_and_white_are_exact() {
         assert_eq!(ansi256_from_rgb(0, 0, 0), 16);
-        assert_eq!(ansi256_from_rgb(7, 7, 7), 16);
-    }
-
-    #[test]
-    fn ansi256_grayscale_high_clamps_to_pure_white() {
-        // r == g == b, with r > 248 → ANSI slot 231 (pure white).
         assert_eq!(ansi256_from_rgb(255, 255, 255), 231);
-        assert_eq!(ansi256_from_rgb(249, 249, 249), 231);
-    }
-
-    #[test]
-    fn ansi256_grayscale_ramp_midrange_maps_into_232_to_255() {
-        // r == g == b, with 8 <= r <= 248 → grayscale ramp 232..=255.
-        let mid = ansi256_from_rgb(128, 128, 128);
-        assert!(
-            (232..=255).contains(&mid),
-            "expected grayscale-ramp slot for #808080, got: {mid}"
-        );
-        // Edge: r == 8 lands at 232 (first ramp slot).
-        assert_eq!(ansi256_from_rgb(8, 8, 8), 232);
-        // Edge: r == 248 maps near the top of the ramp.
-        let high = ansi256_from_rgb(248, 248, 248);
-        assert!(
-            (232..=255).contains(&high),
-            "r==248 should still be in the ramp, got: {high}"
-        );
     }
 
     #[test]
@@ -886,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn from_config_icon_overrides_apply_all_seven_slots() {
+    fn from_config_icon_overrides_apply_all_eight_slots() {
         let cfg = crate::config::ThemeConfig {
             name: "default".to_string(),
             overrides: crate::config::ThemeOverrides {
@@ -897,6 +1027,7 @@ mod tests {
                 icon_running: Some("[*]".into()),
                 icon_skipped: Some("[-]".into()),
                 icon_arrow: Some("=>".into()),
+                icon_info: Some("[i]".into()),
                 ..Default::default()
             },
         };
@@ -908,6 +1039,7 @@ mod tests {
         assert_eq!(t.icon_running, "[*]");
         assert_eq!(t.icon_skipped, "[-]");
         assert_eq!(t.icon_arrow, "=>");
+        assert_eq!(t.icon_info, "[i]");
     }
 
     #[test]

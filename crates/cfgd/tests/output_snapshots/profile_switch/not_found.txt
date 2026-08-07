@@ -1,5 +1,4 @@
 Switch Profile
-
 ✗ Profile 'missing' not found in <CONFIG_DIR>/profiles
 
 → Available profiles: default, work

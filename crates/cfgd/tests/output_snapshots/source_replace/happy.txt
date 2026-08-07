@@ -1,13 +1,10 @@
 Replace Source: replace-old
 
 Remove Source: replace-old
-
 ✓ Source 'replace-old' removed
 
 Add Config Source
-
 ◐ Cloning source 'replace-old'
-
   Cloning into '<STATE_DIR>/sources/replace-old'...
 ✓ Cloning source 'replace-old'
 
@@ -17,8 +14,8 @@ Source Manifest
   Profiles  default
 
 Policy
-  Scripts: blocked
-  Secret access: blocked
+  ⊙ Scripts: blocked
+  ⊙ Secret access: blocked
 
 ✓ No conflicts with current config
 

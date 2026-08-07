@@ -56,6 +56,70 @@ fn run_request(
 /// risking OOM from a malicious or mis-sized descriptor.
 const MAX_BLOB_SIZE: u64 = 512 * 1024 * 1024;
 
+/// Maximum bytes read from a non-2xx registry response when building an error
+/// message. Registry error pages are small JSON documents; bounding the read
+/// keeps a misbehaving or malicious endpoint from streaming an unbounded body
+/// into memory just to construct an error string.
+const MAX_ERROR_BODY_SIZE: u64 = 4 * 1024;
+
+/// OCI Distribution Spec error envelope: `{"errors":[{"code","message","detail"}]}`.
+#[derive(serde::Deserialize)]
+struct RegistryErrorBody {
+    errors: Vec<RegistryErrorEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct RegistryErrorEntry {
+    code: Option<String>,
+    message: Option<String>,
+}
+
+/// Drain up to [`MAX_ERROR_BODY_SIZE`] bytes from a non-2xx response body.
+/// Read failures collapse to an empty string rather than masking the
+/// original HTTP status with an I/O error.
+fn read_error_body(resp: Response<Body>) -> String {
+    let mut data = Vec::new();
+    let mut reader = resp.into_body().into_reader().take(MAX_ERROR_BODY_SIZE);
+    if reader.read_to_end(&mut data).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&data).trim().to_string()
+}
+
+/// Build a [`RequestFailed`](OciError::RequestFailed) that carries the
+/// registry's own explanation. Registries report failures (quota exceeded,
+/// insufficient storage, access denied) as a JSON `errors[]` array per the
+/// OCI Distribution Spec; when the body parses that way each entry renders
+/// as `CODE: message`, and when it doesn't (plain text, HTML error page, or
+/// no body at all) the raw trimmed body is appended instead so nothing the
+/// registry sent is silently dropped.
+fn format_registry_error(status: u16, url: &str, resp: Response<Body>) -> OciError {
+    let body = read_error_body(resp);
+    if body.is_empty() {
+        return OciError::RequestFailed {
+            message: format!("HTTP {status} from {url}"),
+        };
+    }
+    let detail = match serde_json::from_str::<RegistryErrorBody>(&body) {
+        Ok(parsed) if !parsed.errors.is_empty() => parsed
+            .errors
+            .iter()
+            .map(|e| {
+                let code = e.code.as_deref().unwrap_or("UNKNOWN");
+                match e.message.as_deref() {
+                    Some(msg) if !msg.is_empty() => format!("{code}: {msg}"),
+                    _ => code.to_string(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => body,
+    };
+    OciError::RequestFailed {
+        message: format!("HTTP {status} from {url}: {detail}"),
+    }
+}
+
 /// Make an authenticated request. Handles 401 → token exchange flow.
 pub(super) fn authenticated_request(
     agent: &ureq::Agent,
@@ -122,14 +186,10 @@ pub(super) fn authenticated_request(
         if (200..300).contains(&status2) {
             return Ok(resp2);
         }
-        return Err(OciError::RequestFailed {
-            message: format!("HTTP {status2} from {url}"),
-        });
+        return Err(format_registry_error(status2, url, resp2));
     }
 
-    Err(OciError::RequestFailed {
-        message: format!("HTTP {status} from {url}"),
-    })
+    Err(format_registry_error(status, url, resp))
 }
 
 /// Resolve the authoritative digest of a just-PUT manifest/index.
@@ -681,6 +741,57 @@ mod tests {
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
         assert!(matches!(result, Err(OciError::RequestFailed { .. })));
+    }
+
+    #[test]
+    fn authenticated_request_surfaces_registry_error_body() {
+        let mut server = mockito::Server::new();
+
+        server
+            .mock("POST", "/v2/test/repo/blobs/uploads/")
+            .with_status(507)
+            .with_body(
+                r#"{"errors":[{"code":"DENIED","message":"insufficient_storage: no space left on device"}]}"#,
+            )
+            .create();
+
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+
+        let url = format!("{}/v2/test/repo/blobs/uploads/", server.url());
+        let result = authenticated_request(&agent, "POST", &url, None, None, None, Some(&[]));
+        let err = result.expect_err("507 must surface as an error");
+        let message = err.to_string();
+        assert!(
+            message.contains("DENIED: insufficient_storage: no space left on device"),
+            "registry error body must reach the rendered error, got: {message}"
+        );
+    }
+
+    #[test]
+    fn authenticated_request_falls_back_to_raw_body_when_not_json() {
+        let mut server = mockito::Server::new();
+
+        server
+            .mock("GET", "/v2/test/repo/tags/list")
+            .with_status(502)
+            .with_body("upstream registry unreachable")
+            .create();
+
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+
+        let url = format!("{}/v2/test/repo/tags/list", server.url());
+        let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
+        let err = result.expect_err("502 must surface as an error");
+        assert!(
+            err.to_string().contains("upstream registry unreachable"),
+            "non-JSON body must fall back to raw text, got: {err}"
+        );
     }
 
     #[test]

@@ -29,6 +29,14 @@
 !manifests/
 !manifests/**
 
+# demo/Dockerfile is already trackable via the !Dockerfile* rule above; this
+# pair exists for the demo's other, non-Dockerfile assets — the recorded
+# init.tape and its GIF — so the VHS recording task can commit them. The
+# `demo/bin/` re-ignore below still wins for the staged binary, a build
+# output that must never be tracked.
+!demo/
+!demo/**
+
 # Crossplane function
 !function-cfgd/
 !function-cfgd/**
@@ -100,6 +108,12 @@
 # Re-ignore build artifacts inside allowed dirs
 target/
 **/*.rs.bk
+# Host-built cfgd binary staged for `docker build -f demo/Dockerfile`; never
+# a source artifact, always regenerated from `task build`.
+demo/bin/
+# Scratch space for `demo/init.tape`: thousands of raw VHS frames plus the
+# uncompressed capture, all regenerated on every recording.
+demo/.out/
 
 # Re-ignore OS/IDE junk inside allowed dirs
 .DS_Store

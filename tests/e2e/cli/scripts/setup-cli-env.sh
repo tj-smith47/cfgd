@@ -75,7 +75,10 @@ run() {
 assert_ok() {
     if [ "$RC" -ne 0 ]; then
         echo "  ASSERT FAILED: expected exit 0, got $RC"
-        echo "$OUTPUT" | head -5 | sed 's/^/    /'
+        # Unlike the pass-path prints scattered through this suite, this only
+        # runs on an unexpected failure — truncating here risks cutting the
+        # one line that names the actual error, so print all of it.
+        echo "$OUTPUT" | sed 's/^/    /'
         return 1
     fi
 }

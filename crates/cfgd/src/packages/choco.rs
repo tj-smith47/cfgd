@@ -91,7 +91,10 @@ impl PackageManager for ChocolateyManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
         Ok(parse_choco_list(&String::from_utf8_lossy(&output.stdout)))
     }
@@ -105,19 +108,26 @@ impl PackageManager for ChocolateyManager {
 
     /// Display surface (scan/status): keep the REGISTERED name case and the real
     /// version, rather than the lowercase identity form used for matching.
-    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<PackageInfo>> {
         let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
         Ok(parse_choco_list_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         let mut args = vec!["install", "-y"];
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "chocolatey",
             Command::new("choco").args(&args),
             "Installing chocolatey packages",
@@ -126,12 +136,16 @@ impl PackageManager for ChocolateyManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         let mut args = vec!["uninstall", "-y"];
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "chocolatey",
             Command::new("choco").args(&args),
             "Uninstalling chocolatey packages",
@@ -140,9 +154,9 @@ impl PackageManager for ChocolateyManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "chocolatey",
             Command::new("choco").args(["upgrade", "all", "-y"]),
             "Upgrading all chocolatey packages",
@@ -455,6 +469,9 @@ Tags: git vcs dvcs
     #[test]
     #[serial_test::serial]
     fn chocolatey_manager_is_available_checks_choco() {
+        // Both sides read `PATH`; without the guard a concurrent test's
+        // `PATH` mutation can land between them and they disagree.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let mgr = ChocolateyManager;
         let available = mgr.is_available();
         assert_eq!(available, command_available("choco"));
@@ -476,7 +493,9 @@ Tags: git vcs dvcs
     #[cfg(unix)]
     mod choco_shim {
         use super::*;
-        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
+        use cfgd_core::test_helpers::{
+            install_named_path_shim, test_package_context, test_printer, test_state,
+        };
         use serial_test::serial;
 
         fn install_choco_shim(
@@ -516,8 +535,10 @@ Tags: git vcs dvcs
         fn install_succeeds_when_choco_exits_zero() {
             let (_bin, _path) = install_choco_shim(0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             ChocolateyManager
-                .install(&["git".into(), "nodejs".into()], &p)
+                .install(&["git".into(), "nodejs".into()], &cx)
                 .expect("install Ok");
         }
 
@@ -526,8 +547,10 @@ Tags: git vcs dvcs
         fn install_propagates_nonzero_exit_as_install_failed() {
             let (_bin, _path) = install_choco_shim(1, "", "package not found");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let err = ChocolateyManager
-                .install(&["git".into()], &p)
+                .install(&["git".into()], &cx)
                 .expect_err("non-zero choco install must error");
             assert!(err.to_string().contains("chocolatey"));
         }
@@ -537,8 +560,10 @@ Tags: git vcs dvcs
         fn uninstall_succeeds_when_choco_exits_zero() {
             let (_bin, _path) = install_choco_shim(0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             ChocolateyManager
-                .uninstall(&["git".into()], &p)
+                .uninstall(&["git".into()], &cx)
                 .expect("uninstall Ok");
         }
 
@@ -547,8 +572,10 @@ Tags: git vcs dvcs
         fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
             let (_bin, _path) = install_choco_shim(2, "", "no such package");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let err = ChocolateyManager
-                .uninstall(&["git".into()], &p)
+                .uninstall(&["git".into()], &cx)
                 .expect_err("non-zero choco uninstall must error");
             assert!(err.to_string().contains("chocolatey"));
         }
@@ -558,7 +585,9 @@ Tags: git vcs dvcs
         fn update_runs_upgrade_all() {
             let (_bin, _path) = install_choco_shim(0, "", "");
             let p = test_printer();
-            ChocolateyManager.update(&p).expect("update Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ChocolateyManager.update(&cx).expect("update Ok");
         }
 
         #[test]
@@ -566,7 +595,10 @@ Tags: git vcs dvcs
         fn installed_packages_parses_choco_list_output() {
             let stdout = "Chocolatey v2.2.2\ngit 2.44.0\nnodejs 20.11.1\npython 3.12.1\n3 packages installed.\n";
             let (_bin, _path) = install_choco_shim(0, stdout, "");
-            let pkgs = ChocolateyManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = ChocolateyManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.contains("git"));
             assert!(pkgs.contains("nodejs"));
             assert!(pkgs.contains("python"));
@@ -578,7 +610,10 @@ Tags: git vcs dvcs
         fn installed_packages_empty_when_output_only_has_summary() {
             let (_bin, _path) =
                 install_choco_shim(0, "Chocolatey v2.2.2\n0 packages installed.\n", "");
-            let pkgs = ChocolateyManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = ChocolateyManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.is_empty());
         }
 

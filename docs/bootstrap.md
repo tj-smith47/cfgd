@@ -15,6 +15,11 @@ The flow:
 3. **Generate** release workflow if profiles/modules are present
 4. **Init git** if the directory isn't already a repository
 
+The clone step is skipped entirely when the target already contains a
+`cfgd.yaml` — cfgd reports `Already initialized at <dir>` and leaves the existing
+config untouched. Re-running `init --from` is therefore safe: it moves straight
+to whatever `--apply` / `--apply-module` work you asked for.
+
 ### Specifying a Branch
 
 ```sh

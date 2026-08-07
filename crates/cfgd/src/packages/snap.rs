@@ -55,17 +55,24 @@ impl PackageManager for SnapManager {
         bootstrap_via_system_manager(printer, "snapd", "snap")
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("snap", snap_cmd().args(["list"]), "list")?;
         Ok(parse_snap_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         // Snap requires individual install commands for --classic flag per package
         for pkg in packages {
             let label = format!("snap install {}", pkg);
             let result = run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "snap",
                 sudo_cmd_with_seam("snap").arg("install").arg(pkg),
                 &label,
@@ -76,7 +83,7 @@ impl PackageManager for SnapManager {
                 if e.to_string().contains("classic") {
                     let label = format!("snap install --classic {}", pkg);
                     run_pkg_cmd_live(
-                        printer,
+                        cx.printer,
                         "snap",
                         sudo_cmd_with_seam("snap").args(["install", "--classic", pkg]),
                         &label,
@@ -90,13 +97,17 @@ impl PackageManager for SnapManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         if packages.is_empty() {
             return Ok(());
         }
         let label = format!("snap remove {}", packages.join(" "));
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "snap",
             sudo_cmd_with_seam("snap").arg("remove").args(packages),
             &label,
@@ -105,9 +116,9 @@ impl PackageManager for SnapManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "snap",
             sudo_cmd_with_seam("snap").arg("refresh"),
             "snap refresh",
@@ -365,7 +376,7 @@ fd        9.0.0    100    latest/stable  -             -
     mod snap_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_SNAP_BIN";
@@ -375,8 +386,10 @@ fd        9.0.0    100    latest/stable  -             -
         fn snap_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             SnapManager
-                .install(&["ripgrep".into(), "fd".into()], &p)
+                .install(&["ripgrep".into(), "fd".into()], &cx)
                 .expect("Ok");
             assert_eq!(s.invocation_count(), 2);
             let argv = s.argv_log();
@@ -406,7 +419,9 @@ fd        9.0.0    100    latest/stable  -             -
                 "snap \"ripgrep\" requires classic confinement",
             );
             let p = test_printer();
-            let _ = SnapManager.install(&["ripgrep".into()], &p);
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let _ = SnapManager.install(&["ripgrep".into()], &cx);
             assert_eq!(
                 s.invocation_count(),
                 2,
@@ -429,8 +444,10 @@ fd        9.0.0    100    latest/stable  -             -
         fn snap_uninstall_runs_remove_with_all_packages_in_one_invocation() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             SnapManager
-                .uninstall(&["ripgrep".into(), "fd".into()], &p)
+                .uninstall(&["ripgrep".into(), "fd".into()], &cx)
                 .expect("Ok");
             assert_eq!(s.invocation_count(), 1, "snap remove batches all pkgs");
             let argv = s.argv_log();
@@ -445,7 +462,9 @@ fd        9.0.0    100    latest/stable  -             -
         fn snap_uninstall_is_noop_when_packages_empty() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            SnapManager.uninstall(&[], &p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            SnapManager.uninstall(&[], &cx).expect("Ok");
             assert_eq!(s.invocation_count(), 0, "no command spawned for empty");
         }
 
@@ -454,7 +473,9 @@ fd        9.0.0    100    latest/stable  -             -
         fn snap_update_runs_refresh() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            SnapManager.update(&p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            SnapManager.update(&cx).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
             assert!(s.argv_log().contains("refresh"), "argv: {}", s.argv_log());
         }
@@ -468,7 +489,10 @@ core22    20240124 1100  latest/stable  canonical**  base
 ripgrep   14.1.0   234   latest/stable  burntsushi   classic
 ";
             let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
-            let pkgs = SnapManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = SnapManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.contains("core22"));
             assert!(pkgs.contains("ripgrep"));
         }

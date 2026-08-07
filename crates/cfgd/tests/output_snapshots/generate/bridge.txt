@@ -1,5 +1,4 @@
 Generate
-
-Scanning system for installed tools
+⊙ Scanning system for installed tools
 
 ✓ Generation complete

@@ -2,11 +2,9 @@ Diff
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
 
-Files
-
-<TARGET> (new file)
+⊙ Files
+⊙ <TARGET> (new file)
 hello world
-
 ⚠ File drift detected
 
 Packages

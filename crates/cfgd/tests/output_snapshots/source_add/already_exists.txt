@@ -1,3 +1,2 @@
 Add Config Source
-
 ✗ Source 'team-config' already exists. Use 'cfgd source update' to refresh.

@@ -1,5 +1,4 @@
 Daemon Status
-
 ✓ Daemon is running
 
 PID             4242

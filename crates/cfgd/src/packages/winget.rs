@@ -5,7 +5,7 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageInfo, PackageManager};
+use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
 
@@ -88,7 +88,7 @@ impl PackageManager for WingetManager {
         .into())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         let output = run_pkg_cmd(
             "winget",
             Command::new("winget").args(["list", "--source", "winget"]),
@@ -106,7 +106,10 @@ impl PackageManager for WingetManager {
 
     /// Display surface (scan/status): keep the REGISTERED Id case and the real
     /// version, rather than the lowercase identity form used for matching.
-    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &PackageContext<'_>,
+    ) -> Result<Vec<PackageInfo>> {
         let output = run_pkg_cmd(
             "winget",
             Command::new("winget").args(["list", "--source", "winget"]),
@@ -117,10 +120,10 @@ impl PackageManager for WingetManager {
         )))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "winget",
                 Command::new("winget").args([
                     "install",
@@ -136,10 +139,10 @@ impl PackageManager for WingetManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "winget",
                 Command::new("winget").args(["uninstall", "--id", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -149,9 +152,9 @@ impl PackageManager for WingetManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "winget",
             Command::new("winget").args([
                 "upgrade",
@@ -390,6 +393,9 @@ SomeApp               Some.App                  1.0.0\n";
     #[test]
     #[serial_test::serial]
     fn winget_manager_is_available_checks_winget() {
+        // Both sides read `PATH`; without the guard a concurrent test's
+        // `PATH` mutation can land between them and they disagree.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let mgr = WingetManager;
         let available = mgr.is_available();
         assert_eq!(available, command_available("winget"));
@@ -415,7 +421,9 @@ SomeApp               Some.App                  1.0.0\n";
     #[cfg(unix)]
     mod winget_shim {
         use super::*;
-        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
+        use cfgd_core::test_helpers::{
+            install_named_path_shim, test_package_context, test_printer, test_state,
+        };
         use serial_test::serial;
 
         fn install_winget_shim(
@@ -431,8 +439,10 @@ SomeApp               Some.App                  1.0.0\n";
         fn install_succeeds_per_package_when_winget_exits_zero() {
             let (_bin, _path) = install_winget_shim(0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             WingetManager
-                .install(&["Git.Git".into(), "Microsoft.VisualStudio".into()], &p)
+                .install(&["Git.Git".into(), "Microsoft.VisualStudio".into()], &cx)
                 .expect("install Ok");
         }
 
@@ -441,8 +451,10 @@ SomeApp               Some.App                  1.0.0\n";
         fn install_propagates_nonzero_exit_as_install_failed() {
             let (_bin, _path) = install_winget_shim(1, "", "no manifest found");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let err = WingetManager
-                .install(&["NoSuch".into()], &p)
+                .install(&["NoSuch".into()], &cx)
                 .expect_err("non-zero winget install must error");
             assert!(err.to_string().contains("winget"));
         }
@@ -452,8 +464,10 @@ SomeApp               Some.App                  1.0.0\n";
         fn uninstall_succeeds_per_package_when_winget_exits_zero() {
             let (_bin, _path) = install_winget_shim(0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             WingetManager
-                .uninstall(&["Git.Git".into()], &p)
+                .uninstall(&["Git.Git".into()], &cx)
                 .expect("uninstall Ok");
         }
 
@@ -462,8 +476,10 @@ SomeApp               Some.App                  1.0.0\n";
         fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
             let (_bin, _path) = install_winget_shim(1, "", "not installed");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             let err = WingetManager
-                .uninstall(&["Git.Git".into()], &p)
+                .uninstall(&["Git.Git".into()], &cx)
                 .expect_err("non-zero winget uninstall must error");
             assert!(err.to_string().contains("winget"));
         }
@@ -473,7 +489,9 @@ SomeApp               Some.App                  1.0.0\n";
         fn update_runs_upgrade_all() {
             let (_bin, _path) = install_winget_shim(0, "", "");
             let p = test_printer();
-            WingetManager.update(&p).expect("update Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            WingetManager.update(&cx).expect("update Ok");
         }
 
         #[test]
@@ -486,7 +504,10 @@ Visual Studio   Microsoft.VisualStudio 17.8.3
 Git             Git.Git                2.43.0
 ";
             let (_bin, _path) = install_winget_shim(0, stdout, "");
-            let pkgs = WingetManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = WingetManager.installed_packages(&cx).expect("Ok");
             // winget Ids are matched case-insensitively; cfgd canonicalizes to lowercase.
             assert!(pkgs.contains("microsoft.visualstudio"));
             assert!(pkgs.contains("git.git"));

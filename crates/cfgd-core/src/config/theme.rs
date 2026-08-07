@@ -86,7 +86,7 @@ pub struct ThemeOverrides {
     pub accent: Option<String>,
     pub secondary: Option<String>,
 
-    // Icon overrides (7) — single glyphs (or short strings) for status roles.
+    // Icon overrides (8) — single glyphs (or short strings) for status roles.
     pub icon_ok: Option<String>,
     pub icon_warn: Option<String>,
     pub icon_fail: Option<String>,
@@ -94,6 +94,7 @@ pub struct ThemeOverrides {
     pub icon_running: Option<String>,
     pub icon_skipped: Option<String>,
     pub icon_arrow: Option<String>,
+    pub icon_info: Option<String>,
 }
 
 impl ThemeOverrides {
@@ -117,6 +118,7 @@ impl ThemeOverrides {
             && self.icon_running.is_none()
             && self.icon_skipped.is_none()
             && self.icon_arrow.is_none()
+            && self.icon_info.is_none()
     }
 }
 

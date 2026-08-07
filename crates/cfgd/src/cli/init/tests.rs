@@ -2,6 +2,15 @@ use super::*;
 use cfgd_core::output::{Printer, Verbosity};
 use cfgd_core::test_helpers::test_printer as quiet_printer;
 
+// `cmd_init` gates on `command_available("git")` and calls `ExitCode::Error.exit()`
+// when it misses, so losing the race against a concurrent test's empty-`PATH`
+// window does not fail one test — it terminates the whole test binary. Only for a
+// `cmd_init` call that reaches neither a clone nor workflow regeneration: those
+// take the same lock internally and would deadlock beneath this guard.
+fn git_resolution_guard() -> std::sync::RwLockReadGuard<'static, ()> {
+    cfgd_core::test_helpers::path_env_read_guard()
+}
+
 // ─────────────────────────────────────────────────────
 // ensure_config_file — used by profile switch and tests
 // ─────────────────────────────────────────────────────
@@ -1646,6 +1655,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2158,6 +2168,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
@@ -2173,6 +2184,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2232,6 +2244,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::PreScripts,
+            scope: None,
             actions: vec![],
         }],
         warnings: Vec::new(),
@@ -2241,6 +2254,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2260,6 +2274,90 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
+    );
+}
+
+// --- apply_plan hands the apply the modules it planned ---
+
+#[test]
+#[serial_test::serial]
+fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
+    // `cfgd init --apply-module` resolved its modules for planning and then gave
+    // the apply an empty slice, so nothing past the plan ever saw them: no
+    // module row was written, and the post-phase env regeneration could not
+    // notice a package manager the same run had bootstrapped — which is why the
+    // demo's `nvim` stayed unreachable after a green apply. The recorded module
+    // row is the cheapest proof the slice arrives.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let (printer, _cap) = Printer::for_test_doc();
+
+    let registry = super::build_registry_with_config(None);
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+
+    let module = cfgd_core::modules::ResolvedModule {
+        name: "demo".to_string(),
+        packages: Vec::new(),
+        files: Vec::new(),
+        env: Vec::new(),
+        aliases: Vec::new(),
+        system: std::collections::HashMap::new(),
+        pre_apply_scripts: Vec::new(),
+        post_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        depends: Vec::new(),
+        dir: dir.path().to_path_buf(),
+        platform_skip_reason: None,
+        origin: None,
+    };
+
+    // A manager no registry can supply: the action is recorded as failed and
+    // skipped, so the apply is a real run that touches nothing on this host.
+    let plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase {
+            name: cfgd_core::reconciler::PhaseName::Packages,
+            scope: None,
+            actions: vec![cfgd_core::reconciler::Action::Package(
+                cfgd_core::providers::PackageAction::Install {
+                    manager: "no-such-package-manager".to_string(),
+                    packages: vec!["test-pkg".to_string()],
+                    origin: "test".to_string(),
+                },
+            )],
+        }],
+        warnings: Vec::new(),
+    };
+
+    let result = apply_plan(
+        &plan,
+        &reconciler,
+        &resolved,
+        std::slice::from_ref(&module),
+        dir.path(),
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: true,
+            state_dir: Some(&state_dir),
+            scope: cfgd_core::Scope::User,
+        },
+        &printer,
+    );
+    assert!(result.is_ok(), "apply must succeed: {:?}", result.err());
+
+    let recorded = store.module_state_by_name("demo").unwrap();
+    assert!(
+        recorded.is_some(),
+        "the apply must record state for the module it was handed"
     );
 }
 
@@ -2296,6 +2394,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Files,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::File(
                 cfgd_core::providers::FileAction::Skip {
                     target: dir.path().join("noop"),
@@ -2311,6 +2410,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: false,
@@ -2354,6 +2454,7 @@ fn apply_plan_dry_run_skips_apply() {
     let plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase {
             name: cfgd_core::reconciler::PhaseName::Packages,
+            scope: None,
             actions: vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
@@ -2369,6 +2470,7 @@ fn apply_plan_dry_run_skips_apply() {
         &plan,
         &reconciler,
         &resolved,
+        &[],
         dir.path(),
         ApplyPlanOpts {
             dry_run: true,
@@ -2444,6 +2546,128 @@ fn cmd_init_from_git_source_with_explicit_target() {
     assert!(
         target.join("cfgd.yaml").exists(),
         "should clone to target dir"
+    );
+}
+
+#[test]
+fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
+    // Nesting-free: an already-initialized target skips the clone, and `--from`
+    // skips workflow regeneration.
+    let _path = git_resolution_guard();
+
+    // `--from` skips step 3's already-initialized early return so that
+    // `--apply-module` still reaches the apply step. That left step 4 free to
+    // clone over a populated config dir: git refused, and the failed attempt's
+    // cleanup deleted the user's cfgd.yaml, profiles/, and files/.
+    let dir = tempfile::tempdir().unwrap();
+
+    let origin = dir.path().join("origin");
+    let repo = git2::Repository::init(&origin).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    std::fs::write(
+        origin.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: origin-cfg\nspec: {}\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+
+    // The victim: a config dir that is already initialized and NOT a git repo,
+    // exactly the shape a `cfgd init` scaffold leaves before its first commit.
+    let target = dir.path().join("existing");
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    let mine = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: mine\nspec: {}\n";
+    std::fs::write(target.join("cfgd.yaml"), mine).unwrap();
+    std::fs::write(target.join("profiles").join("base.yaml"), "# mine\n").unwrap();
+
+    let printer = quiet_printer();
+    let origin_str = origin.display().to_string();
+    let target_str = target.display().to_string();
+    let args = InitArgs {
+        path: Some(&target_str),
+        from: Some(&origin_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let result = cmd_init(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "init against an already-initialized target must succeed as a no-op: {:?}",
+        result.err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("cfgd.yaml")).unwrap(),
+        mine,
+        "the user's cfgd.yaml must be neither cloned over nor re-scaffolded"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("profiles").join("base.yaml")).unwrap(),
+        "# mine\n",
+        "profiles/ must survive the refused clone"
+    );
+}
+
+#[test]
+fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
+    // Nesting-free: a plain `--from` never clones, and `--from` skips workflow
+    // regeneration.
+    let _path = git_resolution_guard();
+
+    // A non-git `--from` resolves to the directory itself as the config dir.
+    // With step 3's early return skipped, the scaffold branch used to overwrite
+    // that very cfgd.yaml with a fresh template.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("plain-config");
+    std::fs::create_dir_all(&source).unwrap();
+    let mine =
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: hand-written\nspec: {}\n";
+    std::fs::write(source.join("cfgd.yaml"), mine).unwrap();
+
+    let printer = quiet_printer();
+    let source_str = source.display().to_string();
+    let args = InitArgs {
+        path: None,
+        from: Some(&source_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let result = cmd_init(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "init --from <plain path> must succeed: {:?}",
+        result.err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("cfgd.yaml")).unwrap(),
+        mine,
+        "the hand-written config must survive byte-for-byte"
     );
 }
 

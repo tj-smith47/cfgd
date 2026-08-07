@@ -97,16 +97,23 @@ impl PackageManager for PipxManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("pipx", pipx_cmd().args(["list", "--json"]), "list")?;
         parse_pipx_list_packages(&String::from_utf8_lossy(&output.stdout))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             let label = format!("pipx install {}", pkg);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "pipx",
                 pipx_cmd().args(["install", pkg]),
                 &label,
@@ -116,11 +123,15 @@ impl PackageManager for PipxManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for pkg in packages {
             let label = format!("pipx uninstall {}", pkg);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "pipx",
                 pipx_cmd().args(["uninstall", pkg]),
                 &label,
@@ -130,9 +141,9 @@ impl PackageManager for PipxManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "pipx",
             pipx_cmd().args(["upgrade-all"]),
             "pipx upgrade-all",
@@ -157,7 +168,10 @@ impl PackageManager for PipxManager {
         parse_pypi_version(&String::from_utf8_lossy(&output.stdout))
     }
 
-    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
         let output = run_pkg_cmd("pipx", pipx_cmd().args(["list", "--json"]), "list")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parsed: serde_json::Value =
@@ -515,7 +529,9 @@ mod tests {
     mod pipx_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, install_named_path_shim, test_printer};
+        use cfgd_core::test_helpers::{
+            ToolShim, install_named_path_shim, test_package_context, test_printer, test_state,
+        };
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_PIPX_BIN";
@@ -525,8 +541,10 @@ mod tests {
         fn pipx_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
             PipxManager
-                .install(&["black".into(), "ruff".into()], &p)
+                .install(&["black".into(), "ruff".into()], &cx)
                 .expect("Ok");
             assert_eq!(s.invocation_count(), 2, "one pipx invocation per pkg");
             let argv = s.argv_log();
@@ -539,7 +557,9 @@ mod tests {
         fn pipx_uninstall_runs_uninstall_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            PipxManager.uninstall(&["black".into()], &p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            PipxManager.uninstall(&["black".into()], &cx).expect("Ok");
             assert!(s.argv_log().contains("uninstall black"));
         }
 
@@ -548,7 +568,9 @@ mod tests {
         fn pipx_update_runs_upgrade_all_subcommand() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            PipxManager.update(&p).expect("Ok");
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            PipxManager.update(&cx).expect("Ok");
             assert!(s.argv_log().contains("upgrade-all"));
         }
 
@@ -558,7 +580,10 @@ mod tests {
             // pipx list --json: { "venvs": { "black": { ... }, "ruff": { ... } } }
             let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}},"ruff":{"metadata":{"main_package":{"package":"ruff","package_version":"0.2.1"}}}}}"#;
             let _s = ToolShim::install(SHIM_ENV, 0, json, "");
-            let pkgs = PipxManager.installed_packages().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = PipxManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("black"));
             assert!(pkgs.contains("ruff"));
@@ -597,7 +622,12 @@ mod tests {
         fn pipx_installed_packages_with_versions_extracts_versions() {
             let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}}}}"#;
             let _s = ToolShim::install(SHIM_ENV, 0, json, "");
-            let pkgs = PipxManager.installed_packages_with_versions().expect("Ok");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = PipxManager
+                .installed_packages_with_versions(&cx)
+                .expect("Ok");
             let black = pkgs
                 .iter()
                 .find(|p| p.name == "black")

@@ -30,6 +30,7 @@ pub mod rollback;
 pub mod secret;
 pub mod skill;
 pub mod source;
+pub mod state_cmd;
 pub mod status;
 pub mod sync;
 pub mod upgrade;
@@ -846,6 +847,15 @@ pub enum Command {
         yes: bool,
     },
 
+    /// Inspect or reset cfgd's own persisted decisions
+    #[command(
+        long_about = "Manage state cfgd persists about itself, separate from managed-resource state (see 'cfgd log'/'cfgd rollback').\n\nExamples:\n  cfgd state forget-prefix npm"
+    )]
+    State {
+        #[command(subcommand)]
+        command: StateCommand,
+    },
+
     /// Start MCP server for AI editor integration
     #[command(
         name = "mcp-server",
@@ -945,6 +955,23 @@ pub enum ComplianceCommand {
         /// Target snapshot ID (the snapshot being compared)
         #[arg(value_name = "TARGET_ID")]
         target_id: i64,
+    },
+}
+
+/// Subcommands for `cfgd state`.
+#[derive(Subcommand)]
+pub enum StateCommand {
+    /// Forget a package manager's persisted global-install prefix decision
+    ///
+    /// Deletes the row `cfgd` recorded the last time it resolved MANAGER's
+    /// writable global-install prefix, forcing the next install/uninstall/list
+    /// to derive it fresh instead of reusing the cached decision. Automatic
+    /// revalidation already catches a persisted prefix that itself became
+    /// unwritable; this is for the case where a BETTER prefix is now available
+    /// (e.g. permissions were fixed after cfgd fell back).
+    ForgetPrefix {
+        /// Package manager name (e.g. npm, pipx)
+        manager: String,
     },
 }
 
@@ -2264,7 +2291,14 @@ pub fn execute(
         Command::Rollback { apply_id, yes } => {
             rollback::cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
         }
-        Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
+        Command::State { command } => match command {
+            StateCommand::ForgetPrefix { manager } => {
+                state_cmd::cmd_state_forget_prefix(printer, manager, cli.state_dir.as_deref())
+            }
+        },
+        Command::McpServer => {
+            crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref())
+        }
         Command::Compliance { command } => match command {
             None => compliance::cmd_compliance_snapshot(cli, printer),
             Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, printer),

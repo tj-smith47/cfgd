@@ -68,6 +68,21 @@ fn validate_verify_options(opts: &VerifyOptions<'_>) -> Result<(), OciError> {
     Ok(())
 }
 
+/// Anchor a cosign `--certificate-identity-regexp` / `--certificate-oidc-issuer-regexp`
+/// pattern to require a full match of the certificate subject.
+///
+/// cosign hands these patterns straight to Go's `regexp.MatchString`, which matches
+/// if the pattern is found ANYWHERE in the subject — an operator-supplied
+/// `alice@example.com` also matches `evil-alice@example.com.attacker.io`. Wrapping the
+/// pattern in a non-capturing group before anchoring keeps `^`/`$` binding the whole
+/// pattern rather than just its first/last alternative when the pattern contains `|`.
+fn anchor_regexp(pattern: &str) -> String {
+    if pattern.starts_with('^') && pattern.ends_with('$') {
+        return pattern.to_string();
+    }
+    format!("^(?:{pattern})$")
+}
+
 /// Apply verification args to a cosign command.
 fn apply_verify_args(cmd: &mut std::process::Command, opts: &VerifyOptions<'_>) {
     if let Some(key) = opts.key {
@@ -76,8 +91,8 @@ fn apply_verify_args(cmd: &mut std::process::Command, opts: &VerifyOptions<'_>) 
         // transparency-log lookup that keyless verification relies on.
         cmd.arg("--insecure-ignore-tlog=true");
     } else {
-        let identity = opts.identity.unwrap_or(".*");
-        let issuer = opts.issuer.unwrap_or(".*");
+        let identity = anchor_regexp(opts.identity.unwrap_or(".*"));
+        let issuer = anchor_regexp(opts.issuer.unwrap_or(".*"));
         cmd.arg("--certificate-identity-regexp").arg(identity);
         cmd.arg("--certificate-oidc-issuer-regexp").arg(issuer);
     }

@@ -47,41 +47,54 @@ pub(crate) fn update_script_list(
     field: fn(&mut config::ScriptSpec) -> &mut Vec<config::ScriptEntry>,
     printer: &cfgd_core::output::Printer,
 ) -> u32 {
-    use cfgd_core::output::Role;
+    use cfgd_core::output::{Role, collapse_to_subject_line, condense_script_label};
     let mut changes = 0u32;
     for script in add {
         let scripts = scripts_opt.get_or_insert_with(Default::default);
         let list = field(scripts);
         let entry = config::ScriptEntry::Simple(script.clone());
+        // `--add-*-script` / `--remove-*-script` take the same free-form body
+        // a YAML `run:` field would; condense before any status subject below
+        // so a multi-line value passed on the CLI never lands raw.
+        let label_text = condense_script_label(script);
         if list.contains(&entry) {
             printer.status_simple(
                 Role::Warn,
-                format!("{} script '{}' already exists", label, script),
+                format!("{} script '{}' already exists", label, label_text),
             );
             continue;
         }
         list.push(entry);
-        printer.status_simple(Role::Ok, format!("Added {}: {}", label, script));
+        printer.status_simple(Role::Ok, format!("Added {}: {}", label, label_text));
         changes += 1;
     }
     for script in remove {
+        let label_text = condense_script_label(script);
+        // A "not found" message echoes back the exact argument the user
+        // searched for — a truncated/condensed view would hide a
+        // copy-paste-whitespace mismatch that's exactly the thing worth
+        // debugging here. `collapse_to_subject_line` flattens any embedded
+        // newlines safely (never truncating content), unlike
+        // `condense_script_label`, which is fine for the found-and-acted-on
+        // messages above but wrong for a not-found echo.
+        let not_found_text = collapse_to_subject_line(script);
         if let Some(scripts) = scripts_opt.as_mut() {
             let list = field(scripts);
             let before = list.len();
             list.retain(|e| e.run_str() != script.as_str());
             if list.len() < before {
-                printer.status_simple(Role::Ok, format!("Removed {}: {}", label, script));
+                printer.status_simple(Role::Ok, format!("Removed {}: {}", label, label_text));
                 changes += 1;
             } else {
                 printer.status_simple(
                     Role::Warn,
-                    format!("{} script '{}' not found", label, script),
+                    format!("{} script '{}' not found", label, not_found_text),
                 );
             }
         } else {
             printer.status_simple(
                 Role::Warn,
-                format!("{} script '{}' not found", label, script),
+                format!("{} script '{}' not found", label, not_found_text),
             );
         }
     }

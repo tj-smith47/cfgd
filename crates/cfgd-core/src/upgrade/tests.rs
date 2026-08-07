@@ -2145,6 +2145,7 @@ fn find_cosign_cert_asset_ignores_lookalike_names() {
 // --- check_with_cache + check_latest via mockito ---
 
 #[test]
+#[serial_test::serial]
 fn check_with_cache_falls_back_to_api_on_cache_miss() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -3674,7 +3675,12 @@ fn read_version_cache_returns_none_for_invalid_json() {
     );
 }
 
+// `cache_dir` reads the process-global `CFGD_CACHE_DIR` above the
+// `with_test_home_guard` thread-local, so a concurrent setter hands this test
+// another test's tempdir. See the note above
+// `check_with_cache_returns_error_when_cached_version_is_unparseable`.
 #[test]
+#[serial_test::serial]
 fn cache_dir_returns_test_home_scoped_path() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());

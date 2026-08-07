@@ -774,7 +774,7 @@ async fn migration_upgrades_v1_database() {
     assert!(device.desired_config.is_none());
 }
 
-// --- Pool refactor guarantee tests (B1 W-6) ---
+// --- Pool transaction guarantees ---
 
 /// Enrollment is wrapped in `with_write_tx`; any step failing inside the
 /// closure must roll back the whole transaction, including the bootstrap
@@ -1130,9 +1130,8 @@ async fn migration_replay_idempotent_after_rewind() {
     drop(_db);
 
     // 2. Force schema_version + on-disk schema out of sync by rewinding
-    //    schema_version. This is the scenario the audit was worried about
-    //    (a v0.3.x upgrade path that mutated schema without bumping the
-    //    version row). The runner must still complete via the swallow
+    //    schema_version. This models an upgrade path that mutated schema
+    //    without bumping the version row. The runner must still complete via the swallow
     //    rather than crash — the alternative (loud failure) is functionally
     //    equivalent to the bootstrap case and would brick affected
     //    deployments.

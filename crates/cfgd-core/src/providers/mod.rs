@@ -13,10 +13,43 @@ use crate::output::Printer;
 
 // --- PackageManager trait ---
 
+/// The slice of persisted state a `PackageManager` may reach.
+///
+/// Declared here rather than importing `state::StateStore` so the trait layer
+/// names the capability it needs and the storage layer supplies it — the
+/// dependency runs `state` → `providers`, not the other way round. `StateStore`
+/// implements this alongside its inherent methods.
+pub trait PackageStateStore {
+    /// The prefix previously resolved for `manager`, paired with whether it was
+    /// the fallback rather than the manager's own configured prefix. `None` when
+    /// nothing has been resolved yet.
+    fn resolved_prefix(&self, manager: &str) -> Result<Option<(String, bool)>>;
+
+    /// Record the global-install prefix `manager` resolved, replacing any
+    /// earlier record for it.
+    fn record_resolved_prefix(&self, manager: &str, prefix: &str, is_fallback: bool) -> Result<()>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageInfo {
     pub name: String,
     pub version: String,
+}
+
+/// The per-run context every state-touching `PackageManager` method receives:
+/// the printer for user-facing output, plus the reconciler's already-open
+/// `StateStore` connection. Threading `state` here — instead of a manager
+/// opening its own `StateStore::open_default()` — is what makes a
+/// `--state-dir`-scoped run's package-manager state (e.g. npm's persisted
+/// global-prefix decision) honor that override rather than silently reading
+/// and writing the default state location out from under it, and avoids a
+/// second SQLite connection contending with the reconciler's own
+/// `BEGIN EXCLUSIVE` writes. Mirrors the "no process-global mutable state"
+/// precedent set by `register_bootstrapped_path_dirs`/`PATH_ENV_LOCK` — this
+/// is struct-threaded, not global.
+pub struct PackageContext<'a> {
+    pub printer: &'a Printer,
+    pub state: &'a dyn PackageStateStore,
 }
 
 pub trait PackageManager: Send + Sync {
@@ -24,10 +57,10 @@ pub trait PackageManager: Send + Sync {
     fn is_available(&self) -> bool;
     fn can_bootstrap(&self) -> bool;
     fn bootstrap(&self, printer: &Printer) -> Result<()>;
-    fn installed_packages(&self) -> Result<HashSet<String>>;
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()>;
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()>;
-    fn update(&self, printer: &Printer) -> Result<()>;
+    fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>>;
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
+    fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()>;
 
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
@@ -44,15 +77,19 @@ pub trait PackageManager: Send + Sync {
 
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
-    fn path_dirs(&self) -> Vec<String> {
+    fn path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
+        let _ = cx;
         Vec::new()
     }
 
     /// List all installed packages with their installed versions.
     /// Default implementation wraps `installed_packages()` with version "unknown".
-    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        cx: &PackageContext<'_>,
+    ) -> Result<Vec<PackageInfo>> {
         Ok(self
-            .installed_packages()?
+            .installed_packages(cx)?
             .into_iter()
             .map(|name| PackageInfo {
                 name,
@@ -486,7 +523,7 @@ impl PackageManager for StubPackageManager {
     fn bootstrap(&self, _printer: &Printer) -> Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         if let Some(ref msg) = self.installed_error {
             return Err(crate::errors::CfgdError::Io(std::io::Error::other(
                 msg.clone(),
@@ -494,13 +531,13 @@ impl PackageManager for StubPackageManager {
         }
         Ok(self.installed.clone())
     }
-    fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, package: &str) -> Result<Option<String>> {
@@ -518,6 +555,13 @@ impl PackageManager for StubPackageManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The trait layer must not depend on the store, but its own tests need a
+    // real implementation to hand `PackageContext`; the import is test-only.
+    use crate::state::StateStore;
+
+    fn test_cx<'a>(printer: &'a Printer, state: &'a StateStore) -> PackageContext<'a> {
+        PackageContext { printer, state }
+    }
 
     #[test]
     fn registry_filters_available_managers() {
@@ -546,7 +590,11 @@ mod tests {
     #[test]
     fn test_default_installed_packages_with_versions_empty() {
         let mock = StubPackageManager::new("mock");
-        let pkgs = mock.installed_packages_with_versions().unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let state = StateStore::open_in_memory().unwrap();
+        let pkgs = mock
+            .installed_packages_with_versions(&test_cx(&printer, &state))
+            .unwrap();
         assert!(pkgs.is_empty());
     }
 
@@ -648,9 +696,16 @@ mod tests {
             .bootstrappable()
             .with_installed(&["jq", "ripgrep"])
             .with_package("jq", "1.7.1");
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let state = StateStore::open_in_memory().unwrap();
         assert!(stub.is_available());
         assert!(stub.can_bootstrap());
-        assert_eq!(stub.installed_packages().unwrap().len(), 2);
+        assert_eq!(
+            stub.installed_packages(&test_cx(&printer, &state))
+                .unwrap()
+                .len(),
+            2
+        );
         assert_eq!(
             stub.available_version("jq").unwrap(),
             Some("1.7.1".to_string())
@@ -662,7 +717,11 @@ mod tests {
     fn stub_with_installed_error_returns_err() {
         let stub =
             StubPackageManager::new("brew").with_installed_error("simulated brew list failure");
-        let err = stub.installed_packages().unwrap_err();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let state = StateStore::open_in_memory().unwrap();
+        let err = stub
+            .installed_packages(&test_cx(&printer, &state))
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("simulated brew list failure"),
@@ -673,7 +732,11 @@ mod tests {
     #[test]
     fn stub_default_installed_packages_with_versions_with_content() {
         let stub = StubPackageManager::new("brew").with_installed(&["fd", "jq"]);
-        let mut pkgs = stub.installed_packages_with_versions().unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let state = StateStore::open_in_memory().unwrap();
+        let mut pkgs = stub
+            .installed_packages_with_versions(&test_cx(&printer, &state))
+            .unwrap();
         pkgs.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(pkgs.len(), 2);
         assert_eq!(pkgs[0].name, "fd");
@@ -685,7 +748,9 @@ mod tests {
     #[test]
     fn stub_default_path_dirs_empty() {
         let stub = StubPackageManager::new("apt");
-        assert!(stub.path_dirs().is_empty());
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let state = StateStore::open_in_memory().unwrap();
+        assert!(stub.path_dirs(&test_cx(&printer, &state)).is_empty());
     }
 
     #[test]

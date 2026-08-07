@@ -24,8 +24,8 @@ use cfgd_core::config::{MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageManager};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageContext, PackageManager};
 
 mod brew;
 mod cargo;
@@ -154,6 +154,7 @@ pub fn plan_packages(
     modules: &[ResolvedModule],
     managers: &[&dyn PackageManager],
     cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
 ) -> Result<Vec<PackageAction>> {
     let mut actions = Vec::new();
 
@@ -205,7 +206,7 @@ pub fn plan_packages(
         // Only available managers can read installed state to confirm the
         // package is still present before pruning.
         if manager.is_available() {
-            let installed = manager.installed_packages()?;
+            let installed = manager.installed_packages(cx)?;
 
             // Install before uninstall so a rename (old pkg dropped, new pkg
             // added) lands the replacement before removing the old. The diff
@@ -286,7 +287,7 @@ pub fn plan_packages(
 pub fn apply_packages(
     actions: &[PackageAction],
     managers: &[&dyn PackageManager],
-    printer: &Printer,
+    cx: &PackageContext<'_>,
 ) -> Result<()> {
     for action in actions {
         match action {
@@ -294,7 +295,7 @@ pub fn apply_packages(
                 manager: mgr_name, ..
             } => {
                 if let Some(mgr) = managers.iter().find(|m| m.name() == mgr_name) {
-                    mgr.bootstrap(printer)?;
+                    mgr.bootstrap(cx.printer)?;
                 }
             }
             PackageAction::Install {
@@ -303,7 +304,7 @@ pub fn apply_packages(
                 ..
             } => {
                 if let Some(mgr) = managers.iter().find(|m| m.name() == mgr_name) {
-                    mgr.install(packages, printer)?;
+                    mgr.install(packages, cx)?;
                 }
             }
             PackageAction::Uninstall {
@@ -312,13 +313,14 @@ pub fn apply_packages(
                 ..
             } => {
                 if let Some(mgr) = managers.iter().find(|m| m.name() == mgr_name) {
-                    mgr.uninstall(packages, printer)?;
+                    mgr.uninstall(packages, cx)?;
                 }
             }
             PackageAction::Skip {
                 manager, reason, ..
             } => {
-                printer.status_simple(Role::Warn, format!("{}: {}", manager, reason));
+                cx.printer
+                    .status_simple(Role::Warn, format!("{}: {}", manager, reason));
             }
         }
     }
@@ -563,7 +565,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
 /// printer and skipped (cannot remove what we have no script for).
 pub fn prune_orphaned_packages(
     orphans: &[OrphanedPackage],
-    printer: &Printer,
+    cx: &PackageContext<'_>,
 ) -> Vec<(String, String)> {
     // Group by (manager, uninstall_cmd) so each scripted manager's persisted
     // template runs once over its full package batch.
@@ -578,7 +580,7 @@ pub fn prune_orphaned_packages(
                 .or_default()
                 .push(orphan.package.clone()),
             None => {
-                printer.status_simple(
+                cx.printer.status_simple(
                     Role::Warn,
                     format!(
                         "orphaned {}/{} tracked but its custom manager left the config with no persisted uninstall script — remove it manually",
@@ -591,14 +593,14 @@ pub fn prune_orphaned_packages(
 
     for ((manager, uninstall_cmd), packages) in groups {
         let mgr = ScriptedManager::from_uninstall_only(&manager, uninstall_cmd);
-        match mgr.uninstall(&packages, printer) {
+        match mgr.uninstall(&packages, cx) {
             Ok(()) => {
                 for pkg in packages {
                     removed.push((manager.clone(), pkg));
                 }
             }
             Err(e) => {
-                printer.status_simple(
+                cx.printer.status_simple(
                     Role::Warn,
                     format!(
                         "failed to uninstall orphaned packages via {manager}: {}",

@@ -1,5 +1,5 @@
 //! End-to-end filesystem behavior of the `SkillProvider` default `install` /
-//! `remove` / `list` impls (spec §5, §5A): idempotent surgical writes, AGENTS.md
+//! `remove` / `list` impls: idempotent surgical writes, AGENTS.md
 //! managed-block surgery preserving surrounding bytes, whole-file roundtrip with
 //! empty-dir cleanup, and the `list` payload + version-stamp staleness flag.
 //!
@@ -346,7 +346,7 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 #[test]
 #[serial_test::serial]
 fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
-    // Spec §12: two concurrent installs of DIFFERENT kinds into the same AGENTS.md
+    // Two concurrent installs of DIFFERENT kinds into the same AGENTS.md
     // must not corrupt delimiters. The advisory lock (`acquire_apply_lock`) is
     // non-blocking — a contending install fails fast with a lock-held error rather
     // than racing into the read-modify-write, so the integrity guarantee holds by

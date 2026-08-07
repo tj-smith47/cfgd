@@ -104,7 +104,14 @@ pub(super) fn export_devcontainer(
     if let Some(ref scripts) = module.spec.scripts {
         for script in &scripts.post_apply {
             install_lines.push(String::new());
-            install_lines.push(format!("# Post-apply: {}", script));
+            // `run_str()` returns the raw script body: for a multi-line
+            // inline script, interpolating it straight after `# ` would only
+            // comment out the first line, leaving the rest as live shell that
+            // runs once here and again via the push below.
+            install_lines.push(format!(
+                "# Post-apply: {}",
+                cfgd_core::output::condense_script_label(script.run_str())
+            ));
             install_lines.push(script.run_str().to_string());
         }
     }

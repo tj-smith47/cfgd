@@ -29,11 +29,21 @@ pub struct CommandOutcome {
 /// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
 /// retry (Windows), and the returned [`CommandOutcome::timed_out`] is `true`.
 ///
-/// **Caveat**: if the child forks descendants that inherit its stdout/stderr
-/// pipes (e.g. a shell wrapper spawning a long-running grandchild), SIGKILL
-/// on the immediate child will not close those pipes — `wait_with_output`
-/// will block on them until the grandchild also dies. Production callers
-/// should invoke the target binary directly rather than via a shell wrapper.
+/// Stdio is configured here, not by callers: stdout and stderr are piped and
+/// stdin is null, matching [`std::process::Command::output`]. `spawn` alone
+/// defaults every stream to *inherit*, which fails twice over — the child's
+/// output bypasses the `output` module straight onto the terminal, and the
+/// captured buffers come back empty, so the text every caller here parses or
+/// reports is silently blank.
+///
+/// The pipes are drained by reader threads and the exit status is collected
+/// with [`Child::wait`](std::process::Child::wait), never `wait_with_output`.
+/// A killed child whose descendants inherited its pipe write ends leaves those
+/// pipes open, so `wait_with_output` would block past the timeout it exists to
+/// enforce — a shell-wrapped command (`run_guard_command`, a user `run:` body)
+/// backgrounding a daemon is enough to trigger it. Readers get
+/// [`PIPE_DRAIN_GRACE`] after child exit to reach EOF; past that they are
+/// abandoned and whatever they captured so far is returned.
 pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -42,8 +52,17 @@ pub fn command_output_with_timeout_outcome(
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
-    let child = cmd.spawn()?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
     let id = child.id();
+
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let (drained_tx, drained_rx) = mpsc::channel();
+    let stdout_buf = spawn_pipe_reader(child.stdout.take(), &abandoned, drained_tx.clone());
+    let stderr_buf = spawn_pipe_reader(child.stderr.take(), &abandoned, drained_tx);
+
     let (tx, rx) = mpsc::channel();
     let timed_out = Arc::new(AtomicBool::new(false));
     let timed_out_watchdog = Arc::clone(&timed_out);
@@ -52,20 +71,87 @@ pub fn command_output_with_timeout_outcome(
         if rx.recv_timeout(timeout).is_err() {
             timed_out_watchdog.store(true, Ordering::SeqCst);
             terminate_process(id);
-            // SIGTERM-trapping children can hang the wait_with_output below
-            // indefinitely. Give them a grace window to flush, then escalate.
+            // SIGTERM-trapping children can hang the wait below indefinitely.
+            // Give them a grace window to flush, then escalate.
             if rx.recv_timeout(KILL_GRACE_PERIOD).is_err() {
                 force_kill_process(id);
             }
         }
     });
 
-    let result = child.wait_with_output();
+    let status = child.wait();
     let _ = tx.send(());
-    result.map(|output| CommandOutcome {
-        output,
+    let status = status?;
+
+    let deadline = std::time::Instant::now() + PIPE_DRAIN_GRACE;
+    for _ in 0..2 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if drained_rx.recv_timeout(remaining).is_err() {
+            break;
+        }
+    }
+    abandoned.store(true, Ordering::SeqCst);
+
+    Ok(CommandOutcome {
+        output: std::process::Output {
+            status,
+            stdout: take_pipe_buffer(&stdout_buf),
+            stderr: take_pipe_buffer(&stderr_buf),
+        },
         timed_out: timed_out.load(Ordering::SeqCst),
     })
+}
+
+/// How long the pipe readers get to reach EOF after the child has exited,
+/// before they are abandoned and their partial capture is returned. Only ever
+/// elapses when a surviving descendant still holds the child's pipe write end.
+const PIPE_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Drain one child pipe on its own thread into a shared buffer, signalling
+/// `drained` at EOF.
+///
+/// The buffer is shared rather than returned through the channel so that an
+/// abandoned reader's partial capture is still readable; the reader checks
+/// `abandoned` each chunk so it stops growing the buffer once nobody is left
+/// to read it.
+fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
+    source: Option<R>,
+    abandoned: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    drained: std::sync::mpsc::Sender<()>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    use std::sync::atomic::Ordering;
+
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let Some(mut source) = source else {
+        let _ = drained.send(());
+        return buffer;
+    };
+    let sink = std::sync::Arc::clone(&buffer);
+    let abandoned = std::sync::Arc::clone(abandoned);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match source.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if abandoned.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    sink.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&chunk[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let _ = drained.send(());
+    });
+    buffer
+}
+
+fn take_pipe_buffer(buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> Vec<u8> {
+    std::mem::take(&mut *buffer.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Run a [`Command`] with a timeout, discarding the timeout signal.
@@ -171,20 +257,92 @@ pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
     } else {
         &[""]
     };
-    let paths = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&paths) {
-        for ext in extensions {
-            let candidate = dir.join(format!("{cmd}{ext}"));
-            if candidate.is_file()
-                && std::fs::metadata(&candidate)
-                    .map(|m| is_executable(&candidate, &m))
-                    .unwrap_or(false)
-            {
-                return Some(candidate);
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            if let Some(hit) = probe_dir_for_command(&dir, cmd, extensions) {
+                return Some(hit);
             }
         }
     }
+    for dir in bootstrapped_path_dirs() {
+        if let Some(hit) = probe_dir_for_command(&dir, cmd, extensions) {
+            return Some(hit);
+        }
+    }
     None
+}
+
+/// First `dir/cmd{ext}` that is a real, executable file, in `extensions` order.
+fn probe_dir_for_command(
+    dir: &std::path::Path,
+    cmd: &str,
+    extensions: &[&str],
+) -> Option<std::path::PathBuf> {
+    for ext in extensions {
+        let candidate = dir.join(format!("{cmd}{ext}"));
+        if candidate.is_file()
+            && std::fs::metadata(&candidate)
+                .map(|m| is_executable(&candidate, &m))
+                .unwrap_or(false)
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// PATH directories contributed by a package manager cfgd bootstrapped during
+/// this process's lifetime.
+///
+/// A bootstrap installs into a prefix that did not exist when cfgd started, so
+/// the inherited `PATH` cannot name it — and the next action in the same apply
+/// is routinely the install that needs it, as when brew lands `pipx` and the
+/// following action is `pipx install pynvim`. Rewriting the process's own
+/// `PATH` would be the obvious fix and is not available: `std::env::set_var` is
+/// unsound once any thread is live, and the daemon runs several. Holding the
+/// directories beside `PATH` and searching them after it gives the same
+/// resolution with none of that exposure.
+static BOOTSTRAPPED_PATH_DIRS: std::sync::RwLock<Vec<std::path::PathBuf>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Make `dirs` visible to every later [`command_path`] / [`command_available`]
+/// call in this process. Idempotent — a directory already registered is not
+/// re-added, so a manager bootstrapped twice in one run resolves the same way.
+pub fn register_bootstrapped_path_dirs(dirs: &[String]) {
+    if dirs.is_empty() {
+        return;
+    }
+    // A poisoned lock still holds a usable directory list: a panic in another
+    // thread is no reason to stop resolving binaries that exist on disk.
+    let mut guard = BOOTSTRAPPED_PATH_DIRS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    for dir in dirs {
+        let path = std::path::PathBuf::from(dir);
+        if !guard.contains(&path) {
+            guard.push(path);
+        }
+    }
+}
+
+/// Snapshot of the directories registered by [`register_bootstrapped_path_dirs`].
+pub fn bootstrapped_path_dirs() -> Vec<std::path::PathBuf> {
+    BOOTSTRAPPED_PATH_DIRS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Replace the registry with `dirs`, discarding everything registered since it
+/// was snapshotted. Test-only: a bootstrap that happened cannot un-happen, so
+/// production never rewinds this list. Reach for it through
+/// [`crate::test_helpers::BootstrappedPathDirsGuard`] rather than calling it
+/// directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn restore_bootstrapped_path_dirs(dirs: Vec<std::path::PathBuf>) {
+    *BOOTSTRAPPED_PATH_DIRS
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = dirs;
 }
 
 /// Check if a command is available on the system via PATH lookup.
@@ -333,7 +491,110 @@ mod tests {
 
     #[test]
     fn command_available_finds_sh() {
+        let _path = crate::test_helpers::path_env_read_guard();
         assert!(command_available("sh"));
+    }
+
+    /// Write an executable file named so `command_path(stem)` can resolve it.
+    fn write_probe_tool(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+        let name = if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem.to_string()
+        };
+        let path = dir.join(name);
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write probe tool");
+        crate::set_file_permissions(&path, 0o755).expect("chmod probe tool");
+        path
+    }
+
+    #[test]
+    #[serial]
+    fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
+        let _path = crate::test_helpers::path_env_read_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-registered-tool";
+        let expected = write_probe_tool(dir.path(), stem);
+
+        assert!(
+            command_path(stem).is_none(),
+            "probe tool must not resolve before its directory is registered"
+        );
+
+        register_bootstrapped_path_dirs(&[dir.path().to_string_lossy().into_owned()]);
+
+        assert_eq!(command_path(stem).as_deref(), Some(expected.as_path()));
+        assert!(command_available(stem));
+    }
+
+    #[test]
+    #[serial]
+    fn path_still_wins_over_a_registered_dir() {
+        // Declared before the `EnvVarGuard` below so it drops last, bracketing
+        // the whole window in which `PATH` holds this test's tempdir.
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+        let on_path = tempfile::tempdir().expect("tempdir");
+        let registered = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-shadowed-tool";
+        let preferred = write_probe_tool(on_path.path(), stem);
+        write_probe_tool(registered.path(), stem);
+
+        register_bootstrapped_path_dirs(&[registered.path().to_string_lossy().into_owned()]);
+        let _path =
+            crate::test_helpers::EnvVarGuard::set("PATH", &on_path.path().to_string_lossy());
+
+        assert_eq!(command_path(stem).as_deref(), Some(preferred.as_path()));
+    }
+
+    #[test]
+    #[serial]
+    fn registering_the_same_dir_twice_records_it_once() {
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().to_string_lossy().into_owned();
+
+        register_bootstrapped_path_dirs(std::slice::from_ref(&entry));
+        register_bootstrapped_path_dirs(&[entry]);
+
+        let hits = bootstrapped_path_dirs()
+            .into_iter()
+            .filter(|p| p == dir.path())
+            .count();
+        assert_eq!(hits, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn the_test_guard_unregisters_dirs_registered_inside_its_scope() {
+        // Production never rewinds this registry, so a fixture that registers a
+        // real host directory would otherwise change what every later test in
+        // the binary can resolve — the shape that made an empty-PATH "git is
+        // missing" test pass on Linux and fail on macOS.
+        let before = bootstrapped_path_dirs();
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+            register_bootstrapped_path_dirs(&[dir.path().to_string_lossy().into_owned()]);
+            assert!(
+                bootstrapped_path_dirs().iter().any(|p| p == dir.path()),
+                "registration must take effect inside the guard's scope"
+            );
+        }
+        assert_eq!(
+            bootstrapped_path_dirs(),
+            before,
+            "the guard must leave the registry exactly as it found it"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn registering_nothing_leaves_the_list_alone() {
+        let before = bootstrapped_path_dirs();
+        register_bootstrapped_path_dirs(&[]);
+        assert_eq!(bootstrapped_path_dirs(), before);
     }
 
     #[test]
@@ -343,6 +604,7 @@ mod tests {
 
     #[test]
     fn command_path_resolves_sh_to_a_real_executable_file() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let p = command_path("sh").expect("sh is on PATH");
         assert!(p.is_file(), "resolved sh must be a real file: {p:?}");
         // Stem, not file_name: on Windows the resolved binary is `sh.exe`, so its
@@ -357,6 +619,7 @@ mod tests {
 
     #[test]
     fn command_path_and_command_available_agree() {
+        let _path = crate::test_helpers::path_env_read_guard();
         assert_eq!(command_available("sh"), command_path("sh").is_some());
         assert_eq!(
             command_available("absolutely-not-a-real-command-xyz"),
@@ -366,6 +629,7 @@ mod tests {
 
     #[test]
     fn require_tool_succeeds_for_sh() {
+        let _path = crate::test_helpers::path_env_read_guard();
         assert!(require_tool("sh", None).is_ok());
     }
 
@@ -463,20 +727,51 @@ mod tests {
         assert!(command_available_with_seam("CFGD_TEST_AVAIL_NONE", "sh"));
     }
 
+    // `tool_binary_name`'s own tests pin the resolution rule; what is unproven
+    // there is the wiring — that the factory asks the seam at all rather than
+    // handing `Command::new` the default it was passed.
     #[test]
-    fn tool_cmd_creates_command_with_piped_stderr() {
-        let cmd = tool_cmd("", "echo");
-        let prog = std::path::Path::new(cmd.get_program())
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        assert_eq!(prog, "echo");
+    #[serial]
+    fn tool_cmd_program_follows_the_env_seam() {
+        let _unset = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_TOOL_CMD_BIN");
+        assert_eq!(
+            tool_cmd("CFGD_TEST_TOOL_CMD_BIN", "echo").get_program(),
+            std::ffi::OsStr::new("echo")
+        );
+
+        let _seam =
+            crate::test_helpers::EnvVarGuard::set("CFGD_TEST_TOOL_CMD_BIN", "/shim/bin/echo");
+        assert_eq!(
+            tool_cmd("CFGD_TEST_TOOL_CMD_BIN", "echo").get_program(),
+            std::ffi::OsStr::new("/shim/bin/echo"),
+            "the factory must build the command from the seam, not the default"
+        );
+    }
+
+    // std exposes no getter for a `Command`'s configured stdio, so the piped
+    // stderr this factory sets is only observable on a spawned child, where
+    // `stderr` is `Some` exactly when the stream was piped rather than
+    // inherited. Asserting on the built `Command` alone would prove nothing.
+    #[cfg(unix)]
+    #[test]
+    fn tool_cmd_pipes_stderr_on_the_spawned_child() {
+        let _path = crate::test_helpers::path_env_read_guard();
+        let mut child = tool_cmd("", "sh")
+            .arg("-c")
+            .arg("")
+            .spawn()
+            .expect("sh must spawn");
+        assert!(
+            child.stderr.is_some(),
+            "tool_cmd must pipe stderr so callers can quote it in error messages"
+        );
+        let _ = child.wait();
     }
 
     #[test]
     fn command_output_with_timeout_succeeds() {
         let mut cmd = std::process::Command::new("echo");
-        cmd.arg("hello").stdout(std::process::Stdio::piped());
+        cmd.arg("hello");
         let output =
             command_output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)).unwrap();
         assert!(output.status.success());
@@ -559,5 +854,51 @@ mod tests {
             "a fast command must not report timed_out"
         );
         assert!(outcome.output.status.success());
+    }
+
+    // Callers pass a bare Command and configure no stdio. Spawning without
+    // piping inherits the parent's terminal, which both leaks the child's
+    // output past the `output` module and hands back empty capture buffers —
+    // every caller that parses this text would silently read "".
+    #[cfg(unix)]
+    #[test]
+    fn command_output_captures_both_streams_without_caller_piping() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo to-stdout; echo to-stderr >&2");
+        let output =
+            command_output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(stdout_lossy_trimmed(&output), "to-stdout");
+        assert_eq!(stderr_lossy_trimmed(&output), "to-stderr");
+    }
+
+    // A killed child's descendants keep the pipe write ends open, so waiting
+    // for pipe EOF would outlast the timeout by however long the descendant
+    // lives — here 30s against a 200ms timeout.
+    #[cfg(unix)]
+    #[test]
+    fn command_output_returns_when_descendant_holds_pipe_open() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("sleep 30 & echo $!; sleep 30");
+
+        let started = std::time::Instant::now();
+        let outcome =
+            command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_millis(200))
+                .expect("spawn should succeed");
+        let elapsed = started.elapsed();
+
+        let orphan = stdout_lossy_trimmed(&outcome.output);
+        if let Ok(pid) = orphan.parse::<u32>() {
+            force_kill_process(pid);
+        }
+
+        assert!(outcome.timed_out, "the watchdog must report the timeout");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "returned in {elapsed:?}; a surviving descendant must not extend the wait"
+        );
+        assert!(
+            !orphan.is_empty(),
+            "output written before the kill must still be captured"
+        );
     }
 }

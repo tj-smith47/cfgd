@@ -45,8 +45,11 @@ impl<'a> super::Reconciler<'a> {
             let is_file = entry.phase == "files"
                 || entry.action_type == "file"
                 || entry.resource_id.starts_with("file:");
-            if !is_file && !non_file_actions.contains(&entry.resource_id) {
-                non_file_actions.push(entry.resource_id.clone());
+            let already_listed = non_file_actions
+                .iter()
+                .any(|(_, rid): &(String, String)| rid == &entry.resource_id);
+            if !is_file && !already_listed {
+                non_file_actions.push((entry.action_type.clone(), entry.resource_id.clone()));
             }
         }
 

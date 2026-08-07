@@ -333,6 +333,31 @@ golden_doc!(regression, sync_per_source_secondary_marker, |p, cap| {
         .detail("network unreachable");
 });
 
+// Surface: the reminder `cfgd apply` prints once at the end of a run whose Env
+// phase changed something — the running shell predates the file, so the
+// bootstrapped manager's PATH entries are one command away. Anchors the exact
+// wording and the two-bullet shape.
+golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
+    let s = p.section("Shell environment changed");
+    s.bullet("run: source ~/.cfgd.env");
+    s.bullet("or open a new shell");
+});
+
+// Same reminder in its real position: emitted after the apply summary line.
+// Anchors the blank-line grouping that separates it from the summary, which is
+// what makes it read as a closing note rather than another result row.
+golden_doc!(
+    regression,
+    apply_shell_env_reminder_after_summary,
+    |p, cap| {
+        p.status(Role::Ok, "Applied 4 of 4 actions")
+            .duration(Duration::from_millis(820));
+        let s = p.section("Shell environment changed");
+        s.bullet("run: source ~/.cfgd.env");
+        s.bullet("or open a new shell");
+    }
+);
+
 // Surface: `cfgd status` drift attribution. The `[source-name]` suffix is
 // styled in `secondary` so the warn subject's yellow stays intact up to the
 // suffix, then the suffix renders in pink. Tests run with colors off, so the

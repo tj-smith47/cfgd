@@ -1,7 +1,5 @@
 Add Config Source
-
 ◐ Cloning source 'team-config'
-
   Cloning into '<STATE_DIR>/sources/team-config'...
 ✓ Cloning source 'team-config'
 
@@ -11,8 +9,8 @@ Source Manifest
   Profiles  default
 
 Policy
-  Scripts: blocked
-  Secret access: blocked
+  ⊙ Scripts: blocked
+  ⊙ Secret access: blocked
 
 ✓ No conflicts with current config
 

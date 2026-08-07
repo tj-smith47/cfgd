@@ -88,15 +88,22 @@ impl PackageManager for BrewTapManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         BrewManager.installed_taps()
     }
 
-    fn install(&self, taps: &[String], printer: &Printer) -> Result<()> {
+    fn install(
+        &self,
+        taps: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for tap in taps {
             let label = format!("brew tap {}", tap);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "brew-tap",
                 brew_cmd().args(["tap", tap]),
                 &label,
@@ -106,11 +113,15 @@ impl PackageManager for BrewTapManager {
         Ok(())
     }
 
-    fn uninstall(&self, taps: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        taps: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         for tap in taps {
             let label = format!("brew untap {}", tap);
             run_pkg_cmd_live(
-                printer,
+                cx.printer,
                 "brew-tap",
                 brew_cmd().args(["untap", tap]),
                 &label,
@@ -120,7 +131,7 @@ impl PackageManager for BrewTapManager {
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Taps are repository references, not versioned packages; nothing to update
         Ok(())
     }
@@ -152,12 +163,19 @@ impl PackageManager for BrewCaskManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         BrewManager.installed_casks()
     }
 
-    fn install(&self, casks: &[String], printer: &Printer) -> Result<()> {
-        install_batch_then_per_package(printer, "brew-cask", casks, |pkgs| {
+    fn install(
+        &self,
+        casks: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
+        install_batch_then_per_package(cx.printer, "brew-cask", casks, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").arg("--cask").args(pkgs);
             cmd
@@ -165,13 +183,17 @@ impl PackageManager for BrewCaskManager {
         Ok(())
     }
 
-    fn uninstall(&self, casks: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        casks: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         if casks.is_empty() {
             return Ok(());
         }
         let label = format!("brew uninstall --cask {}", casks.join(" "));
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "brew-cask",
             brew_cmd().arg("uninstall").arg("--cask").args(casks),
             &label,
@@ -180,7 +202,7 @@ impl PackageManager for BrewCaskManager {
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Cask updates are handled by `brew upgrade`; no separate cask update command
         Ok(())
     }
@@ -296,7 +318,10 @@ impl PackageManager for BrewManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<HashSet<String>> {
         Ok(parse_brew_list_set(&self.run_brew(&[
             "list",
             "--formulae",
@@ -304,8 +329,12 @@ impl PackageManager for BrewManager {
         ])?))
     }
 
-    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
-        install_batch_then_per_package(printer, "brew", packages, |pkgs| {
+    fn install(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
+        install_batch_then_per_package(cx.printer, "brew", packages, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").args(pkgs);
             cmd
@@ -313,13 +342,17 @@ impl PackageManager for BrewManager {
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<()> {
         if packages.is_empty() {
             return Ok(());
         }
         let label = format!("brew uninstall {}", packages.join(" "));
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "brew",
             brew_cmd().arg("uninstall").args(packages),
             &label,
@@ -328,9 +361,9 @@ impl PackageManager for BrewManager {
         Ok(())
     }
 
-    fn update(&self, printer: &Printer) -> Result<()> {
+    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx.printer,
             "brew",
             brew_cmd().arg("update"),
             "brew update",
@@ -358,11 +391,14 @@ impl PackageManager for BrewManager {
         )
     }
 
-    fn path_dirs(&self) -> Vec<String> {
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
         brew_path_dirs()
     }
 
-    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
         let output = run_pkg_cmd("brew", brew_cmd().args(["list", "--versions"]), "list")?;
         Ok(parse_brew_versions(&String::from_utf8_lossy(
             &output.stdout,

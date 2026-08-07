@@ -9,4 +9,4 @@ Sources
   'perm-team' permission changes
     - Locked items increased from 0 to 2
   ⚠ 'perm-team' has permission changes
-  Skipped source 'perm-team' (permission changes rejected)
+  ⊙ Skipped source 'perm-team' (permission changes rejected)

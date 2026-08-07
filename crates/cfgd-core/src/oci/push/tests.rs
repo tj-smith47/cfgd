@@ -275,6 +275,46 @@ fn push_module_top_level_propagates_invalid_reference_err() {
     );
 }
 
+#[test]
+fn push_module_registry_failure_finishes_spinner_as_fail() {
+    // Drives the error arm added at push/mod.rs:44-51: when push_module_inner
+    // errors, the spinner must close with Role::Fail rather than being
+    // dropped (which would render as an unmarked Info line instead).
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let module_dir = create_test_module_dir();
+
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/test/failpush/blobs/sha256:.*".to_string()),
+        )
+        .with_status(500)
+        .create();
+    server
+        .mock("POST", "/v2/test/failpush/blobs/uploads/")
+        .with_status(500)
+        .with_body(r#"{"errors":[{"code":"DENIED","message":"quota exceeded"}]}"#)
+        .create();
+
+    let (printer, buf) = crate::output::Printer::for_test();
+    let artifact_ref = format!("{}/test/failpush:v1", registry);
+    let result = push_module(
+        module_dir.path(),
+        &artifact_ref,
+        Some("linux/amd64"),
+        Some(&printer),
+    );
+    assert!(result.is_err(), "500 from registry must surface as Err");
+    printer.flush();
+
+    let rendered = buf.lock().unwrap().clone();
+    assert!(
+        rendered.contains("Failed to push module"),
+        "spinner must finish_fail with a push-failure subject, got: {rendered}"
+    );
+}
+
 // --- push_module_multiplatform (mockito) ---
 
 #[test]
@@ -363,6 +403,64 @@ fn push_module_multiplatform_propagates_invalid_platform_target_err() {
     assert!(
         matches!(result, Err(OciError::BuildError { .. })),
         "expected BuildError, got: {result:?}"
+    );
+}
+
+#[test]
+fn push_module_multiplatform_index_failure_finishes_spinner_as_fail() {
+    // Same finish_fail contract as push_module, but for the index-push
+    // failure branch of push_module_multiplatform (mod.rs:242-250): the
+    // per-platform manifests succeed but the index PUT 500s.
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let amd64_dir = create_test_module_dir();
+
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/test/failmulti/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(2)
+        .create();
+    let upload_location = format!("{}/v2/test/failmulti/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/test/failmulti/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(2)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/test/failmulti/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .with_status(201)
+        .expect_at_least(2)
+        .create();
+    server
+        .mock("PUT", "/v2/test/failmulti/manifests/multi-tag-linux-amd64")
+        .with_status(201)
+        .create();
+    server
+        .mock("PUT", "/v2/test/failmulti/manifests/multi-tag")
+        .with_status(500)
+        .with_body(r#"{"errors":[{"code":"DENIED","message":"insufficient storage"}]}"#)
+        .create();
+
+    let (printer, buf) = crate::output::Printer::for_test();
+    let artifact_ref = format!("{}/test/failmulti:multi-tag", registry);
+    let builds: Vec<(&std::path::Path, &str)> = vec![(amd64_dir.path(), "linux/amd64")];
+    let result = push_module_multiplatform(&builds, &artifact_ref, Some(&printer));
+    assert!(result.is_err(), "index 500 must surface as Err");
+    printer.flush();
+
+    let rendered = buf.lock().unwrap().clone();
+    assert!(
+        rendered.contains("Failed to push multi-platform module"),
+        "spinner must finish_fail with a push-failure subject, got: {rendered}"
     );
 }
 

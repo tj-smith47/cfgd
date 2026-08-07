@@ -11,4 +11,4 @@ Manifest
   Policy Summary
     Locked
       Count  1
-      env: CORP_PROXY
+      ⊙ env: CORP_PROXY

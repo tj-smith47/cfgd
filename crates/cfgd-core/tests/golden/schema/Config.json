@@ -894,6 +894,12 @@
             "null"
           ]
         },
+        "iconInfo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "iconOk": {
           "type": [
             "string",

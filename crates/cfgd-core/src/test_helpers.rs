@@ -1007,6 +1007,17 @@ pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::new(crate::output::Verbosity::Quiet)
 }
 
+/// Build a `PackageContext` from a borrowed `Printer` and `StateStore` — the
+/// pair every `PackageManager` fixture now needs alongside `test_printer()` /
+/// `test_state()` since `PackageContext` threading replaced the bare
+/// `&Printer` parameter on the state-touching trait methods.
+pub fn test_package_context<'a>(
+    printer: &'a crate::output::Printer,
+    state: &'a crate::state::StateStore,
+) -> crate::providers::PackageContext<'a> {
+    crate::providers::PackageContext { printer, state }
+}
+
 // ---------------------------------------------------------------------------
 // NoopDaemonHooks
 // ---------------------------------------------------------------------------
@@ -1034,6 +1045,7 @@ impl crate::daemon::DaemonHooks for NoopDaemonHooks {
         _: &crate::config::MergedProfile,
         _: &[&dyn crate::providers::PackageManager],
         _: &std::collections::HashSet<String>,
+        _: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
         Ok(vec![])
     }
@@ -1165,6 +1177,7 @@ pub fn make_test_modules(
         modules.insert(
             name.to_string(),
             crate::modules::LoadedModule {
+                version: None,
                 name: name.to_string(),
                 spec: crate::config::ModuleSpec {
                     depends: deps.iter().map(|s| s.to_string()).collect(),
@@ -1452,36 +1465,93 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, En
 /// tests against the interpreter *spawns* done by script-execution tests.
 ///
 /// `std::env::set_var`/`remove_var` is `unsafe` precisely because a concurrent
-/// reader is a data race on the C `environ`. A script spawn resolves its
-/// interpreter (`sh`/`bash`) through `PATH` inside `Command::spawn`, so a test
-/// that empties `PATH` to drive a "command not found" branch races — and
-/// corrupts — any concurrently-spawning script test, surfacing as a spurious
-/// `could not spawn the script interpreter (os error 2)`.
+/// reader is a data race on the C `environ`. Two kinds of code read `PATH`:
+/// resolution ([`crate::command_path`] and everything over it —
+/// `command_available`, `require_tool`) and any spawn that resolves its program
+/// through `PATH` — a script's interpreter (`sh`/`bash`), or `git` via
+/// [`crate::git_cmd_local`] / [`crate::git_cmd_safe`]. A test that empties
+/// `PATH` to drive a "command not found" branch races and corrupts either. It
+/// surfaces as a spurious `could not spawn the script interpreter (os error 2)`,
+/// as a `git … must succeed` assertion that fails on one arbitrary git call out
+/// of several, or as an unrelated `require_tool("sh")` reporting sh missing.
 ///
 /// `#[serial]` cannot close this: it only excludes other `#[serial]` tests,
-/// never the non-serial spawner majority. This lock guards the real resource
-/// boundary instead — spawns take the shared read guard ([`script_spawn_path_guard`]),
-/// PATH emptying takes the exclusive write guard ([`path_env_mutation_guard`]) —
-/// so the two can never overlap and every spawner is covered with no per-test
-/// attribute. Spawns run fully parallel with each other; only an active
-/// PATH-emptying window blocks them.
+/// never the non-serial reader majority. Nor does `nextest` expose it — its
+/// process-per-test model gives every test its own `environ`, so this races only
+/// under `cargo test`'s thread-per-test model (the shape CI runs on macOS).
+/// This lock guards the real resource boundary instead — readers take the shared
+/// read guard ([`path_env_read_guard`]), PATH mutation takes the exclusive write
+/// guard ([`path_env_mutation_guard`]) — so the two can never overlap. Readers
+/// run fully parallel with each other; only an active mutation window blocks
+/// them.
 static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
 
-/// Shared read guard held across an interpreter spawn. Acquired at the top of
-/// `reconciler::scripts::execute_script`, so every script-spawning test is
-/// covered automatically. See [`PATH_ENV_LOCK`].
-pub fn script_spawn_path_guard() -> RwLockReadGuard<'static, ()> {
+/// Shared read guard held across a read of `PATH`. Acquired at the top of
+/// `reconciler::scripts::execute_script` and inside the `git` command factories,
+/// so every script- and git-spawning test is covered automatically; a test that
+/// asserts a *successful* `command_path` / `command_available` / `require_tool`
+/// resolution takes it by hand. A test asserting a resolution *fails* does not
+/// need it — an empty `PATH` cannot turn a miss into a hit. See
+/// [`PATH_ENV_LOCK`].
+pub fn path_env_read_guard() -> RwLockReadGuard<'static, ()> {
     PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Exclusive write guard for a test that empties the process-global `PATH` to
 /// exercise a command-not-found branch. Declare it *before* the `EnvVarGuard`
 /// that mutates `PATH` so it drops last, bracketing the entire empty-`PATH`
-/// window. Never spawn a script while holding it — that both contradicts the
-/// test (no `sh` on an empty `PATH`) and risks a same-thread read-after-write
-/// deadlock. See [`PATH_ENV_LOCK`].
+/// window. Never spawn a script or a `git` child while holding it — that both
+/// contradicts the test (nothing resolves on an empty `PATH`) and risks a
+/// same-thread read-after-write deadlock. See [`PATH_ENV_LOCK`].
 pub fn path_env_mutation_guard() -> RwLockWriteGuard<'static, ()> {
     PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// RAII guard that snapshots the process-global bootstrapped-PATH registry on
+/// construction and restores it on drop.
+///
+/// The registry that `crate::register_bootstrapped_path_dirs` feeds is never
+/// cleared — in production a bootstrap that happened cannot un-happen. In a test
+/// binary that makes every registration permanent for every test that runs
+/// after it, and `command_path` searches those directories once `$PATH` misses.
+/// A fixture registering a real host directory therefore changes what unrelated
+/// later tests can resolve, and only on hosts where that directory exists:
+/// registering `/opt/homebrew/bin` made an empty-`PATH` "git is missing" test
+/// find git on macOS and not on Linux. Take this guard in any fixture that
+/// drives a bootstrap so the registration cannot outlive it.
+pub struct BootstrappedPathDirsGuard {
+    prior: Vec<std::path::PathBuf>,
+}
+
+impl BootstrappedPathDirsGuard {
+    /// Snapshot the currently registered directories.
+    pub fn capture() -> Self {
+        Self {
+            prior: crate::bootstrapped_path_dirs(),
+        }
+    }
+
+    /// Snapshot the registry and empty it for the guard's lifetime. Use in a
+    /// test asserting a "command not found" branch: emptying `PATH` alone does
+    /// not make a command unresolvable, because this registry is searched after
+    /// it.
+    pub fn capture_and_clear() -> Self {
+        let guard = Self::capture();
+        crate::restore_bootstrapped_path_dirs(Vec::new());
+        guard
+    }
+}
+
+impl Default for BootstrappedPathDirsGuard {
+    fn default() -> Self {
+        Self::capture()
+    }
+}
+
+impl Drop for BootstrappedPathDirsGuard {
+    fn drop(&mut self) {
+        crate::restore_bootstrapped_path_dirs(std::mem::take(&mut self.prior));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1908,21 +1978,32 @@ impl crate::providers::PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> crate::errors::Result<std::collections::HashSet<String>> {
+    fn installed_packages(
+        &self,
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<std::collections::HashSet<String>> {
         Ok(self.installed.clone())
     }
 
-    fn install(&self, packages: &[String], _printer: &Printer) -> crate::errors::Result<()> {
+    fn install(
+        &self,
+        packages: &[String],
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<()> {
         self.install_calls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], _printer: &Printer) -> crate::errors::Result<()> {
+    fn uninstall(
+        &self,
+        packages: &[String],
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<()> {
         self.uninstall_calls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> crate::errors::Result<()> {
+    fn update(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
 
@@ -2374,6 +2455,8 @@ mod tests {
             .unavailable()
             .bootstrappable();
         let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
 
         assert_eq!(mgr.name(), "pacman");
         assert!(
@@ -2387,13 +2470,13 @@ mod tests {
         mgr.bootstrap(&printer).unwrap();
 
         assert_eq!(
-            mgr.installed_packages().unwrap(),
+            mgr.installed_packages(&cx).unwrap(),
             std::collections::HashSet::from(["git".to_string()])
         );
 
-        mgr.install(&["vim".to_string()], &printer).unwrap();
-        mgr.uninstall(&["nano".to_string()], &printer).unwrap();
-        mgr.update(&printer).unwrap();
+        mgr.install(&["vim".to_string()], &cx).unwrap();
+        mgr.uninstall(&["nano".to_string()], &cx).unwrap();
+        mgr.update(&cx).unwrap();
         assert_eq!(
             mgr.install_calls.lock().unwrap().as_slice(),
             &[vec!["vim".to_string()]]
@@ -3026,14 +3109,15 @@ mod tests {
         use secrecy::ExposeSecret;
 
         #[test]
-        fn harness_plan_empty_profile_produces_eight_phases() {
+        fn harness_plan_empty_profile_produces_no_phases() {
             let h = ReconcilerTestHarness::builder()
                 .package_manager("brew", &["curl", "git"])
                 .system_configurator("shell", &[])
                 .build();
 
             let plan = h.plan().unwrap();
-            assert_eq!(plan.phases.len(), 8);
+            // Action-less phases are dropped, so an empty profile plans nothing.
+            assert_eq!(plan.phases.len(), 0);
             assert!(plan.is_empty());
         }
 
@@ -3142,9 +3226,9 @@ env:
             assert_eq!(h.registry.system_configurators.len(), 1);
 
             // Plan still works (system drift doesn't automatically generate actions
-            // without matching profile system config)
+            // without matching profile system config), so it yields no phases.
             let plan = h.plan().unwrap();
-            assert_eq!(plan.phases.len(), 8);
+            assert_eq!(plan.phases.len(), 0);
         }
 
         #[test]
@@ -3156,13 +3240,16 @@ env:
             assert!(pm.is_available());
             assert_eq!(pm.name(), "brew");
 
-            let installed = pm.installed_packages().unwrap();
+            let printer = test_printer();
+            let state = super::super::test_state();
+            let cx = super::super::test_package_context(&printer, &state);
+
+            let installed = pm.installed_packages(&cx).unwrap();
             assert!(installed.contains("curl"));
             assert!(installed.contains("git"));
             assert!(!installed.contains("ripgrep"));
 
-            let printer = test_printer();
-            pm.install(&["ripgrep".to_string(), "fd".to_string()], &printer)
+            pm.install(&["ripgrep".to_string(), "fd".to_string()], &cx)
                 .unwrap();
 
             let calls = pm.install_calls.lock().unwrap();

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use cfgd_core::output::{Printer, Verbosity};
+use cfgd_core::providers::PackageContext;
 
 use super::cargo::{cargo_available, cargo_cmd};
 use super::go::{find_go, go_available, go_cmd};
@@ -64,7 +65,7 @@ impl PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         if self.list_fails {
             return Err(PackageError::ListFailed {
                 manager: self.mgr_name.to_string(),
@@ -75,17 +76,17 @@ impl PackageManager for MockPackageManager {
         Ok(self.installed.clone())
     }
 
-    fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn install(&self, packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         self.installs.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
 
-    fn uninstall(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         self.uninstalls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
 
-    fn update(&self, _printer: &Printer) -> Result<()> {
+    fn update(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -126,17 +127,17 @@ impl PackageManager for GoLikeMockManager {
     fn bootstrap(&self, _: &Printer) -> Result<()> {
         Ok(())
     }
-    fn installed_packages(&self) -> Result<HashSet<String>> {
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(self.installed.clone())
     }
-    fn install(&self, _: &[String], _: &Printer) -> Result<()> {
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn uninstall(&self, packages: &[String], _: &Printer) -> Result<()> {
+    fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.uninstalls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
-    fn update(&self, _: &Printer) -> Result<()> {
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> Result<Option<String>> {
@@ -163,6 +164,9 @@ fn default_package_identity_is_passthrough() {
 
 #[test]
 fn plan_installs_missing_packages() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
     let profile = test_profile(PackagesSpec {
         cargo: Some(cfgd_core::config::CargoSpec {
@@ -173,7 +177,7 @@ fn plan_installs_missing_packages() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -191,6 +195,9 @@ fn plan_installs_missing_packages() {
 
 #[test]
 fn plan_skips_unavailable_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("brew", false, vec![]);
     let profile = test_profile(PackagesSpec {
         brew: Some(cfgd_core::config::BrewSpec {
@@ -201,7 +208,7 @@ fn plan_skips_unavailable_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -217,6 +224,9 @@ fn plan_skips_unavailable_manager() {
 
 #[test]
 fn plan_empty_when_all_installed() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("cargo", true, vec!["bat", "ripgrep"]);
     let profile = test_profile(PackagesSpec {
         cargo: Some(cfgd_core::config::CargoSpec {
@@ -227,18 +237,21 @@ fn plan_empty_when_all_installed() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert!(actions.is_empty());
 }
 
 #[test]
 fn plan_skips_manager_with_no_desired_packages() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
     let profile = test_profile(PackagesSpec::default());
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert!(actions.is_empty());
 }
@@ -406,7 +419,9 @@ fn apply_calls_install_on_correct_manager() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let printer = cfgd_core::test_helpers::test_printer();
-    apply_packages(&actions, &managers, &printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    apply_packages(&actions, &managers, &cx).unwrap();
 
     let installs = mock.installs.lock().unwrap();
     assert_eq!(installs.len(), 1);
@@ -424,7 +439,9 @@ fn apply_calls_uninstall_on_correct_manager() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let printer = cfgd_core::test_helpers::test_printer();
-    apply_packages(&actions, &managers, &printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    apply_packages(&actions, &managers, &cx).unwrap();
 
     let uninstalls = mock.uninstalls.lock().unwrap();
     assert_eq!(uninstalls.len(), 1);
@@ -461,6 +478,9 @@ fn all_package_managers_creates_all() {
 
 #[test]
 fn all_package_managers_default_trait_contracts() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // Exercise the PackageManager trait's default-derived methods on every
     // registered manager and assert their documented contracts hold uniformly.
     // installed_packages_with_versions is intentionally excluded: its default
@@ -494,11 +514,16 @@ fn all_package_managers_default_trait_contracts() {
         );
 
         // path_dirs: PATH additions applied after bootstrap; every entry is a
-        // non-empty path fragment.
-        assert!(
-            m.path_dirs().iter().all(|d| !d.is_empty()),
-            "{name}: path_dirs entries must be non-empty",
-        );
+        // non-empty path fragment. npm is intentionally excluded: its
+        // override shells out to `npm config get prefix` and write-probes
+        // the result, neither of which is hermetic against a real npm on CI
+        // (and could create a real `$HOME/.npm-global`).
+        if name != "npm" {
+            assert!(
+                m.path_dirs(&cx).iter().all(|d| !d.is_empty()),
+                "{name}: path_dirs entries must be non-empty",
+            );
+        }
 
         // version_meets_minimum: the default is a loose-semver >= comparison.
         // pkg overrides it to defer to FreeBSD `pkg version -t`, which
@@ -521,6 +546,9 @@ fn all_package_managers_default_trait_contracts() {
 
 #[test]
 fn plan_multiple_managers() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let cargo_mock = MockPackageManager::new("cargo", true, vec![]);
     let npm_mock = MockPackageManager::new("npm", true, vec!["typescript"]);
 
@@ -537,7 +565,7 @@ fn plan_multiple_managers() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // cargo needs ripgrep, npm needs eslint (typescript already installed)
     assert_eq!(actions.len(), 2);
@@ -560,6 +588,9 @@ fn plan_multiple_managers() {
 
 #[test]
 fn plan_bootstrap_unavailable_bootstrappable_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
     let profile = test_profile(PackagesSpec {
         cargo: Some(cfgd_core::config::CargoSpec {
@@ -570,7 +601,7 @@ fn plan_bootstrap_unavailable_bootstrappable_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert_eq!(actions.len(), 2);
     assert!(matches!(&actions[0], PackageAction::Bootstrap { manager, .. } if manager == "cargo"));
@@ -581,6 +612,9 @@ fn plan_bootstrap_unavailable_bootstrappable_manager() {
 
 #[test]
 fn plan_skip_unavailable_non_bootstrappable_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("apt", false, vec![]);
     let profile = test_profile(PackagesSpec {
         apt: Some(cfgd_core::config::AptSpec {
@@ -591,7 +625,7 @@ fn plan_skip_unavailable_non_bootstrappable_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -607,6 +641,9 @@ fn plan_skip_unavailable_non_bootstrappable_manager() {
 
 #[test]
 fn plan_sub_manager_installs_when_parent_bootstrapping() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // brew is unavailable + bootstrappable, brew-tap should get Install (not Skip)
     let brew_mock = MockPackageManager::new("brew", false, vec![]).with_bootstrap();
     let tap_mock = MockPackageManager::new("brew-tap", false, vec![]);
@@ -621,7 +658,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew_mock, &tap_mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // Should have: Bootstrap(brew), Install(brew: ripgrep), Install(brew-tap: some/tap)
     assert_eq!(actions.len(), 3);
@@ -638,6 +675,9 @@ fn cfgd_set(entries: &[&str]) -> HashSet<String> {
 
 #[test]
 fn plan_uninstalls_tracked_package_dropped_from_desired() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // bat was cfgd-installed and is still on the system, but no longer desired.
     let mock = MockPackageManager::new("cargo", true, vec!["bat", "ripgrep"]);
     let profile = test_profile(PackagesSpec {
@@ -650,7 +690,7 @@ fn plan_uninstalls_tracked_package_dropped_from_desired() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/bat", "cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall {
@@ -669,6 +709,9 @@ fn plan_uninstalls_tracked_package_dropped_from_desired() {
 
 #[test]
 fn plan_never_uninstalls_untracked_package() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // bat is installed and NOT desired, but cfgd never installed it → leave alone.
     let mock = MockPackageManager::new("cargo", true, vec!["bat", "ripgrep"]);
     let profile = test_profile(PackagesSpec {
@@ -682,7 +725,7 @@ fn plan_never_uninstalls_untracked_package() {
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     // Only ripgrep is tracked; bat was installed by the user, not cfgd.
     let cfgd_installed = cfgd_set(&["cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     assert!(
         !actions
@@ -694,6 +737,9 @@ fn plan_never_uninstalls_untracked_package() {
 
 #[test]
 fn plan_steady_state_tracked_desired_installed() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // ripgrep is tracked, desired, and installed → no Install, no Uninstall.
     let mock = MockPackageManager::new("cargo", true, vec!["ripgrep"]);
     let profile = test_profile(PackagesSpec {
@@ -706,13 +752,16 @@ fn plan_steady_state_tracked_desired_installed() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     assert!(actions.is_empty(), "expected no actions, got: {actions:?}");
 }
 
 #[test]
 fn plan_no_uninstall_for_tracked_package_already_gone_out_of_band() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // bat is tracked + not desired, but was already removed out-of-band
     // (not in installed_packages) → nothing to uninstall.
     let mock = MockPackageManager::new("cargo", true, vec!["ripgrep"]);
@@ -726,7 +775,7 @@ fn plan_no_uninstall_for_tracked_package_already_gone_out_of_band() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/bat", "cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     assert!(
         !actions
@@ -738,6 +787,9 @@ fn plan_no_uninstall_for_tracked_package_already_gone_out_of_band() {
 
 #[test]
 fn plan_uninstall_scoped_to_owning_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // A package tracked under apt must not be uninstalled by cargo even if
     // cargo also has it installed and it is not desired.
     let cargo_mock = MockPackageManager::new("cargo", true, vec!["shared"]);
@@ -752,7 +804,7 @@ fn plan_uninstall_scoped_to_owning_manager() {
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock];
     // "shared" is tracked under apt, not cargo.
     let cfgd_installed = cfgd_set(&["apt/shared"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     assert!(
         !actions
@@ -764,6 +816,9 @@ fn plan_uninstall_scoped_to_owning_manager() {
 
 #[test]
 fn plan_does_not_probe_idle_available_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // An available manager with no desired packages and nothing cfgd-tracked
     // must never have installed_packages() called — a present-but-broken manager
     // (here: list always errors) must not abort an unrelated plan.
@@ -771,12 +826,15 @@ fn plan_does_not_probe_idle_available_manager() {
     let profile = test_profile(PackagesSpec::default());
 
     let managers: Vec<&dyn PackageManager> = vec![&broken];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(actions.is_empty(), "idle manager must yield no actions");
 }
 
 #[test]
 fn plan_probes_available_manager_only_when_it_has_tracked_packages() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // The same broken manager, but now it has a cfgd-tracked package: prune must
     // attempt to read installed state (and surface the list error) rather than
     // silently skipping — otherwise a dropped package would never be pruned.
@@ -785,7 +843,7 @@ fn plan_probes_available_manager_only_when_it_has_tracked_packages() {
 
     let managers: Vec<&dyn PackageManager> = vec![&broken];
     let cfgd_installed = cfgd_set(&["pacman/htop"]);
-    let result = plan_packages(&profile, &[], &managers, &cfgd_installed);
+    let result = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx);
     assert!(
         result.is_err(),
         "a tracked package forces a real installed-state read"
@@ -794,6 +852,9 @@ fn plan_probes_available_manager_only_when_it_has_tracked_packages() {
 
 #[test]
 fn plan_keeps_shared_package_when_one_consumer_removed() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // `desired` is the FULL merged set across all modules+profile. A package
     // still present in the merge (because another consumer keeps it) is not
     // pruned even though it is cfgd-tracked. Modeled here by including `shared`
@@ -809,7 +870,7 @@ fn plan_keeps_shared_package_when_one_consumer_removed() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/shared", "cargo/solo"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall { packages, .. } => Some(packages),
@@ -821,6 +882,9 @@ fn plan_keeps_shared_package_when_one_consumer_removed() {
 
 #[test]
 fn plan_prunes_shared_package_when_last_consumer_removed() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // Once the final consumer drops `shared`, it leaves the merged desired set
     // and is pruned.
     let mock = MockPackageManager::new("cargo", true, vec!["shared"]);
@@ -834,7 +898,7 @@ fn plan_prunes_shared_package_when_last_consumer_removed() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/shared"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
 
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall { packages, .. } => Some(packages),
@@ -845,6 +909,9 @@ fn plan_prunes_shared_package_when_last_consumer_removed() {
 
 #[test]
 fn plan_scoped_apply_empty_tracked_set_never_prunes() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // A scoped apply (--module / --only / --phase) passes an empty tracked set
     // so the merge it sees — which is NOT the full picture — can never drive a
     // prune. Even a clearly-droppable tracked package is left alone.
@@ -859,7 +926,7 @@ fn plan_scoped_apply_empty_tracked_set_never_prunes() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     // Empty set models the scoped-apply guard.
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(
         !actions
             .iter()
@@ -870,6 +937,9 @@ fn plan_scoped_apply_empty_tracked_set_never_prunes() {
 
 #[test]
 fn plan_never_prunes_user_package_absent_from_tracked_set() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // cfgd only tracks a package whose Install ran, so a package the user
     // installed by hand (never in the tracked set) is never pruned even when
     // installed-and-not-desired.
@@ -885,7 +955,7 @@ fn plan_never_prunes_user_package_absent_from_tracked_set() {
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     // git is tracked; vim is a user package cfgd never installed.
     let cfgd_installed = cfgd_set(&["apt/git"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
     assert!(
         !actions
             .iter()
@@ -898,6 +968,9 @@ fn plan_never_prunes_user_package_absent_from_tracked_set() {
 
 #[test]
 fn plan_go_no_reinstall_when_binary_already_present() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // `installed` reports the BINARY `2fa`; `desired` carries the MODULE PATH
     // `rsc.io/2fa`. Identity-aware diffing must see them as the same package and
     // emit NO Install (the idempotency bug: a raw-string compare always
@@ -909,7 +982,7 @@ fn plan_go_no_reinstall_when_binary_already_present() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(
         actions.is_empty(),
         "binary already installed → no Install, no Uninstall: {actions:?}"
@@ -918,6 +991,9 @@ fn plan_go_no_reinstall_when_binary_already_present() {
 
 #[test]
 fn plan_go_install_carries_full_module_path() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // When the binary is absent, the Install action must carry the ORIGINAL
     // module path so `go install` gets the full path.
     let mock = GoLikeMockManager::new(vec![]);
@@ -927,7 +1003,7 @@ fn plan_go_install_carries_full_module_path() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     let install = actions.iter().find_map(|a| match a {
         PackageAction::Install { packages, .. } => Some(packages),
         _ => None,
@@ -937,6 +1013,9 @@ fn plan_go_install_carries_full_module_path() {
 
 #[test]
 fn plan_go_prunes_dropped_tracked_binary() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // Tracked as `go/2fa` (binary identity), still installed, dropped from
     // desired → Uninstall the binary `2fa`.
     let mock = GoLikeMockManager::new(vec!["2fa"]);
@@ -947,7 +1026,7 @@ fn plan_go_prunes_dropped_tracked_binary() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["go/2fa"]);
-    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed, &cx).unwrap();
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall { packages, .. } => Some(packages),
         _ => None,
@@ -968,8 +1047,12 @@ fn stale_tracked_packages_reports_rows_whose_package_is_gone() {
     let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/bat", "cargo/ghost"]);
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
 
-    let stale = cfgd_core::reconciler::stale_tracked_packages(&managers, &cfgd_installed).unwrap();
+    let stale =
+        cfgd_core::reconciler::stale_tracked_packages(&managers, &cfgd_installed, &cx).unwrap();
     assert_eq!(stale, vec![("cargo".to_string(), "ghost".to_string())]);
 }
 
@@ -979,8 +1062,12 @@ fn stale_tracked_packages_skips_unavailable_managers() {
     let mock = MockPackageManager::new("cargo", false, vec![]);
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/anything"]);
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
 
-    let stale = cfgd_core::reconciler::stale_tracked_packages(&managers, &cfgd_installed).unwrap();
+    let stale =
+        cfgd_core::reconciler::stale_tracked_packages(&managers, &cfgd_installed, &cx).unwrap();
     assert!(
         stale.is_empty(),
         "unavailable manager rows must not be GC'd: {stale:?}"
@@ -994,8 +1081,12 @@ fn stale_tracked_packages_uses_identity_for_go() {
     let mock = GoLikeMockManager::new(vec!["2fa"]);
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["go/2fa", "go/gone"]);
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
 
-    let stale = cfgd_core::reconciler::stale_tracked_packages(&managers, &cfgd_installed).unwrap();
+    let stale =
+        cfgd_core::reconciler::stale_tracked_packages(&managers, &cfgd_installed, &cx).unwrap();
     assert_eq!(stale, vec![("go".to_string(), "gone".to_string())]);
 }
 
@@ -1331,6 +1422,9 @@ fn add_and_remove_new_managers() {
 
 #[test]
 fn plan_with_new_managers() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let apk = MockPackageManager::new("apk", true, vec!["curl"]);
     let pacman = MockPackageManager::new("pacman", true, vec![]);
     let snap = MockPackageManager::new("snap", false, vec![]).with_bootstrap();
@@ -1346,7 +1440,7 @@ fn plan_with_new_managers() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&apk, &pacman, &snap];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // apk: git is missing → Install
     assert!(actions.iter().any(|a| matches!(
@@ -1484,13 +1578,15 @@ fn custom_manager_desired_packages() {
 fn apply_packages_install() {
     let mock = MockPackageManager::new("cargo", true, vec![]);
     let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let actions = vec![PackageAction::Install {
         manager: "cargo".into(),
         packages: vec!["bat".into(), "fd-find".into()],
         origin: "local".into(),
     }];
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    apply_packages(&actions, &managers, &printer).unwrap();
+    apply_packages(&actions, &managers, &cx).unwrap();
     let installs = mock.installs.lock().unwrap();
     assert_eq!(installs.len(), 1);
     assert_eq!(installs[0], vec!["bat", "fd-find"]);
@@ -1500,13 +1596,15 @@ fn apply_packages_install() {
 fn apply_packages_uninstall() {
     let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
     let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let actions = vec![PackageAction::Uninstall {
         manager: "cargo".into(),
         packages: vec!["bat".into()],
         origin: "local".into(),
     }];
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    apply_packages(&actions, &managers, &printer).unwrap();
+    apply_packages(&actions, &managers, &cx).unwrap();
     let uninstalls = mock.uninstalls.lock().unwrap();
     assert_eq!(uninstalls.len(), 1);
 }
@@ -1515,28 +1613,35 @@ fn apply_packages_uninstall() {
 fn apply_packages_bootstrap() {
     let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
     let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let actions = vec![PackageAction::Bootstrap {
         manager: "cargo".into(),
         method: "rustup".into(),
         origin: "local".into(),
     }];
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    apply_packages(&actions, &managers, &printer).unwrap();
+    apply_packages(&actions, &managers, &cx).unwrap();
 }
 
 #[test]
 fn apply_packages_skip_no_error() {
     let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let actions = vec![PackageAction::Skip {
         manager: "snap".into(),
         reason: "not available".into(),
         origin: "local".into(),
     }];
-    apply_packages(&actions, &[], &printer).unwrap();
+    apply_packages(&actions, &[], &cx).unwrap();
 }
 
 #[test]
 fn plan_skip_unavailable_no_bootstrap() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("snap", false, vec![]);
     let profile = test_profile(PackagesSpec {
         snap: Some(cfgd_core::config::SnapSpec {
@@ -1546,7 +1651,7 @@ fn plan_skip_unavailable_no_bootstrap() {
         ..Default::default()
     });
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -1921,9 +2026,12 @@ fn format_package_actions_uninstall() {
 
 #[test]
 fn plan_packages_no_managers() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let profile = test_profile(PackagesSpec::default());
     let managers: Vec<&dyn PackageManager> = vec![];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -1933,7 +2041,9 @@ fn plan_packages_no_managers() {
 fn mock_manager_update_is_noop() {
     let mock = MockPackageManager::new("test", true, vec![]);
     let printer = cfgd_core::test_helpers::test_printer();
-    mock.update(&printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    mock.update(&cx).unwrap();
 }
 
 #[test]
@@ -2109,11 +2219,14 @@ fn resolve_manifest_packages_cargo_file() {
 
 #[test]
 fn plan_packages_available_manager_no_desired_is_noop() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // Manager is available but no packages desired → no actions
     let mock = MockPackageManager::new("brew", true, vec!["ripgrep"]);
     let profile = test_profile(PackagesSpec::default());
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -2139,7 +2252,9 @@ fn apply_packages_multiple_actions() {
 
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
     let printer = cfgd_core::test_helpers::test_printer();
-    apply_packages(&actions, &managers, &printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    apply_packages(&actions, &managers, &cx).unwrap();
 
     let cargo_installs = cargo_mock.installs.lock().unwrap();
     assert_eq!(cargo_installs.len(), 1);
@@ -2160,8 +2275,10 @@ fn apply_packages_unknown_manager_skipped() {
         origin: "local".into(),
     }];
     let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // No matching manager → the find returns None → action is skipped
-    apply_packages(&actions, &[], &printer).unwrap();
+    apply_packages(&actions, &[], &cx).unwrap();
 }
 
 // --- PostInstallNote and print_caveats ---
@@ -2272,6 +2389,9 @@ fn format_package_actions_single_package_install() {
 
 #[test]
 fn plan_packages_mixed_available_and_unavailable() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let available = MockPackageManager::new("cargo", true, vec!["bat"]);
     let unavailable = MockPackageManager::new("snap", false, vec![]);
     let bootstrappable = MockPackageManager::new("nix", false, vec![]).with_bootstrap();
@@ -2290,7 +2410,7 @@ fn plan_packages_mixed_available_and_unavailable() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&available, &unavailable, &bootstrappable];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // cargo: ripgrep needs install (bat already installed)
     let cargo_install = actions.iter().find(|a| {
@@ -2325,6 +2445,9 @@ fn plan_packages_mixed_available_and_unavailable() {
 
 #[test]
 fn plan_packages_all_already_installed() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("npm", true, vec!["typescript", "eslint"]);
     let profile = test_profile(PackagesSpec {
         npm: Some(cfgd_core::config::NpmSpec {
@@ -2335,12 +2458,15 @@ fn plan_packages_all_already_installed() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(actions.is_empty());
 }
 
 #[test]
 fn plan_packages_empty_desired_skips_available_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
     // Profile has cargo spec but with empty packages list
     let profile = test_profile(PackagesSpec {
@@ -2352,7 +2478,7 @@ fn plan_packages_empty_desired_skips_available_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -2674,7 +2800,9 @@ fn apply_packages_mixed_actions() {
 
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
     let printer = cfgd_core::test_helpers::test_printer();
-    apply_packages(&actions, &managers, &printer).unwrap();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    apply_packages(&actions, &managers, &cx).unwrap();
 
     let cargo_installs = cargo_mock.installs.lock().unwrap();
     assert_eq!(cargo_installs.len(), 1);
@@ -2996,6 +3124,9 @@ fn simple_manager_without_versions_fn() {
 
 #[test]
 fn plan_packages_with_custom_manager() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let custom = ScriptedManager {
         mgr_name: "mypm".to_string(),
         check_cmd: "true".to_string(),
@@ -3019,7 +3150,7 @@ fn plan_packages_with_custom_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&custom];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // "existing" is installed, "new-pkg" is not → should have Install action for new-pkg
     assert_eq!(actions.len(), 1);
@@ -3041,6 +3172,9 @@ fn plan_packages_with_custom_manager() {
 
 #[test]
 fn plan_packages_brew_submanagers_available() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let brew = MockPackageManager::new("brew", true, vec!["ripgrep"]);
     let brew_tap = MockPackageManager::new("brew-tap", true, vec!["homebrew/core"]);
     let brew_cask = MockPackageManager::new("brew-cask", true, vec![]);
@@ -3056,7 +3190,7 @@ fn plan_packages_brew_submanagers_available() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &brew_tap, &brew_cask];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // brew: fd needs install (ripgrep already installed)
     let brew_install = actions.iter().find(|a| {
@@ -3098,8 +3232,11 @@ fn plan_packages_brew_submanagers_available() {
 
 #[test]
 fn mock_manager_installed_packages_returns_set() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("test", true, vec!["a", "b", "c"]);
-    let installed = mock.installed_packages().unwrap();
+    let installed = mock.installed_packages(&cx).unwrap();
     assert_eq!(installed.len(), 3);
     assert!(installed.contains("a"));
     assert!(installed.contains("b"));
@@ -3108,8 +3245,11 @@ fn mock_manager_installed_packages_returns_set() {
 
 #[test]
 fn mock_manager_installed_packages_empty() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mock = MockPackageManager::new("test", true, vec![]);
-    let installed = mock.installed_packages().unwrap();
+    let installed = mock.installed_packages(&cx).unwrap();
     assert!(installed.is_empty());
 }
 
@@ -3144,12 +3284,14 @@ fn mock_manager_installed_packages_empty() {
 #[test]
 fn apply_packages_skip_prints_warning() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let actions = vec![PackageAction::Skip {
         manager: "snap".into(),
         reason: "'snap' not available — cannot auto-install on this platform".into(),
         origin: "local".into(),
     }];
-    apply_packages(&actions, &[], &printer).unwrap();
+    apply_packages(&actions, &[], &cx).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("snap") && output.contains("cannot auto-install"),
@@ -3259,6 +3401,9 @@ fn resolve_manifest_packages_npm_dedup() {
 
 #[test]
 fn plan_sub_manager_skips_when_parent_not_bootstrapping() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // brew-cask is unavailable, brew is NOT being bootstrapped → cask should Skip
     let brew = MockPackageManager::new("brew", true, vec!["ripgrep"]); // available
     let cask = MockPackageManager::new("brew-cask", false, vec![]); // unavailable, can't bootstrap
@@ -3273,7 +3418,7 @@ fn plan_sub_manager_skips_when_parent_not_bootstrapping() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &cask];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // brew-cask is unavailable and non-bootstrappable, and parent is not being bootstrapped
     assert!(actions.iter().any(|a| matches!(
@@ -3286,6 +3431,9 @@ fn plan_sub_manager_skips_when_parent_not_bootstrapping() {
 
 #[test]
 fn plan_brew_cask_installs_when_brew_bootstrapping() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let brew = MockPackageManager::new("brew", false, vec![]).with_bootstrap();
     let cask = MockPackageManager::new("brew-cask", false, vec![]);
 
@@ -3299,7 +3447,7 @@ fn plan_brew_cask_installs_when_brew_bootstrapping() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &cask];
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
     // brew-cask should get Install (not Skip) because brew parent is being bootstrapped
     assert!(actions.iter().any(|a| matches!(
@@ -3445,6 +3593,9 @@ fn format_package_actions_bootstrap_with_long_method() {
 
 #[test]
 fn plan_packages_many_managers_all_empty() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mocks: Vec<MockPackageManager> = vec![
         MockPackageManager::new("brew", true, vec!["ripgrep"]),
         MockPackageManager::new("cargo", true, vec!["bat"]),
@@ -3454,7 +3605,7 @@ fn plan_packages_many_managers_all_empty() {
     let profile = test_profile(PackagesSpec::default());
     let managers: Vec<&dyn PackageManager> =
         mocks.iter().map(|m| m as &dyn PackageManager).collect();
-    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
     assert!(actions.is_empty(), "no desired packages → no actions");
 }
 
@@ -3590,8 +3741,11 @@ fn cmd_builders_return_valid_commands() {
 
 #[test]
 fn brew_path_dirs_through_trait() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mgr: Box<dyn PackageManager> = Box::new(BrewManager);
-    let dirs = mgr.path_dirs();
+    let dirs = mgr.path_dirs(&cx);
     // On Linux: should have linuxbrew dirs
     // On macOS: should have homebrew dirs
     // On Windows: should be empty

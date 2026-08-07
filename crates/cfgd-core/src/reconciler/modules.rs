@@ -6,7 +6,8 @@ use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, build_module_script_env, execute_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, execute_script,
+    script_default_workdir,
 };
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
 
@@ -50,6 +51,7 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(first) = pkgs.first() {
                     if first.manager == "script" {
                         // Script-based install: run each package's script via execute_script
+                        let path_dirs = super::all_recorded_path_dirs(self.state);
                         for pkg in pkgs {
                             if let Some(ref script_content) = pkg.script {
                                 let profile_name = resolved
@@ -58,12 +60,15 @@ impl<'a> super::Reconciler<'a> {
                                     .map(|l| l.profile_name.as_str())
                                     .unwrap_or("unknown");
                                 let env_vars = build_module_script_env(
-                                    config_dir,
-                                    profile_name,
-                                    context,
-                                    &ScriptPhase::PostApply,
-                                    Some(&action.module_name),
-                                    module_dir.as_deref(),
+                                    &ScriptEnvContext {
+                                        config_dir,
+                                        profile_name,
+                                        context,
+                                        phase: &ScriptPhase::PostApply,
+                                        module_name: Some(&action.module_name),
+                                        module_dir: module_dir.as_deref(),
+                                        path_dirs: &path_dirs,
+                                    },
                                     module_env,
                                 );
                                 // Build a Full entry so the package's idempotency
@@ -114,50 +119,27 @@ impl<'a> super::Reconciler<'a> {
                             .find(|m| m.name() == first.manager);
 
                         if let Some(pm) = pm {
-                            // Bootstrap if needed
+                            // Bootstrap if needed. The manager's PATH directories
+                            // are recorded, never appended to `~/.cfgd.env` here:
+                            // the generated env file has exactly one writer, and
+                            // an out-of-band append would be erased by the next
+                            // wholesale rewrite of that file.
                             if !pm.is_available() && pm.can_bootstrap() {
                                 pm.bootstrap(printer)?;
-
-                                // Persist bootstrapped manager's PATH to ~/.cfgd.env
-                                let path_dirs = pm.path_dirs();
-                                if !path_dirs.is_empty() {
-                                    let env_path =
-                                        expand_tilde(std::path::Path::new("~/.cfgd.env"));
-                                    let existing = match std::fs::read_to_string(&env_path) {
-                                        Ok(s) => s,
-                                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                            String::new()
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("cannot read {}: {e}", env_path.posix());
-                                            String::new()
-                                        }
-                                    };
-                                    let new_dirs: Vec<&str> = path_dirs
-                                        .iter()
-                                        .filter(|d| !existing.contains(d.as_str()))
-                                        .map(|d| d.as_str())
-                                        .collect();
-                                    if !new_dirs.is_empty() {
-                                        let mut content = existing;
-                                        if !content.ends_with('\n') && !content.is_empty() {
-                                            content.push('\n');
-                                        }
-                                        content.push_str(&format!(
-                                            "export PATH=\"{}:$PATH\"\n",
-                                            new_dirs.join(":")
-                                        ));
-                                        crate::atomic_write_str(&env_path, &content)?;
-                                    }
-                                }
+                                self.record_bootstrap_path_dirs(pm.as_ref(), printer);
                             }
+
+                            let cx = crate::providers::PackageContext {
+                                printer,
+                                state: self.state,
+                            };
 
                             // Update package index before installing
                             if pm.is_available() {
-                                pm.update(printer)?;
+                                pm.update(&cx)?;
                             }
 
-                            pm.install(&pkg_names, printer)?;
+                            pm.install(&pkg_names, &cx)?;
                             manager_changed = true;
                         }
                     }
@@ -194,7 +176,7 @@ impl<'a> super::Reconciler<'a> {
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
                         && let Err(e) = self.state.store_file_backup(
                             apply_id,
-                            &target.display().to_string(),
+                            &crate::to_posix_fs_key(&target),
                             &file_state,
                         )
                     {
@@ -252,9 +234,14 @@ impl<'a> super::Reconciler<'a> {
                     } else {
                         String::new()
                     };
+                    // Persisted key AND a path a later apply reopens, so it folds
+                    // with `to_posix_fs_key`: the UNIQUE(module_name, file_path)
+                    // row a Windows apply writes is the one every later apply
+                    // derives, without renaming a POSIX target whose filename
+                    // legitimately contains a backslash.
                     self.state.upsert_module_file(
                         &action.module_name,
-                        &target.display().to_string(),
+                        &crate::to_posix_fs_key(&target),
                         &hash,
                         &format!("{:?}", strategy),
                         apply_id,
@@ -285,12 +272,15 @@ impl<'a> super::Reconciler<'a> {
                     .map(|l| l.profile_name.as_str())
                     .unwrap_or("unknown");
                 let env_vars = build_module_script_env(
-                    config_dir,
-                    profile_name,
-                    context,
-                    script_phase,
-                    Some(&action.module_name),
-                    module_dir.as_deref(),
+                    &ScriptEnvContext {
+                        config_dir,
+                        profile_name,
+                        context,
+                        phase: script_phase,
+                        module_name: Some(&action.module_name),
+                        module_dir: module_dir.as_deref(),
+                        path_dirs: &super::all_recorded_path_dirs(self.state),
+                    },
                     module_env,
                 );
 

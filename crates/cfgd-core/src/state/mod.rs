@@ -7,16 +7,19 @@ use crate::errors::{Result, StateError};
 
 mod applies;
 mod backups;
+mod bootstrap;
 mod compliance;
 mod decisions;
 mod drift;
 mod journal;
 mod managed;
 mod modules;
+mod package_prefix;
 mod pending_config;
 mod sources;
 mod types;
 
+pub use package_prefix::PackageManagerPrefixRecord;
 pub use pending_config::{
     PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
     save_pending_server_config,
@@ -232,6 +235,86 @@ const MIGRATIONS: &[&str] = &[
     // content. DEFAULT 1 keeps every legacy row at today's content-restore
     // behavior.
     "ALTER TABLE file_backups ADD COLUMN existed INTEGER NOT NULL DEFAULT 1;",
+    // Migration 9: drop managed_resources bookkeeping rows whose resource_id
+    // shape changed. Four id derivations were corrected at once:
+    //   - `Running script: {body}` and `system:{cfg}.{key} ({cur} → {des})`
+    //     were split by a blind `splitn(3, ':')`, which truncated any body or
+    //     value holding its own colon (URLs, `sed`/`awk` programs, PATH values).
+    //   - `module:{name}:{verb}` dropped the module NAME, and
+    //     `package:{manager}:{verb}` the MANAGER, so every module — and every
+    //     manager's bootstrap/skip — collapsed onto one
+    //     UNIQUE(resource_type, resource_id) row.
+    //   - `secret:{decrypt,resolve}:…` keys were built with the native path
+    //     separator, so a Windows-written key never matched its POSIX form.
+    // Nothing sweeps managed_resources on observation (the only DELETE is
+    // package-scoped), so a row written under an old id would linger in
+    // `cfgd status` forever. These rows are pure bookkeeping — the next apply
+    // re-derives them — and carry no uninstall_cmd, which only
+    // `upsert_package_resource` ever writes, so deleting them loses nothing.
+    // The package clause is scoped to the two collapsed ids rather than the
+    // type: real package rows are keyed `{manager}/{package}` and DO carry an
+    // uninstall_cmd that cannot be re-derived once its manager leaves config.
+    "DELETE FROM managed_resources
+        WHERE resource_type IN ('Running script', 'system', 'module', 'secret')
+           OR (resource_type = 'package' AND resource_id IN ('bootstrap', 'skip'));",
+    // Migration 10: fold the persisted file-path keys to `/`. Every writer of
+    // `file_backups.file_path` and `module_file_manifest.file_path` now uses
+    // `to_posix_fs_key`, so a Windows row written with the native separator
+    // would no longer join: the manifest drives `latest_backup_for_path`, and a
+    // mismatch there makes module removal DELETE a file it should have
+    // RESTORED. These rows are normalized rather than dropped — unlike the
+    // managed_resources bookkeeping above, `file_backups` holds the only copy
+    // of pre-overwrite content and the manifest is the only record of what a
+    // module deployed, so a DELETE would forfeit rollback.
+    // `UPDATE OR REPLACE` because the manifest's UNIQUE(module_name, file_path)
+    // is reachable, if barely: a module that declared both `C:\dir\f` and
+    // `C:/dir/f` folds two historical rows onto one key. REPLACE keeps the row
+    // being folded and drops the twin, which is safe because both name the same
+    // file and the only column production reads from this table is file_path.
+    // Scoped to Windows-rooted shapes on purpose. A backslash is a legal
+    // filename character on unix, so folding `/home/u/od\d.conf` would re-point
+    // the row at a different file — which is also why the writers fold on
+    // Windows only. These columns hold absolute paths, so a unix row can never
+    // begin `X:/`, `X:\`, or `\\`, and the three patterns between them catch
+    // every Windows row including one authored with mixed separators.
+    // SQLite gives LIKE no escape character, so `\` here is a literal.
+    r"UPDATE file_backups
+         SET file_path = REPLACE(file_path, '\', '/')
+       WHERE file_path LIKE '_:\%' OR file_path LIKE '_:/%' OR file_path LIKE '\\%';
+
+      UPDATE OR REPLACE module_file_manifest
+         SET file_path = REPLACE(file_path, '\', '/')
+       WHERE file_path LIKE '_:\%' OR file_path LIKE '_:/%' OR file_path LIKE '\\%';",
+    // Migration 11: remember which package managers cfgd itself bootstrapped and
+    // the PATH directories each contributed. `PackageManager::path_dirs()` is a
+    // live probe of the machine — npm's creates a global prefix directory, and
+    // brew's answer flips with what already exists on disk — so it is accurate
+    // only in the instant after a successful bootstrap, and calling it from a
+    // read-only path would mutate the user's home. The recorded answer is what
+    // planning and verification read instead. `path_dirs` holds a JSON array
+    // because the order is load-bearing: the generated shell file is hashed and
+    // compared on every reconcile tick.
+    "CREATE TABLE IF NOT EXISTS bootstrapped_managers (
+        manager         TEXT PRIMARY KEY,
+        path_dirs       TEXT NOT NULL,
+        bootstrapped_at TEXT NOT NULL
+    );",
+    // Migration 12: persist the resolved global-install prefix a package
+    // manager is actually using. `bootstrapped_managers` only gets a row when
+    // cfgd itself installs the manager; most machines already have npm
+    // present, so nothing ever writes one for it, and every install/uninstall
+    // /update/list call re-derives a prefix from live-fallible inputs
+    // (elevation, a write-probe, the project-local `.npmrc` npm itself
+    // consults). A later run can legitimately re-derive a DIFFERENT prefix
+    // than the one packages were actually installed under, making them
+    // invisible to `installed_packages()` — the prefix must be decided once
+    // and reused by every subsequent operation, not re-negotiated on each one.
+    "CREATE TABLE IF NOT EXISTS package_manager_prefixes (
+        manager     TEXT PRIMARY KEY,
+        prefix      TEXT NOT NULL,
+        is_fallback INTEGER NOT NULL,
+        resolved_at TEXT NOT NULL
+    );",
 ];
 
 /// SQLite-backed state store for cfgd.

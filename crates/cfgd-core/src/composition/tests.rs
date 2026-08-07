@@ -3267,7 +3267,7 @@ fn resolution_type_label_all_variants() {
     assert_eq!(ResolutionType::Default.label(), "DEFAULT");
 }
 
-// --- subscriber overrides composition (Finding A) ---
+// --- subscriber overrides composition ---
 
 /// Build a source input whose recommended tier sets `EDITOR=vim` and an npm
 /// recommendation of `eslint`, with the given `overrides` YAML applied.

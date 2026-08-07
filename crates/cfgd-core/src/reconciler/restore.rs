@@ -61,8 +61,19 @@ pub fn restore_file_from_backup(
         {
             return RestoreOutcome::Skipped;
         }
+        // A row that recorded both a link and its content came from a write
+        // that went THROUGH the link, so the rollback goes through it too:
+        // clearing the link and dropping a regular file in its place would
+        // strand the dotfile repo the link points into and lose the rolled-back
+        // content at the next re-link. Restoring the link first covers the case
+        // where something replaced it since.
+        if bk.was_symlink
+            && let Some(ref link_target) = bk.symlink_target
+        {
+            return restore_through_link(target, std::path::Path::new(link_target), bk, printer);
+        }
         // Remove existing target (might be a symlink or regular file). A
-        // remove failure here means we cannot atomically replace — propagate
+        // remove failure here means the replacement cannot be atomic — propagate
         // as Failed rather than silently continuing with stale content.
         if target.symlink_metadata().is_ok()
             && let Err(e) = std::fs::remove_file(target)
@@ -152,16 +163,112 @@ pub fn restore_file_from_backup(
     RestoreOutcome::Skipped
 }
 
-/// Extract the target file path from an action, if it writes to a file.
+/// Roll back a write that followed a symlink: put the link back if it is gone,
+/// then write the recorded content through it.
+fn restore_through_link(
+    target: &std::path::Path,
+    link_target: &std::path::Path,
+    bk: &crate::state::FileBackupRecord,
+    printer: &crate::output::Printer,
+) -> RestoreOutcome {
+    let link_intact = std::fs::read_link(target).is_ok_and(|current| current == link_target);
+    if !link_intact {
+        if target.symlink_metadata().is_ok()
+            && let Err(e) = std::fs::remove_file(target)
+        {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "rollback: failed to clear {} before symlink restore: {}",
+                    target.posix(),
+                    e
+                ),
+            );
+            return RestoreOutcome::Failed;
+        }
+        if let Err(e) = crate::create_symlink(link_target, target) {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "rollback: failed to restore symlink {}: {}",
+                    target.posix(),
+                    e
+                ),
+            );
+            return RestoreOutcome::Failed;
+        }
+    }
+    if let Err(e) = crate::atomic_write_resolved(target, &bk.content) {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "rollback: failed to restore {} through its symlink: {}",
+                target.posix(),
+                e
+            ),
+        );
+        return RestoreOutcome::Failed;
+    }
+    // The recorded mode is the resolved file's, so it is set on the resolved
+    // file: chmod through a link changes the destination, which is the file
+    // whose mode was captured.
+    if let Some(mode) = bk.permissions
+        && let Err(e) = crate::set_file_permissions(target, mode)
+    {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "rollback: restored {} but failed to set permissions {:o}: {}",
+                target.posix(),
+                mode,
+                e
+            ),
+        );
+        return RestoreOutcome::Failed;
+    }
+    RestoreOutcome::Restored
+}
+
+/// The file a pre-apply backup of an action must capture.
+#[derive(Debug, Clone)]
+pub(super) struct BackupTarget {
+    pub path: std::path::PathBuf,
+    /// Whether the action's write follows a symlink at `path` rather than
+    /// replacing it.
+    ///
+    /// The capture has to make the same choice the write does. A link-only
+    /// snapshot of a target the write goes *through* records zero bytes, so the
+    /// backup row exists and rollback restores nothing — the failure mode is
+    /// indistinguishable from a working backup until someone needs it.
+    pub follow_symlink: bool,
+}
+
+/// Extract the target file of an action, if it writes to a file.
 /// Used for pre-apply backup capture.
-pub(super) fn action_target_path(action: &Action) -> Option<std::path::PathBuf> {
+pub(super) fn action_target_path(action: &Action) -> Option<BackupTarget> {
     match action {
         Action::File(
             FileAction::Create { target, .. }
             | FileAction::Update { target, .. }
             | FileAction::Delete { target, .. },
-        ) => Some(target.clone()),
-        Action::Env(EnvAction::WriteEnvFile { path, .. }) => Some(path.clone()),
+        ) => Some(BackupTarget {
+            path: target.clone(),
+            follow_symlink: false,
+        }),
+        // Both env writes resolve a symlinked target and write through it, so
+        // both capture through it. The generated file is as likely to be
+        // symlinked into a dotfile repo as the rc file is.
+        Action::Env(EnvAction::WriteEnvFile { path, .. }) => Some(BackupTarget {
+            path: path.clone(),
+            follow_symlink: true,
+        }),
+        // A source-line injection rewrites a user-owned dotfile in full. It is
+        // the one managed write whose target cfgd did not author, so it is the
+        // one that most needs a pre-write backup row to roll back to.
+        Action::Env(EnvAction::InjectSourceLine { rc_path, .. }) => Some(BackupTarget {
+            path: rc_path.clone(),
+            follow_symlink: true,
+        }),
         // Module deploys multiple files — backup handled per-file in apply_module_action
         _ => None,
     }
@@ -215,8 +322,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn restore_with_perm_request_applies_them_and_marks_restored() {
-        // Regression guard for MEDIUM #2: rollback used to fall through to
-        // `Restored` even on perm-set failure. The happy path proves perms
+        // Rollback used to fall through to `Restored` even when setting
+        // permissions failed. The happy path proves perms
         // ARE applied — the failure-path equivalent is enforced by the
         // logic in `restore_file_from_backup` returning Failed when
         // `set_file_permissions` errs (covered by error-path tests in the
@@ -275,6 +382,44 @@ mod tests {
         );
         assert!(target.exists(), "existed empty backup must write a file");
         assert_eq!(std::fs::read(&target).unwrap(), b"");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_link_applies_recorded_permissions() {
+        // Symlink is cfgd's default file strategy, so this is the backup
+        // shape rollback restores for an ordinary managed file: the mode
+        // belongs to the file the content was written to (the link's
+        // destination), so it must land there too, not just the link.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_file = tmp.path().join("real-target.txt");
+        std::fs::write(&real_file, b"current").unwrap();
+        std::fs::set_permissions(&real_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let link = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink(&real_file, &link).unwrap();
+
+        let mut bk = record(&link, b"original", Some(0o600));
+        bk.was_symlink = true;
+        bk.symlink_target = Some(real_file.display().to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&link, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            link.symlink_metadata().unwrap().file_type().is_symlink(),
+            "rollback through a link must leave the link intact"
+        );
+        assert_eq!(std::fs::read(&link).unwrap(), b"original");
+        let mode = std::fs::metadata(&real_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "rollback through a link must restore the destination's mode"
+        );
     }
 
     #[test]

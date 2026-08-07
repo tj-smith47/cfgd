@@ -13,6 +13,7 @@ kind: Module
 metadata:
   name: string
   description: string
+  version: string
 
 spec:
   depends:
@@ -77,6 +78,41 @@ spec:
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Module name. Must be unique within a registry. Referenced by profiles via `spec.modules`. |
 | `description` | string | No | | Human-readable description of what this module provides. |
+| `version` | string | No | | The module's own release version, as strict semver — `MAJOR.MINOR.PATCH` with optional pre-release and build metadata. See [metadata.version](#metadataversion). |
+
+---
+
+### metadata.version
+
+`version` is the module's release version, independent of the cfgd version and of any package
+version inside it. It is strict semver: `1.4.0`, `2.0.0-rc.1`, and `1.0.0+build.5` are accepted;
+`0.10`, `v1.2.3`, and `latest` are rejected at parse time with an error naming the field.
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  version: 1.4.0
+
+spec:
+  packages:
+    - name: neovim
+```
+
+The field is optional, and a module without it loads exactly as before. Two surfaces read it:
+
+- The release workflow written by `cfgd workflow generate` tags a changed module `<name>/v<version>`.
+  A module with no `version` fails that job rather than being tagged with a guessed value, and an
+  already-published tag fails it too — bump `metadata.version` instead of rewriting a tag.
+- `cfgd module show <name>` reports it, so CI reads a module's version from cfgd rather than
+  grepping YAML:
+
+```sh
+cfgd module show nvim -o jsonpath='{.metadata.version}'   # → 1.4.0
+```
+
+`cfgd module create` scaffolds new modules with `version: 0.1.0`.
 
 ---
 
@@ -432,6 +468,7 @@ kind: Module
 metadata:
   name: nvim
   description: Neovim editor with plugins, LSP, and config files
+  version: 1.4.0
 
 spec:
   depends:

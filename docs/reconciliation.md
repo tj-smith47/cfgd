@@ -7,7 +7,7 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 Apply runs in a fixed phase order:
 
 1. **Pre-Scripts** — profile-level `preApply` or `preReconcile` hooks (context-dependent)
-2. **Env** — write env vars and shell aliases to `~/.cfgd.env`, inject shell rc source lines
+2. **Env** — write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`; inject shell rc source lines
 3. **Modules** — resolve module dependencies, install module packages, deploy module files, run module-level hooks
 4. **Packages** — install/uninstall across all package managers (profile-level packages)
 5. **System** — shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
@@ -15,7 +15,14 @@ Apply runs in a fixed phase order:
 7. **Secrets** — decrypt SOPS files, resolve external provider references
 8. **Post-Scripts** — profile-level `postApply` or `postReconcile` hooks, `onChange` hooks
 
-Each phase can be applied independently with `cfgd apply --phase <name>`.
+Each phase can be applied independently with `cfgd apply --phase <name>`. A phase-scoped
+apply only touches the surfaces that phase owns: bootstrapping a package manager under
+`--phase modules` records its PATH entries but leaves `~/.cfgd.env` and your shell rc files
+alone. The record is durable, so the next full `cfgd apply` folds those entries in.
+
+A full apply needs no second run for that: the Env phase runs before Modules and Packages,
+so cfgd regenerates `~/.cfgd.env` once at the end of the apply that bootstrapped the manager,
+and the file is correct when that run finishes.
 
 ## Apply vs Reconcile Context
 

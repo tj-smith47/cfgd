@@ -1543,6 +1543,20 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
                 symlink_target TEXT, oversized INTEGER NOT NULL DEFAULT 0,
                 backed_up_at TEXT NOT NULL,
                 FOREIGN KEY (apply_id) REFERENCES applies(id));
+             CREATE TABLE managed_resources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'local', last_hash TEXT,
+                last_applied INTEGER, uninstall_cmd TEXT,
+                UNIQUE(resource_type, resource_id),
+                FOREIGN KEY (last_applied) REFERENCES applies(id));
+             CREATE TABLE module_file_manifest (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                module_name TEXT NOT NULL, file_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL, strategy TEXT NOT NULL,
+                last_applied INTEGER,
+                UNIQUE(module_name, file_path),
+                FOREIGN KEY (last_applied) REFERENCES applies(id));
              CREATE TABLE schema_version (version INTEGER NOT NULL);
              INSERT INTO schema_version (version) VALUES (5);
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
@@ -1579,6 +1593,251 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
         .query_row("SELECT COUNT(*) FROM source_applies", [], |r| r.get(0))
         .unwrap();
     assert_eq!(after, 0, "migration 6 must enable ON DELETE CASCADE");
+}
+
+#[test]
+fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
+    use crate::providers::ProviderRegistry;
+    use crate::reconciler::{
+        Action, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ReconcileContext,
+        Reconciler,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+
+    // Seed rows in the shapes the old id derivations produced, then wind
+    // schema_version back one step so reopening replays the sweep migration.
+    // Building the pre-migration schema by hand instead would duplicate every
+    // earlier migration's DDL and rot the moment one of them changes.
+    {
+        let store = StateStore::open(&path).unwrap();
+        // Every module collapsed onto the bare verb, so the module name was lost.
+        store
+            .upsert_managed_resource("module", "script", "local", None, None)
+            .unwrap();
+        // Truncated at the colon inside the script body.
+        store
+            .upsert_managed_resource("Running script", " curl https", "local", None, None)
+            .unwrap();
+        // Truncated at the colon inside the configurator value.
+        store
+            .upsert_managed_resource("system", "path.value (a", "local", None, None)
+            .unwrap();
+        // Native-separator secret key, as a Windows host would have written it.
+        store
+            .upsert_managed_resource("secret", r"C:\Users\me\.env", "local", None, None)
+            .unwrap();
+        // Every manager's bootstrap/skip collapsed onto the bare verb, losing
+        // the manager name. These go through upsert_managed_resource, so they
+        // carry no uninstall_cmd.
+        store
+            .upsert_managed_resource("package", "skip", "local", None, None)
+            .unwrap();
+        store
+            .upsert_managed_resource("package", "bootstrap", "local", None, None)
+            .unwrap();
+        // A real package row must NOT be swept — it is the one shape carrying an
+        // uninstall_cmd that cannot be re-derived once its manager leaves config.
+        store
+            .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+            .unwrap();
+        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
+        // id-shape sweep", so appending a later migration must not silently
+        // re-point it at the new tail.
+        store
+            .conn
+            .execute("UPDATE schema_version SET version = 8", [])
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+
+    let swept = state.managed_resources().unwrap();
+    assert!(
+        swept
+            .iter()
+            .all(|r| !["module", "Running script", "system", "secret"]
+                .contains(&r.resource_type.as_str())),
+        "migration 9 must remove every row whose id shape changed: {swept:?}"
+    );
+    assert!(
+        !swept
+            .iter()
+            .any(|r| r.resource_type == "package"
+                && ["bootstrap", "skip"].contains(&&*r.resource_id)),
+        "the collapsed package bootstrap/skip ids must be swept: {swept:?}"
+    );
+    let known = std::collections::HashSet::new();
+    let orphans = state.orphaned_package_resources(&known).unwrap();
+    assert_eq!(
+        orphans.len(),
+        1,
+        "the sweep must spare real package rows: {orphans:?}"
+    );
+    assert_eq!(orphans[0].package, "widget");
+    assert_eq!(orphans[0].uninstall_cmd.as_deref(), Some("widgetmgr rm"));
+
+    // A fresh apply re-derives the rows under the corrected id — and two
+    // modules no longer contend for the same UNIQUE(resource_type, resource_id).
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = crate::test_helpers::make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            scope: None,
+            actions: ["nvim", "zsh"]
+                .into_iter()
+                .map(|name| {
+                    Action::Module(ModuleAction {
+                        module_name: name.to_string(),
+                        kind: ModuleActionKind::Skip {
+                            reason: "platform not matched".to_string(),
+                        },
+                        origin: None,
+                    })
+                })
+                .collect(),
+        }],
+        warnings: vec![],
+    };
+    let printer = crate::test_helpers::test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let module_ids: Vec<String> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.resource_type == "module")
+        .map(|r| r.resource_id)
+        .collect();
+    assert_eq!(
+        module_ids,
+        vec!["nvim:skip".to_string(), "zsh:skip".to_string()],
+        "each module must re-appear under its own name-qualified id"
+    );
+}
+
+#[test]
+fn migration_10_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let backup = |content: &[u8]| crate::FileState {
+        content: content.to_vec(),
+        content_hash: crate::sha256_hex(content),
+        permissions: None,
+        is_symlink: false,
+        symlink_target: None,
+        oversized: false,
+    };
+
+    {
+        let store = StateStore::open(&path).unwrap();
+        let apply_id = store
+            .record_apply("default", "h", ApplyStatus::Success, None)
+            .unwrap();
+        // Keys as a pre-fold Windows host wrote them.
+        store
+            .store_file_backup(apply_id, r"C:\Users\me\.gitconfig", &backup(b"win"))
+            .unwrap();
+        store
+            .store_file_backup(apply_id, r"\\srv\share\hosts", &backup(b"unc"))
+            .unwrap();
+        // A legal unix filename that merely contains a backslash: folding it
+        // would re-point the row at a different file, so it must survive exact.
+        store
+            .store_file_backup(apply_id, r"/home/me/od\d.conf", &backup(b"nix"))
+            .unwrap();
+        // A Windows key authored with mixed separators is still Windows-rooted,
+        // so its trailing backslashes have to fold with the rest.
+        store
+            .store_file_backup(apply_id, r"C:/Users/me\nvim\init.vim", &backup(b"mix"))
+            .unwrap();
+        store
+            .upsert_module_file("nvim", r"C:\Users\me\init.lua", "h1", "Copy", apply_id)
+            .unwrap();
+        store
+            .upsert_module_file("nvim", "C:/Users/me/init.lua", "h2", "Copy", apply_id)
+            .unwrap();
+        store
+            .upsert_module_file("zsh", r"/home/me/od\d.zshrc", "h3", "Copy", apply_id)
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE schema_version SET version = 9", [])
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+
+    assert!(
+        state
+            .latest_backup_for_path("C:/Users/me/.gitconfig")
+            .unwrap()
+            .is_some(),
+        "a native-separator backup key must be reachable under its folded form"
+    );
+    assert!(
+        state
+            .latest_backup_for_path(r"C:\Users\me\.gitconfig")
+            .unwrap()
+            .is_none(),
+        "the native-separator key must not survive alongside the folded one"
+    );
+    assert!(
+        state
+            .latest_backup_for_path("//srv/share/hosts")
+            .unwrap()
+            .is_some(),
+        "a UNC key must fold too"
+    );
+    assert!(
+        state
+            .latest_backup_for_path(r"/home/me/od\d.conf")
+            .unwrap()
+            .is_some(),
+        "a unix filename containing a backslash must be left exact"
+    );
+    assert!(
+        state
+            .latest_backup_for_path("C:/Users/me/nvim/init.vim")
+            .unwrap()
+            .is_some(),
+        "a Windows key authored with mixed separators must fold whole"
+    );
+
+    let nvim = state.module_deployed_files("nvim").unwrap();
+    assert_eq!(
+        nvim.len(),
+        1,
+        "folding must collapse the two shapes onto one manifest row: {nvim:?}"
+    );
+    assert_eq!(nvim[0].file_path, "C:/Users/me/init.lua");
+    assert_eq!(
+        nvim[0].content_hash, "h1",
+        "OR REPLACE keeps the row being folded and drops the twin it collides with"
+    );
+
+    let zsh = state.module_deployed_files("zsh").unwrap();
+    assert_eq!(zsh.len(), 1);
+    assert_eq!(
+        zsh[0].file_path, r"/home/me/od\d.zshrc",
+        "a unix manifest key containing a backslash must be left exact"
+    );
 }
 
 // --- file_backups_after_apply ---
@@ -2028,5 +2287,231 @@ fn migrate_state_db_preserves_sidecars_when_checkpoint_fails() {
             .path()
             .join(format!("{STATE_DB_FILENAME}-shm"))
             .exists()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bootstrapped_managers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bootstrap_path_dirs_round_trip_preserves_order() {
+    let store = StateStore::open_in_memory().unwrap();
+    let dirs = vec![
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+    ];
+    store.record_bootstrapped_path_dirs("brew", &dirs).unwrap();
+
+    // The generated env file's content is hashed and compared on every
+    // reconcile tick, so a reordered read would be reported as drift forever.
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![("brew".to_string(), dirs)]
+    );
+}
+
+#[test]
+fn bootstrap_path_dirs_replaces_an_earlier_record_for_the_same_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/usr/local/bin".to_string()])
+        .unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+
+    // A re-bootstrap that lands in a different prefix must not leave the old
+    // prefix on PATH alongside the new one.
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
+    );
+}
+
+#[test]
+fn bootstrap_path_dirs_orders_managers_deterministically() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs("npm", &["/home/u/.npm-global/bin".to_string()])
+        .unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+
+    let names: Vec<String> = store
+        .bootstrapped_managers()
+        .unwrap()
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["brew".to_string(), "npm".to_string()],
+        "insertion order must not leak into the read"
+    );
+}
+
+#[test]
+fn bootstrap_path_dirs_skips_an_undecodable_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "INSERT INTO bootstrapped_managers (manager, path_dirs, bootstrapped_at)
+             VALUES ('npm', 'not-json', '2026-01-01T00:00:00Z')",
+            params![],
+        )
+        .unwrap();
+
+    // One unreadable row must not wedge `cfgd plan`, `cfgd status`, and the
+    // daemon tick, all of which read this table.
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![("brew".to_string(), vec!["/opt/homebrew/bin".to_string()])]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// package_manager_prefixes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn package_manager_prefix_returns_none_when_nothing_recorded() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
+}
+
+#[test]
+fn package_manager_prefix_round_trips_prefix_and_fallback_flag() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    assert_eq!(
+        store.package_manager_prefix("npm").unwrap(),
+        Some(("/home/u/.npm-global".to_string(), true))
+    );
+}
+
+#[test]
+fn package_manager_prefix_replaces_an_earlier_record_for_the_same_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/usr/local", false)
+        .unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    // A prefix that was writable on an earlier run but isn't any more must
+    // not leave the stale writable-prefix record readable alongside the new
+    // fallback one — every later operation resolves through this row.
+    assert_eq!(
+        store.package_manager_prefix("npm").unwrap(),
+        Some(("/home/u/.npm-global".to_string(), true))
+    );
+}
+
+#[test]
+fn package_manager_prefix_is_scoped_per_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+    store
+        .record_package_manager_prefix("pipx", "/home/u/.local/pipx", false)
+        .unwrap();
+
+    assert_eq!(
+        store.package_manager_prefix("npm").unwrap(),
+        Some(("/home/u/.npm-global".to_string(), true))
+    );
+    assert_eq!(
+        store.package_manager_prefix("pipx").unwrap(),
+        Some(("/home/u/.local/pipx".to_string(), false))
+    );
+}
+
+#[test]
+fn package_manager_prefix_record_returns_none_when_nothing_recorded() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert!(
+        store
+            .package_manager_prefix_record("npm")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn package_manager_prefix_record_surfaces_resolved_at() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    let record = store
+        .package_manager_prefix_record("npm")
+        .unwrap()
+        .expect("row should exist");
+    assert_eq!(record.manager, "npm");
+    assert_eq!(record.prefix, "/home/u/.npm-global");
+    assert!(record.is_fallback);
+    assert!(
+        !record.resolved_at.is_empty(),
+        "resolved_at must be populated"
+    );
+}
+
+#[test]
+fn forget_package_manager_prefix_returns_none_when_nothing_recorded() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert!(
+        store
+            .forget_package_manager_prefix("npm")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn forget_package_manager_prefix_deletes_the_row_and_returns_it() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+
+    let forgotten = store
+        .forget_package_manager_prefix("npm")
+        .unwrap()
+        .expect("row should have existed");
+    assert_eq!(forgotten.prefix, "/home/u/.npm-global");
+
+    // The row must actually be gone, not just returned — the whole point is
+    // forcing the next resolution to derive fresh.
+    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
+}
+
+#[test]
+fn forget_package_manager_prefix_is_scoped_per_manager() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+        .unwrap();
+    store
+        .record_package_manager_prefix("pipx", "/home/u/.local/pipx", false)
+        .unwrap();
+
+    store.forget_package_manager_prefix("npm").unwrap();
+
+    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
+    assert_eq!(
+        store.package_manager_prefix("pipx").unwrap(),
+        Some(("/home/u/.local/pipx".to_string(), false))
     );
 }

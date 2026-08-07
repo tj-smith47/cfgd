@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line, condense_script_label};
 
 pub fn cmd_module_create(
     cli: &Cli,
@@ -188,6 +188,9 @@ pub fn cmd_module_create(
         metadata: config::ModuleMetadata {
             name: name.to_string(),
             description: desc,
+            // Scaffolded with a version so the module is taggable by the
+            // generated release workflow without a follow-up edit.
+            version: Some("0.1.0".to_string()),
         },
         spec: config::ModuleSpec {
             depends: dep_list,
@@ -240,6 +243,9 @@ pub fn cmd_module_create(
 
     // Apply if requested
     let mut applied = false;
+    // Deferred so the structured payload below still reaches `-o json`
+    // consumers before the process exits nonzero on a failed apply.
+    let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
         printer.heading("Applying Module");
 
@@ -272,7 +278,7 @@ pub fn cmd_module_create(
             &resolved,
             Vec::new(),
             Vec::new(),
-            resolved_modules,
+            resolved_modules.clone(),
             cfgd_core::reconciler::ReconcileContext::Apply,
         )?;
 
@@ -304,19 +310,25 @@ pub fn cmd_module_create(
                 cli.scope(),
             )?)?;
 
+            // Same requirement as `cfgd init --apply-module`: the apply records
+            // module state from this slice, and regenerates the env files from
+            // the PATH directories of a manager it bootstrapped mid-run.
             let result = reconciler.apply(
                 &plan,
                 &resolved,
                 &config_dir,
                 printer,
                 None,
-                &[],
+                &resolved_modules,
                 cfgd_core::reconciler::ReconcileContext::Apply,
                 false,
                 None,
                 &cfgd_core::AbortFlag::new(),
             )?;
-            super::print_apply_result(&result, printer, None);
+            apply_status = super::print_apply_result(&result, printer, None);
+            // A module whose packages come from a manager this apply bootstrapped
+            // leaves the invoking shell one `source` away from reaching them.
+            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
             applied = true;
         }
     }
@@ -326,6 +338,17 @@ pub fn cmd_module_create(
         "path": module_dir.display().to_string(),
         "applied": applied,
     })));
+
+    // Same contract as `cfgd apply`: an apply that ran and lost actions must not
+    // report success. Exiting directly (rather than returning an error) keeps
+    // render_cli_error from double-printing a failure line after the per-action
+    // report above.
+    if matches!(
+        apply_status,
+        cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
+    ) {
+        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+    }
 
     Ok(())
 }
@@ -560,7 +583,9 @@ pub fn cmd_module_update_local(
         }
     }
 
-    // Add post-apply scripts
+    // Add post-apply scripts. `--add-post-apply-script` takes the same
+    // free-form body a YAML `run:` field would, so condense before it lands
+    // in a status subject below — a multi-line value must never go raw.
     for script in &add_post_apply {
         let scripts = doc
             .spec
@@ -569,7 +594,10 @@ pub fn cmd_module_update_local(
         let entry = config::ScriptEntry::Simple(script.clone());
         if !scripts.post_apply.contains(&entry) {
             scripts.post_apply.push(entry);
-            printer.status_simple(Role::Ok, format!("Added post-apply script: {}", script));
+            printer.status_simple(
+                Role::Ok,
+                format!("Added post-apply script: {}", condense_script_label(script)),
+            );
             changes += 1;
         }
     }
@@ -588,11 +616,23 @@ pub fn cmd_module_update_local(
                 scripts.post_apply.len() < before
             })
             .unwrap_or(false);
+        let label_text = condense_script_label(script);
         if removed {
-            printer.status_simple(Role::Ok, format!("Removed post-apply script: {}", script));
+            printer.status_simple(
+                Role::Ok,
+                format!("Removed post-apply script: {}", label_text),
+            );
             changes += 1;
         } else {
-            printer.status_simple(Role::Warn, format!("Script '{}' not found", script));
+            // Echo back the exact raw argument the user searched for — a
+            // condensed/truncated view would hide a copy-paste-whitespace
+            // mismatch that's exactly the thing worth debugging here.
+            // `collapse_to_subject_line` flattens any embedded newlines
+            // safely without truncating content.
+            printer.status_simple(
+                Role::Warn,
+                format!("Script '{}' not found", collapse_to_subject_line(script)),
+            );
         }
     }
 

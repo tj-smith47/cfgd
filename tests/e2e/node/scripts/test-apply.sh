@@ -37,16 +37,48 @@ begin_test "BIN-03: cfgd apply --dry-run produces plan"
 CURRENT=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "unknown")
 echo "  Current vm.max_map_count: $CURRENT"
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
-echo "  Plan output (first 20 lines):"
-echo "$OUTPUT" | head -20 | sed 's/^/    /'
-
-# The plan always shows phase headers (e.g. "Phase: System").
-# If sysctl values already match, the phase shows "(nothing to do)" — still valid.
-if assert_contains "$OUTPUT" "Phase:"; then
-    pass_test "BIN-03"
+if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
+    skip_test "BIN-03" "could not read a numeric vm.max_map_count from the node (got '$CURRENT')"
 else
-    fail_test "BIN-03" "Plan output missing phase headers"
+    # Empty phase headers are suppressed by design, so a profile that already
+    # matches the node's live value renders no "Phase:" line at all. Pin a
+    # scratch config to a value one above the node's current one so the plan
+    # is guaranteed to contain drift regardless of what the node started at.
+    DRIFT_VALUE=$((CURRENT + 1))
+    exec_in_pod mkdir -p /tmp/bin03/profiles
+    exec_in_pod bash -c 'cat > /tmp/bin03/profiles/bin03-drift.yaml << "INNEREOF"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: bin03-drift
+spec:
+  env: []
+  system:
+    sysctl:
+      vm.max_map_count: "'"$DRIFT_VALUE"'"
+INNEREOF'
+    exec_in_pod bash -c 'cat > /tmp/bin03/cfgd.yaml << "INNEREOF"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: bin03-test
+spec:
+  profile: bin03-drift
+INNEREOF'
+
+    OUTPUT=$(exec_in_pod cfgd --config /tmp/bin03/cfgd.yaml apply --dry-run --no-color 2>&1) || true
+    echo "  Plan output (first 20 lines):"
+    echo "$OUTPUT" | head -20 | sed 's/^/    /'
+
+    # The drift profile above always differs from the node's live value, so the
+    # plan is guaranteed non-empty and must show a phase header.
+    if assert_contains "$OUTPUT" "Phase:"; then
+        pass_test "BIN-03"
+    else
+        fail_test "BIN-03" "Plan output missing phase headers"
+    fi
+
+    exec_in_pod rm -rf /tmp/bin03 2>/dev/null || true
 fi
 
 # =================================================================

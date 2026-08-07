@@ -28,5 +28,16 @@
 # Allow README for labels
 !README.md
 
+# Allow only the demo container's staged binary, not the whole demo/ tree:
+# `demo/Dockerfile` is read directly by `docker build -f` and never needs
+# this file, and `task docker:cli`/`task docker:operator` build from this
+# same repo-root context — an unqualified `!demo/` would let every future
+# demo asset (the recorded init.tape, the multi-megabyte GIF) leak into
+# those unrelated builds too. demo/bin/cfgd (a host-built binary staged
+# there before `docker build` — see demo/Dockerfile for why it isn't copied
+# straight out of target/) is the only thing those builds actually need.
+!demo/bin/
+!demo/bin/**
+
 # Re-ignore build artifacts inside allowed dirs
 target/

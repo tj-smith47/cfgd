@@ -25,6 +25,61 @@ pub struct ModuleMetadata {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The module's own release version, as `MAJOR.MINOR.PATCH` with optional
+    /// pre-release and build metadata (`1.2.0`, `2.0.0-rc.1`). It names the
+    /// `<module>/v<version>` release tag that the workflow from
+    /// `cfgd workflow generate` cuts when the module changes, so bumping it is
+    /// what publishes a new release. Absent on modules that are not released
+    /// independently.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_module_version"
+    )]
+    // The published editor schema is a second enforcement point: without the
+    // pattern an editor green-lights a value the parser then rejects.
+    #[schemars(pattern(SEMVER_PATTERN))]
+    pub version: Option<String>,
+}
+
+/// JSON Schema `pattern` for `metadata.version`, the semver.org reference regexp.
+/// Kept in step with what [`module_version_error`] accepts.
+const SEMVER_PATTERN: &str = r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$";
+
+/// Reject a `metadata.version` that is not strict semver, at every parse path:
+/// wiring the check into the field's `Deserialize` means `parse_module`, the
+/// kind-registry validator, and any direct `serde_yaml::from_str` all agree on
+/// what the field accepts.
+fn deserialize_module_version<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    if let Some(value) = &raw {
+        // The raw message, not the wrapped CfgdError: serde already re-wraps into a
+        // parse error naming the offending line, so a second "config error: invalid
+        // config:" prefix would just nest inside it.
+        module_version_error(value).map_or(Ok(()), |m| Err(serde::de::Error::custom(m)))?;
+    }
+    Ok(raw)
+}
+
+/// The rejection message for a `metadata.version` that is not strict semver, or
+/// `None` when the value is acceptable.
+///
+/// Strict on purpose: a loose `0.10` and a `v`-prefixed `v1.2.3` both produce
+/// release tags that no consumer can resolve back to a version, so they are
+/// rejected rather than coerced — which also rules out the crate's deliberately
+/// lenient `parse_loose_version`.
+fn module_version_error(value: &str) -> Option<String> {
+    if semver::Version::parse(value).is_ok() {
+        return None;
+    }
+    Some(format!(
+        "metadata.version '{value}' is not a valid semantic version: expected MAJOR.MINOR.PATCH with optional pre-release and build metadata (for example 1.2.0 or 2.0.0-rc.1)"
+    ))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -317,6 +372,64 @@ spec: {}
         assert!(
             msg.contains("unknown field") && msg.contains("bogusField"),
             "expected unknown-field error mentioning bogusField, got: {msg}"
+        );
+    }
+
+    fn module_yaml_with_version(version_line: &str) -> String {
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\n{version_line}spec: {{}}\n"
+        )
+    }
+
+    #[test]
+    fn module_metadata_version_parses_and_round_trips() {
+        let doc = parse_module(&module_yaml_with_version("  version: \"1.2.3\"\n"))
+            .expect("semver version should parse");
+        assert_eq!(doc.metadata.version.as_deref(), Some("1.2.3"));
+
+        let round_tripped = serde_yaml::to_string(&doc).expect("document should serialize");
+        assert!(
+            round_tripped.contains("version: 1.2.3"),
+            "version must survive a round trip, got: {round_tripped}"
+        );
+    }
+
+    #[test]
+    fn module_metadata_version_accepts_prerelease_and_build() {
+        for version in ["2.0.0-rc.1", "1.0.0+build.5", "0.1.0-alpha.2+sha.abc"] {
+            let doc = parse_module(&module_yaml_with_version(&format!(
+                "  version: \"{version}\"\n"
+            )))
+            .unwrap_or_else(|e| panic!("{version} should parse: {e}"));
+            assert_eq!(doc.metadata.version.as_deref(), Some(version));
+        }
+    }
+
+    #[test]
+    fn module_metadata_version_rejects_non_semver() {
+        for version in ["0.10", "v1.2.3", "", "1", "latest"] {
+            let err = parse_module(&module_yaml_with_version(&format!(
+                "  version: \"{version}\"\n"
+            )))
+            .expect_err(&format!("{version} must be rejected"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("metadata.version") && msg.contains(version),
+                "error must name the field and the offending value, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn module_metadata_version_is_optional() {
+        let doc =
+            parse_module(&module_yaml_with_version("")).expect("module without version must parse");
+        assert!(doc.metadata.version.is_none());
+
+        let round_tripped = serde_yaml::to_string(&doc).expect("document should serialize");
+        assert!(
+            !round_tripped.contains("version:"),
+            "an absent version must not be materialized on write, got: {round_tripped}"
         );
     }
 

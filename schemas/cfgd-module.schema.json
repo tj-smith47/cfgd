@@ -134,6 +134,14 @@
         },
         "name": {
           "type": "string"
+        },
+        "version": {
+          "description": "The module's own release version, as `MAJOR.MINOR.PATCH` with optional\npre-release and build metadata (`1.2.0`, `2.0.0-rc.1`). It names the\n`<module>/v<version>` release tag that the workflow from\n`cfgd workflow generate` cuts when the module changes, so bumping it is\nwhat publishes a new release. Absent on modules that are not released\nindependently.",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

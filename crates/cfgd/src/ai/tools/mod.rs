@@ -44,9 +44,10 @@ pub fn dispatch_tool_call(
     session: &mut GenerateSession,
     home: &Path,
     managers: &[Box<dyn PackageManager>],
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> ToolCallResult {
     match name {
-        "scan_installed_packages" => dispatch_scan_installed_packages(input, managers),
+        "scan_installed_packages" => dispatch_scan_installed_packages(input, managers, cx),
         "scan_dotfiles" => dispatch_scan_dotfiles(input, home),
         "scan_shell_config" => dispatch_scan_shell_config(input, home),
         "scan_system_settings" => dispatch_scan_system_settings(),
@@ -342,10 +343,11 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
 fn dispatch_scan_installed_packages(
     input: &Value,
     managers: &[Box<dyn PackageManager>],
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> ToolCallResult {
     let filter_manager = input.get("manager").and_then(|v| v.as_str());
     let refs: Vec<&dyn PackageManager> = managers.iter().map(|m| m.as_ref()).collect();
-    match scan::scan_installed_packages(&refs, filter_manager) {
+    match scan::scan_installed_packages(&refs, filter_manager, cx) {
         Ok(entries) => serialize_tool_content(&entries),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),

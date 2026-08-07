@@ -3190,6 +3190,12 @@
               },
               {
                 "description": "",
+                "name": "iconInfo",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "",
                 "name": "iconOk",
                 "required": false,
                 "type": "string"

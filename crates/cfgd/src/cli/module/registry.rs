@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_module_add_from_registry(
     cli: &Cli,
@@ -397,7 +397,11 @@ pub fn cmd_module_upgrade(
     {
         let changes_sec = printer.section("Changes");
         for change in &changes {
-            changes_sec.bullet(change);
+            // A diff entry embeds the unmodified body of whatever changed — a
+            // multi-line script, or an env value carrying a newline — so it
+            // goes through the same full-fidelity renderer as the add-time
+            // review rather than being condensed at the moment of approval.
+            review_entry(&changes_sec, "", change);
         }
     }
 
@@ -461,11 +465,56 @@ pub fn cmd_module_upgrade(
     Ok(())
 }
 
+/// True when `body` has a second non-empty logical line — the shared gate
+/// for rendering a review-surface entry (an upgrade diff line, a post-apply
+/// script) as a multi-line `code_block()` instead of a single `bullet()`.
+/// Deciding on LINE COUNT alone (rather than raw `contains('\n')`) is
+/// necessary because a `run: |` YAML block-scalar's trailing newline
+/// survives `run_str()` even for a single logical line of script — a raw
+/// `contains('\n')` check would flip that single line into a code block in
+/// one review surface while `bullet()`-rendering it in the other.
+pub(super) fn has_second_non_empty_line(body: &str) -> bool {
+    let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
+    non_empty.next();
+    non_empty.next().is_some()
+}
+
+/// Render one review-surface entry in full, each line carrying `prefix`.
+///
+/// `bullet()` cannot carry a body containing `\n` (the `write_line`
+/// debug_assert), and this is the pre-install security review of a remote
+/// module — dropping the tail of a multi-line value would hide the part of it
+/// the user most needs to see before approving it. A single logical line stays
+/// a bullet; anything longer becomes a `code_block` showing every line
+/// verbatim.
+///
+/// Lines are shown byte-for-byte apart from control characters, which are
+/// escaped: the operator is deciding on the exact text that will be written, so
+/// trimming or reflowing it would put a different value on screen than the one
+/// being approved, while a raw `\r` or `\x1b[` sequence would let the value
+/// repaint the lines describing it.
+///
+/// Renders nothing when `body` holds no non-empty line; a caller whose section
+/// header has already promised an entry handles that case itself.
+fn review_entry(section: &SectionGuard<'_>, prefix: &str, body: &str) {
+    // Split by hand rather than with `lines()`, which silently drops a `\r`
+    // sitting before a `\n` — on a surface whose contract is "this is exactly
+    // what will be written", a byte may not disappear just because it happens
+    // to be invisible in that position.
+    let raw = body.strip_suffix('\n').unwrap_or(body).split('\n');
+    let decorate = |l: &str| format!("{prefix}{}", cfgd_core::escape_control_chars(l));
+    if has_second_non_empty_line(body) {
+        section.code_block(raw.map(decorate));
+    } else if let Some(line) = raw.into_iter().find(|l| !l.trim().is_empty()) {
+        section.bullet(decorate(line));
+    }
+}
+
 /// Print the module-review summary shown before the user confirms an
-/// `add` or `upgrade`: dependencies, packages, files, post-apply script
-/// warnings, then commit + integrity. Split out so the side-effect-free
-/// output shape is testable against a captured Printer buffer without
-/// running the full cmd_module_add_remote orchestration.
+/// `add` or `upgrade`: dependencies, packages, files, environment, aliases,
+/// post-apply script warnings, then commit + integrity. Split out so the
+/// side-effect-free output shape is testable against a captured Printer buffer
+/// without running the full cmd_module_add_remote orchestration.
 pub(super) fn print_module_review_summary(
     printer: &Printer,
     module_name: &str,
@@ -498,6 +547,23 @@ pub(super) fn print_module_review_summary(
         }
     }
 
+    // Env values and alias commands reach the user's login shell on every new
+    // shell, so they belong on the same review surface as a post-apply script.
+    // Rendered in full: a truncated value is exactly where a payload hides.
+    if !module.spec.env.is_empty() {
+        let env_sec = mod_sec.section(format!("Environment ({})", module.spec.env.len()));
+        for ev in &module.spec.env {
+            review_entry(&env_sec, "", &format!("{}={}", ev.name, ev.value));
+        }
+    }
+
+    if !module.spec.aliases.is_empty() {
+        let alias_sec = mod_sec.section(format!("Aliases ({})", module.spec.aliases.len()));
+        for alias in &module.spec.aliases {
+            review_entry(&alias_sec, "", &format!("{}={}", alias.name, alias.command));
+        }
+    }
+
     if let Some(ref scripts) = module.spec.scripts
         && !scripts.post_apply.is_empty()
     {
@@ -510,7 +576,14 @@ pub(super) fn print_module_review_summary(
         );
         let scripts_sec = mod_sec.section("Post-apply");
         for script in &scripts.post_apply {
-            scripts_sec.bullet(format!("$ {}", script));
+            let body = script.run_str();
+            if body.trim().is_empty() {
+                // The count in the warning above already promised this entry,
+                // so rendering nothing would leave it unaccounted for.
+                scripts_sec.bullet("(empty script)");
+            } else {
+                review_entry(&scripts_sec, "$ ", body);
+            }
         }
     }
 

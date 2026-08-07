@@ -320,8 +320,6 @@ pub fn latest_module_version(
 pub fn latest_module_version_remote(repo_url: &str, module_name: &str) -> Result<Option<String>> {
     let mut cmd = crate::git_cmd_safe(Some(repo_url), None);
     cmd.args(["ls-remote", "--tags", "--end-of-options", repo_url]);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
     let output =
         crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT).map_err(|e| {
