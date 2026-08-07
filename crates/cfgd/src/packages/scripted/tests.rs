@@ -752,7 +752,10 @@ fn scripted_manager_bootstrap_through_trait() {
     let spec = cfgd_core::config::CustomManagerSpec {
         name: "boottest".to_string(),
         check: "true".to_string(),
-        list_installed: "echo".to_string(),
+        // `cmd.exe /C echo` (no arguments) prints the literal `ECHO is on.`
+        // rather than nothing, so a bare "echo" here would make
+        // `installed_packages` see one package on Windows.
+        list_installed: if cfg!(windows) { "type nul" } else { "true" }.to_string(),
         install: "echo".to_string(),
         uninstall: "echo".to_string(),
         update: None,

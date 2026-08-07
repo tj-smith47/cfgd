@@ -14,9 +14,11 @@
 //! - **Non-TTY or `Verbosity::Quiet`** — there is no window to repaint, so the
 //!   lines stream instead and a leading `Status(Running)` opens the step. A CI
 //!   log keeps the full output it exists to preserve.
-//! - **Over-wide lines** — clamped to the live terminal width at the window's
-//!   own indent, so a long line never wraps the window to a second row or
-//!   scrolls the terminal sideways.
+//! - **Over-wide lines in the repainting window** — clamped to the live
+//!   terminal width, since indicatif rewrites the ring's rows in place and has
+//!   no way to reach a second row for one that's too long. A line reaching the
+//!   terminal any other way (streamed, or dumped below a collapsed window) is
+//!   soft-wrapped by the renderer instead, which can lay out a second row.
 //!
 //! Callers hand over raw child bytes: `push_line` strips ANSI and escapes
 //! residual control characters itself, because a child that emits its own
@@ -102,18 +104,24 @@ impl<'p> OutputWindow<'p> {
         if text.is_empty() {
             return;
         }
+        if !self.windowed {
+            // Streamed lines append and scroll rather than repainting a fixed
+            // row, so `render_stream_line` (via `write_line`) can soft-wrap
+            // them at the sink's real width instead of losing the tail.
+            self.spinner.renderer.render_stream_line(
+                self.spinner.sink.as_ref(),
+                self.body_depth,
+                text,
+            );
+            return;
+        }
+        // The ring's rows are rewritten in place by `repaint` below — indicatif
+        // has no way to reach a second row for an over-wide one — so this is
+        // the one path that must clamp rather than wrap.
         let clamped = clamp_line(
             text,
             available_width(self.spinner.sink.as_ref(), self.body_depth),
         );
-        if !self.windowed {
-            self.spinner.renderer.render_stream_line(
-                self.spinner.sink.as_ref(),
-                self.body_depth,
-                &clamped,
-            );
-            return;
-        }
         if self.ring.len() >= VISIBLE_LINES {
             self.ring.pop_front();
         }
@@ -169,14 +177,16 @@ impl<'p> OutputWindow<'p> {
         depth: usize,
         lines: impl IntoIterator<Item = impl AsRef<str>>,
     ) {
-        let width = available_width(printer.sink_stderr.as_ref(), depth + 1);
+        // A pure append below an already-collapsed status, not a repaint — so
+        // `stream_line_at` (via `write_line`) wraps this the same way it wraps
+        // any other muted body text, instead of clamping the tail away.
         for line in lines {
             let clean = sanitize(line.as_ref());
             let text = clean.trim_end();
             if text.is_empty() {
                 continue;
             }
-            printer.stream_line_at(depth + 1, &clamp_line(text, width));
+            printer.stream_line_at(depth + 1, text);
         }
     }
 }
@@ -301,6 +311,19 @@ mod tests {
     }
 
     #[test]
+    fn streamed_long_line_reaches_the_sink_untruncated() {
+        // The non-windowed path appends and scrolls, so the renderer wraps it
+        // rather than clamping it — unlike the windowed ring below, which
+        // repaints a fixed row and has nowhere to put a second line.
+        let (mut w, buf) = window(0, Verbosity::Normal);
+        let long = "x".repeat(200);
+        w.push_line(&long);
+        let _ = w.finish_ok("step done");
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains(&long), "long line was truncated: {out:?}");
+    }
+
+    #[test]
     fn quiet_emits_neither_announcement_nor_lines() {
         let (mut w, buf) = window(0, Verbosity::Quiet);
         w.push_line("noise");
@@ -342,6 +365,20 @@ mod tests {
         assert_eq!(w.ring.len(), VISIBLE_LINES);
         assert_eq!(w.ring.back().map(String::as_str), Some("line 19"));
         assert_eq!(w.ring.front().map(String::as_str), Some("line 15"));
+        let _ = w.finish_ok("done");
+    }
+
+    #[test]
+    fn windowed_ring_clamps_a_line_too_wide_for_the_repaint_row() {
+        // The ring is rewritten in place by `repaint`, so an over-wide line
+        // must be clamped rather than wrapped — indicatif cannot reach a
+        // second row for it.
+        let (mut w, _buf) = window(0, Verbosity::Normal);
+        w.windowed = true;
+        w.push_line(&"x".repeat(200));
+        let stored = w.ring.back().expect("line was pushed");
+        assert!(stored.ends_with('…'), "ring line not clamped: {stored:?}");
+        assert!(stored.len() < 200, "ring line not clamped: {stored:?}");
         let _ = w.finish_ok("done");
     }
 
