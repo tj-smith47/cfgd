@@ -384,6 +384,44 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_link_applies_recorded_permissions() {
+        // Symlink is cfgd's default file strategy, so this is the backup
+        // shape rollback restores for an ordinary managed file: the mode
+        // belongs to the file the content was written to (the link's
+        // destination), so it must land there too, not just the link.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_file = tmp.path().join("real-target.txt");
+        std::fs::write(&real_file, b"current").unwrap();
+        std::fs::set_permissions(&real_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let link = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink(&real_file, &link).unwrap();
+
+        let mut bk = record(&link, b"original", Some(0o600));
+        bk.was_symlink = true;
+        bk.symlink_target = Some(real_file.display().to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&link, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            link.symlink_metadata().unwrap().file_type().is_symlink(),
+            "rollback through a link must leave the link intact"
+        );
+        assert_eq!(std::fs::read(&link).unwrap(), b"original");
+        let mode = std::fs::metadata(&real_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "rollback through a link must restore the destination's mode"
+        );
+    }
+
     #[test]
     fn restore_skips_when_current_already_matches_backup() {
         let tmp = tempfile::TempDir::new().unwrap();
