@@ -30,9 +30,19 @@ const FALLBACK_WIDTH: usize = 100;
 /// Measured against stderr, where every spinner and window lives — stdout may
 /// be redirected while the progress display still owns a terminal.
 pub(crate) fn available_width(depth: usize) -> usize {
-    let cols = console::Term::stderr()
-        .size_checked()
-        .map_or(FALLBACK_WIDTH, |(_, cols)| cols as usize);
+    // Only real geometry when the progress display actually owns a terminal.
+    // Clamping exists so an in-place repaint cannot wrap onto a row indicatif
+    // will not rewind; with no terminal there is no repaint to protect, and
+    // probing stderr regardless makes captured output depend on the host's
+    // window size — a golden recorded where stderr reports no size then fails
+    // on a runner where it reports one.
+    let cols = if crate::output::spinner::stderr_is_terminal() {
+        console::Term::stderr()
+            .size_checked()
+            .map_or(FALLBACK_WIDTH, |(_, cols)| cols as usize)
+    } else {
+        FALLBACK_WIDTH
+    };
     cols.saturating_sub(depth * 2 + 2).max(MIN_WRAP_WIDTH)
 }
 

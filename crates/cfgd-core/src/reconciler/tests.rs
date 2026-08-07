@@ -10574,7 +10574,11 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
 mod bridge {
     use super::super::Reconciler;
     use super::*;
-    use crate::output::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
+    use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
+    // Only the mixed-apply fixture strips a wall-clock duration, and that
+    // fixture is Unix-only.
+    #[cfg(unix)]
+    use crate::output::test_capture::strip_spinner_duration;
     use crate::output::{Doc, Printer, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
