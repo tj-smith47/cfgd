@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-08
+
+### Bug Fixes
+
+* c0cf1b98b333 mint cfgd-crd 0.5.1 so the registry crate carries check_unsigned_policy (#76) ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.5.1] - 2026-07-20
 
 ### Bug Fixes
@@ -36,6 +42,7 @@
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 * d7d3bf6bc720 gen_crds render_all + file-writing, sourced from cfgd-crd ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.6.1...HEAD
+[0.6.1]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...operator-v0.6.1
 [0.5.1]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.0...operator-v0.5.1
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.4.0...operator-v0.5.0
