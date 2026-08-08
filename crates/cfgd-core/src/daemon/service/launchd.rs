@@ -2,6 +2,10 @@ use super::super::*;
 use crate::PathDisplayExt;
 
 /// Generate launchd plist content for the daemon service.
+///
+/// `dirs` carries the process-level `--state-dir` / `--runtime-dir` — see
+/// [`super::generate_systemd_unit`] for why dropping them silently splits the
+/// daemon's state from the CLI's.
 #[cfg(unix)]
 pub(crate) fn generate_launchd_plist(
     binary: &Path,
@@ -9,19 +13,40 @@ pub(crate) fn generate_launchd_plist(
     profile: Option<&str>,
     home: &Path,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> String {
+    // Every value interpolated into the plist is XML-escaped: a path or
+    // profile name carrying `&` or `<` otherwise produces a plist launchd
+    // refuses to parse, and the service silently never loads.
+    //
+    // native-ok: every path below renders as an argv token this host's own
+    // binary receives back from launchd, so it must carry this host's
+    // separators rather than being folded to `/`.
     let mut args = vec![
-        format!("<string>{}</string>", binary.display()),
+        format!(
+            "<string>{}</string>",
+            crate::xml_escape(&binary.display().to_string()) // native-ok: argv token for this host
+        ),
         "<string>--config</string>".to_string(),
-        format!("<string>{}</string>", config_path.display()),
+        format!(
+            "<string>{}</string>",
+            crate::xml_escape(&config_path.display().to_string()) // native-ok: argv token for this host
+        ),
     ];
     if let Some(p) = profile {
         args.push("<string>--profile</string>".to_string());
-        args.push(format!("<string>{}</string>", p));
+        args.push(format!("<string>{}</string>", crate::xml_escape(p)));
     }
     if scope == crate::Scope::System {
         args.push("<string>--scope</string>".to_string());
         args.push("<string>system</string>".to_string());
+    }
+    for (flag, dir) in service_dir_flags(dirs) {
+        args.push(format!("<string>{}</string>", flag));
+        args.push(format!(
+            "<string>{}</string>",
+            crate::xml_escape(&dir.display().to_string()) // native-ok: argv token for this host
+        ));
     }
     args.push("<string>--quiet</string>".to_string());
     args.push("<string>daemon</string>".to_string());
@@ -72,6 +97,7 @@ pub(crate) fn install_launchd_service(
     config_path: &Path,
     profile: Option<&str>,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> Result<()> {
     let home = crate::expand_tilde(Path::new("~"));
     let (plist_dir, plist_path) = if scope == crate::Scope::System {
@@ -91,7 +117,7 @@ pub(crate) fn install_launchd_service(
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
 
-    let plist = generate_launchd_plist(binary, &config_abs, profile, &home, scope);
+    let plist = generate_launchd_plist(binary, &config_abs, profile, &home, scope, dirs);
 
     crate::atomic_write_str(&plist_path, &plist).map_err(|e| {
         DaemonError::ServiceInstallFailed {
@@ -367,6 +393,7 @@ mod tests {
             &config,
             Some("ws"),
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         )
         .expect("install");
 
@@ -395,6 +422,7 @@ mod tests {
             None,
             &PathBuf::from("/Users/tj"),
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         );
         assert!(plist.contains("<string>/usr/local/bin/cfgd</string>"));
         assert!(plist.contains("<string>/etc/cfgd/config.yaml</string>"));
@@ -413,6 +441,7 @@ mod tests {
             Some("workstation"),
             &PathBuf::from("/Users/tj"),
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         );
         assert!(plist.contains("<string>--profile</string>"));
         assert!(plist.contains("<string>workstation</string>"));
@@ -466,6 +495,7 @@ mod tests {
             None,
             &PathBuf::from("/h"),
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         );
         assert!(plist.contains("<key>Label</key>"));
         assert!(plist.contains("<key>ProgramArguments</key>"));
@@ -483,6 +513,7 @@ mod tests {
             None,
             &PathBuf::from("/root"),
             crate::Scope::System,
+            &DaemonDirOverrides::default(),
         );
         assert!(plist.contains("<string>--scope</string>"));
         assert!(plist.contains("<string>system</string>"));
@@ -529,5 +560,56 @@ mod tests {
     fn launchd_enable_argv_system_scope_targets_system_domain() {
         let argv = launchd_enable_argv(0, crate::Scope::System);
         assert_eq!(argv, ["enable", &format!("system/{LAUNCHD_LABEL}")]);
+    }
+
+    /// Same contract as the systemd unit: the plist is the installed daemon's
+    /// only source of argv.
+    #[test]
+    fn the_plist_carries_the_state_and_runtime_dir_flags() {
+        let plist = generate_launchd_plist(
+            Path::new("/usr/local/bin/cfgd"),
+            Path::new("/Users/t/.config/cfgd/cfgd.yaml"),
+            None,
+            Path::new("/Users/t"),
+            crate::Scope::User,
+            &DaemonDirOverrides {
+                state_dir: Some(PathBuf::from("/Users/t/state")),
+                runtime_dir: Some(PathBuf::from("/Users/t/run")),
+            },
+        );
+        assert!(plist.contains("<string>--state-dir</string>"), "{plist}");
+        assert!(plist.contains("<string>/Users/t/state</string>"), "{plist}");
+        assert!(plist.contains("<string>--runtime-dir</string>"), "{plist}");
+        assert!(plist.contains("<string>/Users/t/run</string>"), "{plist}");
+    }
+
+    #[test]
+    fn the_plist_omits_the_dir_flags_that_were_not_set() {
+        let plist = generate_launchd_plist(
+            Path::new("/usr/local/bin/cfgd"),
+            Path::new("/Users/t/.config/cfgd/cfgd.yaml"),
+            None,
+            Path::new("/Users/t"),
+            crate::Scope::User,
+            &DaemonDirOverrides::default(),
+        );
+        assert!(!plist.contains("--state-dir"));
+        assert!(!plist.contains("--runtime-dir"));
+    }
+
+    #[test]
+    fn plist_values_are_xml_escaped() {
+        let plist = generate_launchd_plist(
+            Path::new("/usr/local/bin/cfgd"),
+            Path::new("/Users/t/a&b/cfgd.yaml"),
+            Some("work<1>"),
+            Path::new("/Users/t"),
+            crate::Scope::User,
+            &DaemonDirOverrides::default(),
+        );
+        // An unescaped `&` makes the plist unparseable, and launchd then fails
+        // to load a service that looks installed.
+        assert!(plist.contains("/Users/t/a&amp;b/cfgd.yaml"), "{plist}");
+        assert!(plist.contains("work&lt;1&gt;"), "{plist}");
     }
 }

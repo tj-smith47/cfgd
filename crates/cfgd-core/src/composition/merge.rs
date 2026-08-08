@@ -147,6 +147,9 @@ pub(super) fn merge_with_policy(
             merged.scripts.on_change.extend(scripts.on_change.clone());
         }
 
+        // Backups: append, deduplicate by name (higher-priority layer overrides)
+        crate::merge_backups(&mut merged.backups, &spec.backups);
+
         // Modules: union (deduplicated)
         union_extend(&mut merged.modules, &spec.modules);
     }

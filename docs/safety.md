@@ -24,6 +24,11 @@ Before overwriting any file during `cfgd apply`, the original content is capture
 
 Backups are retained for the last 10 applies and automatically pruned after each successful apply.
 
+These backups are automatic, cover only files cfgd itself is about to write, and exist to power
+`cfgd rollback`. To snapshot arbitrary files or directories on a schedule — an application
+database, a photo library — declare them in `spec.backups[]`; see
+[Declarative Backups](backups.md).
+
 ## Transaction Journal
 
 Each `cfgd apply` creates a transaction journal (`apply_journal` table) that records:
@@ -50,13 +55,23 @@ Rollback is available for any apply that has backups in the state store.
 
 ## Apply Locking
 
-cfgd uses `flock()` to prevent concurrent applies. Only one `cfgd apply` can run at a time.
+cfgd takes an exclusive whole-file lock to prevent concurrent applies — `flock()` on Unix, `LockFileEx` on Windows. Only one `cfgd apply` can run at a time.
 
 - The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform — see `configuration.md`)
 - The daemon skips reconciliation ticks if the lock is held by a CLI apply
 - The lock is released automatically when the process exits
+- The holder records its PID in the lock file, and a refused apply names it: `apply lock held by another process: pid 12345`
 
-**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, `flock()` releases it automatically on file descriptor close. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
+**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, the OS releases it automatically when the file handle closes. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
+
+The message reads `unknown pid` when the file holds no complete PID record, and cfgd would rather say it does not know than name a process it is not sure about. Two things produce it:
+
+- A holder that is not cfgd (`flock(1)`, say) never writes a record at all.
+- **Version skew across an upgrade.** cfgd started writing a terminator after the PID; a daemon still running from before `cfgd upgrade` writes the older, terminator-less record, which a newer contender will not read as a PID. The holder is a perfectly legitimate cfgd process — restarting the daemon (`systemctl --user restart cfgd`, or whatever supervises it) puts the two on the same format again.
+
+Deleting the lock file is the same remedy in either case.
+
+**The PID is advisory; the refusal is not.** "Lock held" is decided by the OS and is always correct. The PID is read from the file separately, and a holder that crashed without clearing its record leaves it in place until the next holder overwrites it — so a contender arriving in the syscall-narrow window between that acquire and that write can name the *previous* holder. Treat the PID as a starting point for `ps`, not as proof.
 
 ## Graceful Interruption (SIGINT / SIGTERM)
 

@@ -76,6 +76,11 @@ pub struct EffectiveFile {
     /// no tera origin). Drives content rendering so a profile template compares
     /// against its correctly-rendered bytes.
     pub tera_origin: Option<String>,
+    /// Partial-file merge configuration, present exactly when `strategy` is
+    /// `Patch`. A consumer checks convergence by evaluating this against the
+    /// target rather than comparing it to `source`, which a `Patch` entry does
+    /// not have.
+    pub patch: Option<crate::config::PatchSpec>,
 }
 
 /// Build the effective system-configurator map: start from the profile's system
@@ -181,6 +186,7 @@ pub fn effective_files(
                 is_git_source: file.is_git_source,
                 origin: Origin::Module(module.name.clone()),
                 tera_origin: None,
+                patch: file.patch.clone(),
             });
         }
     }
@@ -201,6 +207,7 @@ fn profile_file(spec: &ManagedFileSpec, config_dir: &Path) -> EffectiveFile {
         is_git_source: false,
         origin: Origin::Profile,
         tera_origin: spec.origin.clone(),
+        patch: spec.patch.clone(),
     }
 }
 
@@ -225,6 +232,7 @@ mod tests {
             system: HashMap::new(),
             secrets: Vec::new(),
             scripts: crate::config::ScriptSpec::default(),
+            backups: Vec::new(),
         }
     }
 
@@ -434,6 +442,7 @@ mod tests {
 
     fn managed(source: &str, target: &str) -> ManagedFileSpec {
         ManagedFileSpec {
+            patch: None,
             source: source.to_string(),
             target: PathBuf::from(target),
             strategy: Some(FileStrategy::Copy),
@@ -455,6 +464,7 @@ mod tests {
             strategy: Some(FileStrategy::Symlink),
             encryption: None,
             permissions: Some("644".into()),
+            patch: None,
         }
     }
 

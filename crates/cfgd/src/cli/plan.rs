@@ -55,7 +55,8 @@ pub fn cmd_plan(
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
-                let resolved = empty_resolved_profile(mod_name);
+                let resolved =
+                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
                 printer.kv_block([
                     ("Config".to_string(), cli.config.display_posix()),
                     ("Profile".to_string(), "(module-only)".to_string()),
@@ -180,14 +181,23 @@ pub fn cmd_plan(
         strip_scripts_from_plan(&mut plan);
     }
 
+    // Surfaced in the preview so `plan` never omits work a real apply would do.
+    let pending_backups: Vec<String> = pending_backups(&effective_resolved.merged)
+        .iter()
+        .map(|b| b.name.clone())
+        .collect();
+
     display_plan_preview(
         &plan,
         printer,
         &state,
-        &args.context,
-        phase_filter.as_ref(),
-        dry_run_fm.as_ref(),
-        &scope,
+        &PlanPreviewArgs {
+            context: &args.context,
+            phase_filter: phase_filter.as_ref(),
+            dry_run_fm: dry_run_fm.as_ref(),
+            scope: &scope,
+            pending_backups: &pending_backups,
+        },
     );
 
     Ok(())

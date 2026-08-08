@@ -652,7 +652,7 @@ mod tests {
     fn install_fake_launchctl(
         exit_code: u8,
         stderr: &str,
-    ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+    ) -> (tempfile::TempDir, cfgd_core::test_helpers::PathShimGuard) {
         cfgd_core::test_helpers::install_named_path_shim("launchctl", exit_code, "", stderr)
     }
 

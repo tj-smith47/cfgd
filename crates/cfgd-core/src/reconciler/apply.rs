@@ -826,7 +826,7 @@ impl<'a> super::Reconciler<'a> {
                 .apply_package_action(pkg, printer)
                 .map(|d| (d, true, None)),
             Action::File(file) => self
-                .apply_file_action(file, &resolved.merged, config_dir, printer)
+                .apply_file_action(file, resolved.profile_name(), config_dir, printer)
                 .map(|d| (d, true, None)),
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, printer, secret_env_collector)

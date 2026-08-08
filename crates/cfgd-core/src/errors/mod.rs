@@ -63,6 +63,9 @@ pub enum CfgdError {
     #[error("skill error: {0}")]
     Skill(#[from] SkillError),
 
+    #[error("backup error: {0}")]
+    Backup(#[from] BackupError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -152,6 +155,50 @@ pub enum FileError {
         "encryption mode 'Always' is incompatible with strategy '{strategy}' for '{path}' — use Copy or Template instead"
     )]
     EncryptionStrategyIncompatible { path: PathBuf, strategy: String },
+
+    #[error("strategy 'Patch' for {path} requires a 'patch' block")]
+    PatchBlockMissing { path: PathBuf },
+
+    #[error(
+        "cannot infer a patch format from the extension of {path} — set 'patch.format' explicitly (ini, json, yaml, toml)"
+    )]
+    PatchFormatUnknown { path: PathBuf },
+
+    #[error("patch target {path} is not valid {format}: {message}")]
+    PatchParse {
+        path: PathBuf,
+        format: String,
+        message: String,
+    },
+
+    #[error("failed to serialize the patched {format} content for {path}: {message}")]
+    PatchSerialize {
+        path: PathBuf,
+        format: String,
+        message: String,
+    },
+
+    #[error("patch 'ensure' for {path} ({format}) is invalid: {message}")]
+    PatchEnsureShape {
+        path: PathBuf,
+        format: String,
+        message: String,
+    },
+
+    #[error("patch script '{script}' failed for {path}: {message}")]
+    PatchScriptFailed {
+        path: PathBuf,
+        script: String,
+        message: String,
+    },
+
+    #[error("patch block for {path} must set exactly one of 'ensure' or 'script'")]
+    PatchSpecInvalid { path: PathBuf },
+
+    #[error(
+        "patch script for {path} is blocked: source '{source_name}' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"
+    )]
+    PatchScriptBlocked { path: PathBuf, source_name: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -200,6 +247,209 @@ pub enum SecretError {
 
     #[error("age key not found at {path}")]
     AgeKeyNotFound { path: PathBuf },
+}
+
+/// Failures of a declarative backup (`spec.backups[]`).
+///
+/// Most of these are recorded as the `error` of a failed run rather than
+/// returned to the caller — see [`crate::backup::run_backup`]. They are typed
+/// anyway so every surface (recorded row, terminal line, future `-o json`)
+/// renders the same wording for the same failure.
+#[derive(Debug, thiserror::Error)]
+pub enum BackupError {
+    #[error("backup '{name}': source does not exist: {}", .path.posix())]
+    SourceMissing { name: String, path: PathBuf },
+
+    #[error("backup '{name}': cannot read source {}: {source}", .path.posix())]
+    SourceUnreadable {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("backup '{name}': cannot write snapshot to {}: {source}", .path.posix())]
+    CopyFailed {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "backup '{name}': namePattern rendered the unusable snapshot name '{rendered}' ({message}); \
+         {{filename}} was '{source_filename}' — if the filename itself is what makes the name \
+         unusable, set an explicit namePattern that does not use it"
+    )]
+    InvalidSnapshotName {
+        name: String,
+        rendered: String,
+        source_filename: String,
+        message: String,
+    },
+
+    #[error(
+        "backup '{name}': destination {} is inside source {} — every snapshot would be copied into the next one, without end; move the destination outside the source",
+        .destination.posix(), .source_path.posix()
+    )]
+    DestinationInsideSource {
+        name: String,
+        source_path: PathBuf,
+        destination: PathBuf,
+    },
+
+    #[error(
+        "backup '{name}': the snapshot path {} collides with source {} — taking it would destroy the data being backed up; change namePattern or destination",
+        .snapshot.posix(), .source_path.posix()
+    )]
+    SnapshotCollidesWithSource {
+        name: String,
+        source_path: PathBuf,
+        snapshot: PathBuf,
+    },
+
+    #[error("backup '{name}': {phase} hook failed: {message}")]
+    HookFailed {
+        name: String,
+        phase: &'static str,
+        message: String,
+    },
+
+    /// `cfgd backup run <name>` (or the daemon) named a backup that is not in
+    /// the active profile's `spec.backups[]`. `valid` lists every declared
+    /// name so the caller can render "did you mean" without a second lookup.
+    #[error(
+        "backup '{name}' not found{}",
+        if .valid.is_empty() {
+            String::new()
+        } else {
+            format!(" — valid backups: {}", .valid.join(", "))
+        }
+    )]
+    UnknownName { name: String, valid: Vec<String> },
+
+    /// Another process (or another thread of this one) is already running this
+    /// exact backup. Reported instead of waiting: the engine's staging path,
+    /// destination replace, and retention prune all assume a single writer per
+    /// unit, and two runs of one unit a second apart produce a torn snapshot
+    /// recorded as a success.
+    #[error(
+        "backup '{name}' is already running ({holder}); wait for it to finish or stop the other run"
+    )]
+    Busy { name: String, holder: String },
+
+    /// `cfgd backup restore <name>` on a unit that has never produced a
+    /// snapshot. Distinct from [`BackupError::SnapshotNotFound`]: there is no
+    /// list of alternatives to offer, only a run to take first.
+    #[error("backup '{name}': no snapshots to restore — run `cfgd backup run {name}` first")]
+    NoSnapshots { name: String },
+
+    /// `--at` named a snapshot this unit has no record of. `available` lists
+    /// every restorable snapshot, newest first, so the caller can render the
+    /// alternatives without a second lookup — the same shape
+    /// [`BackupError::UnknownName`] uses for backup names.
+    #[error(
+        "backup '{name}': no snapshot matches '{requested}'{}",
+        if .available.is_empty() {
+            String::new()
+        } else {
+            format!(" — available snapshots: {}", .available.join(", "))
+        }
+    )]
+    SnapshotNotFound {
+        name: String,
+        requested: String,
+        available: Vec<String>,
+    },
+
+    /// `--at` was given a timestamp fragment that more than one snapshot name
+    /// contains. Refused rather than resolved to the newest match: a restore
+    /// overwrites live data, and guessing which snapshot the operator meant is
+    /// the one place that must not be guessed.
+    #[error(
+        "backup '{name}': '{requested}' matches {} snapshots ({}); pass the full snapshot name",
+        .matches.len(), .matches.join(", ")
+    )]
+    AmbiguousSnapshot {
+        name: String,
+        requested: String,
+        matches: Vec<String>,
+    },
+
+    /// The selected snapshot vanished between being listed and being staged —
+    /// a concurrent prune, or a hand-deleted destination.
+    #[error(
+        "backup '{name}': snapshot {} is no longer on disk; it may have been pruned since it was listed",
+        .path.posix()
+    )]
+    SnapshotMissing { name: String, path: PathBuf },
+
+    #[error("backup '{name}': cannot stage snapshot {} for restore: {source}", .path.posix())]
+    StagingFailed {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("backup '{name}': cannot restore into {}: {source}", .path.posix())]
+    RestoreFailed {
+        name: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The snapshot and the restore target disagree about what they are. A
+    /// file snapshot published over a directory target would delete the whole
+    /// directory on the way to the rename, which is well past overlay
+    /// semantics, so both directions are refused before anything is touched.
+    #[error(
+        "backup '{name}': the snapshot is a {snapshot_kind} but the restore target {} is a {target_kind}; \
+         remove or rename the target, or restore elsewhere with --to",
+        .target.posix()
+    )]
+    RestoreKindMismatch {
+        name: String,
+        target: PathBuf,
+        snapshot_kind: &'static str,
+        target_kind: &'static str,
+    },
+
+    /// The safety backup taken immediately before a restore-to-source did not
+    /// produce a snapshot. The restore is abandoned: overwriting live data
+    /// whose current contents were NOT captured is the failure mode the safety
+    /// backup exists to prevent.
+    #[error(
+        "backup '{name}': the safety backup of the current source failed ({message}); \
+         refusing to overwrite data that is not backed up — fix the failure, or pass --to to restore elsewhere"
+    )]
+    SafetyBackupFailed { name: String, message: String },
+
+    /// A fatal failure aborted a restore while the unit's `postBackup` hook
+    /// ALSO failed on the way out. Carried as one error because the abort is
+    /// the primary condition, but a structured-output consumer would never
+    /// see a hook failure reported only as a stderr status line.
+    #[error("{fatal}; additionally: {post_message}")]
+    RestoreAbortHookFailed {
+        #[source]
+        fatal: Box<CfgdError>,
+        post_message: String,
+    },
+
+    /// A `--to` that points at (or into) the unit's own snapshot destination.
+    /// Restoring there would overwrite the snapshot store with one of its own
+    /// snapshots and desynchronize it from the run records retention walks.
+    #[error(
+        "backup '{name}': restore target {} is inside the snapshot destination {}; \
+         restoring there would overwrite the snapshot store",
+        .target.posix(), .destination.posix()
+    )]
+    RestoreTargetInsideDestination {
+        name: String,
+        target: PathBuf,
+        destination: PathBuf,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -311,8 +561,10 @@ pub enum CompositionError {
     )]
     InvalidReject { source_name: String, key: String },
 
-    #[error("source '{source_name}' is not allowed to run scripts")]
-    ScriptsNotAllowed { source_name: String },
+    #[error(
+        "source '{source_name}' carries {kind}, but it is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.noScripts)"
+    )]
+    ScriptsNotAllowed { source_name: String, kind: String },
 
     #[error(
         "required source '{source_name}' is not available (not synced or failed to load); fix the source or set its sync.required to false"
@@ -451,7 +703,7 @@ pub enum ModuleError {
     InvalidSpec { name: String, message: String },
 
     #[error(
-        "module '{module}' delivered by source '{source_name}' carries {kind}, but that source is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)"
+        "module '{module}' delivered by source '{source_name}' carries {kind}, but that source is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.noScripts)"
     )]
     ScriptsNotAllowed {
         source_name: String,

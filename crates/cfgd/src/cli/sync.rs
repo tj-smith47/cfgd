@@ -45,6 +45,19 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
         let silent_printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        // Opened once: every open runs the full migration chain, and the loop
+        // below records a fetch per source. Best-effort — the cache refreshes
+        // either way, so a read-only state dir must not turn a successful sync
+        // into a failure; it costs the freshness ledger, not the sync.
+        let state = match open_state_store(cli.state_dir.as_deref()) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                sources_sec
+                    .status(Role::Warn, "source fetches will not be recorded")
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                None
+            }
+        };
 
         // Multi-source sync emits N undifferentiated status streams. The
         // per-source `secondary` line acts as a structural pivot — color
@@ -152,6 +165,34 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 sources_sec
                                     .status(Role::Ok, format!("'{}' synced", source_spec.name))
                                     .detail(format!("commit: {}", commit_short));
+                            }
+
+                            // Record the fetch in the state store, the same way
+                            // `source add` / `source update` do. Without this a
+                            // `cfgd status` immediately after a successful sync
+                            // reports the source as "not yet fetched": the
+                            // freshness ledger only ever heard from the two
+                            // `source` subcommands, never from the command
+                            // whose whole job is refreshing sources.
+                            if let Some(ref state) = state
+                                && let Err(e) = state.upsert_config_source(
+                                    &source_spec.name,
+                                    &source_spec.origin.url,
+                                    &source_spec.origin.branch,
+                                    cached.last_commit.as_deref(),
+                                    cached.manifest.metadata.version.as_deref(),
+                                    source_spec.sync.pin_version.as_deref(),
+                                )
+                            {
+                                sources_sec
+                                    .status(
+                                        Role::Warn,
+                                        format!(
+                                            "could not record the fetch for '{}'",
+                                            source_spec.name
+                                        ),
+                                    )
+                                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
                             }
 
                             // Record the resolved commit in sources.lock.

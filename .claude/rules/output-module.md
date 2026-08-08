@@ -42,6 +42,21 @@ Forbidden outside the `output/` module itself:
 
 See Hard Rule #1 in `hard-rules.md`.
 
+## Source-constraint mode (every `compose_with_sources` call site)
+
+**`ConstraintMode::Report` is for read paths; every path that mutates the machine composes in `Enforce`.** Decide on what the command *does*, not on what it reads: `backup run` reads config like `status` but executes hooks and writes snapshots, so it is `Enforce`. `Report` records a source violation and continues (the read still has to render); `Enforce` aborts on the first one.
+
+| Mode | Commands |
+|---|---|
+| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin` — anything whose whole job is to describe state |
+| `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `backup restore`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
+
+`Report` is not "skip the check": `compose` still warns per violation, and any script surface a
+read path would EXECUTE is marked unrunnable in the composed spec (`composition::block_barred_scripts`
+poisons a barred source's `patch.script`, so evaluating the file degrades instead of running it).
+Adding a script surface that a `Report`-mode command evaluates means extending that marking too —
+a surface only `Enforce` reaches needs nothing.
+
 ## Structured-output coverage
 
 Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in

@@ -1,57 +1,182 @@
-use crate::config::{MergedProfile, PolicyItems, ProfileSpec, SourceConstraints};
-use crate::errors::{CompositionError, Result};
+use crate::PathDisplayExt;
+use crate::config::{MergedProfile, PolicyItems, ProfileLayer, ProfileSpec, SourceConstraints};
+use crate::errors::{CfgdError, CompositionError, Result};
 
-/// Validate security constraints for a source's contribution to the composed profile.
+/// Describe every element of `spec` that runs source-supplied code, in the
+/// wording an error or a plan note uses.
+///
+/// The single enumeration of what `constraints.noScripts` governs. The
+/// fail-closed check and the `allowScripts` disclosure note both read this
+/// list, so a new script surface cannot reach one without reaching the other.
+pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
+    let mut surfaces = Vec::new();
+
+    if let Some(ref scripts) = spec.scripts {
+        for (label, entries) in [
+            ("preApply", &scripts.pre_apply),
+            ("postApply", &scripts.post_apply),
+            ("preReconcile", &scripts.pre_reconcile),
+            ("postReconcile", &scripts.post_reconcile),
+            ("onChange", &scripts.on_change),
+            ("onDrift", &scripts.on_drift),
+        ] {
+            if !entries.is_empty() {
+                surfaces.push(format!("a {label} script"));
+            }
+        }
+    }
+
+    for backup in &spec.backups {
+        for (label, entries) in [
+            ("preBackup", &backup.pre_backup),
+            ("postBackup", &backup.post_backup),
+        ] {
+            if !entries.is_empty() {
+                surfaces.push(format!("a {label} hook on backup '{}'", backup.name));
+            }
+        }
+    }
+
+    if let Some(ref files) = spec.files {
+        for managed in &files.managed {
+            if managed
+                .patch
+                .as_ref()
+                .is_some_and(|patch| patch.script.is_some())
+            {
+                surfaces.push(format!("a patch script for {}", managed.target.posix()));
+            }
+        }
+    }
+
+    surfaces
+}
+
+/// Poison every `patch.script` in `layers` that `source_name` is not permitted
+/// to run, so a read path cannot execute it.
+///
+/// `Report` mode records a source's violation and keeps composing — the read
+/// still has to render — but a `patch.script` is not inert data: `diff`,
+/// `verify`, `status` and a compliance snapshot all evaluate a `Patch` file,
+/// and evaluating one runs the filter. Marking the spec (rather than dropping
+/// the file, which would describe a state `apply` would never produce) leaves
+/// the file visible and degrades it with a named failure at every evaluation
+/// site.
+///
+/// Called unconditionally: in `Enforce` mode a barred source carrying a script
+/// has already aborted composition, so marking is a no-op there.
+pub(super) fn block_barred_scripts(
+    source_name: &str,
+    constraints: &SourceConstraints,
+    allow_scripts: bool,
+    layers: &mut [ProfileLayer],
+) {
+    if !constraints.no_scripts || allow_scripts {
+        return;
+    }
+    for layer in layers {
+        let Some(ref mut files) = layer.spec.files else {
+            continue;
+        };
+        for managed in &mut files.managed {
+            if let Some(ref mut patch) = managed.patch
+                && patch.script.is_some()
+            {
+                patch.blocked_by = Some(source_name.to_string());
+            }
+        }
+    }
+}
+
+/// Every security-constraint violation `spec` commits against `constraints`,
+/// in declaration order.
+///
+/// The single constraint check. Collecting rather than short-circuiting is what
+/// lets `Report` mode agree with itself: a source with two barred patch filters
+/// degrades both files, so the warning has to name both. A fail-closed caller
+/// takes the first entry — the one it would have aborted on either way — so
+/// both modes read the same enumeration and cannot drift apart.
 ///
 /// `allow_scripts` is the subscriber's `subscription.allowScripts` opt-in: when
-/// `true` the source's `constraints.no_scripts` no longer rejects scripts (the
+/// `true` the source's `constraints.noScripts` no longer rejects scripts (the
 /// subscriber has accepted the risk), matching the source-delivered module-body
 /// enforcement. Path/system/encryption constraints are unaffected.
-pub fn validate_constraints(
+pub(super) fn collect_constraint_violations(
     source_name: &str,
     constraints: &SourceConstraints,
     spec: &ProfileSpec,
     allow_scripts: bool,
-) -> Result<()> {
-    // Check script constraint
-    if constraints.no_scripts
-        && !allow_scripts
-        && let Some(ref scripts) = spec.scripts
-        && (!scripts.pre_apply.is_empty()
-            || !scripts.post_apply.is_empty()
-            || !scripts.pre_reconcile.is_empty()
-            || !scripts.post_reconcile.is_empty()
-            || !scripts.on_drift.is_empty()
-            || !scripts.on_change.is_empty())
-    {
-        return Err(CompositionError::ScriptsNotAllowed {
-            source_name: source_name.to_string(),
-        }
-        .into());
-    }
+) -> Vec<CfgdError> {
+    let mut violations: Vec<CfgdError> = Vec::new();
 
-    // Check system change constraint
-    if !constraints.allow_system_changes && !spec.system.is_empty() {
-        let first_key = spec.system.keys().next().cloned().unwrap_or_default();
-        return Err(CompositionError::SystemChangeNotAllowed {
-            source_name: source_name.to_string(),
-            setting: first_key,
-        }
-        .into());
-    }
-
-    // Check path containment
-    if !constraints.allowed_target_paths.is_empty()
-        && let Some(ref files) = spec.files
-    {
-        for managed in &files.managed {
-            let target_str = managed.target.to_string_lossy();
-            if !path_matches_any(&target_str, &constraints.allowed_target_paths) {
-                return Err(CompositionError::PathNotAllowed {
+    if constraints.no_scripts && !allow_scripts {
+        for kind in script_surfaces(spec) {
+            violations.push(
+                CompositionError::ScriptsNotAllowed {
                     source_name: source_name.to_string(),
-                    path: target_str.to_string(),
+                    kind,
                 }
-                .into());
+                .into(),
+            );
+        }
+    }
+
+    if !constraints.allow_system_changes {
+        // `spec.system` is a HashMap, so sort: a reported list an operator
+        // reads must not reshuffle between two runs of the same command.
+        let mut settings: Vec<&String> = spec.system.keys().collect();
+        settings.sort();
+        for setting in settings {
+            violations.push(
+                CompositionError::SystemChangeNotAllowed {
+                    source_name: source_name.to_string(),
+                    setting: setting.clone(),
+                }
+                .into(),
+            );
+        }
+    }
+
+    if !constraints.allowed_target_paths.is_empty() {
+        if let Some(ref files) = spec.files {
+            for managed in &files.managed {
+                // Folded to `/`: the allow-list globs are authored once in the
+                // source manifest and must match identically on every
+                // subscriber's OS.
+                let target_str = crate::to_posix_string(&managed.target);
+                if !path_matches_any(&target_str, &constraints.allowed_target_paths) {
+                    violations.push(
+                        CompositionError::PathNotAllowed {
+                            source_name: source_name.to_string(),
+                            path: target_str,
+                        }
+                        .into(),
+                    );
+                }
+            }
+        }
+
+        // A backup's `destination` is a path the source makes cfgd WRITE to, so
+        // it is bound by the same allow-list as a managed file's target. Its
+        // `source` is deliberately unconstrained: snapshotting a path the
+        // allow-list does not cover (`~/.ssh` before a risky apply) is the
+        // feature's primary use, and a snapshot can only ever land inside a
+        // destination this check already covers.
+        for backup in &spec.backups {
+            let Some(ref destination) = backup.destination else {
+                // The default destination is `<state_dir>/backups/<name>/` —
+                // cfgd's own state dir, not a path the source chose.
+                continue;
+            };
+            let destination_str = crate::to_posix_string(destination);
+            if !path_matches_any(&destination_str, &constraints.allowed_target_paths) {
+                violations.push(
+                    CompositionError::PathNotAllowed {
+                        source_name: source_name.to_string(),
+                        path: destination_str,
+                    }
+                    .into(),
+                );
             }
         }
     }
@@ -64,51 +189,56 @@ pub fn validate_constraints(
         && let Some(ref files) = spec.files
     {
         for managed in &files.managed {
-            let target_str = managed.target.to_string_lossy();
-            if let Some(matched_pattern) =
+            let target_str = crate::to_posix_string(&managed.target);
+            let Some(matched_pattern) =
                 find_matching_pattern(&target_str, &enc_constraint.required_targets)
-            {
-                match managed.encryption.as_ref() {
-                    None => {
-                        return Err(CompositionError::EncryptionRequired {
-                            source_name: source_name.to_string(),
-                            path: target_str.to_string(),
-                            pattern: matched_pattern,
-                        }
-                        .into());
+            else {
+                continue;
+            };
+            match managed.encryption.as_ref() {
+                None => violations.push(
+                    CompositionError::EncryptionRequired {
+                        source_name: source_name.to_string(),
+                        path: target_str,
+                        pattern: matched_pattern,
                     }
-                    Some(enc_spec) => {
-                        if let Some(ref required_backend) = enc_constraint.backend
-                            && enc_spec.backend != *required_backend
-                        {
-                            return Err(CompositionError::EncryptionBackendMismatch {
+                    .into(),
+                ),
+                Some(enc_spec) => {
+                    if let Some(ref required_backend) = enc_constraint.backend
+                        && enc_spec.backend != *required_backend
+                    {
+                        violations.push(
+                            CompositionError::EncryptionBackendMismatch {
                                 source_name: source_name.to_string(),
-                                path: target_str.to_string(),
+                                path: target_str.clone(),
                                 pattern: matched_pattern.clone(),
                                 actual_backend: enc_spec.backend.clone(),
                                 required_backend: required_backend.clone(),
                             }
-                            .into());
-                        }
-                        if let Some(ref required_mode) = enc_constraint.mode
-                            && enc_spec.mode != *required_mode
-                        {
-                            return Err(CompositionError::EncryptionModeMismatch {
+                            .into(),
+                        );
+                    }
+                    if let Some(ref required_mode) = enc_constraint.mode
+                        && enc_spec.mode != *required_mode
+                    {
+                        violations.push(
+                            CompositionError::EncryptionModeMismatch {
                                 source_name: source_name.to_string(),
-                                path: target_str.to_string(),
+                                path: target_str,
                                 pattern: matched_pattern,
                                 actual_mode: format!("{:?}", enc_spec.mode),
                                 required_mode: format!("{:?}", required_mode),
                             }
-                            .into());
-                        }
+                            .into(),
+                        );
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    violations
 }
 
 /// Check if a path matches any of the allowed patterns.
@@ -148,7 +278,7 @@ pub fn check_locked_violations(
             if local_file.target == locked_file.target && local_file.source != locked_file.source {
                 return Err(CompositionError::LockedResource {
                     source_name: source_name.to_string(),
-                    resource: locked_file.target.to_string_lossy().to_string(),
+                    resource: crate::to_posix_string(&locked_file.target),
                 }
                 .into());
             }

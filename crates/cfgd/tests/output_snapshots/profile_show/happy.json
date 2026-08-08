@@ -9,6 +9,7 @@
         "source": "local",
         "spec": {
           "aliases": [],
+          "backups": [],
           "env": [],
           "files": null,
           "inherits": [],
@@ -26,6 +27,7 @@
         "source": "local",
         "spec": {
           "aliases": [],
+          "backups": [],
           "env": [],
           "files": null,
           "inherits": [],
@@ -39,6 +41,7 @@
     ],
     "merged": {
       "aliases": [],
+      "backups": [],
       "env": [
         {
           "name": "EDITOR",

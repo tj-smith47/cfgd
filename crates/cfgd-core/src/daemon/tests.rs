@@ -4,6 +4,13 @@ use super::*;
 use super::drift::*;
 use crate::test_helpers::{test_printer, test_state};
 
+/// A never-raised abort flag with a `'static` lifetime, so a `ReconcileCtx`
+/// built by a helper can borrow one without the caller owning it.
+fn never_abort() -> &'static crate::AbortFlag {
+    static FLAG: std::sync::OnceLock<crate::AbortFlag> = std::sync::OnceLock::new();
+    FLAG.get_or_init(crate::AbortFlag::new)
+}
+
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
     notifier: &'a Arc<Notifier>,
@@ -23,6 +30,7 @@ fn quiet_reconcile_ctx<'a>(
         auto_apply_override: None,
         drift_policy_override: None,
         scope: crate::Scope::User,
+        abort: never_abort(),
     }
 }
 
@@ -370,6 +378,7 @@ fn extract_source_resources_from_merged_profile() {
         },
         files: FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "dotfiles/.zshrc".into(),
                 target: PathBuf::from("/home/user/.zshrc"),
                 strategy: None,
@@ -822,6 +831,7 @@ fn action_resource_info_file_create() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
+        patch: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -839,6 +849,7 @@ fn action_resource_info_file_update() {
         origin: "local".into(),
         strategy: crate::config::FileStrategy::default(),
         source_hash: None,
+        patch: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -2019,6 +2030,7 @@ fn extract_source_resources_full_profile() {
         },
         files: FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "dotfiles/.zshrc".into(),
                 target: PathBuf::from("/home/user/.zshrc"),
                 strategy: None,
@@ -2408,6 +2420,7 @@ fn extract_source_resources_multiple_files() {
         files: FilesSpec {
             managed: vec![
                 ManagedFileSpec {
+                    patch: None,
                     source: "dotfiles/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -2417,6 +2430,7 @@ fn extract_source_resources_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
+                    patch: None,
                     source: "dotfiles/.vimrc".into(),
                     target: PathBuf::from("/home/user/.vimrc"),
                     strategy: None,
@@ -2426,6 +2440,7 @@ fn extract_source_resources_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
+                    patch: None,
                     source: "dotfiles/.gitconfig".into(),
                     target: PathBuf::from("/home/user/.gitconfig"),
                     strategy: None,
@@ -4471,6 +4486,78 @@ fn compute_config_hash_ignores_non_package_fields() {
     );
 }
 
+// --- service generators/installers under the default (no-override) dir set ---
+//
+// The dir-overrides parameter is threaded through every generator and
+// installer, but only the override-specific tests care what is in it; these
+// wrappers keep the rest reading as the one-line calls they are about.
+
+#[cfg(unix)]
+fn launchd_plist_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    home: &Path,
+    scope: crate::Scope,
+) -> String {
+    generate_launchd_plist(
+        binary,
+        config_path,
+        profile,
+        home,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
+#[cfg(unix)]
+fn systemd_unit_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> String {
+    generate_systemd_unit(
+        binary,
+        config_path,
+        profile,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
+#[cfg(unix)]
+fn install_launchd_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> Result<()> {
+    install_launchd_service(
+        binary,
+        config_path,
+        profile,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
+#[cfg(unix)]
+fn install_systemd_default_dirs(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> Result<()> {
+    install_systemd_service(
+        binary,
+        config_path,
+        profile,
+        scope,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+}
+
 // --- generate_launchd_plist tests ---
 
 #[cfg(unix)]
@@ -4480,7 +4567,7 @@ fn generate_launchd_plist_contains_correct_structure() {
     let config = Path::new("/Users/testuser/.config/cfgd/config.yaml");
     let home = Path::new("/Users/testuser");
 
-    let plist = generate_launchd_plist(binary, config, None, home, crate::Scope::User);
+    let plist = launchd_plist_default_dirs(binary, config, None, home, crate::Scope::User);
 
     assert!(
         plist.contains("<?xml version=\"1.0\""),
@@ -4545,7 +4632,7 @@ fn generate_launchd_plist_with_profile() {
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(binary, config, Some("work"), home, crate::Scope::User);
+    let plist = launchd_plist_default_dirs(binary, config, Some("work"), home, crate::Scope::User);
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -4582,7 +4669,7 @@ fn generate_systemd_unit_contains_correct_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, None, crate::Scope::User);
+    let unit = systemd_unit_default_dirs(binary, config, None, crate::Scope::User);
 
     assert!(
         unit.contains("[Unit]"),
@@ -4639,7 +4726,7 @@ fn generate_systemd_unit_with_profile() {
     let binary = Path::new("/opt/bin/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, Some("server"), crate::Scope::User);
+    let unit = systemd_unit_default_dirs(binary, config, Some("server"), crate::Scope::User);
 
     assert!(
         unit.contains(
@@ -4664,7 +4751,7 @@ fn install_then_uninstall_launchd_service_round_trips_plist() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_launchd_service(&binary, &config, Some("work"), crate::Scope::User)
+    install_launchd_default_dirs(&binary, &config, Some("work"), crate::Scope::User)
         .expect("install ok");
 
     let plist = tmp
@@ -4701,7 +4788,7 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_systemd_service(&binary, &config, None, crate::Scope::User).expect("install ok");
+    install_systemd_default_dirs(&binary, &config, None, crate::Scope::User).expect("install ok");
 
     let unit_path = tmp.path().join(".config/systemd/user/cfgd.service");
     assert!(unit_path.exists(), "unit should be installed");
@@ -4738,8 +4825,13 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    crate::daemon::service::install_service(&config, None, crate::Scope::User)
-        .expect("install_service ok");
+    crate::daemon::service::install_service(
+        &config,
+        None,
+        crate::Scope::User,
+        &crate::daemon::DaemonDirOverrides::default(),
+    )
+    .expect("install_service ok");
     // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
     // panic. Skip exists() assertions — the dispatcher branch depends on
     // target_os and we just want both arms exercised.
@@ -5910,6 +6002,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
                 origin: "local".into(),
                 strategy: crate::config::FileStrategy::default(),
                 source_hash: None,
+                patch: None,
             }])
         }
         fn plan_packages(
@@ -6012,6 +6105,7 @@ impl DaemonHooks for DriftingFileHooks {
             origin: "local".into(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
+            patch: None,
         }])
     }
     fn plan_packages(
@@ -6098,6 +6192,88 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     assert!(
         store.unresolved_drift().unwrap().is_empty(),
         "successful auto-apply must leave no outstanding drift rows"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
+    // `systemctl stop cfgd` mid-auto-apply must stop the reconcile the way it
+    // stops a CLI apply. A throwaway flag nobody raises would let this run to
+    // completion — and, with a profile script in the plan, wait out
+    // PROFILE_SCRIPT_TIMEOUT before the daemon could exit.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let source = tmp.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let target = tmp.path().join("dst.txt");
+    let hooks = DriftingFileHooks {
+        source,
+        target: target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let abort = Arc::new(crate::AbortFlag::new());
+    abort.set(143);
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let ab = Arc::clone(&abort);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &hooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+                module_filter: None,
+                auto_apply_override: None,
+                drift_policy_override: None,
+                scope: crate::Scope::User,
+                abort: &ab,
+            },
+        );
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !target.exists(),
+        "an aborted auto-apply must not perform the copy"
+    );
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    let record = store
+        .last_apply()
+        .unwrap()
+        .expect("the aborted run must still be recorded");
+    assert_eq!(
+        record.status,
+        crate::state::ApplyStatus::Aborted,
+        "the reconcile apply must record the cooperative abort, not success"
     );
 }
 
@@ -6736,7 +6912,7 @@ fn generate_launchd_plist_xml_structure_complete() {
     let config = Path::new("/Users/alice/.config/cfgd/config.yaml");
     let home = Path::new("/Users/alice");
 
-    let plist = generate_launchd_plist(binary, config, None, home, crate::Scope::User);
+    let plist = launchd_plist_default_dirs(binary, config, None, home, crate::Scope::User);
 
     // Verify required XML structure
     assert!(
@@ -6801,7 +6977,7 @@ fn generate_launchd_plist_includes_profile_flag() {
     let config = Path::new("/home/user/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(binary, config, Some("work"), home, crate::Scope::User);
+    let plist = launchd_plist_default_dirs(binary, config, Some("work"), home, crate::Scope::User);
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -6842,7 +7018,7 @@ fn generate_systemd_unit_complete_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, None, crate::Scope::User);
+    let unit = systemd_unit_default_dirs(binary, config, None, crate::Scope::User);
 
     assert!(unit.contains("[Unit]"), "should contain [Unit] section");
     assert!(
@@ -6898,7 +7074,7 @@ fn generate_systemd_unit_includes_profile() {
     let binary = Path::new("/opt/cfgd/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, Some("server"), crate::Scope::User);
+    let unit = systemd_unit_default_dirs(binary, config, Some("server"), crate::Scope::User);
 
     let expected_exec = format!(
         "ExecStart={} --config {} --profile {} --quiet daemon",
@@ -7471,6 +7647,7 @@ mod harness {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(NoopHooks),
@@ -7592,24 +7769,49 @@ mod harness {
         assert_eq!(sync, Some(StdDuration::from_secs(600)));
     }
 
+    /// A `DaemonLoopContext` pointed at `config_path`, plus the printer buffer
+    /// the reload writes into. `apply_sighup_reload` reads the profile override
+    /// and scope off the context to rebuild backup timers, so the reload tests
+    /// need a real one rather than a bare printer.
+    pub(super) fn sighup_ctx(
+        tmp: &tempfile::TempDir,
+        config_path: &Path,
+    ) -> (DaemonLoopContext, Arc<std::sync::Mutex<String>>) {
+        let (mut ctx, _state, buf) = make_test_ctx(tmp, false, false, None);
+        ctx.config_path = config_path.to_path_buf();
+        (ctx, buf)
+    }
+
+    /// One SIGHUP reload against `config_path`, returning the captured output
+    /// and the reconcile/sync intervals it left behind (both start at 300s).
+    fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> (String, u64, u64) {
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+        let (ctx, buf) = sighup_ctx(tmp, config_path);
+        let mut backup_timers = crate::daemon::BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
+        let captured = buf.lock().unwrap().clone();
+        (
+            captured,
+            reconcile_secs.load(Ordering::Relaxed),
+            sync_secs.load(Ordering::Relaxed),
+        )
+    }
+
     #[test]
     fn apply_sighup_reload_warns_on_unparseable_config() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("bad.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("Config reload failed"),
             "expected reload-failed warning in: {}",
             captured
         );
         // Atomics untouched on failure
-        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 300);
-        assert_eq!(sync_secs.load(Ordering::Relaxed), 300);
+        assert_eq!(reconcile_secs, 300);
+        assert_eq!(sync_secs, 300);
     }
 
     #[test]
@@ -7621,22 +7823,18 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n    sync:\n      interval: 2m\n",
         )
         .unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("Timer intervals reloaded"),
             "expected reload success in: {}",
             captured
         );
-        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 90);
-        assert_eq!(sync_secs.load(Ordering::Relaxed), 120);
+        assert_eq!(reconcile_secs, 90);
+        assert_eq!(sync_secs, 120);
     }
 
     #[test]
-    fn apply_sighup_reload_states_scope_is_timer_only_to_avoid_silent_surprise() {
+    fn apply_sighup_reload_states_scope_is_timers_and_backups_only() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(
@@ -7644,13 +7842,9 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n",
         )
         .unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, _, _) = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("timer intervals only"),
+            captured.contains("timer intervals and backup schedules only"),
             "SIGHUP start message must state scope: {}",
             captured
         );
@@ -7670,18 +7864,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
         )
         .unwrap();
-        let reconcile_secs = AtomicU64::new(300);
-        let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
-        let captured = buf.lock().unwrap().clone();
+        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
         assert!(
             captured.contains("no timer changes detected"),
             "expected no-changes message in: {}",
             captured
         );
-        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 300);
-        assert_eq!(sync_secs.load(Ordering::Relaxed), 300);
+        assert_eq!(reconcile_secs, 300);
+        assert_eq!(sync_secs, 300);
     }
 
     // ----- build_initial_source_status tests -----
@@ -7964,6 +8154,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -7998,6 +8189,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8033,6 +8225,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8064,6 +8257,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8093,6 +8287,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8229,6 +8424,7 @@ mod harness {
         let printer = Arc::new(printer);
         let (ran_tx, ran_rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingPlanFilesHooks { ran: ran_tx }),
@@ -8276,6 +8472,7 @@ mod harness {
             triggers,
             tasks,
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8312,6 +8509,7 @@ mod harness {
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingRegistryHooks),
@@ -8334,6 +8532,7 @@ mod harness {
             triggers,
             Vec::new(),
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8384,6 +8583,7 @@ mod harness {
             triggers,
             reconcile_tasks,
             sync_tasks,
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8425,6 +8625,7 @@ mod harness {
             triggers,
             reconcile_tasks,
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8464,6 +8665,7 @@ mod harness {
             triggers,
             tasks,
             Vec::new(),
+            crate::daemon::BackupTimers::empty(),
             reconcile_secs,
             sync_secs,
         ));
@@ -8558,6 +8760,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
@@ -8632,6 +8835,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
@@ -8691,6 +8895,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
@@ -9077,15 +9282,29 @@ mod harness {
 
     // ----- build_pre_loop_setup: SETUP-arm coverage -----
 
+    /// `build_pre_loop_setup` under the arguments every SETUP-arm test shares:
+    /// no-op hooks, user scope, a test printer, and no state-dir override.
+    pub(super) fn pre_loop(
+        config_path: &std::path::Path,
+        profile: Option<&str>,
+    ) -> Result<PreLoopSetup> {
+        build_pre_loop_setup(
+            config_path,
+            profile,
+            &NoopHooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+            None,
+        )
+    }
+
     #[test]
     fn build_pre_loop_setup_happy_path_yields_defaulted_intervals() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User)
-            .expect("happy setup");
+        let setup = pre_loop(&config_path, None).expect("happy setup");
 
         // Default reconcile + sync interval = 300s (5m)
         assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
@@ -9133,10 +9352,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         assert!(setup.compliance_config.is_some());
         assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
@@ -9158,10 +9375,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         // Compliance config present but interval None because enabled=false short-circuits filter.
         assert!(setup.compliance_config.is_some());
@@ -9174,9 +9389,8 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
-        let hooks = NoopHooks;
 
-        let result = build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User);
+        let result = pre_loop(&config_path, None);
 
         match result {
             Ok(_) => panic!("invalid yaml must error"),
@@ -9210,15 +9424,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: override-profile\nspec:\n  files:\n    managed:\n      - source: example.txt\n        target: /tmp/example-override.txt\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(
-            &config_path,
-            Some("override-profile"),
-            &hooks,
-            crate::Scope::User,
-        )
-        .expect("setup");
+        let setup = pre_loop(&config_path, Some("override-profile")).expect("setup");
 
         // override-profile has a managed file → discover_managed_paths populates it.
         assert_eq!(setup.managed_paths.len(), 1);
@@ -9242,10 +9449,8 @@ mod harness {
         )
         .unwrap();
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
-        let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         // No profile resolution → no managed paths, reconcile_tasks contains just __default__
         assert!(setup.managed_paths.is_empty());
@@ -9269,10 +9474,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         assert!(setup.parsed.auto_pull);
         assert!(setup.parsed.auto_push);
@@ -9298,10 +9501,8 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
         )
         .unwrap();
-        let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
+        let setup = pre_loop(&config_path, None).expect("setup");
 
         assert_eq!(
             setup.server_checkin_url.as_deref(),
@@ -9330,6 +9531,7 @@ mod harness {
         )
         .unwrap();
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9338,7 +9540,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9367,6 +9568,7 @@ mod harness {
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9375,7 +9577,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9410,6 +9611,7 @@ mod harness {
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         // Intentionally no ghost.yaml → resolve_profile fails.
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9418,7 +9620,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9453,6 +9654,7 @@ mod harness {
         .unwrap();
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
 
+        let hooks = NoopHooks;
         let compliance_cfg = config::ComplianceConfig {
             enabled: true,
             interval: "1h".into(),
@@ -9461,7 +9663,6 @@ mod harness {
             export: config::ComplianceExport::default(),
         };
 
-        let hooks = NoopHooks;
         super::super::sync::handle_compliance_snapshot(
             &config_path,
             None,
@@ -9534,7 +9735,7 @@ mod harness {
     #[serial_test::serial]
     async fn handle_version_check_surfaces_consolidated_skill_stale_when_up_to_date() {
         // Binary current (tag == running) + a stale user-scope skill under Notify
-        // → the §9 consolidated skill-stale notice fires once, recorded in state
+        // → the consolidated skill-stale notice fires once, recorded in state
         // by its per-scope signature. Rule 3 wired through `handle_version_check`.
         use crate::generate::SkillKind;
         use crate::providers::skill::SkillScope;
@@ -9939,7 +10140,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, None);
         assert_eq!(lines, vec!["reconcile=300s".to_string()]);
     }
 
@@ -9956,7 +10157,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, None);
         assert_eq!(
             lines,
             vec![
@@ -9979,7 +10180,12 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(900)));
+        let lines = super::super::format_interval_lines(
+            &parsed,
+            Some(StdDuration::from_secs(900)),
+            0,
+            None,
+        );
         assert_eq!(
             lines,
             vec!["reconcile=30s".to_string(), "compliance=900s".to_string()]
@@ -10618,7 +10824,7 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, None);
+        let lines = super::super::format_interval_lines(&parsed, None, 0, None);
         assert_eq!(
             lines,
             vec![
@@ -10641,7 +10847,12 @@ mod harness {
             notify_on_drift: false,
             webhook_url: None,
         };
-        let lines = super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(600)));
+        let lines = super::super::format_interval_lines(
+            &parsed,
+            Some(StdDuration::from_secs(600)),
+            0,
+            None,
+        );
         assert_eq!(
             lines,
             vec![
@@ -10719,18 +10930,21 @@ mod harness {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
     async fn wait_for_shutdown_returns_on_sigterm() {
-        // Driving wait_for_shutdown directly: spawn it on its own task, raise
-        // SIGTERM at our own PID, and verify the function returns AND the
-        // printer captured the SIGTERM message.
+        // Driving the shutdown wait directly: register, raise SIGTERM at our
+        // own PID, and verify the wait returns AND the printer captured the
+        // SIGTERM message.
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
-        let handle = tokio::spawn(super::super::wait_for_shutdown(Arc::clone(&printer)));
-        // Allow the SIGTERM signal listener to register.
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        // Registration is synchronous, so the signal cannot arrive before the
+        // handler exists — no sleep is needed to make this deterministic, and
+        // the delivery the assertions rely on is a latched pending
+        // notification rather than a race the test happened to win.
+        let signals = super::super::ShutdownSignals::install();
         // SAFETY: libc::kill against own PID is well-defined.
         unsafe {
             libc::kill(libc::getpid(), libc::SIGTERM);
         }
+        let handle = tokio::spawn(signals.wait(Arc::clone(&printer)));
         let joined = tokio::time::timeout(StdDuration::from_secs(3), handle).await;
         assert!(
             joined.is_ok(),
@@ -10871,11 +11085,25 @@ mod harness {
             env!("CARGO_PKG_VERSION"),
         ));
 
-        // Give the daemon time to bind everything, spawn pumps, and emit the
-        // startup banner — proves the production trigger-setup block ran.
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        // Wait for the startup banner. It is proof the SIGTERM handler is
+        // installed, not merely that setup started: registration happens
+        // synchronously before the banner is printed, so a banner in the
+        // buffer means the signal raised below is delivered to the daemon
+        // rather than to the default disposition that would kill this test
+        // process. Polled to a deadline rather than slept for a fixed span —
+        // a machine running the whole suite in parallel misses a fixed budget
+        // while being perfectly healthy.
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        let mut banner = false;
+        while std::time::Instant::now() < deadline {
+            if buf.lock().unwrap().contains("Daemon running") {
+                banner = true;
+                break;
+            }
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
         assert!(
-            buf.lock().unwrap().contains("Daemon running"),
+            banner,
             "production-trigger path must emit the startup banner before shutdown"
         );
 
@@ -12634,6 +12862,7 @@ mod handle_reconcile_extra_branches {
                     auto_apply_override: Some(false),
                     drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
                     scope: crate::Scope::User,
+                    abort: never_abort(),
                 },
             );
         })
@@ -12838,6 +13067,7 @@ mod discover_managed_paths_extra {
 mod tests_run_daemon_wrapper {
     use crate::config::CfgdConfig;
     use crate::config::PackagesSpec;
+    use crate::daemon::DaemonDirOverrides;
     use crate::daemon::DaemonHooks;
     use crate::daemon::run_daemon;
     use crate::daemon::{MergedProfile, ResolvedProfile};
@@ -12872,6 +13102,55 @@ mod tests_run_daemon_wrapper {
         }
     }
 
+    #[test]
+    fn cli_run_overrides_carry_the_state_dir_and_runtime_dir_flags() {
+        use crate::daemon::cli_run_overrides;
+        let state = PathBuf::from("/srv/cfgd-state");
+        let runtime = PathBuf::from("/srv/cfgd-run");
+        let over = cli_run_overrides(
+            DaemonDirOverrides {
+                runtime_dir: Some(runtime.clone()),
+                state_dir: Some(state.clone()),
+            },
+            crate::Scope::User,
+        );
+        assert_eq!(
+            over.state_dir_override.as_deref(),
+            Some(state.as_path()),
+            "--state-dir must reach the loop, or the daemon's drift events, backups, and apply lock land where the CLI never looks"
+        );
+        let ipc = over.ipc_path.expect("runtime dir resolves an ipc path");
+        // The endpoint's SHAPE is the one thing that genuinely differs by OS: a
+        // unix socket is a file under the runtime dir, a Windows named pipe is a
+        // kernel object in the flat `\\.\pipe\` namespace that no directory can
+        // contain. Each side asserts its own real contract rather than the
+        // check being dropped on the platform where it does not fit.
+        #[cfg(unix)]
+        assert!(
+            ipc.starts_with(&runtime),
+            "--runtime-dir must bind the socket under the given root, got {ipc:?}"
+        );
+        #[cfg(windows)]
+        {
+            let _ = &runtime;
+            assert_eq!(
+                ipc,
+                PathBuf::from(r"\\.\pipe\cfgd"),
+                "a named pipe cannot live under --runtime-dir, but scope must still pick the per-user endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
+        use crate::daemon::cli_run_overrides;
+        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User);
+        assert!(
+            over.state_dir_override.is_none(),
+            "no flag → fall through to CFGD_STATE_DIR / the scope default"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn run_daemon_with_invalid_config_returns_err_early() {
         let printer = Arc::new(test_printer());
@@ -12880,7 +13159,7 @@ mod tests_run_daemon_wrapper {
         let result = run_daemon(
             bogus_path,
             None,
-            None,
+            DaemonDirOverrides::default(),
             printer,
             hooks,
             crate::Scope::User,
@@ -12890,6 +13169,1252 @@ mod tests_run_daemon_wrapper {
         assert!(
             result.is_err(),
             "missing config must propagate as Err, got Ok"
+        );
+    }
+}
+
+// ===========================================================================
+// Scheduled-backup timers
+//
+// `daemon::backup` owns scheduling only; the run itself goes through the same
+// `crate::backup::run_backup` the CLI drives, so these tests assert the timer
+// arithmetic, the SIGHUP rebuild, and that a fire lands a real `backup_runs`
+// row — not the engine's own semantics, which `backup/tests.rs` covers.
+// ===========================================================================
+
+mod backup_timers {
+    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::*;
+    use crate::daemon::backup::{
+        BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
+        reload_backup_tasks, resolve_backup_tasks,
+    };
+    use crate::state::StateStore;
+    use std::sync::atomic::AtomicU64;
+    use std::time::{Duration as StdDuration, Instant};
+
+    /// A backup spec with an optional schedule, everything else defaulted.
+    fn spec(name: &str, source: &Path, schedule: Option<&str>) -> config::BackupSpec {
+        let mut yaml = format!("name: {name}\nsource: {}\n", crate::to_posix_string(source));
+        if let Some(s) = schedule {
+            yaml.push_str(&format!("schedule: \"{s}\"\n"));
+        }
+        serde_yaml::from_str(&yaml).expect("backup spec should parse")
+    }
+
+    fn task(name: &str, source: &Path, schedule: &str, now: Instant) -> BackupTask {
+        BackupTask::new(
+            &spec(name, source, Some(schedule)),
+            "workstation",
+            now,
+            None,
+        )
+        .expect("schedule should install a timer")
+    }
+
+    /// A clean (non-degraded) timer set around `tasks` — the shape a healthy
+    /// resolution produces.
+    fn timers(tasks: Vec<BackupTask>) -> BackupTimers {
+        BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks,
+                degraded: None,
+            },
+            Instant::now(),
+        )
+    }
+
+    /// No recorded history — every unit's interval starts from now.
+    fn no_history(_: &str) -> Option<String> {
+        None
+    }
+
+    /// Write a config plus a `default` profile whose `spec.backups` block is
+    /// `backups_yaml` (already indented four spaces).
+    fn write_config_with_backups(tmp: &tempfile::TempDir, backups_yaml: &str) -> PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n{backups_yaml}"
+            ),
+        )
+        .unwrap();
+        config_path
+    }
+
+    // ----- next-fire computation -----
+
+    #[test]
+    fn interval_next_fire_is_one_period_out() {
+        let now = Instant::now();
+        let t = task("db", Path::new("/tmp/db"), "45s", now);
+        assert_eq!(t.next_fire(), now + StdDuration::from_secs(45));
+    }
+
+    #[test]
+    fn cron_next_fire_matches_croners_own_search() {
+        let now = Instant::now();
+        let t = task("db", Path::new("/tmp/db"), "0 * * * *", now);
+        let cron: croner::Cron = "0 * * * *".parse().unwrap();
+        let wall = chrono::Local::now();
+        let expected = (cron.find_next_occurrence(&wall, false).unwrap() - wall)
+            .to_std()
+            .unwrap();
+        let actual = t.next_fire().duration_since(now);
+        let skew = actual.abs_diff(expected);
+        assert!(
+            skew < StdDuration::from_secs(2),
+            "cron deadline {actual:?} should track croner's {expected:?}"
+        );
+        assert!(
+            t.next_fire() > now,
+            "a cron deadline must be strictly in the future"
+        );
+    }
+
+    #[test]
+    fn a_task_is_due_only_once_its_deadline_has_passed() {
+        let now = Instant::now();
+        let t = task("db", Path::new("/tmp/db"), "60s", now);
+        assert!(!t.is_due(now));
+        assert!(!t.is_due(now + StdDuration::from_secs(59)));
+        assert!(t.is_due(now + StdDuration::from_secs(60)));
+    }
+
+    // ----- overlap / missed-fire behaviour -----
+
+    #[test]
+    fn advance_skips_the_fires_that_elapsed_while_the_loop_was_busy() {
+        let past = Instant::now() - StdDuration::from_secs(10);
+        let mut t = task("db", Path::new("/tmp/db"), "1s", past);
+        let now = Instant::now();
+        let missed = t.advance(now);
+        assert!(
+            (8..=10).contains(&missed),
+            "a 1s schedule 10s behind should report ~9 skipped fires, got {missed}"
+        );
+        assert!(
+            t.next_fire() > now,
+            "advance must arm a deadline in the future, never queue the backlog"
+        );
+        assert!(
+            t.next_fire() <= now + StdDuration::from_secs(1),
+            "the next fire stays on the declared cadence"
+        );
+    }
+
+    #[test]
+    fn advance_reports_no_missed_fires_for_a_prompt_tick() {
+        let now = Instant::now();
+        let mut t = task("db", Path::new("/tmp/db"), "30s", now);
+        let due_at = now + StdDuration::from_secs(30);
+        assert_eq!(t.advance(due_at), 0);
+        assert_eq!(t.next_fire(), due_at + StdDuration::from_secs(30));
+    }
+
+    #[test]
+    fn advance_on_a_cron_schedule_arms_a_future_deadline() {
+        let past = Instant::now() - StdDuration::from_secs(120);
+        let mut t = task("db", Path::new("/tmp/db"), "* * * * *", past);
+        let now = Instant::now();
+        let missed = t.advance(now);
+        assert!(
+            missed > 0,
+            "a per-minute cron two minutes behind must report skipped fires"
+        );
+        assert!(t.next_fire() > now);
+        assert!(
+            t.next_fire() <= now + StdDuration::from_secs(61),
+            "the next per-minute occurrence is at most a minute out"
+        );
+    }
+
+    // ----- task-set construction -----
+
+    #[test]
+    fn only_scheduled_backups_get_a_timer() {
+        let now = Instant::now();
+        let specs = vec![
+            spec("scheduled", Path::new("/tmp/a"), Some("1h")),
+            spec("apply-time", Path::new("/tmp/b"), None),
+        ];
+        let tasks = build_backup_tasks(&specs, "workstation", now, &no_history);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].spec.name, "scheduled");
+        assert_eq!(tasks[0].profile_name, "workstation");
+    }
+
+    #[test]
+    fn an_unparseable_schedule_installs_no_timer() {
+        let specs = vec![spec("broken", Path::new("/tmp/a"), Some("every tuesday"))];
+        assert!(build_backup_tasks(&specs, "workstation", Instant::now(), &no_history).is_empty());
+    }
+
+    #[test]
+    fn next_backup_deadline_takes_the_soonest_of_the_set() {
+        let now = Instant::now();
+        let set = timers(vec![
+            task("late", Path::new("/tmp/a"), "1h", now),
+            task("soon", Path::new("/tmp/b"), "30s", now),
+        ]);
+        assert_eq!(
+            runner::next_backup_deadline(&set),
+            now + StdDuration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn next_backup_deadline_parks_when_nothing_is_scheduled() {
+        let deadline = runner::next_backup_deadline(&BackupTimers::empty());
+        assert!(
+            deadline > Instant::now() + StdDuration::from_secs(60),
+            "an empty timer set must park rather than spin the loop"
+        );
+    }
+
+    // ----- SIGHUP rebuild -----
+
+    #[test]
+    fn reload_carries_the_pending_deadline_of_an_unchanged_unit() {
+        let past = Instant::now() - StdDuration::from_secs(30);
+        let mut current = vec![task("db", Path::new("/tmp/db"), "1h", past)];
+        let carried = current[0].next_fire();
+        let rebuilt = vec![task("db", Path::new("/tmp/db"), "1h", Instant::now())];
+
+        let summary = reload_backup_tasks(&mut current, rebuilt);
+        assert!(summary.is_empty(), "an untouched unit is not a change");
+        assert_eq!(
+            current[0].next_fire(),
+            carried,
+            "a reload must not restart the clock on a backup the user did not touch"
+        );
+    }
+
+    #[test]
+    fn reload_counts_added_removed_and_rescheduled_units() {
+        let now = Instant::now();
+        let mut current = vec![
+            task("kept", Path::new("/tmp/a"), "1h", now),
+            task("changed", Path::new("/tmp/b"), "1h", now),
+            task("dropped", Path::new("/tmp/c"), "1h", now),
+        ];
+        let rebuilt = vec![
+            task("kept", Path::new("/tmp/a"), "1h", now),
+            task("changed", Path::new("/tmp/b"), "15m", now),
+            task("new", Path::new("/tmp/d"), "1h", now),
+        ];
+
+        let summary = reload_backup_tasks(&mut current, rebuilt);
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.removed, 1);
+        assert_eq!(summary.rescheduled, 1);
+        assert!(!summary.is_empty());
+        let names: Vec<&str> = current.iter().map(|t| t.spec.name.as_str()).collect();
+        assert_eq!(names, vec!["kept", "changed", "new"]);
+    }
+
+    #[test]
+    fn reload_restarts_the_clock_on_a_rescheduled_unit() {
+        let past = Instant::now() - StdDuration::from_secs(30);
+        let mut current = vec![task("db", Path::new("/tmp/db"), "1h", past)];
+        let stale = current[0].next_fire();
+        let rebuilt = vec![task("db", Path::new("/tmp/db"), "15m", Instant::now())];
+
+        reload_backup_tasks(&mut current, rebuilt);
+        assert_ne!(current[0].next_fire(), stale);
+        assert!(current[0].next_fire() > Instant::now());
+    }
+
+    #[test]
+    fn sighup_reload_picks_up_added_changed_and_removed_units() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let posix = crate::to_posix_string(&source);
+
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: kept\n      source: {posix}\n      schedule: 1h\n    - name: dropped\n      source: {posix}\n      schedule: 1h\n"
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let names: Vec<&str> = set.tasks().iter().map(|t| t.spec.name.as_str()).collect();
+        assert_eq!(names, vec!["kept", "dropped"], "startup-equivalent rebuild");
+        let kept_deadline = set.tasks()[0].next_fire();
+
+        // Drop one, reschedule the survivor, add a new one.
+        write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: kept\n      source: {posix}\n      schedule: 15m\n    - name: added\n      source: {posix}\n      schedule: 1h\n"
+            ),
+        );
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let names: Vec<&str> = set.tasks().iter().map(|t| t.spec.name.as_str()).collect();
+        assert_eq!(names, vec!["kept", "added"]);
+        assert_ne!(
+            set.tasks()[0].next_fire(),
+            kept_deadline,
+            "a changed schedule re-arms the timer"
+        );
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
+            "reload must report the timer-set delta: {captured}"
+        );
+    }
+
+    #[test]
+    fn sighup_reload_installs_no_timer_for_a_schedule_less_backup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: apply-time\n      source: {}\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &AtomicU64::new(300), &AtomicU64::new(300), &mut set);
+        assert_eq!(
+            set.len(),
+            0,
+            "a schedule-less backup belongs to apply, not to the daemon"
+        );
+    }
+
+    // ----- the tick itself -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_runs_a_due_unit_and_records_it_like_the_cli_does() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let past = Instant::now() - StdDuration::from_secs(5);
+        let mut set = timers(vec![task("db", &source, "1s", past)]);
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let record = store
+            .latest_backup_run("db")
+            .unwrap()
+            .expect("the tick must write a backup_runs row");
+        assert_eq!(record.name, "db");
+        assert_eq!(record.status, crate::state::BackupRunStatus::Success);
+        assert!(record.is_clean(), "unexpected error: {:?}", record.error);
+        assert_eq!(record.source, crate::to_posix_string(&source));
+        assert_eq!(record.size_bytes, Some(7));
+        let snapshot = PathBuf::from(
+            record
+                .destination_path
+                .as_ref()
+                .expect("a successful run records its artifact"),
+        );
+        assert!(snapshot.exists(), "snapshot missing at {snapshot:?}");
+        assert!(
+            set.tasks()[0].next_fire() > Instant::now(),
+            "the fired unit must be re-armed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_leaves_a_unit_that_is_not_due_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let mut set = timers(vec![task("db", &source, "1h", Instant::now())]);
+        let armed = set.tasks()[0].next_fire();
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(set.tasks()[0].next_fire(), armed, "deadline must not move");
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        assert!(
+            store.latest_backup_run("db").unwrap().is_none(),
+            "a unit that is not due must not run"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_hooks_run_in_the_reconcile_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let marker = tmp.path().join("hook.out");
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let mut s = spec("db", &source, Some("1s"));
+        // native-ok: the path is interpolated into a shell command for THIS host.
+        #[cfg(unix)]
+        let run = format!(
+            "printf '%s' \"$CFGD_CONTEXT:$CFGD_PHASE:$CFGD_PROFILE\" > '{}'",
+            marker.display()
+        );
+        #[cfg(windows)]
+        let run = format!(
+            "echo %CFGD_CONTEXT%:%CFGD_PHASE%:%CFGD_PROFILE%> \"{}\"",
+            marker.display()
+        );
+        s.pre_backup = vec![config::ScriptEntry::Simple(run)];
+
+        let past = Instant::now() - StdDuration::from_secs(5);
+        let mut set = timers(vec![
+            BackupTask::new(&s, "workstation", past, None).expect("schedule installs a timer"),
+        ]);
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        let contents = std::fs::read_to_string(&marker)
+            .expect("preBackup hook should have run")
+            .trim()
+            .to_string();
+        assert_eq!(contents, "reconcile:preBackup:workstation");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backup_tick_records_a_failure_without_taking_the_loop_down() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let missing = tmp.path().join("never-created.db");
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let past = Instant::now() - StdDuration::from_secs(5);
+        let mut set = timers(vec![task("db", &missing, "1s", past)]);
+        runner::handle_backup_tick(&ctx, &mut set)
+            .await
+            .expect("an operational failure is recorded, never propagated");
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let record = store.latest_backup_run("db").unwrap().expect("row written");
+        assert_eq!(record.status, crate::state::BackupRunStatus::Failed);
+        assert!(record.destination_path.is_none());
+    }
+
+    // ----- the loop's timer branch -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_loop_fires_a_backup_timer_without_any_external_trigger() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+        let (triggers, senders) = make_triggers();
+
+        let set = timers(vec![task("db", &source, "1s", Instant::now())]);
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            set,
+            Arc::new(AtomicU64::new(300)),
+            Arc::new(AtomicU64::new(300)),
+        ));
+
+        // No channel is pumped: only the timer branch can produce this row.
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let deadline = Instant::now() + StdDuration::from_secs(10);
+        loop {
+            if store.latest_backup_run("db").unwrap().is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the loop's backup timer never fired"
+            );
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
+
+        senders.shutdown_tx.send(()).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    // ----- restart seeding of interval schedules -----
+
+    /// An ISO 8601 timestamp `ago` in the past — the shape `finished_at` holds.
+    fn finished_secs_ago(ago: u64) -> String {
+        crate::unix_secs_to_iso8601(crate::unix_secs_now() - ago)
+    }
+
+    /// Assert `actual` sits within a second of `expected` — the seeding
+    /// arithmetic reads two clocks, so an exact match would be flaky.
+    fn assert_fires_near(actual: Instant, expected: Instant) {
+        let slack = StdDuration::from_secs(2);
+        assert!(
+            actual >= expected.checked_sub(slack).unwrap() && actual <= expected + slack,
+            "next fire is off by more than {slack:?}"
+        );
+    }
+
+    #[test]
+    fn an_interval_schedule_resumes_from_the_last_recorded_run() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some(&finished_secs_ago(1800)),
+        )
+        .expect("timer installs");
+        // Half the period has already elapsed, so only half is left — NOT a
+        // fresh hour, which is what makes a daily backup on a daily-rebooted
+        // machine never fire.
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(1800));
+    }
+
+    #[test]
+    fn an_overdue_interval_schedule_fires_promptly_after_a_restart() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some(&finished_secs_ago(7200)),
+        )
+        .expect("timer installs");
+        assert!(
+            t.is_due(now),
+            "a unit whose period elapsed while the machine was down is due now"
+        );
+    }
+
+    #[test]
+    fn an_interval_schedule_with_no_history_starts_a_full_period_out() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            None,
+        )
+        .expect("timer installs");
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_recorded_run_in_the_future_falls_back_to_a_full_period() {
+        let now = Instant::now();
+        let future = crate::unix_secs_to_iso8601(crate::unix_secs_now() + 3600);
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some(&future),
+        )
+        .expect("timer installs");
+        // A stepped-back clock or a state dir carried over from another machine
+        // must not arm a deadline in the past.
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
+    }
+
+    #[test]
+    fn an_unparseable_recorded_timestamp_falls_back_to_a_full_period() {
+        let now = Instant::now();
+        let t = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("1h")),
+            "workstation",
+            now,
+            Some("not-a-timestamp"),
+        )
+        .expect("timer installs");
+        assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_cron_schedule_ignores_the_last_run() {
+        let now = Instant::now();
+        let seeded = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("0 3 * * *")),
+            "workstation",
+            now,
+            Some(&finished_secs_ago(86_400 * 7)),
+        )
+        .expect("timer installs");
+        let unseeded = BackupTask::new(
+            &spec("db", Path::new("/tmp/a"), Some("0 3 * * *")),
+            "workstation",
+            now,
+            None,
+        )
+        .expect("timer installs");
+        // Cron occurrences are absolute wall-clock times: the next 3am is the
+        // next 3am no matter how many were slept through.
+        assert_fires_near(seeded.next_fire(), unseeded.next_fire());
+    }
+
+    #[test]
+    fn resolve_seeds_the_timer_set_from_the_state_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let state_dir = tmp.path().join("state");
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        store
+            .record_backup_run(&crate::state::BackupRunDraft {
+                name: "db".to_string(),
+                source: crate::to_posix_string(&source),
+                destination_path: Some("/snap".to_string()),
+                size_bytes: Some(1),
+                status: crate::state::BackupRunStatus::Success,
+                error: None,
+                started_at: finished_secs_ago(1830),
+                finished_at: finished_secs_ago(1800),
+            })
+            .unwrap();
+
+        let cfg = config::load_config(&config_path).unwrap();
+        let (printer, _) = crate::output::Printer::for_test();
+        let now = Instant::now();
+        let resolved = resolve_backup_tasks(
+            &cfg,
+            &config_path,
+            None,
+            &printer,
+            crate::Scope::User,
+            Some(&state_dir),
+            now,
+        )
+        .expect("a valid profile resolves");
+
+        assert_eq!(resolved.tasks.len(), 1);
+        assert!(resolved.degraded.is_none());
+        assert_fires_near(
+            resolved.tasks[0].next_fire(),
+            now + StdDuration::from_secs(1800),
+        );
+    }
+
+    #[test]
+    fn resolve_reports_an_unresolvable_profile_rather_than_an_empty_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: missing\n",
+        )
+        .unwrap();
+        let cfg = config::load_config(&config_path).unwrap();
+        let (printer, _) = crate::output::Printer::for_test();
+
+        // An `Ok(empty)` here is exactly the silent failure that let one SIGHUP
+        // wipe a working timer set: the caller could not tell "no backups" from
+        // "could not tell".
+        assert!(
+            resolve_backup_tasks(
+                &cfg,
+                &config_path,
+                None,
+                &printer,
+                crate::Scope::User,
+                None,
+                Instant::now(),
+            )
+            .is_err()
+        );
+    }
+
+    // ----- a degraded resolution is neither sticky nor destructive -----
+
+    #[test]
+    fn a_degraded_resolution_never_swaps_out_the_running_set() {
+        let now = Instant::now();
+        let mut set = timers(vec![
+            task("db", Path::new("/tmp/a"), "1h", now),
+            task("home", Path::new("/tmp/b"), "1h", now),
+        ]);
+        let armed: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+
+        let summary = set.apply_resolved(
+            ResolvedBackupTasks {
+                tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
+                degraded: Some(DegradedReason::SourcesUnavailable),
+            },
+            now,
+        );
+
+        assert!(
+            summary.is_none(),
+            "a degraded resolution reports no reload, because none happened"
+        );
+        assert_eq!(
+            set.len(),
+            2,
+            "the source-delivered timer must not be retired"
+        );
+        let kept: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+        assert_eq!(kept, armed, "the running deadlines must be untouched");
+        assert!(set.is_degraded(), "a degraded resolution must arm a retry");
+    }
+
+    #[test]
+    fn a_clean_resolution_clears_the_retry_and_swaps_the_set() {
+        let now = Instant::now();
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
+                degraded: Some(DegradedReason::SourcesUnavailable),
+            },
+            now,
+        );
+        assert!(set.is_degraded());
+
+        let summary = set
+            .apply_resolved(
+                ResolvedBackupTasks {
+                    tasks: vec![
+                        task("db", Path::new("/tmp/a"), "1h", now),
+                        task("home", Path::new("/tmp/b"), "1h", now),
+                    ],
+                    degraded: None,
+                },
+                now,
+            )
+            .expect("a clean resolution reloads");
+        assert_eq!(summary.added, 1);
+        assert_eq!(set.len(), 2);
+        assert!(!set.is_degraded());
+    }
+
+    #[test]
+    fn a_degraded_startup_holds_the_first_fire_back_past_the_retry() {
+        let now = Instant::now();
+        let set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: vec![task("db", Path::new("/tmp/a"), "1s", now)],
+                degraded: Some(DegradedReason::SourcesUnavailable),
+            },
+            now,
+        );
+        // Until the retry confirms these specs, a unit a source overrides may be
+        // carrying the local destination — and a run against the wrong
+        // destination prunes the source-era history out of the table.
+        assert!(
+            set.tasks()[0].next_fire() > now + StdDuration::from_secs(60),
+            "a degraded startup must not run before it has re-resolved"
+        );
+        assert!(set.is_degraded());
+    }
+
+    #[test]
+    fn sighup_over_a_broken_profile_keeps_the_running_schedules() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let posix = crate::to_posix_string(&source);
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {posix}\n      schedule: 1h\n    - name: home\n      source: {posix}\n      schedule: 6h\n"
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        assert_eq!(set.len(), 2);
+        let armed: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+        buf.lock().unwrap().clear();
+
+        // The profile the timers came from is now unreadable — a typo saved
+        // mid-edit, or a half-written file.
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "spec:\n  backups:\n   - name: [unclosed\n",
+        )
+        .unwrap();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+
+        assert_eq!(
+            set.len(),
+            2,
+            "one SIGHUP over a transient config error must not retire the machine's backups"
+        );
+        let kept: Vec<Instant> = set.tasks().iter().map(BackupTask::next_fire).collect();
+        assert_eq!(
+            kept, armed,
+            "the pending deadlines must survive the failure"
+        );
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedules NOT reloaded"),
+            "the operator must be told the reload was refused: {captured}"
+        );
+        assert!(
+            !captured.contains("2 removed"),
+            "a refused reload must never report the running set as removed: {captured}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_due_retry_re_resolves_and_restores_the_timer_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+
+        // A startup that could not compose sources: no timers, retry armed and
+        // already due (the daemon has been up longer than the retry window).
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: Vec::new(),
+                degraded: Some(DegradedReason::SourcesUnavailable),
+            },
+            Instant::now() - StdDuration::from_secs(3600),
+        );
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(
+            set.len(),
+            1,
+            "a healed config must restore the timers without a restart or a SIGHUP"
+        );
+        assert!(!set.is_degraded());
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedules restored: 1 scheduled"),
+            "the recovery must be visible: {captured}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_due_retry_over_a_backup_less_profile_does_not_claim_a_restoration() {
+        // Same recovery path, but the healed profile declares zero backups.
+        // "restored: 0 scheduled" reads as a broken recovery when it is really
+        // just an empty, healthy config — the zero case gets its own wording.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: Vec::new(),
+                degraded: Some(DegradedReason::SourcesUnavailable),
+            },
+            Instant::now() - StdDuration::from_secs(3600),
+        );
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(set.len(), 0);
+        assert!(!set.is_degraded());
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedule resolved: no units configured"),
+            "the zero case must not say 'restored': {captured}"
+        );
+        assert!(
+            !captured.contains("restored: 0 scheduled"),
+            "the odd zero-count phrasing must be gone: {captured}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_due_retry_over_an_unreadable_config_is_labeled_by_its_real_cause() {
+        // The config-load Err arm is a DIFFERENT failure than profile
+        // resolution: the profile is never even reached because the
+        // top-level config file itself would not parse. It must not borrow
+        // ProfileUnresolved's label.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "::: not valid yaml :::").unwrap();
+        ctx.config_path = config_path;
+
+        let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::ConfigUnreadable),
+            "an unreadable top-level config must not be mislabeled as an unresolved profile"
+        );
+    }
+
+    /// A config declaring a source whose cache is present but unreadable — the
+    /// "source cache caught mid-rewrite" case. The profile resolves locally,
+    /// `compose_daemon_desired_state` fails on the manifest, and
+    /// `resolve_backup_tasks` hands back the locally-declared set marked
+    /// degraded: the exact state the adopt branch runs in. (A source that was
+    /// never fetched is only WARNED about, not an error, so it cannot produce
+    /// this state.)
+    fn write_config_with_broken_source_cache(
+        tmp: &tempfile::TempDir,
+        backups_yaml: &str,
+    ) -> PathBuf {
+        let cache = tmp
+            .path()
+            .join(".cache")
+            .join("cfgd")
+            .join("sources")
+            .join("team");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            cache.join(crate::sources::SOURCE_MANIFEST_FILE),
+            "::: not a manifest :::",
+        )
+        .unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team\n      origin:\n        type: Git\n        url: https://example.invalid/team.git\n      subscription:\n        profile: team\n        priority: 500\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n{backups_yaml}"
+            ),
+        )
+        .unwrap();
+        config_path
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retry_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
+        // The recovery path the startup retry opens: booted on a broken
+        // profile (0 timers), profile since fixed, sources still unavailable.
+        // The set genuinely improved — and it is NOT an all-clear. The retry is
+        // still armed, and once the one-shot first-fire deferral expires a unit
+        // a source overrides runs against the LOCAL destination and its prune
+        // drops the source-era retention rows.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_broken_source_cache(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+
+        let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(set.len(), 1, "the local set must be adopted");
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable),
+            "adopting a partial set must not clear the degraded state"
+        );
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains(
+                "Backup schedules restored: 1 scheduled (source composition unavailable)"
+            ),
+            "the line must name what is still missing: {captured}"
+        );
+        assert!(
+            !captured.contains("✓ Backup schedules restored"),
+            "an unqualified all-clear tick would report a healthy set that is not: {captured}"
+        );
+        assert!(
+            captured.contains("⚠ Backup schedules restored"),
+            "a partial set is a warning, not an Ok: {captured}"
+        );
+    }
+
+    #[test]
+    fn a_sighup_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
+        // Same state, reached the other way: a SIGHUP arriving while nothing is
+        // running adopts rather than refusing (there is nothing to protect), so
+        // its completion line carries the same qualifier the tick's does.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_broken_source_cache(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+
+        assert_eq!(set.len(), 1);
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
+        );
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains(
+                "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
+            ),
+            "the reload line must name what is still missing: {captured}"
+        );
+        assert!(
+            !captured.contains("✓ Backup schedules reloaded"),
+            "an unqualified all-clear would tell the operator their edit landed in full: {captured}"
+        );
+        assert!(
+            captured.contains("⚠ Backup schedules reloaded"),
+            "a partial reload is a warning, not an Ok: {captured}"
+        );
+    }
+
+    #[test]
+    fn a_fully_resolved_reload_still_reports_a_plain_all_clear() {
+        // The qualifier must ride ONLY the degraded state: a healthy reload has
+        // to stay a bare Ok, or the warning stops meaning anything.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+
+        assert!(!set.is_degraded());
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
+            "got: {captured}"
+        );
+        assert!(
+            !captured.contains("unavailable") && !captured.contains("unresolved"),
+            "a clean reload must carry no qualifier: {captured}"
+        );
+    }
+
+    #[test]
+    fn a_startup_that_cannot_resolve_the_profile_still_arms_a_retry() {
+        // Startup is the one moment with no prior set to keep, so an
+        // unresolvable profile costs every timer. Without a retry the daemon
+        // runs indefinitely with zero backups — healthy in every other respect
+        // — and only a restart or a manual SIGHUP brings them back.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        // Saved mid-edit: the file exists, and does not parse.
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "spec:\n  backups:\n   - name: [unclosed\n",
+        )
+        .unwrap();
+
+        let setup = pre_loop(&config_path, None)
+            .expect("a broken profile must not stop the daemon from starting");
+
+        assert_eq!(setup.backup_timers.len(), 0);
+        assert_eq!(
+            setup.backup_timers.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::ProfileUnresolved),
+            "the banner must name the profile, not blame source composition"
+        );
+        assert!(
+            setup.backup_timers.next_deadline().is_some(),
+            "an empty startup set must still wake the loop to re-resolve"
+        );
+    }
+
+    #[test]
+    fn a_degraded_resolution_is_adopted_when_nothing_is_running() {
+        // The keep-the-running-set rule protects timers that exist. With none,
+        // refusing would pin a daemon that booted on an unresolvable profile at
+        // zero timers for as long as composition stayed down — the sticky-empty
+        // failure the retry exists to end.
+        let now = Instant::now();
+        let mut set = BackupTimers::empty_with_retry(now);
+        assert_eq!(set.len(), 0);
+
+        let summary = set
+            .apply_resolved(
+                ResolvedBackupTasks {
+                    tasks: vec![task("db", Path::new("/tmp/a"), "1s", now)],
+                    degraded: Some(DegradedReason::SourcesUnavailable),
+                },
+                now,
+            )
+            .expect("adopting a set from nothing is a reload worth reporting");
+        assert_eq!(summary.added, 1);
+        assert_eq!(set.len(), 1);
+        assert!(
+            set.is_degraded(),
+            "adopting a partial set must keep the retry armed"
+        );
+        assert!(
+            set.tasks()[0].next_fire() > now + StdDuration::from_secs(60),
+            "an adopted degraded set gets the same first-fire deferral a degraded startup does"
+        );
+    }
+
+    #[test]
+    fn a_degraded_resolution_is_still_refused_while_timers_are_running() {
+        let now = Instant::now();
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: vec![
+                    task("db", Path::new("/tmp/a"), "1h", now),
+                    task("home", Path::new("/tmp/b"), "6h", now),
+                ],
+                degraded: None,
+            },
+            now,
+        );
+
+        assert!(
+            set.apply_resolved(
+                ResolvedBackupTasks {
+                    tasks: vec![task("db", Path::new("/tmp/a"), "1h", now)],
+                    degraded: Some(DegradedReason::SourcesUnavailable),
+                },
+                now,
+            )
+            .is_none(),
+            "a degraded resolution must not retire the source-delivered timer"
+        );
+        assert_eq!(set.len(), 2);
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
+        );
+    }
+
+    #[test]
+    fn the_startup_banner_says_when_the_timer_set_is_degraded() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(300),
+            sync_interval: StdDuration::from_secs(300),
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+        };
+        let clean = crate::daemon::format_interval_lines(&parsed, None, 2, None);
+        assert!(clean.iter().any(|l| l == "backups=2 scheduled"));
+
+        // "backups=2 scheduled" alone is a lie when a source's third one is
+        // missing from the set — and the two degraded causes need different
+        // remedies, so the banner names which one it hit.
+        let sources = crate::daemon::format_interval_lines(
+            &parsed,
+            None,
+            2,
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable),
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|l| l == "backups=2 scheduled (source composition unavailable)"),
+            "got: {sources:?}"
+        );
+
+        let profile = crate::daemon::format_interval_lines(
+            &parsed,
+            None,
+            0,
+            Some(crate::daemon::backup::DegradedReason::ProfileUnresolved),
+        );
+        assert!(
+            profile
+                .iter()
+                .any(|l| l == "backups=0 scheduled (profile unresolved)"),
+            "a profile that would not resolve must not be reported as a source \
+             problem, got: {profile:?}"
+        );
+
+        let unreadable_config = crate::daemon::format_interval_lines(
+            &parsed,
+            None,
+            0,
+            Some(crate::daemon::backup::DegradedReason::ConfigUnreadable),
+        );
+        assert!(
+            unreadable_config
+                .iter()
+                .any(|l| l == "backups=0 scheduled (config unreadable)"),
+            "a top-level config that would not parse must render its own label, \
+             not borrow the profile-unresolved or source-composition wording, \
+             got: {unreadable_config:?}"
         );
     }
 }

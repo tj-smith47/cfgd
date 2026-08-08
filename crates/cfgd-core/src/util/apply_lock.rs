@@ -5,6 +5,24 @@ use crate::errors;
 /// path can never drift from the one actually acquired.
 pub const APPLY_LOCK_FILENAME: &str = "apply.lock";
 
+/// State-dir subdirectory holding per-resource lock files. Kept out of the
+/// state-dir root so a lock file is never mistaken for one of the state dir's
+/// own artifacts, and so the set of locks can be listed in one place.
+const LOCKS_SUBDIR: &str = "locks";
+
+/// High half of the byte offset `LockFileEx` locks, i.e. the lock sits one byte
+/// past 2^63 into the file.
+///
+/// `LockFileEx` ranges are **mandatory**, not advisory: while one process holds
+/// a range exclusively, no other process may even READ those bytes. Locking
+/// byte 0 — the obvious choice, and what this did — therefore made the PID
+/// stored in the file unreadable by precisely the caller that needs it, the one
+/// being refused, so every contended acquire reported `unknown pid`. The range
+/// is parked far past any content the file will ever hold, which leaves the PID
+/// readable while keeping the exclusion exactly as strict.
+#[cfg(windows)]
+const LOCK_RANGE_OFFSET_HIGH: u32 = 0x8000_0000;
+
 /// Platform-specific lock file type.
 /// Unix: `nix::fcntl::Flock` (safe RAII flock, unlocks on drop).
 /// Windows: plain `File` (LockFileEx releases on handle close).
@@ -13,100 +31,134 @@ type LockFile = nix::fcntl::Flock<std::fs::File>;
 #[cfg(windows)]
 type LockFile = std::fs::File;
 
-/// RAII guard that releases the apply lock when dropped.
+/// Terminator the holder appends after its PID, and the marker `holder_label`
+/// requires before it will believe what it read.
+///
+/// A holder truncates the file and then writes, so a contender reading inside
+/// that window sees a *prefix* — `12` for a process whose real ID is `12345`.
+/// A bare numeric parse accepts that prefix and names an unrelated process just
+/// as confidently as a correct answer, which is strictly worse than admitting
+/// the holder is unknown: nothing in the message tells the operator to distrust
+/// it. Requiring the terminator makes the record self-delimiting, so a torn
+/// read is detectable rather than plausible.
+const PID_RECORD_TERMINATOR: char = '\n';
+
+/// Describe whoever holds `lock_path`, for the error a refused acquire returns.
+///
+/// Reports a PID only for a complete, well-formed record: the holder's ID
+/// followed by [`PID_RECORD_TERMINATOR`]. Everything else falls back to
+/// `unknown pid` — an empty file (a holder that has taken the lock but not yet
+/// written its PID, or a non-cfgd holder such as `flock(1)` that never writes
+/// one), a torn prefix, and any content that is not a bare number.
+fn holder_label(lock_path: &std::path::Path) -> String {
+    let unknown = || "unknown pid".to_string();
+    let raw = std::fs::read_to_string(lock_path).unwrap_or_default();
+    match raw.strip_suffix(PID_RECORD_TERMINATOR) {
+        Some(pid) => match pid.parse::<u32>() {
+            Ok(pid) => format!("pid {pid}"),
+            Err(_) => unknown(),
+        },
+        None => unknown(),
+    }
+}
+
+/// The exact bytes a holder records in its lock file.
+fn pid_record() -> String {
+    format!("{}{PID_RECORD_TERMINATOR}", std::process::id())
+}
+
+/// RAII guard that releases an exclusive file lock when dropped.
+///
+/// Shared by every cfgd mutex that is a whole-file lock: the machine-wide apply
+/// lock and the per-unit backup locks. The guard body is identical for all of
+/// them — only the path differs — so the acquire helpers below are thin wrappers
+/// over one `acquire_lock_at`.
 #[derive(Debug)]
-pub struct ApplyLockGuard {
+pub struct FileLockGuard {
     _file: LockFile,
     _path: std::path::PathBuf,
 }
 
-impl Drop for ApplyLockGuard {
+impl Drop for FileLockGuard {
     fn drop(&mut self) {
         // Clear the PID so stale reads aren't confusing.
         // Lock is released when LockFile is dropped after this.
         if let Err(e) = std::fs::write(&self._path, b"") {
-            tracing::debug!(path = ?self._path, error = %e, "failed to clear apply-lock PID on drop");
+            tracing::debug!(path = ?self._path, error = %e, "failed to clear lock PID on drop");
         }
     }
 }
 
-/// Acquire an exclusive apply lock via `flock()`.
-///
-/// The lock file is created at `state_dir/apply.lock`. Uses non-blocking
-/// `LOCK_EX | LOCK_NB` — returns `StateError::ApplyLockHeld` if another
-/// process holds the lock. The lock is released automatically when the guard
-/// is dropped.
-///
-/// The PID is written via `std::fs::write` (a fresh open/write/close) rather
-/// than through the Flock fd because on macOS ARM64 writes through
-/// `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
-/// unaffected — `Flock<File>` still holds it).
+// Acquire an exclusive whole-file lock via `flock()`, non-blocking
+// (`LOCK_EX | LOCK_NB`): `StateError::ApplyLockHeld` when another holder has it.
+//
+// The PID is written via `std::fs::write` (a fresh open/write/close) rather
+// than through the Flock fd because on macOS ARM64 writes through
+// `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
+// unaffected — `Flock<File>` still holds it).
 #[cfg(unix)]
-pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLockGuard> {
-    std::fs::create_dir_all(state_dir)?;
-    let lock_path = state_dir.join(APPLY_LOCK_FILENAME);
-
+fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&lock_path)?;
+        .open(lock_path)?;
 
     let locked = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
         .map_err(|(_file, errno)| {
             if errno == nix::errno::Errno::EWOULDBLOCK {
-                let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
                 errors::CfgdError::from(errors::StateError::ApplyLockHeld {
-                    holder: format!("pid {}", holder.trim()),
+                    holder: holder_label(lock_path),
                 })
             } else {
                 errors::CfgdError::from(std::io::Error::from(errno))
             }
         })?;
 
-    std::fs::write(&lock_path, std::process::id().to_string().as_bytes())?;
+    std::fs::write(lock_path, pid_record().as_bytes())?;
 
-    Ok(ApplyLockGuard {
+    Ok(FileLockGuard {
         _file: locked,
-        _path: lock_path,
+        _path: lock_path.to_path_buf(),
     })
 }
 
-/// Acquire an exclusive apply lock via `LockFileEx`.
-///
-/// The lock file is created at `state_dir/apply.lock`. Uses
-/// `LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY` — returns
-/// `StateError::ApplyLockHeld` if another process holds the lock. The lock is
-/// released automatically when the guard is dropped (file handle closed).
+// Acquire an exclusive whole-file lock via `LockFileEx`, non-blocking
+// (`LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY`):
+// `StateError::ApplyLockHeld` when another holder has it. The lock is released
+// when the guard drops and the handle closes.
 #[cfg(windows)]
-pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLockGuard> {
+fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard> {
     use std::io::Write;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
     };
-
-    std::fs::create_dir_all(state_dir)?;
-    let lock_path = state_dir.join(APPLY_LOCK_FILENAME);
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&lock_path)?;
+        .open(lock_path)?;
 
     let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-    // SAFETY: `OVERLAPPED` is a plain-old-data struct of integers and a
-    // handle field; the all-zero bit pattern is the documented "no event,
-    // offset 0" initial value for synchronous-style LockFileEx calls.
-    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let mut overlapped = OVERLAPPED {
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 {
+                Offset: 0,
+                OffsetHigh: LOCK_RANGE_OFFSET_HIGH,
+            },
+        },
+        ..Default::default()
+    };
     // SAFETY: `handle` is a valid, open, owned Win32 file handle derived
     // from `file`, which outlives the call. `&mut overlapped` points to a
     // stack-local, aligned, writable OVERLAPPED struct. The lock byte
-    // range (offset 0, length 1) is fixed and valid. Non-blocking lock
-    // (LOCKFILE_FAIL_IMMEDIATELY) avoids indefinite wait.
+    // range (one byte at `LOCK_RANGE_OFFSET_HIGH << 32`) is fixed and valid.
+    // Non-blocking lock (LOCKFILE_FAIL_IMMEDIATELY) avoids indefinite wait.
     let ret = unsafe {
         LockFileEx(
             handle,
@@ -121,9 +173,8 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
         let err = std::io::Error::last_os_error();
         // ERROR_LOCK_VIOLATION (33) = lock held by another process
         if err.raw_os_error() == Some(33) {
-            let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
             return Err(errors::StateError::ApplyLockHeld {
-                holder: format!("pid {}", holder.trim()),
+                holder: holder_label(lock_path),
             }
             .into());
         }
@@ -132,11 +183,52 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
 
     let mut f = file;
     f.set_len(0)?;
-    write!(f, "{}", std::process::id())?;
+    write!(f, "{}", pid_record())?;
     f.sync_all()?;
 
-    Ok(ApplyLockGuard {
+    Ok(FileLockGuard {
         _file: f,
-        _path: lock_path,
+        _path: lock_path.to_path_buf(),
     })
+}
+
+/// Acquire the machine-wide apply lock at `<state_dir>/apply.lock`.
+///
+/// Non-blocking: returns [`crate::errors::StateError::ApplyLockHeld`] naming the
+/// holding PID when another `cfgd apply` (or the daemon's reconcile) already
+/// holds it. Released when the returned guard drops.
+pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLockGuard> {
+    std::fs::create_dir_all(state_dir)?;
+    acquire_lock_at(&state_dir.join(APPLY_LOCK_FILENAME))
+}
+
+/// Acquire the exclusive lock for one `spec.backups[]` unit at
+/// `<state_dir>/locks/backup-<name>.lock`.
+///
+/// Per-unit rather than global so two different backups still run
+/// concurrently, and taken by every surface (CLI, apply, daemon timer) with no
+/// opt-out: the backup engine's staging path is derived from the destination
+/// alone, so two runs of ONE unit share `.<name>.partial` and the second run's
+/// staging wipe lands inside the first run's in-flight tree. Retention pruning
+/// has the same shape — it reads the run list, then deletes — so a concurrent
+/// run can slip a row in between.
+///
+/// Non-blocking, like [`acquire_apply_lock`]: a held lock is reported as
+/// [`crate::errors::StateError::ApplyLockHeld`] with the holding PID rather
+/// than waited on, so a scheduled fire that collides with a hand-run is skipped
+/// instead of queued behind it.
+///
+/// `name` is interpolated into the lock filename, so it is re-validated here
+/// rather than trusted. Every in-tree caller passes a name
+/// `config::validate_backup_specs` already accepted, but this is a `pub`
+/// cfgd-core API and a `..`, `/`, or `.` slipping through would aim the lock
+/// outside `locks/`.
+pub fn acquire_backup_lock(
+    state_dir: &std::path::Path,
+    name: &str,
+) -> errors::Result<FileLockGuard> {
+    crate::config::validate_backup_name(name)?;
+    let dir = state_dir.join(LOCKS_SUBDIR);
+    std::fs::create_dir_all(&dir)?;
+    acquire_lock_at(&dir.join(format!("backup-{name}.lock")))
 }

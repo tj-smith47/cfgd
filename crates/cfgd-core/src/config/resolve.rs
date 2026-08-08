@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
-    EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec, SecretSpec,
-    validate_secret_specs,
+    BackupSpec, EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec,
+    SecretSpec, validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -37,6 +37,19 @@ pub struct ResolvedProfile {
     pub merged: MergedProfile,
 }
 
+impl ResolvedProfile {
+    /// Name of the profile this resolution is *for*: the last layer in the
+    /// chain (bases are resolved first, the requested profile last). Falls back
+    /// to `"unknown"` for a synthesized layer-free profile so callers that stamp
+    /// the name into script metadata always have a value.
+    pub fn profile_name(&self) -> &str {
+        self.layers
+            .last()
+            .map(|l| l.profile_name.as_str())
+            .unwrap_or("unknown")
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MergedProfile {
     pub modules: Vec<String>,
@@ -48,6 +61,7 @@ pub struct MergedProfile {
     pub system: HashMap<String, serde_yaml::Value>,
     pub secrets: Vec<SecretSpec>,
     pub scripts: ScriptSpec,
+    pub backups: Vec<BackupSpec>,
 }
 
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
@@ -70,6 +84,8 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
     let merged = merge_layers(&layers);
 
     validate_secret_specs(&merged.secrets)?;
+    validate_managed_file_specs(&merged.files.managed)?;
+    validate_backup_specs(&merged.backups)?;
 
     Ok(ResolvedProfile { layers, merged })
 }
@@ -124,6 +140,7 @@ fn resolve_inheritance_order(
 /// - secrets: append (deduplicated by target)
 /// - scripts: append in order
 /// - system: deep merge (later overrides at leaf level)
+/// - backups: append (deduplicated by name, later overrides)
 pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     let mut merged = MergedProfile::default();
 
@@ -208,6 +225,9 @@ pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
             merged.scripts.on_drift.extend(scripts.on_drift.clone());
             merged.scripts.on_change.extend(scripts.on_change.clone());
         }
+
+        // Backups: append, deduplicate by name (later layer overrides)
+        crate::merge_backups(&mut merged.backups, &spec.backups);
     }
 
     merged

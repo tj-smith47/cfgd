@@ -10,6 +10,8 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 3. **Sync loop** — Pulls from the git remote on interval. Optionally auto-commits and pushes local changes. When using [multi-source config](sources.md), syncs each source independently.
 
+4. **Backup timers** — Runs each `spec.backups[]` entry that declares a `schedule`, on its own interval or cron. See [Declarative Backups](backups.md#daemon-scheduling).
+
 ## Architecture
 
 ```
@@ -18,23 +20,25 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 │  tokio::select!      │
 └──────┬───────────────┘
        │
-  ┌────┼────────────┐
-  │    │            │
-┌─▼──┐ ┌─▼──┐ ┌────▼───┐
-│File│ │Sync│ │Health  │
-│Watch│ │Timer│ │API     │
-│    │ │    │ │(socket)│
-└─┬──┘ └─┬──┘ └────────┘
-  │      │
-  └──┬───┘
-     ▼
- ┌────────┐
- │Reconcile│
- │+ Notify │
+  ┌────┼───────┬────────────┐
+  │    │       │            │
+┌─▼──┐ ┌─▼──┐ ┌─▼────┐ ┌───▼────┐
+│File│ │Sync│ │Backup│ │Health  │
+│Watch│ │Timer│ │Timers│ │API     │
+│    │ │    │ │      │ │(socket)│
+└─┬──┘ └─┬──┘ └─┬────┘ └────────┘
+  │      │      │
+  └──┬───┘      ▼
+     ▼      ┌────────┐
+ ┌────────┐ │ Backup │
+ │Reconcile│ │ engine │
+ │+ Notify │ └────────┘
  └────────┘
 ```
 
 The daemon runs as a single tokio async runtime. Shutdown is graceful via SIGTERM/SIGINT (Unix) or the Windows Service control manager stop signal (Windows).
+
+The signal handlers are installed **before** the `Daemon running` banner is printed, so the banner is a promise you can act on immediately: a supervisor that starts cfgd and signals it in the same breath gets the clean shutdown path, not an abrupt kill.
 
 ## Configuration
 
@@ -209,19 +213,47 @@ manual stop command rather than aborting.
 ## Live config reload (SIGHUP)
 
 Sending `SIGHUP` to the running daemon reloads the **reconcile and sync timer
-intervals only**. The reload is intentionally narrow:
+intervals and the scheduled-backup timer set**. The reload is intentionally
+narrow:
 
 ```sh
 kill -HUP "$(cfgd daemon status --output json | jq .pid)"
-# → status: "Reloading configuration (SIGHUP) — timer intervals only;
-#            other fields require restart"
+# → status: "Reloading configuration (SIGHUP) — timer intervals and backup
+#            schedules only; other fields require restart"
 # → status: "Timer intervals reloaded: reconcile=300s, sync=600s
 #            (other field changes require restart)"
+# → status: "Backup schedules reloaded: 1 added, 0 removed, 1 rescheduled"
 ```
 
 Fields that **do** reload on SIGHUP:
 - `daemon.reconcile.interval`
 - `daemon.sync.interval`
+- `backups` (add, remove, or reschedule a `spec.backups[]` entry — a unit whose
+  `schedule` did not change keeps its pending deadline rather than restarting
+  the clock)
+
+The backup-timer swap is all-or-nothing. A reload whose config does not fully
+resolve — a profile saved mid-edit, a source cache being rewritten — keeps the
+schedules already running and retries on its own, rather than swapping in a
+partial set:
+
+```sh
+# → status: "Backup schedules NOT reloaded: config did not fully resolve —
+#            keeping the 2 running schedule(s), retrying automatically"
+```
+
+The same retry covers startup: a daemon that boots while its profile is
+unreadable starts with no backup timers, reports `backups=0 scheduled (profile
+unresolved)` in its banner, and re-resolves on its own — it does not sit
+backup-less until someone restarts it. With no timers running there is nothing
+to protect, so the first resolution that produces a set is adopted even if
+sources are still unavailable. That adoption is reported as a warning naming
+what is still missing, never as an all-clear:
+
+```sh
+# → status: "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled
+#            (source composition unavailable)"
+```
 
 Fields that **require a daemon restart** to take effect:
 - `profile` (active-profile change)
@@ -236,7 +268,8 @@ Restart with `cfgd daemon` (foreground) or the service-manager equivalent
 `sc.exe stop cfgd && sc.exe start cfgd`).
 
 > Why so narrow? Reconcile / sync intervals are read from atomics each tick, so
-> they can change in-flight without races. The other fields are baked into
+> they can change in-flight without races, and a backup timer owns no long-lived
+> machinery — rebuilding the set is a pure swap of deadlines. The other fields are baked into
 > the watcher set, the `DaemonLoopContext`, and the source-status state
 > machine at startup; changing them in-flight would require tearing down and
 > rebuilding those structures, which is not implemented and would race
@@ -284,7 +317,17 @@ and loaded with `launchctl bootstrap system`. Logs go to `/var/log/cfgd.log` and
 
 The generated service bakes `--scope system` into `ExecStart` (Linux) and `ProgramArguments`
 (macOS), so the daemon and any `cfgd --scope system <command>` admin-CLI invocations resolve
-the same roots. Path defaults under system scope:
+the same roots. Any `--state-dir` / `--runtime-dir` the install itself ran under is baked in the
+same way — the installed service is a fresh process with none of the invoking shell's flags, so
+without that the daemon would write its state somewhere the CLI never looks:
+
+```bash
+sudo cfgd --scope system --state-dir /srv/cfgd/state daemon install
+# ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/cfgd.yaml --scope system \
+#           --state-dir /srv/cfgd/state --quiet daemon
+```
+
+Path defaults under system scope:
 
 | Root | Linux | macOS |
 |---|---|---|

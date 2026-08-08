@@ -83,8 +83,7 @@ fn module_keys_list_empty_human() {
     let snap_root = std::env::current_dir().unwrap().join(SNAPSHOT_ROOT);
 
     let tmp = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
 
     // Use HOME override so ~/.cfgd lookup also misses.
     let home_guard =
@@ -100,7 +99,6 @@ fn module_keys_list_empty_human() {
     let json = cap.json().expect("doc captured json");
     assert!(json.is_array(), "list payload is a Vec<KeyListEntry>");
 
-    std::env::set_current_dir(original).unwrap();
     drop(home_guard);
 }
 
@@ -109,8 +107,7 @@ fn module_keys_list_empty_human() {
 #[serial]
 fn module_keys_list_empty_json() {
     let tmp = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
     let home_guard =
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
@@ -122,7 +119,6 @@ fn module_keys_list_empty_json() {
     let arr = json.as_array().expect("Vec payload");
     assert_eq!(arr.len(), 0, "no keys present in empty workspace");
 
-    std::env::set_current_dir(original).unwrap();
     drop(home_guard);
 }
 

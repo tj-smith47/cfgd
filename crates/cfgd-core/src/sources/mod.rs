@@ -25,7 +25,7 @@ use crate::config::{
 use crate::errors::{Result, SourceError};
 use crate::output::{Printer, Role};
 
-const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
+pub(crate) const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";
 
 /// Cached state for a single config source.
@@ -145,12 +145,7 @@ impl SourceManager {
     /// never-synced source (no cache dir) is warned about and skipped; a cached
     /// source with a broken manifest or failed signature is a hard error.
     pub fn load_source_cached(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
-        crate::validate_no_traversal(std::path::Path::new(&spec.name)).map_err(|e| {
-            SourceError::GitError {
-                name: spec.name.clone(),
-                message: format!("invalid source name: {e}"),
-            }
-        })?;
+        validate_source_name(&spec.name)?;
 
         let source_dir = self.cache_dir.join(&spec.name);
         if !source_dir.exists() {
@@ -189,12 +184,7 @@ impl SourceManager {
 
     /// Load a single source — clone or fetch, parse manifest, check version.
     pub fn load_source(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
-        crate::validate_no_traversal(std::path::Path::new(&spec.name)).map_err(|e| {
-            SourceError::GitError {
-                name: spec.name.clone(),
-                message: format!("invalid source name: {e}"),
-            }
-        })?;
+        validate_source_name(&spec.name)?;
 
         // Reject local file URLs to prevent local filesystem access from composed sources.
         // CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test environments only.
@@ -1025,6 +1015,19 @@ impl SourceManager {
     }
 }
 
+/// Reject a source name that cannot serve as a cache directory of its own.
+///
+/// The name is the only thing separating one source's cache from another's, and
+/// the sync path removes and re-clones that directory. A name of `.` would point
+/// at the cache root shared by every source.
+fn validate_source_name(name: &str) -> Result<()> {
+    crate::validate_plain_name(name).map_err(|e| SourceError::GitError {
+        name: name.to_string(),
+        message: format!("invalid source name: {e}"),
+    })?;
+    Ok(())
+}
+
 /// Read and parse a cfgd-source.yaml manifest from a directory.
 fn read_manifest(name: &str, source_dir: &Path) -> Result<ConfigSourceDocument> {
     let manifest_path = source_dir.join(SOURCE_MANIFEST_FILE);
@@ -1090,16 +1093,13 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
     }
 
     let output = crate::command_output_with_timeout(
-        crate::git_cmd_local()
-            .args([
-                "-C",
-                &repo_dir.display().to_string(),
-                "log",
-                "--format=%G?",
-                "-1",
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped()),
+        crate::git_cmd_local().args([
+            "-C",
+            &repo_dir.display().to_string(), // native-ok: argv for local git invocation on this host
+            "log",
+            "--format=%G?",
+            "-1",
+        ]),
         crate::COMMAND_TIMEOUT,
     )
     .map_err(|e| SourceError::SignatureVerificationFailed {
@@ -1471,6 +1471,18 @@ pub fn git_clone_with_fallback(
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
+    // When the libgit2 retry also fails it reports its own, usually less
+    // specific, error (a local path reads as "shallow fetch is not supported by
+    // the local transport" whatever went wrong with the CLI). Carry the CLI's
+    // reason into the final message so the actual cause is not lost.
+    let cli_failure = match &cli_result {
+        Ok(output) => format!(
+            "git CLI exited {}: {}",
+            output.status.code().unwrap_or(-1),
+            output.stderr.trim()
+        ),
+        Err(e) => format!("git CLI unavailable: {e}"),
+    };
 
     // Clean up partial clone before libgit2 retry
     let _ = std::fs::remove_dir_all(target);
@@ -1500,7 +1512,7 @@ pub fn git_clone_with_fallback(
     let result = builder
         .clone(url, target)
         .map(|_| ())
-        .map_err(|e| format!("Failed to clone {}: {}", url, e));
+        .map_err(|e| format!("Failed to clone {}: {} [{}]", url, e, cli_failure));
 
     match &result {
         Ok(_) => {

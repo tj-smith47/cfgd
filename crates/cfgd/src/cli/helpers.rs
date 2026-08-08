@@ -2,6 +2,23 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
+/// Render a byte count for a human, at the largest scale that keeps it under
+/// four digits.
+///
+/// The single byte-size renderer for the whole CLI: `cfgd upgrade` sizes a
+/// release asset and `cfgd backup list --snapshots` sizes a snapshot, and two
+/// commands of one binary reporting `1.5 MB` and `1.5 MiB` for the same number
+/// is exactly the consumer-facing drift the output conventions exist to stop.
+pub(in crate::cli) fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Write a freshly scaffolded manifest: prepend the editor schema modeline and
 /// write atomically.
 ///
@@ -195,11 +212,61 @@ pub(in crate::cli) fn parse_package_flag(
     (None, s.to_string())
 }
 
+/// Best-effort name of the profile a module-only command runs under: the
+/// explicit `--profile`, else the config's active profile, else `"unknown"`.
+///
+/// Module-only commands never resolve a profile, but the scripts they run
+/// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
+/// so the name must be the real one wherever the config knows it. Pass `cfg`
+/// when it is already loaded to avoid a second read.
+/// The `spec.backups[]` units an apply runs unconditionally.
+///
+/// A schedule-less unit has no timer to fire it, so every non-dry-run apply is
+/// its trigger. `plan` and `apply` share this so the preview can never list work
+/// the run then skips, or omit work the run then does.
+pub(in crate::cli) fn pending_backups(
+    merged: &cfgd_core::config::MergedProfile,
+) -> Vec<&cfgd_core::config::BackupSpec> {
+    merged
+        .backups
+        .iter()
+        .filter(|b| b.schedule.is_none())
+        .collect()
+}
+
+pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {
+    if let Some(p) = cli.profile.as_deref() {
+        return p.to_string();
+    }
+    let from_loaded = cfg.and_then(|c| c.active_profile().ok().map(str::to_string));
+    from_loaded
+        .or_else(|| {
+            config::load_config(&cli.config)
+                .ok()
+                .and_then(|c| c.active_profile().ok().map(str::to_string))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Build an empty ResolvedProfile for module-only operations that don't need
 /// a real profile (status --module, verify --module, apply --module without profile).
-pub(in crate::cli) fn empty_resolved_profile(module_name: &str) -> ResolvedProfile {
+///
+/// The single synthesized layer exists to carry `profile_name`: it is what
+/// [`ResolvedProfile::profile_name`] reports, and therefore what a module's
+/// scripts see as `CFGD_PROFILE`. Its spec is empty, so the layer contributes
+/// nothing to the merged profile.
+pub(in crate::cli) fn empty_resolved_profile(
+    module_name: &str,
+    profile_name: &str,
+) -> ResolvedProfile {
     ResolvedProfile {
-        layers: Vec::new(),
+        layers: vec![cfgd_core::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: profile_name.to_string(),
+            priority: 0,
+            policy: cfgd_core::config::LayerPolicy::Local,
+            spec: cfgd_core::config::ProfileSpec::default(),
+        }],
         merged: MergedProfile {
             modules: vec![module_name.to_string()],
             ..Default::default()
@@ -748,19 +815,63 @@ pub(in crate::cli) fn compose_with_sources(
     let result = mgr.compose(&cfg.spec.sources, local_resolved, mode)?;
     display_and_persist_conflicts(cli, &result, printer);
 
+    // Report mode accumulates violations instead of aborting; without this the
+    // only surface that ever showed them was a compliance snapshot, so an
+    // operator running `diff` saw a source's contribution rendered with no sign
+    // that it breaks the source's own constraints.
+    for violation in &result.constraint_violations {
+        printer
+            .status(
+                Role::Warn,
+                format!(
+                    "source '{}' violates its constraints",
+                    violation.source_name
+                ),
+            )
+            .detail(&violation.detail);
+    }
+
     // Surface the documented "scripts are shown in cfgd plan" promise: when a
     // subscriber opted in (`allowScripts: true`) to a source whose
     // `constraints.no_scripts` would otherwise block scripts, the script
-    // execution must be visible. Non-fatal — the opt-in already permitted it.
+    // execution must be visible. Naming the concrete surfaces matters because
+    // two of the three do not look like lifecycle scripts from the outside: a
+    // backup hook runs on the daemon's timer, and a patch filter runs on
+    // read-only commands too.
+    //
+    // A `Warn` status, not `note`: a note renders only at `-v`, which is not a
+    // place to put the one line telling an operator that third-party code is
+    // about to run on their machine. Non-fatal — the opt-in already permitted it.
     for spec in &cfg.spec.sources {
         if spec.subscription.allow_scripts
             && let Some(cached) = mgr.get(&spec.name)
             && cached.manifest.spec.policy.constraints.no_scripts
         {
-            printer.note(format!(
-                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription)",
-                spec.name
-            ));
+            let surfaces: Vec<String> = result
+                .resolved
+                .layers
+                .iter()
+                .filter(|layer| layer.source == spec.name)
+                .flat_map(|layer| composition::script_surfaces(&layer.spec))
+                .collect();
+            // A source that ships no script surface has nothing to disclose;
+            // announcing that its scripts "will run" would name a risk the
+            // subscriber does not actually carry.
+            if surfaces.is_empty() {
+                continue;
+            }
+            printer
+                .status(
+                    Role::Warn,
+                    format!(
+                        "source '{}' scripts will run because allowScripts is set",
+                        spec.name
+                    ),
+                )
+                .detail(format!(
+                    "constraints.noScripts is overridden by your subscription; it carries {}",
+                    surfaces.join(", ")
+                ));
         }
     }
 

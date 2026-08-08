@@ -88,6 +88,7 @@ fn plan_creates_file_when_target_missing() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -127,6 +128,7 @@ fn plan_skips_when_content_matches() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -165,6 +167,7 @@ fn plan_detects_update_when_content_differs() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -218,6 +221,7 @@ fn template_rendering_with_env() {
         env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/config.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -263,6 +267,7 @@ fn apply_creates_files() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -301,6 +306,7 @@ fn apply_is_idempotent() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -346,6 +352,7 @@ fn template_custom_functions() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/sys.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -384,6 +391,7 @@ fn template_system_fact_distro() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/distro.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -440,6 +448,7 @@ fn permissions_set_correctly() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -473,6 +482,7 @@ fn source_not_found_error() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "nonexistent/file.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -507,6 +517,7 @@ fn template_error_includes_path() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/bad.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -574,6 +585,7 @@ fn source_template_cannot_access_local_env() {
         local_env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/team.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -641,6 +653,7 @@ fn source_template_sandbox_violation_pins_variant() {
         local_env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/team.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -691,6 +704,7 @@ fn source_template_can_access_own_env() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/team.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -751,6 +765,7 @@ fn source_template_can_access_system_facts() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/info.txt.tera".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -800,6 +815,7 @@ fn symlink_strategy_creates_symlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Symlink),
@@ -847,6 +863,7 @@ fn symlink_strategy_is_idempotent() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Symlink),
@@ -892,6 +909,7 @@ fn hardlink_strategy_creates_hardlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Hardlink),
@@ -939,6 +957,7 @@ fn template_auto_upgrades_to_copy() {
         env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/config.txt.tera".to_string(),
                 target: target.clone(),
                 // Explicitly set Symlink — but template should force Copy
@@ -987,6 +1006,7 @@ fn global_strategy_applies_when_no_per_file_override() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: None, // No per-file override
@@ -1024,6 +1044,7 @@ fn private_file_skipped_when_source_missing() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/nonexistent.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1056,6 +1077,7 @@ fn non_private_file_errors_when_source_missing() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/nonexistent.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1115,6 +1137,7 @@ fn diff_no_changes_prints_success() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1130,8 +1153,11 @@ fn diff_no_changes_prints_success() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
-    let has_drift = fm.diff(&resolved.merged, &printer).unwrap();
-    assert!(!has_drift, "identical content should report no drift");
+    let records = fm.diff(&resolved.merged, &printer).unwrap();
+    assert!(
+        records.iter().all(|r| r.matches),
+        "identical content should report no drift"
+    );
 }
 
 #[test]
@@ -1152,6 +1178,7 @@ fn diff_detects_content_difference() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1194,6 +1221,7 @@ fn diff_new_file_shown() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/new.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1266,6 +1294,7 @@ fn check_permissions_drift_detected() {
     permissions.insert(target.display().to_string(), "600".to_string());
 
     let managed = ManagedFileSpec {
+        patch: None,
         source: "files/secret.txt".to_string(),
         target: target.clone(),
         strategy: Some(FileStrategy::Copy),
@@ -1308,6 +1337,7 @@ fn check_permissions_no_drift() {
     permissions.insert(target.display().to_string(), "600".to_string());
 
     let managed = ManagedFileSpec {
+        patch: None,
         source: "files/secret.txt".to_string(),
         target: target.clone(),
         strategy: Some(FileStrategy::Copy),
@@ -1406,6 +1436,7 @@ fn plan_multiple_files() {
         FilesSpec {
             managed: vec![
                 ManagedFileSpec {
+                    patch: None,
                     source: "files/a.txt".to_string(),
                     target: target_a,
                     strategy: Some(FileStrategy::Copy),
@@ -1415,6 +1446,7 @@ fn plan_multiple_files() {
                     permissions: None,
                 },
                 ManagedFileSpec {
+                    patch: None,
                     source: "files/b.txt".to_string(),
                     target: target_b,
                     strategy: Some(FileStrategy::Copy),
@@ -1453,6 +1485,7 @@ fn apply_update_overwrites_target() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/test.txt".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1563,6 +1596,7 @@ fn plan_rejects_unencrypted_sops_file() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -1608,6 +1642,7 @@ fn plan_accepts_sops_encrypted_file() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -1667,6 +1702,7 @@ fn plan_rejects_always_mode_with_symlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -1716,6 +1752,7 @@ fn plan_rejects_always_mode_with_hardlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Hardlink),
@@ -1765,6 +1802,7 @@ fn plan_accepts_always_mode_with_copy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target: target.clone(),
                 strategy: Some(FileStrategy::Copy),
@@ -2066,6 +2104,7 @@ fn source_template_env_function_blocked() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/exfil.txt.tera".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -2118,6 +2157,7 @@ fn plan_allows_inrepo_mode_with_symlink() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target: target.clone(),
                 // InRepo + Symlink should be allowed (only Always blocks symlinks)
@@ -2185,6 +2225,7 @@ fn global_symlink_strategy_overridden_for_template() {
         env,
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/app.conf.tera".to_string(),
                 target: target.clone(),
                 strategy: None, // No per-file override
@@ -2238,6 +2279,7 @@ fn plan_rejects_encryption_always_with_symlink_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -2282,6 +2324,7 @@ fn plan_rejects_encryption_always_with_hardlink_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Hardlink),
@@ -2327,6 +2370,7 @@ fn plan_allows_encryption_always_with_copy_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -2386,6 +2430,7 @@ fn plan_allows_encryption_inrepo_with_symlink_strategy() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/secret.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Symlink),
@@ -2440,6 +2485,7 @@ fn plan_rejects_unencrypted_file_when_encryption_required() {
         vec![],
         FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "files/plain.yaml".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -3046,6 +3092,7 @@ fn apply_create_with_stale_source_hash_returns_source_changed() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         // Hash of completely different content — TOCTOU check must fail
         source_hash: Some(cfgd_core::sha256_hex(b"different content from plan time")),
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3077,6 +3124,7 @@ fn apply_create_with_matching_source_hash_writes_target() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3181,6 +3229,7 @@ fn apply_create_with_symlink_strategy_creates_symbolic_link() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Symlink,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3213,6 +3262,7 @@ fn apply_create_with_hardlink_strategy_creates_hard_link() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Hardlink,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3254,6 +3304,7 @@ fn apply_create_with_symlink_strategy_replaces_existing_file() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Symlink,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3310,6 +3361,7 @@ fn apply_create_non_local_origin_writes_file() {
         origin: "remote-source".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3341,6 +3393,7 @@ fn apply_update_non_local_origin_writes_file() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
         diff: String::new(),
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3372,6 +3425,7 @@ fn apply_create_copy_with_source_directory_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3382,6 +3436,200 @@ fn apply_create_copy_with_source_directory_returns_io_error() {
     assert!(
         msg.contains("not-a-file") || msg.contains("directory") || msg.contains("Is a directory"),
         "expected IO error mentioning the path, got: {msg}"
+    );
+}
+
+#[test]
+fn apply_create_patch_writes_a_new_target_from_the_ensure_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("settings.json");
+
+    let actions = vec![FileAction::Create {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+            blocked_by: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(written["telemetry"], false);
+}
+
+#[test]
+fn apply_update_patch_preserves_unmentioned_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("settings.json");
+    fs::write(&target, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        diff: String::new(),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
+            script: None,
+            blocked_by: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(
+        written["runtimeToken"], "keep-me",
+        "a key the spec never mentions must survive the merge"
+    );
+    assert_eq!(written["tabSize"], 4);
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_update_patch_preserves_the_targets_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // `Patch` is the strategy for files cfgd does NOT own, so the target's
+    // metadata is part of what must survive the merge — an `/etc/hosts` that
+    // came back 0600 takes name resolution down for every other process.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("settings.json");
+    fs::write(&target, "{\n  \"keep\": 1\n}\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        diff: String::new(),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
+            script: None,
+            blocked_by: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o644,
+        "the target's mode must survive the merge"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(written["tabSize"], 4);
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_update_patch_writes_through_a_symlinked_target() {
+    // `~/.gitconfig -> ~/dotfiles/gitconfig` is the layout this strategy
+    // exists for: the link must survive and the repo file must receive the
+    // merge, or the dotfiles repo silently stops being the source of truth.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let real = dir.path().join("repo").join("settings.json");
+    fs::create_dir_all(real.parent().unwrap()).unwrap();
+    fs::write(&real, "{\n  \"keep\": 1\n}\n").unwrap();
+    let target = dir.path().join("settings.json");
+    cfgd_core::create_symlink(&real, &target).unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        diff: String::new(),
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("tabSize: 4").unwrap()),
+            script: None,
+            blocked_by: None,
+        }),
+    }];
+
+    let printer = test_printer();
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert!(
+        target.is_symlink(),
+        "the symlink must survive the merge, not be replaced by a regular file"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&real).unwrap()).unwrap();
+    assert_eq!(written["keep"], 1, "unmentioned keys must survive");
+    assert_eq!(
+        written["tabSize"], 4,
+        "the merge must land in the file the link points at"
+    );
+}
+
+#[test]
+fn apply_patch_without_a_patch_block_leaves_the_target_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("target.txt");
+    fs::write(&target, "existing content").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: std::path::PathBuf::new(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Patch,
+        source_hash: None,
+        diff: String::new(),
+        patch: None,
+    }];
+
+    let printer = test_printer();
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("a Patch action without a patch block must not be applied");
+    assert!(
+        matches!(
+            err,
+            cfgd_core::errors::CfgdError::File(FileError::PatchBlockMissing { .. })
+        ),
+        "expected FileError::PatchBlockMissing, got: {err:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "existing content",
+        "existing target content must be untouched"
     );
 }
 
@@ -3405,6 +3653,7 @@ fn apply_update_copy_with_source_directory_returns_io_error() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
         diff: String::new(),
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3462,6 +3711,7 @@ fn apply_create_with_secret_ref_resolved_by_provider() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3518,6 +3768,7 @@ fn apply_create_with_update_action_source_hash_present() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
         diff: String::new(),
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3552,6 +3803,7 @@ fn apply_update_with_stale_source_hash_returns_source_changed() {
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: Some(cfgd_core::sha256_hex(b"stale content from plan time")),
         diff: String::new(),
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3694,6 +3946,7 @@ fn apply_create_when_target_is_directory_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3757,6 +4010,7 @@ fn apply_create_symlink_with_too_long_filename_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Symlink,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3792,6 +4046,7 @@ fn apply_create_hardlink_with_too_long_filename_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Hardlink,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();
@@ -3829,6 +4084,7 @@ fn apply_create_copy_with_too_long_target_filename_returns_io_error() {
         origin: "local".to_string(),
         strategy: cfgd_core::config::FileStrategy::Copy,
         source_hash: None,
+        patch: None,
     }];
 
     let printer = test_printer();

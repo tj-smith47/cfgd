@@ -6,15 +6,15 @@
       "actual": "installed",
       "expected": "installed",
       "matches": true,
-      "resource_id": "curl",
-      "resource_type": "package"
+      "resourceId": "curl",
+      "resourceType": "package"
     },
     {
       "actual": "installed",
       "expected": "installed",
       "matches": true,
-      "resource_id": "ripgrep",
-      "resource_type": "package"
+      "resourceId": "ripgrep",
+      "resourceType": "package"
     }
   ]
 }

@@ -23,6 +23,17 @@ impl ApplyOutcome {
     }
 }
 
+/// Downgrade a running apply status to `Partial` for an unclean/failed
+/// backup unit — but only from `Success`. A prior file/package/module phase
+/// may have already set `status` to `Failed`; a backup unit's own trouble
+/// must never silently mask that higher severity by overwriting it with the
+/// lesser `Partial`.
+fn downgrade_to_partial(status: &mut cfgd_core::state::ApplyStatus) {
+    if matches!(status, cfgd_core::state::ApplyStatus::Success) {
+        *status = cfgd_core::state::ApplyStatus::Partial;
+    }
+}
+
 pub fn cmd_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
@@ -122,7 +133,8 @@ pub fn run_apply(
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
-                let resolved = empty_resolved_profile(mod_name);
+                let resolved =
+                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
                 printer.kv_block([
                     ("Config".to_string(), cli.config.display_posix()),
                     ("Profile".to_string(), "(module-only)".to_string()),
@@ -274,15 +286,26 @@ pub fn run_apply(
         strip_scripts_from_plan(&mut plan);
     }
 
+    // Computed once so the dry-run preview and the real run below use the exact
+    // same list.
+    let pending_backup_specs = pending_backups(&effective_resolved.merged);
+    let pending_backups: Vec<String> = pending_backup_specs
+        .iter()
+        .map(|b| b.name.clone())
+        .collect();
+
     if dry_run {
         display_plan_preview(
             &plan,
             printer,
             &state,
-            &args.context,
-            phase_filter.as_ref(),
-            dry_run_fm.as_ref(),
-            &scope,
+            &PlanPreviewArgs {
+                context: &args.context,
+                phase_filter: phase_filter.as_ref(),
+                dry_run_fm: dry_run_fm.as_ref(),
+                scope: &scope,
+                pending_backups: &pending_backups,
+            },
         );
         // Preview orphaned custom-manager packages a real apply would prune
         // (read-only — execute nothing here). Same gating + query as the apply
@@ -324,7 +347,11 @@ pub fn run_apply(
         !plan.is_empty()
     };
 
-    if !has_actions {
+    // A schedule-less backup runs on every apply regardless of reconciler
+    // diff, so a converged machine (the common case once a fleet is settled)
+    // must not short-circuit here — that would silently starve backups of
+    // the cadence "every apply" promises.
+    if !has_actions && pending_backups.is_empty() {
         report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
@@ -332,55 +359,62 @@ pub fn run_apply(
 
     let start = std::time::Instant::now();
 
-    // Show what will change, nested under a section so each phase's items
-    // render at the section's indent. The preview honours the same
-    // action-level filter as the executor so users see exactly what's about
-    // to run.
-    {
-        let preview = printer.section("Plan preview");
-        for phase_item in &plan.phases {
-            let items = reconciler::format_plan_items(phase_item);
-            let displayed: Vec<(&reconciler::Action, &String)> = if let Some(ref pf) = phase_filter
-            {
-                phase_item
-                    .actions
-                    .iter()
-                    .zip(items.iter())
-                    .filter(|(a, _)| {
-                        reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
-                    })
-                    .collect()
-            } else {
-                phase_item.actions.iter().zip(items.iter()).collect()
-            };
-            if displayed.is_empty() {
-                continue;
+    // Both the preview and the confirmation gate are about the reconciler's
+    // file/package/module diff. A backup-only apply (has_actions == false,
+    // pending_backups non-empty) has no diff to preview or confirm — showing
+    // an empty "Plan preview" section and prompting "Apply these changes?"
+    // over nothing would confuse the one case this exists to serve.
+    if has_actions {
+        // Show what will change, nested under a section so each phase's items
+        // render at the section's indent. The preview honours the same
+        // action-level filter as the executor so users see exactly what's about
+        // to run.
+        {
+            let preview = printer.section("Plan preview");
+            for phase_item in &plan.phases {
+                let items = reconciler::format_plan_items(phase_item);
+                let displayed: Vec<(&reconciler::Action, &String)> =
+                    if let Some(ref pf) = phase_filter {
+                        phase_item
+                            .actions
+                            .iter()
+                            .zip(items.iter())
+                            .filter(|(a, _)| {
+                                reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
+                            })
+                            .collect()
+                    } else {
+                        phase_item.actions.iter().zip(items.iter()).collect()
+                    };
+                if displayed.is_empty() {
+                    continue;
+                }
+                let phase_sec = preview.section(phase_item.display_label());
+                for (action, item) in displayed {
+                    phase_sec.bullet(reconciler::display_action_desc_in_phase(
+                        action,
+                        item,
+                        phase_item.scope.as_ref(),
+                    ));
+                }
             }
-            let phase_sec = preview.section(phase_item.display_label());
-            for (action, item) in displayed {
-                phase_sec.bullet(reconciler::display_action_desc_in_phase(
-                    action,
-                    item,
-                    phase_item.scope.as_ref(),
-                ));
+            for w in &plan.warnings {
+                preview.status_simple(Role::Warn, w);
             }
         }
-        for w in &plan.warnings {
-            preview.status_simple(Role::Warn, w);
-        }
-    }
 
-    // Confirm
-    if !yes {
-        // Closed-TTY / non-interactive defaults to "no" — apply is destructive
-        // and silence is treated as decline, not as approval.
-        let confirmed = printer
-            .prompt_confirm("Apply these changes?")
-            .unwrap_or(false);
-        if !confirmed {
-            printer.status_simple(Role::Info, "Aborted");
-            printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
-            return Ok(ApplyOutcome::success());
+        // Confirm
+        if !yes {
+            // Closed-TTY / non-interactive defaults to "no" — apply is destructive
+            // and silence is treated as decline, not as approval.
+            let confirmed = printer
+                .prompt_confirm("Apply these changes?")
+                .unwrap_or(false);
+            if !confirmed {
+                printer.status_simple(Role::Info, "Aborted");
+                printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
+                return Ok(ApplyOutcome::success());
+            }
         }
     }
 
@@ -441,7 +475,7 @@ pub fn run_apply(
         });
     }
 
-    let status = print_apply_result(&result, printer, Some(start.elapsed()));
+    let mut status = print_apply_result(&result, printer, Some(start.elapsed()));
     print_shell_env_reminder(&result, printer);
 
     // Link source commits to this apply for provenance tracking
@@ -458,13 +492,34 @@ pub fn run_apply(
         }
     }
 
-    // Prune old backups — keep last 10 applies' worth. Best-effort: failures
-    // here (SQLite locked, disk full, permission denied) are surfaced as a
-    // warn-level log so unbounded backup growth on a stuck filesystem is
-    // observable instead of silent.
+    // Prune old rollback backups (per-apply pre-image snapshots, distinct from
+    // `spec.backups[]` below) — keep last 10 applies' worth. Best-effort:
+    // failures here (SQLite locked, disk full, permission denied) are
+    // surfaced as a warn-level log so unbounded growth on a stuck filesystem
+    // is observable instead of silent.
     if let Err(e) = state.prune_old_backups(10) {
         tracing::warn!(error = %e, "failed to prune old backups");
     }
+
+    // Run every schedule-less `spec.backups[]` entry. Not a reconciler action
+    // (no diff against desired state — they always run), and independent of
+    // the reconcile outcome above, so they run here unconditionally rather
+    // than being folded into `plan`/`result`. A dirty run (good snapshot, but
+    // a failed post-hook) is user-declared work, so — unlike the best-effort
+    // pruning above — it downgrades a `Success` apply to `Partial` and drives
+    // the process exit code the same way a failed reconciler action would.
+    let backup_outputs = run_pending_backups(
+        &pending_backup_specs,
+        &PendingBackupCtx {
+            cli,
+            cfg: &cfg,
+            config_dir: &config_dir,
+            state: &state,
+            printer,
+            abort: &abort,
+        },
+        &mut status,
+    )?;
 
     let output = ApplyOutput {
         status: status.display_str().to_string(),
@@ -472,6 +527,7 @@ pub fn run_apply(
         succeeded: result.succeeded(),
         failed: result.failed(),
         source_commits,
+        backups: backup_outputs,
     };
     printer.emit(Doc::new().with_data(&output));
 
@@ -479,6 +535,102 @@ pub fn run_apply(
         status,
         aborted_code: None,
     })
+}
+
+/// What [`run_pending_backups`] needs from the apply it runs inside.
+struct PendingBackupCtx<'a> {
+    cli: &'a Cli,
+    cfg: &'a CfgdConfig,
+    config_dir: &'a std::path::Path,
+    state: &'a cfgd_core::state::StateStore,
+    printer: &'a cfgd_core::output::Printer,
+    abort: &'a cfgd_core::AbortFlag,
+}
+
+/// Run the apply's schedule-less `spec.backups[]` units, downgrading `status`
+/// for any unit whose work did not complete cleanly.
+fn run_pending_backups(
+    specs: &[&cfgd_core::config::BackupSpec],
+    ctx: &PendingBackupCtx<'_>,
+    status: &mut cfgd_core::state::ApplyStatus,
+) -> anyhow::Result<Vec<BackupRunOutput>> {
+    let mut outputs = Vec::with_capacity(specs.len());
+    if specs.is_empty() {
+        return Ok(outputs);
+    }
+    let printer = ctx.printer;
+    let profile_name = active_profile_name(ctx.cli, Some(ctx.cfg));
+    let state_dir = cfgd_core::resolve_state_dir(ctx.cli.state_dir.as_deref(), ctx.cli.scope())?;
+    for spec in specs {
+        let backup_name = &spec.name;
+        let unit =
+            cfgd_core::backup::BackupUnit::new(spec, ctx.config_dir, &profile_name, &state_dir)
+                .with_abort(ctx.abort);
+        // Best-effort, matching the neighboring `record_source_apply` call in
+        // the caller: `run_backup` only returns `Err` on a state-store write
+        // failure (ordinary snapshot/hook failures are captured into the
+        // returned record, not propagated), so a `?` here would abort every
+        // remaining backup AND the rest of apply over what's really a single
+        // unit's storage problem. Warn, count the unit as failed for
+        // exit-code purposes, and keep going.
+        let record = match cfgd_core::backup::run_backup(&unit, ctx.state, printer) {
+            Ok(record) => record,
+            // Another surface (a daemon timer fire, a hand-run) holds this
+            // unit's lock, so the unit IS being backed up right now — just
+            // not by us. Skipping is the correct outcome of the engine's
+            // one-writer-per-unit rule, not an apply failure, so it does
+            // not move the exit code; the structured payload still carries
+            // the skip so a script can see the run did not come from here.
+            Err(cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::Busy {
+                holder,
+                ..
+            })) => {
+                printer
+                    .status(Role::Skipped, format!("backup '{backup_name}'"))
+                    .detail(format!("already running ({holder})"));
+                tracing::info!(
+                    backup = %backup_name,
+                    holder = %holder,
+                    "backup already running elsewhere; skipped"
+                );
+                outputs.push(BackupRunOutput {
+                    name: backup_name.clone(),
+                    status: "skipped".to_string(),
+                    destination_path: None,
+                    clean: false,
+                    error: Some(format!("already running ({holder})")),
+                });
+                continue;
+            }
+            Err(e) => {
+                printer
+                    .status(Role::Fail, format!("backup '{backup_name}'"))
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                tracing::warn!(
+                    backup = %backup_name,
+                    error = %e,
+                    "backup run failed; continuing with remaining backups"
+                );
+                downgrade_to_partial(status);
+                outputs.push(BackupRunOutput {
+                    name: backup_name.clone(),
+                    status: cfgd_core::state::BackupRunStatus::Failed
+                        .as_str()
+                        .to_string(),
+                    destination_path: None,
+                    clean: false,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+        cfgd_core::backup::report_backup_record(printer, &record);
+        if !record.is_clean() {
+            downgrade_to_partial(status);
+        }
+        outputs.push(BackupRunOutput::from(&record));
+    }
+    Ok(outputs)
 }
 
 /// Structured `-o json` payload emitted when an apply is cooperatively aborted

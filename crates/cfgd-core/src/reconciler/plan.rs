@@ -622,11 +622,19 @@ impl<'a> super::Reconciler<'a> {
     fn module_section_for_kind(kind: &ModuleActionKind) -> ModuleSection {
         match kind {
             ModuleActionKind::RunScript { phase, .. } => match phase {
-                ScriptPhase::PreApply | ScriptPhase::PreReconcile => ModuleSection::PreScripts,
+                ScriptPhase::PreApply | ScriptPhase::PreReconcile | ScriptPhase::PreBackup => {
+                    ModuleSection::PreScripts
+                }
                 ScriptPhase::PostApply
                 | ScriptPhase::PostReconcile
                 | ScriptPhase::OnDrift
-                | ScriptPhase::OnChange => ModuleSection::PostScripts,
+                | ScriptPhase::OnChange
+                | ScriptPhase::PostBackup => ModuleSection::PostScripts,
+                // `Patch` never reaches a module-plan `RunScript` action — a
+                // `patch.script` filter runs inline through `PatchBinding`,
+                // never as a planned lifecycle-script action — but the match
+                // must stay total over `ScriptPhase`.
+                ScriptPhase::Patch => ModuleSection::Files,
             },
             ModuleActionKind::InstallPackages { .. } => ModuleSection::Packages,
             ModuleActionKind::DeployFiles { .. } => ModuleSection::Files,

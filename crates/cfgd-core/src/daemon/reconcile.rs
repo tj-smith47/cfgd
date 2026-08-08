@@ -127,6 +127,10 @@ pub(crate) struct ReconcileCtx<'a> {
     /// Deployment scope that selects FHS vs XDG directory roots for module/source
     /// cache directories.
     pub scope: crate::Scope,
+    /// Raised when the daemon is shutting down. Threaded into `reconciler::apply`
+    /// so a `SIGTERM` arriving mid-auto-apply stops the pre/post scripts instead
+    /// of waiting out `PROFILE_SCRIPT_TIMEOUT`.
+    pub abort: &'a crate::AbortFlag,
 }
 
 pub(crate) fn handle_reconcile(
@@ -145,6 +149,7 @@ pub(crate) fn handle_reconcile(
         auto_apply_override,
         drift_policy_override,
         scope,
+        abort,
     } = ctx;
     if let Some(name) = module_filter {
         tracing::info!(module = %name, "running per-module reconciliation check");
@@ -608,7 +613,7 @@ pub(crate) fn handle_reconcile(
                     crate::reconciler::ReconcileContext::Reconcile,
                     false,
                     None,
-                    &crate::AbortFlag::new(),
+                    abort,
                 ) {
                     Ok(result) => {
                         let succeeded = result.succeeded();

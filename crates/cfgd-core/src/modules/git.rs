@@ -166,11 +166,14 @@ pub(super) fn resolve_subdir(
 ) -> Result<PathBuf> {
     match subdir {
         Some(sub) => {
-            crate::validate_no_traversal(std::path::Path::new(sub)).map_err(|_| {
+            // `subdir: "."` is the repository root — an explicit way to spell
+            // the default, and a legitimate answer even though it names nothing
+            // of its own.
+            crate::validate_no_traversal_allowing_self(std::path::Path::new(sub)).map_err(|e| {
                 ModuleError::GitFetchFailed {
                     module: module.to_string(),
                     url: url.to_string(),
-                    message: format!("subdir contains path traversal: {sub}"),
+                    message: format!("subdir '{sub}' is not usable: {e}"),
                 }
             })?;
             Ok(base.join(sub))
@@ -642,6 +645,29 @@ mod tests {
         assert!(
             msg.contains("traversal"),
             "error must mention traversal, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_subdir_accepts_a_subdir_that_names_the_cache_base() {
+        // `subdir: "."` is an explicit way to spell the default (the whole
+        // repository), so it must resolve rather than trip the
+        // names-nothing-of-its-own guard `..` shares.
+        let base = PathBuf::from("/cache/abc123");
+        for candidate in [".", "./"] {
+            let resolved = resolve_subdir(base.clone(), &Some(candidate.into()), "mod", "url")
+                .unwrap_or_else(|e| panic!("subdir '{candidate}' must resolve, got: {e}"));
+            assert_eq!(
+                resolved.components().collect::<Vec<_>>(),
+                base.components().collect::<Vec<_>>(),
+                "a pure `.` subdir names the repository root itself"
+            );
+        }
+        // A leading `./` is ordinary path-writing and still names something.
+        assert_eq!(
+            resolve_subdir(base.clone(), &Some("./charts".into()), "mod", "url")
+                .expect("./charts is a real subdir"),
+            base.join("./charts")
         );
     }
 

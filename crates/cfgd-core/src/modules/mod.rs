@@ -81,6 +81,10 @@ pub struct ResolvedFile {
     pub encryption: Option<crate::config::EncryptionSpec>,
     /// Unix permission bits (e.g. "600", "644") to apply after deployment.
     pub permissions: Option<String>,
+    /// Partial-file merge configuration, present exactly when `strategy` is
+    /// `Patch`. A relative `patch.script` resolves against the module's
+    /// directory (see `PatchBinding::module`).
+    pub patch: Option<crate::config::PatchSpec>,
 }
 
 /// A root of source-delivered module bodies, derived from a subscribed
@@ -96,7 +100,7 @@ pub struct SourceModuleRoot {
     pub offered: Vec<String>,
     /// Whether this source is permitted to deliver lifecycle scripts and
     /// `prefer: [script]` package installs through its module bodies. Computed
-    /// as `subscription.allowScripts || !constraints.no_scripts`. When `false`,
+    /// as `subscription.allowScripts || !constraints.noScripts`. When `false`,
     /// loading a source-delivered body that carries any script is FATAL
     /// ([`ModuleError::ScriptsNotAllowed`](crate::errors::ModuleError::ScriptsNotAllowed)).
     pub scripts_permitted: bool,

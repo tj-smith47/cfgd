@@ -23,6 +23,67 @@
       },
       "type": "object"
     },
+    "BackupSpec": {
+      "additionalProperties": false,
+      "description": "A declarative backup: snapshot `source` (a file or directory) into\n`destination`, retaining the newest `retention` snapshots.\n\nThe shape is validated at parse time and run by the backup engine.\nSchedule-less backups (no `schedule`) run automatically on every\n`cfgd apply`; every backup — scheduled or not — can also be run directly\nwith `cfgd backup run [name]`.",
+      "properties": {
+        "destination": {
+          "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`\nwhen omitted — resolved by the backup engine, not at parse time, since\nthe state dir depends on runtime scope/overrides.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Unique identifier for this backup within `spec.backups`, unique across\nthe list. Keys the `destination` default, run records, and CLI\nselection. Becomes a directory component (`<state_dir>/backups/<name>/`)\nand a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must\nbe non-empty, non-blank, a single segment (no `/` or `\\`), not a\ndirectory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and\nfree of `:` anywhere — a drive and NTFS data-stream separator on Windows.\nWindows shapes are rejected on every platform so a name written on one\nOS stays valid on the others.",
+          "type": "string"
+        },
+        "namePattern": {
+          "default": "{filename}.{timestamp}",
+          "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`,\nand `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are\nrejected at parse time. A literal `/` nests the snapshot in a\nsubdirectory of the destination. At run time the rendered value must be\nrelative and every segment must name something: `.` and `..` segments,\nempty segments (`a//b`, `daily/`), rooted values (`/daily`, `C:/daily`,\n`C:daily`, `\\\\server\\share`), and `:` anywhere are all rejected. Windows\nshapes are rejected on every platform, so a pattern is valid everywhere\nor nowhere. A rejection names the `{filename}` it interpolated, so a\ncolon in the source filename points at itself. Defaults to\n`\"{filename}.{timestamp}\"`.",
+          "type": "string"
+        },
+        "postBackup": {
+          "default": [],
+          "description": "Scripts run after the copy step (e.g. restart the service stopped by\n`preBackup`). Always attempted, including after a failed `preBackup` or\na failed copy.",
+          "items": {
+            "$ref": "#/definitions/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "preBackup": {
+          "default": [],
+          "description": "Scripts run before the snapshot is taken (e.g. stop a service that\nholds `source` open so the snapshot is consistent). A failure skips the\nsnapshot and records a failed run; `postBackup` still runs.",
+          "items": {
+            "$ref": "#/definitions/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "retention": {
+          "default": 10,
+          "description": "Number of newest snapshots to keep for this backup; older snapshots are\npruned from disk and from the run history. Must be at least 1 (`0` would\nkeep no backups, which is a misconfiguration rather than a supported\n\"unlimited\" mode). Defaults to 10.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "schedule": {
+          "description": "When to run this backup: a duration interval (e.g. `\"6h\"`) or a cron\nexpression, validated at parse time. Cron expressions may be 5-field\n(`minute hour day month weekday`, e.g. `\"0 3 * * *\"`) or 6-field with a\nleading seconds field (`second minute hour day month weekday`, e.g.\n`\"30 0 3 * * *\"`), and are evaluated in the machine's LOCAL timezone,\nlike a crontab entry. An interval is measured from the unit's last\nrecorded run, so a `\"1d\"` backup on a machine rebooted daily still fires\ndaily. Setting this hands the backup to the daemon's timers and takes it\nout of apply; omitted means \"run on every apply\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "File or directory to snapshot. A leading `~` expands to the home\ndirectory. Must not contain, or sit inside, the resolved `destination` —\na nested pair is rejected before any copy, with symlinks resolved on both\nsides. Its filename is what `{filename}` interpolates, so a source whose\nfilename contains `:` (legal on Unix, a drive and data-stream separator\non Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "type": "object"
+    },
     "BrewSpec": {
       "additionalProperties": false,
       "properties": {
@@ -210,6 +271,11 @@
           "const": "Hardlink",
           "description": "Create a hard link from target to source.",
           "type": "string"
+        },
+        {
+          "const": "Patch",
+          "description": "Merge structured keys/values into the target, or pipe it through a\nscript, leaving everything else untouched. Requires a `patch:` block.",
+          "type": "string"
         }
       ]
     },
@@ -267,6 +333,17 @@
           ],
           "description": "Encryption settings for this file."
         },
+        "patch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PatchSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Structured merge or script configuration for `strategy: Patch`.\nRequired when `strategy` is `Patch`, rejected otherwise (enforced by\n`validate_managed_file_specs`, not the JSON schema)."
+        },
         "permissions": {
           "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
           "type": [
@@ -279,6 +356,8 @@
           "type": "boolean"
         },
         "source": {
+          "default": "",
+          "description": "Not required when `strategy` is `Patch`; required otherwise\n(enforced by `validate_managed_file_specs`, not the JSON schema).",
           "type": "string"
         },
         "strategy": {
@@ -297,7 +376,6 @@
         }
       },
       "required": [
-        "source",
         "target"
       ],
       "type": "object"
@@ -485,6 +563,59 @@
       },
       "type": "object"
     },
+    "PatchFormat": {
+      "description": "File format used to interpret and re-serialize a `Patch`-strategy target.",
+      "oneOf": [
+        {
+          "const": "Ini",
+          "description": "INI sections/keys, edited line-by-line to preserve comments and layout.",
+          "type": "string"
+        },
+        {
+          "const": "Json",
+          "description": "JSON, re-serialized on write (no comments to preserve).",
+          "type": "string"
+        },
+        {
+          "const": "Yaml",
+          "description": "YAML; comments are NOT preserved across a merge (see docs for the caveat).",
+          "type": "string"
+        },
+        {
+          "const": "Toml",
+          "description": "TOML, edited via `toml_edit` to preserve comments and layout.",
+          "type": "string"
+        }
+      ]
+    },
+    "PatchSpec": {
+      "additionalProperties": false,
+      "description": "Configuration for the `Patch` file strategy: a structured merge (`ensure`)\nor a content-rewriting script, applied on top of the target's current\ncontent.",
+      "properties": {
+        "ensure": {
+          "description": "Keys/values to deep-merge into the target, leaving unmentioned keys\nuntouched. Values are literal (no template rendering). Mutually\nexclusive with `script`."
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PatchFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "File format to parse the target as. Inferred from the target's\nextension when omitted."
+        },
+        "script": {
+          "description": "A script path or an inline command that receives the target's current\ncontent on stdin and writes the new content to stdout. A relative path\nresolves against the module directory for a module file\n(`spec.files[]`) and against the config directory for a profile file\n(`spec.files.managed[]`); a value that resolves to no file is run as an\ninline command. Mutually exclusive with `ensure`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ProfileMetadata": {
       "additionalProperties": false,
       "properties": {
@@ -504,6 +635,13 @@
           "default": [],
           "items": {
             "$ref": "#/definitions/ShellAlias"
+          },
+          "type": "array"
+        },
+        "backups": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BackupSpec"
           },
           "type": "array"
         },

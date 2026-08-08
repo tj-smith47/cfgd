@@ -9,7 +9,7 @@ pub struct VerifyOutput {
     pub fail_count: usize,
 }
 
-pub(super) fn cmd_verify(
+pub fn cmd_verify(
     cli: &Cli,
     printer: &Printer,
     module_filter: Option<&str>,
@@ -19,7 +19,7 @@ pub(super) fn cmd_verify(
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
-        let resolved = empty_resolved_profile(mod_name);
+        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
         let registry = build_registry();
         let platform = Platform::detect();
         let mgr_map = managers_map(&registry);

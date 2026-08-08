@@ -157,6 +157,15 @@ pub(crate) fn resolve_daemon_modules(
 /// down working state. A benign never-synced cache-miss is NOT an error — it is
 /// handled inside `load_sources_cached` as warn+skip, so it stays a happy path
 /// and reconcile proceeds local-only.
+///
+/// ONE caller degrades instead of skipping: the backup timer resolution
+/// ([`backup::resolve_backup_tasks`]) falls back to the local set and marks it
+/// `degraded`. The reasoning above does not transfer to it — a backup prunes
+/// only its own recorded runs and writes only into its own destination, so the
+/// local set cannot uninstall anything, while skipping would silently stop the
+/// machine's backups. The degradation is bounded rather than swallowed: it is
+/// visible in the startup banner, it is refused outright on a reload (the
+/// running set is kept), and it re-resolves on a timer until it succeeds.
 pub(crate) fn compose_daemon_desired_state(
     cfg: &config::CfgdConfig,
     local: &ResolvedProfile,
@@ -336,7 +345,7 @@ pub(super) struct DaemonState {
     sources: Vec<SourceStatus>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
-    // notifier, so the §9 consolidated skill-stale notice fires at most once per
+    // notifier, so the consolidated skill-stale notice fires at most once per
     // distinct staleness state (not on every check tick).
     skills_stale_notified: Option<String>,
     module_last_reconcile: HashMap<String, String>,
@@ -521,6 +530,7 @@ pub(super) fn build_webhook_payload(title: &str, message: &str, timestamp_iso: &
 
 // --- Submodule declarations ---
 
+mod backup;
 mod checkin;
 mod daemon_config;
 mod drift;
@@ -534,6 +544,7 @@ mod sync;
 #[cfg(test)]
 mod tests;
 
+use backup::BackupTimers;
 use checkin::*;
 use daemon_config::*;
 use git::*;
@@ -581,6 +592,10 @@ pub(super) struct PreLoopSetup {
     pub initial_source_status: Vec<SourceStatus>,
     pub managed_paths: Vec<PathBuf>,
     pub reconcile_tasks: Vec<ReconcileTask>,
+    /// One timer per SCHEDULED `spec.backups[]` entry, plus the re-resolve
+    /// deadline a degraded resolution arms. Schedule-less entries are absent —
+    /// those run during `cfgd apply`.
+    pub backup_timers: BackupTimers,
     pub shortest_reconcile: Duration,
     pub shortest_sync: Duration,
     pub server_checkin_url: Option<String>,
@@ -597,6 +612,8 @@ pub(super) fn build_pre_loop_setup(
     profile_override: Option<&str>,
     hooks: &dyn DaemonHooks,
     scope: crate::Scope,
+    printer: &Printer,
+    state_dir: Option<&Path>,
 ) -> Result<PreLoopSetup> {
     let cfg = config::load_config(config_path)?;
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
@@ -643,10 +660,7 @@ pub(super) fn build_pre_loop_setup(
 
     let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
 
-    let profiles_dir = config_dir.join("profiles");
-    let profile_name = profile_override
-        .or(cfg.spec.profile.as_deref())
-        .unwrap_or("default");
+    let (profiles_dir, profile_name) = profile_context(config_path, &cfg, profile_override);
     let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
     let profile_chain: Vec<String> = resolved_profile
         .as_ref()
@@ -672,6 +686,32 @@ pub(super) fn build_pre_loop_setup(
         .min()
         .unwrap_or(parsed.sync_interval);
 
+    let now = std::time::Instant::now();
+    // Both failure shapes arm the retry, because startup has no prior timer set
+    // to fall back on: a profile that will not resolve yet (saved mid-edit, or
+    // owed by a source the sync task is about to fetch) costs every timer until
+    // it does, and only the retry gets them back without a restart. The reconcile
+    // path reports the same profile failure every tick, so the retry stays quiet
+    // in `tracing` rather than repeating it on the operator's terminal.
+    let backup_timers = match backup::resolve_backup_tasks(
+        &cfg,
+        config_path,
+        profile_override,
+        printer,
+        scope,
+        state_dir,
+        now,
+    ) {
+        Ok(resolved) => BackupTimers::new(resolved, now),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "backup timers: profile resolution failed — no scheduled backups installed, retrying"
+            );
+            BackupTimers::empty_with_retry(now)
+        }
+    };
+
     let server_checkin_url = find_server_url(&cfg);
 
     Ok(PreLoopSetup {
@@ -685,6 +725,7 @@ pub(super) fn build_pre_loop_setup(
         initial_source_status,
         managed_paths,
         reconcile_tasks,
+        backup_timers,
         shortest_reconcile,
         shortest_sync,
         server_checkin_url,
@@ -693,6 +734,15 @@ pub(super) fn build_pre_loop_setup(
 
 // --- Main Daemon Entry Point ---
 
+/// The directory roots a caller relocates when the process-level `--runtime-dir`
+/// / `--state-dir` flags are set. `None` for either falls through to its env var
+/// (`CFGD_RUNTIME_DIR` / `CFGD_STATE_DIR`), then to the scope default.
+#[derive(Debug, Clone, Default)]
+pub struct DaemonDirOverrides {
+    pub runtime_dir: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
+}
+
 /// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")` — the
 /// daemon's self-update check and skill-staleness probes compare against the
 /// binary that is actually running, never cfgd-core's own crate version (the
@@ -700,28 +750,47 @@ pub(super) fn build_pre_loop_setup(
 pub async fn run_daemon(
     config_path: PathBuf,
     profile_override: Option<String>,
-    runtime_override: Option<PathBuf>,
+    dirs: DaemonDirOverrides,
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
     scope: crate::Scope,
     cfgd_version: &str,
 ) -> Result<()> {
-    // Resolve the bind socket once at the entry point so the `--runtime-dir`
-    // flag reaches the daemon (env/default when `None`); the client side
-    // resolves identically via `resolve_default_ipc_path(runtime_over, scope)`.
     run_daemon_with(
         config_path,
         profile_override,
         printer,
         hooks,
-        DaemonRunOverrides {
-            ipc_path: Some(resolve_default_ipc_path(runtime_override.as_deref(), scope)),
-            scope,
-            ..DaemonRunOverrides::default()
-        },
+        cli_run_overrides(dirs, scope),
         cfgd_version,
     )
     .await
+}
+
+/// Turn the process-level directory flags into [`DaemonRunOverrides`].
+///
+/// Resolves the bind socket once here so the `--runtime-dir` flag reaches the
+/// daemon (env/default when `None`); the client side resolves identically via
+/// [`resolve_default_ipc_path`].
+///
+/// `--state-dir` rides the same route: without it the loop falls through to
+/// `default_state_dir_for(scope)`, which honors `CFGD_STATE_DIR` but NOT the
+/// flag — so a `cfgd --state-dir X daemon` would write its drift events,
+/// backups, and apply lock somewhere `cfgd --state-dir X status` never looks,
+/// and the CLI and daemon apply locks would stop mutually excluding.
+///
+/// Split out of [`run_daemon`] so the flag plumbing is testable without
+/// starting a loop that binds a real socket.
+pub(super) fn cli_run_overrides(
+    dirs: DaemonDirOverrides,
+    scope: crate::Scope,
+) -> DaemonRunOverrides {
+    DaemonRunOverrides {
+        ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
+        state_dir_override: dirs.state_dir,
+        scope,
+        ..DaemonRunOverrides::default()
+    }
 }
 
 /// Test-shaped knobs for [`run_daemon_with`]. Production callers go through
@@ -792,20 +861,32 @@ pub(super) async fn run_daemon_with(
     printer.heading("Daemon");
     printer.status_simple(Role::Info, "Starting cfgd daemon...");
 
+    let ipc_path = overrides
+        .ipc_path
+        .clone()
+        .unwrap_or_else(|| resolve_default_ipc_path(None, overrides.scope));
+    // Ahead of the config work: a second daemon cannot start whatever the
+    // config says, and composing sources first meant the loser printed a
+    // profile's worth of warnings before finding that out.
+    check_already_running(&ipc_path, overrides.scope)?;
+
+    // Materialize the state dir from scope when no explicit override is given,
+    // so every downstream site (reconcile ticks, /drift endpoint, the backup
+    // timers' restart seeding) all agree on the same path rather than each
+    // re-deriving it independently from scope.
+    let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
+        Some(ref d) => Some(d.clone()),
+        None => crate::state::default_state_dir_for(overrides.scope).ok(),
+    };
+
     let setup = build_pre_loop_setup(
         &config_path,
         profile_override.as_deref(),
         &*hooks,
         overrides.scope,
+        &printer,
+        resolved_state_dir.as_deref(),
     )?;
-
-    // Materialize the state dir from scope when no explicit override is given,
-    // so every downstream site (reconcile ticks, /drift endpoint) all agree on
-    // the same path rather than each re-deriving it independently from scope.
-    let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
-        Some(ref d) => Some(d.clone()),
-        None => crate::state::default_state_dir_for(overrides.scope).ok(),
-    };
 
     let (daemon_state, state_dir_warning) =
         init_daemon_state_with_warning(resolved_state_dir.as_deref(), overrides.scope);
@@ -823,6 +904,12 @@ pub(super) async fn run_daemon_with(
     // External-triggers mode supplies its own file_rx; production wires up a
     // notify-based watcher and pushes via file_tx → file_rx.
     let using_external_triggers = overrides.external_triggers.is_some();
+    // Installed here, ahead of the startup banner, so the banner's "press
+    // Ctrl+C to stop" is true from the instant it is printed. Only the
+    // production path takes it: a caller supplying its own triggers is a test,
+    // and installing process-wide handlers would change the behaviour of the
+    // process running the suite.
+    let shutdown_signals = (!using_external_triggers).then(ShutdownSignals::install);
     let (file_rx_for_triggers, _watcher_handle): (
         Option<mpsc::Receiver<PathBuf>>,
         Option<notify::RecommendedWatcher>,
@@ -833,12 +920,6 @@ pub(super) async fn run_daemon_with(
         let watcher = setup_file_watcher(file_tx, &setup.managed_paths, &setup.config_dir)?;
         (Some(file_rx), Some(watcher))
     };
-
-    let ipc_path = overrides
-        .ipc_path
-        .clone()
-        .unwrap_or_else(|| resolve_default_ipc_path(None, overrides.scope));
-    check_already_running(&ipc_path, overrides.scope)?;
 
     // Start health server (skippable in tests that don't need /healthz).
     let health_handle = if overrides.skip_health_server {
@@ -853,7 +934,12 @@ pub(super) async fn run_daemon_with(
         }))
     };
 
-    let intervals = format_interval_lines(&setup.parsed, setup.compliance_interval);
+    let intervals = format_interval_lines(
+        &setup.parsed,
+        setup.compliance_interval,
+        setup.backup_timers.len(),
+        setup.backup_timers.degraded_reason(),
+    );
     print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
 
     // Initial server check-in at startup (skippable for offline tests).
@@ -873,6 +959,8 @@ pub(super) async fn run_daemon_with(
             message: format!("startup check-in task failed: {}", e),
         })?;
     }
+
+    let abort = Arc::new(crate::AbortFlag::new());
 
     // Shared atomics: SIGHUP updates these so pump tasks pick up the new
     // cadence on the next tick. (See `runner::apply_sighup_reload`.)
@@ -934,8 +1022,16 @@ pub(super) async fn run_daemon_with(
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_printer = Arc::clone(&printer);
+        let shutdown_abort = Arc::clone(&abort);
+        let signals = shutdown_signals.ok_or_else(|| DaemonError::WatchError {
+            message: "internal: production path did not install shutdown signals".to_string(),
+        })?;
         let shutdown_task = tokio::spawn(async move {
-            wait_for_shutdown(shutdown_printer).await;
+            let code = signals.wait(shutdown_printer).await;
+            // Raised BEFORE the trigger: the loop may be awaiting a blocking
+            // backup hook, and the select! arm that observes the trigger cannot
+            // run until that await returns. The flag is what lets it return.
+            shutdown_abort.set(code);
             let _ = shutdown_tx.send(());
         });
 
@@ -963,6 +1059,7 @@ pub(super) async fn run_daemon_with(
 
     let ctx = DaemonLoopContext {
         state: Arc::clone(&state),
+        abort: Arc::clone(&abort),
         hooks: Arc::clone(&hooks),
         notifier: Arc::clone(&setup.notifier),
         config_path: config_path.clone(),
@@ -982,6 +1079,7 @@ pub(super) async fn run_daemon_with(
         triggers,
         setup.reconcile_tasks,
         setup.sync_tasks,
+        setup.backup_timers,
         reconcile_secs,
         sync_secs,
     )
@@ -1088,11 +1186,14 @@ pub(super) fn check_already_running(_ipc_path: &Path, _scope: crate::Scope) -> R
 }
 
 /// Build the "Intervals: ..." line components for the startup banner. Returns
-/// a vector of `key=value` segments the printer joins with `, `. Sync and
-/// compliance lines are conditional; reconcile is always present.
+/// a vector of `key=value` segments the printer joins with `, `. Sync,
+/// compliance, and backup segments are conditional; reconcile is always
+/// present.
 pub(super) fn format_interval_lines(
     parsed: &ParsedDaemonConfig,
     compliance_interval: Option<Duration>,
+    scheduled_backups: usize,
+    backups_degraded: Option<backup::DegradedReason>,
 ) -> Vec<String> {
     let mut intervals = vec![format!(
         "reconcile={}s",
@@ -1108,6 +1209,15 @@ pub(super) fn format_interval_lines(
     }
     if let Some(interval) = compliance_interval {
         intervals.push(format!("compliance={}s", interval.as_secs()));
+    }
+    if scheduled_backups > 0 || backups_degraded.is_some() {
+        // The degraded note rides the count because the count alone is
+        // misleading: it is whatever survived a partial resolution, and an
+        // operator reading "backups=2 scheduled" has no way to tell that a
+        // source's third one is missing until it fails to happen. The two
+        // causes are named apart because they need different remedies.
+        let note = backups_degraded.map_or("", backup::DegradedReason::banner_note);
+        intervals.push(format!("backups={scheduled_backups} scheduled{note}"));
     }
     intervals
 }
@@ -1125,17 +1235,37 @@ pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_
 /// posts the check-in payload, and clears any pending server config so the
 /// first reconcile tick picks it up. Extracted from the `spawn_blocking`
 /// closure so tests can drive the no-profile and resolve-failure arms without
+/// The directory a config's profiles live in.
+pub(super) fn profiles_dir_for(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("profiles")
+}
+
+/// Where profiles live and which profile a daemon run resolves, with the
+/// documented `default` fallback.
+///
+/// The startup check-in deliberately does NOT share this: a missing profile
+/// there is an error rather than a fall back to `default`.
+pub(super) fn profile_context<'a>(
+    config_path: &Path,
+    cfg: &'a CfgdConfig,
+    profile_override: Option<&'a str>,
+) -> (PathBuf, &'a str) {
+    let profile_name = profile_override
+        .or(cfg.spec.profile.as_deref())
+        .unwrap_or("default");
+    (profiles_dir_for(config_path), profile_name)
+}
+
 /// scheduling onto a tokio runtime.
 pub(super) fn run_startup_checkin_blocking(
     config_path: &Path,
     profile_override: Option<&str>,
     cfg: &CfgdConfig,
 ) {
-    let config_dir = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let profiles_dir = config_dir.join("profiles");
+    let profiles_dir = profiles_dir_for(config_path);
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
         Some(p) => p,
         None => {
@@ -1222,35 +1352,105 @@ fn spawn_sighup_pump(tx: mpsc::Sender<()>) -> Result<tokio::task::JoinHandle<()>
     }))
 }
 
-/// Wait for SIGTERM (Unix) or Ctrl+C (any platform) and print the matching
-/// shutdown message. Returns when either fires.
-async fn wait_for_shutdown(printer: Arc<Printer>) {
-    #[cfg(unix)]
-    {
-        let sigterm = async {
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(mut s) => {
+/// The signal streams the daemon shuts down on, registered up front.
+///
+/// Registration is a separate, synchronous step from waiting because the OS
+/// handler is installed when the stream is *built*, not when it is first
+/// polled. Building them inside the spawned wait task therefore left a window
+/// — from the startup banner until that task first ran — in which a SIGTERM
+/// met the default disposition and killed the process outright: no cleanup, no
+/// `Daemon stopped`, precisely the abrupt exit the daemon promises not to do,
+/// while the banner already claimed it was running and interruptible.
+/// [`ShutdownSignals::install`] runs before the banner is printed, so the
+/// banner is true the moment it appears.
+///
+/// A registration failure is recorded as `None` and waited on as `pending`,
+/// keeping a daemon that cannot hear one signal running and responsive to the
+/// other rather than failing startup outright.
+#[cfg(unix)]
+struct ShutdownSignals {
+    sigterm: Option<tokio::signal::unix::Signal>,
+    sigint: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+impl ShutdownSignals {
+    fn install() -> Self {
+        fn register(
+            kind: tokio::signal::unix::SignalKind,
+            name: &str,
+        ) -> Option<tokio::signal::unix::Signal> {
+            match tokio::signal::unix::signal(kind) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(error = %e, signal = name, "failed to register shutdown handler");
+                    None
+                }
+            }
+        }
+        Self {
+            sigterm: register(tokio::signal::unix::SignalKind::terminate(), "SIGTERM"),
+            sigint: register(tokio::signal::unix::SignalKind::interrupt(), "SIGINT"),
+        }
+    }
+
+    /// Block until the operator asks the daemon to stop, returning the POSIX
+    /// `128 + signum` code for the signal that arrived — the value in-flight
+    /// work sees through [`crate::AbortFlag::aborted`].
+    async fn wait(self, printer: Arc<Printer>) -> u8 {
+        async fn recv(signal: Option<tokio::signal::unix::Signal>) {
+            match signal {
+                Some(mut s) => {
                     s.recv().await;
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to register SIGTERM handler");
-                    std::future::pending::<()>().await;
-                }
+                None => std::future::pending::<()>().await,
             }
-        };
+        }
         tokio::select! {
-            _ = sigterm => {
+            _ = recv(self.sigterm) => {
                 printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon...");
+                143
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = recv(self.sigint) => {
                 printer.status_simple(Role::Info, "Shutting down daemon...");
+                130
             }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+}
+
+/// Windows counterpart: no SIGTERM exists, so Ctrl+C is the whole surface.
+/// `tokio::signal::windows::ctrl_c` installs the console handler when it is
+/// called, giving the same before-the-banner guarantee as the unix arm — the
+/// portable `tokio::signal::ctrl_c` would defer it to the first poll.
+#[cfg(windows)]
+struct ShutdownSignals {
+    ctrl_c: Option<tokio::signal::windows::CtrlC>,
+}
+
+#[cfg(windows)]
+impl ShutdownSignals {
+    fn install() -> Self {
+        match tokio::signal::windows::ctrl_c() {
+            Ok(c) => Self { ctrl_c: Some(c) },
+            Err(e) => {
+                tracing::warn!(error = %e, signal = "CTRL_C", "failed to register shutdown handler");
+                Self { ctrl_c: None }
+            }
+        }
+    }
+
+    /// Block until the operator asks the daemon to stop, returning the POSIX
+    /// `128 + signum` code the rest of the daemon speaks in.
+    async fn wait(self, printer: Arc<Printer>) -> u8 {
+        match self.ctrl_c {
+            Some(mut c) => {
+                c.recv().await;
+            }
+            None => std::future::pending::<()>().await,
+        }
         printer.status_simple(Role::Info, "Shutting down daemon...");
+        130
     }
 }
 
@@ -1263,8 +1463,7 @@ async fn wait_for_shutdown(printer: Arc<Printer>) {
 /// the two callers want different fallbacks (daemon reconcile loop default vs.
 /// leader-election lease-window default), so a single shared helper with a
 /// parameterised default would just push the default decision back to every
-/// call site without saving any code. Kept local and documented per
-/// dedup-audit S1 (decision: keep + document).
+/// call site without saving any code. Kept local deliberately.
 pub(crate) fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }

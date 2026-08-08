@@ -10,7 +10,7 @@ use crate::crds::{MachineConfig, MachineConfigSpec, MachineConfigStatus};
 use crate::errors::OperatorError;
 use crate::metrics::DriftLabels;
 
-use super::drift_alert::{cleanup_drift_alerts, has_active_drift_alerts};
+use super::drift_alert::has_active_drift_alerts;
 use super::module::resolve_module_refs;
 use super::{
     ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER,
@@ -121,11 +121,6 @@ pub(super) async fn reconcile_machine_config(
     if generation_unchanged && !has_drift && !had_drift {
         info!(name = %name, "already reconciled this generation, skipping");
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
-    }
-
-    // If not drifted, clean up any stale DriftAlerts for this MachineConfig
-    if !has_drift {
-        cleanup_drift_alerts(&ctx.client, &namespace, &name).await;
     }
 
     // Resolve moduleRefs against Module CRDs (cluster-scoped)

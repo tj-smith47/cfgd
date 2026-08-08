@@ -2094,6 +2094,34 @@ fn schema_version_after_open() {
     );
 }
 
+#[test]
+fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+
+    // Simulate a database last migrated by a build that predates
+    // `backup_runs`: every earlier table exists and schema_version already
+    // stands at 12. The migration runner is positional, so `backup_runs` must
+    // sit at the array tail — inserted mid-array it would never run for this
+    // database. Dropping the table instead of rebuilding the old schema by
+    // hand keeps the fixture from rotting as earlier migrations change.
+    {
+        let store = StateStore::open(&path).unwrap();
+        store.conn.execute("DROP TABLE backup_runs", []).unwrap();
+        store
+            .conn
+            .execute("UPDATE schema_version SET version = 12", [])
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+    assert!(
+        state.backup_runs("any").unwrap().is_empty(),
+        "backup_runs must exist and be readable after replaying the tail migration"
+    );
+    assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+}
+
 // --- get_apply by id ---
 
 #[test]
@@ -2288,6 +2316,143 @@ fn migrate_state_db_preserves_sidecars_when_checkpoint_fails() {
             .join(format!("{STATE_DB_FILENAME}-shm"))
             .exists()
     );
+}
+
+// ---------------------------------------------------------------------------
+// backup_runs
+// ---------------------------------------------------------------------------
+
+fn backup_run_draft(name: &str, artifact: Option<&str>) -> BackupRunDraft {
+    BackupRunDraft {
+        name: name.to_string(),
+        source: "/var/lib/app/data.db".to_string(),
+        destination_path: artifact.map(|s| s.to_string()),
+        size_bytes: artifact.map(|_| 42),
+        status: if artifact.is_some() {
+            BackupRunStatus::Success
+        } else {
+            BackupRunStatus::Failed
+        },
+        error: artifact.map(|_| None).unwrap_or(Some("boom".to_string())),
+        started_at: "2026-08-01T00:00:00Z".to_string(),
+        finished_at: "2026-08-01T00:00:01Z".to_string(),
+    }
+}
+
+#[test]
+fn recorded_runs_round_trip_through_the_state_store() {
+    let store = StateStore::open_in_memory().expect("store");
+    let written = store
+        .record_backup_run(&backup_run_draft(
+            "db",
+            Some("/snapshots/data.db.20260801T000000Z"),
+        ))
+        .expect("insert");
+
+    assert!(written.id > 0);
+    let read_back = store.backup_runs("db").expect("history");
+    assert_eq!(read_back.len(), 1);
+    let row = &read_back[0];
+    assert_eq!(row.id, written.id);
+    assert_eq!(row.name, "db");
+    assert_eq!(row.source, "/var/lib/app/data.db");
+    assert_eq!(
+        row.destination_path.as_deref(),
+        Some("/snapshots/data.db.20260801T000000Z")
+    );
+    assert_eq!(row.size_bytes, Some(42));
+    assert_eq!(row.status, BackupRunStatus::Success);
+    assert_eq!(row.error, None);
+    assert_eq!(row.started_at, "2026-08-01T00:00:00Z");
+    assert_eq!(row.finished_at, "2026-08-01T00:00:01Z");
+}
+
+#[test]
+fn a_failed_run_persists_null_artifact_columns() {
+    let store = StateStore::open_in_memory().expect("store");
+    store
+        .record_backup_run(&backup_run_draft("db", None))
+        .expect("insert");
+
+    let row = &store.backup_runs("db").expect("history")[0];
+    assert_eq!(row.destination_path, None);
+    assert_eq!(row.size_bytes, None);
+    assert_eq!(row.status, BackupRunStatus::Failed);
+    assert_eq!(row.error.as_deref(), Some("boom"));
+    assert!(!row.has_artifact());
+}
+
+#[test]
+fn backup_runs_are_returned_newest_first_and_scoped_by_name() {
+    let store = StateStore::open_in_memory().expect("store");
+    let a1 = store
+        .record_backup_run(&backup_run_draft("alpha", Some("/a1")))
+        .expect("insert");
+    store
+        .record_backup_run(&backup_run_draft("beta", Some("/b1")))
+        .expect("insert");
+    let a2 = store
+        .record_backup_run(&backup_run_draft("alpha", Some("/a2")))
+        .expect("insert");
+
+    let alpha = store.backup_runs("alpha").expect("history");
+    assert_eq!(
+        alpha.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![a2.id, a1.id]
+    );
+    assert_eq!(store.backup_runs("beta").expect("history").len(), 1);
+}
+
+#[test]
+fn latest_backup_run_reports_the_newest_or_none() {
+    let store = StateStore::open_in_memory().expect("store");
+    assert!(store.latest_backup_run("db").expect("query").is_none());
+
+    store
+        .record_backup_run(&backup_run_draft("db", Some("/one")))
+        .expect("insert");
+    let newest = store
+        .record_backup_run(&backup_run_draft("db", Some("/two")))
+        .expect("insert");
+
+    let latest = store.latest_backup_run("db").expect("query").expect("row");
+    assert_eq!(latest.id, newest.id);
+    assert_eq!(latest.destination_path.as_deref(), Some("/two"));
+}
+
+#[test]
+fn delete_backup_run_removes_only_that_row() {
+    let store = StateStore::open_in_memory().expect("store");
+    let first = store
+        .record_backup_run(&backup_run_draft("db", Some("/one")))
+        .expect("insert");
+    let second = store
+        .record_backup_run(&backup_run_draft("db", Some("/two")))
+        .expect("insert");
+
+    store.delete_backup_run(first.id).expect("delete");
+
+    let rows = store.backup_runs("db").expect("history");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, second.id);
+}
+
+#[test]
+fn an_unrecognized_persisted_status_reads_as_failed() {
+    let store = StateStore::open_in_memory().expect("store");
+    let row = store
+        .record_backup_run(&backup_run_draft("db", Some("/one")))
+        .expect("insert");
+    store
+        .conn
+        .execute(
+            "UPDATE backup_runs SET status = 'nonsense' WHERE id = ?1",
+            rusqlite::params![row.id],
+        )
+        .expect("corrupt the row");
+
+    let read_back = &store.backup_runs("db").expect("history")[0];
+    assert_eq!(read_back.status, BackupRunStatus::Failed);
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ fn file_create(target: &str) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Symlink,
         source_hash: None,
+        patch: None,
     })
 }
 
@@ -31,6 +32,7 @@ fn file_update(target: &str) -> Action {
         origin: "test".to_string(),
         strategy: FileStrategy::Copy,
         source_hash: None,
+        patch: None,
     })
 }
 
@@ -336,6 +338,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    patch: None,
                 },
                 cfgd_core::modules::ResolvedFile {
                     source: PathBuf::from("/m/.vimrc"),
@@ -344,6 +347,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
                     strategy: None,
                     encryption: None,
                     permissions: None,
+                    patch: None,
                 },
             ],
         },
@@ -783,7 +787,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None);
+    let output = build_plan_output(&plan, "my-machine", None, &[]);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -812,7 +816,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", Some(&PhaseName::Files));
+    let output = build_plan_output(&plan, "ctx", Some(&PhaseName::Files), &[]);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
@@ -826,7 +830,7 @@ fn build_plan_output_scoped_phase_carries_module_and_kebab_section() {
         ModuleSection::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Modules");
@@ -846,7 +850,7 @@ fn build_plan_output_scoped_phase_carries_module_and_kebab_section() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     assert_eq!(output.phases[0].module, None);
     assert_eq!(output.phases[0].section, None);
@@ -881,7 +885,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     let actions = &output.phases[0].actions;
     let sourced = actions
@@ -918,7 +922,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
     for phase in &output.phases {
         for action in &phase.actions {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -939,7 +943,7 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -958,7 +962,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     let desc = &output.phases[0].actions[0].description;
     assert!(
@@ -983,7 +987,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
 
     let desc = &output.phases[0].actions[0].description;
     assert!(
@@ -1369,6 +1373,82 @@ fn apply_backup_choice_adopt_leaves_action_unchanged() {
     );
 }
 
+// --- unmanaged-file prompt: Patch adopts in place ---
+
+fn patch_update(target: &Path) -> Action {
+    Action::File(FileAction::Update {
+        source: PathBuf::new(),
+        target: target.to_path_buf(),
+        diff: "--- old\n+++ new\n".to_string(),
+        origin: "test".to_string(),
+        strategy: FileStrategy::Patch,
+        source_hash: None,
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: Some(cfgd_core::config::PatchFormat::Json),
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+            blocked_by: None,
+        }),
+    })
+}
+
+fn copy_update(target: &Path) -> Action {
+    Action::File(FileAction::Update {
+        source: PathBuf::from("/src/dotfiles/.zshrc"),
+        target: target.to_path_buf(),
+        diff: "--- old\n+++ new\n".to_string(),
+        origin: "test".to_string(),
+        strategy: FileStrategy::Copy,
+        source_hash: None,
+        patch: None,
+    })
+}
+
+fn one_phase_plan(actions: Vec<Action>) -> Plan {
+    make_plan(vec![(PhaseName::Files, actions)])
+}
+
+#[test]
+fn unmanaged_prompt_never_backs_up_a_patch_target() {
+    // A `Patch` target is unmanaged by definition on the first apply. Renaming
+    // it away would make the merge read empty content and write only the
+    // ensured keys — destroying the content the strategy exists to preserve.
+    let tmp = tempfile::tempdir().unwrap();
+    let patch_target = tmp.path().join("settings.json");
+    let copy_target = tmp.path().join("zshrc");
+    std::fs::write(&patch_target, "{\n  \"runtimeToken\": \"keep-me\"\n}\n").unwrap();
+    std::fs::write(&copy_target, "old").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, _cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Select(
+            "Backup (save as .cfgd-backup, then overwrite)".into(),
+        )]);
+    let mut plan = one_phase_plan(vec![patch_update(&patch_target), copy_update(&copy_target)]);
+
+    handle_unmanaged_file_targets(&mut plan, tmp.path(), &state, &printer, false).unwrap();
+
+    assert!(
+        patch_target.exists(),
+        "a Patch target must stay in place for the merge to read"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&patch_target).unwrap(),
+        "{\n  \"runtimeToken\": \"keep-me\"\n}\n",
+        "a Patch target must not be touched by the unmanaged-file prompt"
+    );
+    assert!(
+        !tmp.path().join("settings.json.cfgd-backup").exists(),
+        "no sidecar should be created for a Patch target"
+    );
+    // The single queued answer went to the non-Patch action, proving the
+    // Patch one never prompted.
+    assert!(
+        tmp.path().join("zshrc.cfgd-backup").exists(),
+        "a Copy target still honours the Backup choice"
+    );
+}
+
 // --- Shell environment reminder ---
 
 fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
@@ -1404,6 +1484,49 @@ fn shell_env_reminder_silent_when_all_env_actions_skipped() {
     assert!(
         out.is_empty(),
         "an apply that changed no env surface must not nag: {out}"
+    );
+}
+
+#[test]
+fn unmanaged_prompt_skips_patch_module_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("hosts");
+    std::fs::write(&target, "127.0.0.1 localhost\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, _cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Select(
+            "Backup (save as .cfgd-backup, then overwrite)".into(),
+        )]);
+    let file = cfgd_core::modules::ResolvedFile {
+        source: PathBuf::new(),
+        target: target.clone(),
+        is_git_source: false,
+        strategy: Some(FileStrategy::Patch),
+        permissions: None,
+        encryption: None,
+        patch: Some(cfgd_core::config::PatchSpec {
+            format: Some(cfgd_core::config::PatchFormat::Ini),
+            ensure: Some(serde_yaml::from_str("core:\n  editor: vim").unwrap()),
+            script: None,
+            blocked_by: None,
+        }),
+    };
+    let mut plan = one_phase_plan(vec![Action::Module(ModuleAction::local(
+        "mymod".to_string(),
+        ModuleActionKind::DeployFiles { files: vec![file] },
+    ))]);
+
+    handle_unmanaged_file_targets(&mut plan, tmp.path(), &state, &printer, false).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "127.0.0.1 localhost\n",
+        "a module-deployed Patch target must not be renamed away"
+    );
+    assert!(
+        !tmp.path().join("hosts.cfgd-backup").exists(),
+        "no sidecar should be created for a module Patch target"
     );
 }
 

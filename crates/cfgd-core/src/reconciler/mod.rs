@@ -12,6 +12,7 @@ mod files;
 mod format;
 mod modules;
 mod packages;
+mod patch;
 mod plan;
 mod restore;
 mod rollback;
@@ -32,6 +33,7 @@ pub use format::{
     format_plan_items,
 };
 pub use packages::stale_tracked_packages;
+pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, ModuleScope,
@@ -43,7 +45,7 @@ pub use verify::{VerifyResult, verify};
 pub(crate) use env::all_recorded_path_dirs;
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, build_script_env,
-    execute_script, script_default_workdir,
+    effective_continue_on_error, execute_script, script_default_workdir,
 };
 
 // Re-export sibling submodule items at the parent level so the externalized

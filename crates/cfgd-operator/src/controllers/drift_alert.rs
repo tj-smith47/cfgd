@@ -266,6 +266,10 @@ pub(super) async fn reconcile_drift_alert(
 
 /// Check whether any active DriftAlerts exist for a MachineConfig.
 /// Matches by spec.machineConfigRef.name since labels may not be set.
+///
+/// The caller must treat this single list as the only view of alert state:
+/// a follow-up list to act on "no alerts" races with alert creation and can
+/// delete a freshly created alert before its first reconcile.
 pub(super) async fn has_active_drift_alerts(
     client: &Client,
     namespace: &str,
@@ -286,39 +290,6 @@ pub(super) async fn has_active_drift_alerts(
         Err(e) => {
             warn!(error = %e, mc_name = %mc_name, "failed to list DriftAlerts for drift check");
             false
-        }
-    }
-}
-
-pub(super) async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
-    let alerts: Api<DriftAlert> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), namespace)
-    };
-
-    // List all and filter by machineConfigRef.name (labels may not be set)
-    let list = match alerts.list(&ListParams::default()).await {
-        Ok(l) => l,
-        Err(e) => {
-            warn!(error = %e, "failed to list DriftAlerts for cleanup");
-            return;
-        }
-    };
-
-    for alert in list {
-        if alert.spec.machine_config_ref.name != mc_name {
-            continue;
-        }
-        let alert_name = alert.name_any();
-        if let Err(e) = alerts.delete(&alert_name, &Default::default()).await {
-            warn!(
-                name = %alert_name,
-                error = %e,
-                "failed to delete resolved DriftAlert"
-            );
-        } else {
-            info!(name = %alert_name, "deleted resolved DriftAlert");
         }
     }
 }

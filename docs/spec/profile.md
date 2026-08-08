@@ -121,8 +121,12 @@ spec:
     managed:
       - source: string
         target: string
-        strategy: Symlink | Copy | Template | Hardlink
+        strategy: Symlink | Copy | Template | Hardlink | Patch
         private: bool
+        patch:
+          format: Ini | Json | Yaml | Toml
+          ensure: {}
+          script: string
     permissions:
       "path": "octal-mode"
 
@@ -186,6 +190,7 @@ spec:
 | `system` | map | No | `{}` | System configurator settings. Keys map to configurator names; values are configurator-specific. See [spec.system](#specsystem). |
 | `secrets` | list | No | `[]` | Secret references to decrypt and place on disk. See [spec.secrets[]](#specsecrets). |
 | `scripts` | object | No | | Lifecycle scripts (pre/post apply, pre/post reconcile, onChange, onDrift). See [spec.scripts](#specscripts). |
+| `backups` | list | No | `[]` | Declarative file/directory snapshot backups. See [spec.backups[]](#specbackups). |
 
 ---
 
@@ -483,12 +488,13 @@ on the machine.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Yes | | Path to the source file or directory, relative to the config root. |
+| `source` | string | Only when `strategy` is not `Patch` | | Path to the source file or directory, relative to the config root. Not required when `strategy: Patch`. |
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
 | `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"600"`). Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
-| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). See [encryption fields](#managed-file-encryption-fields). |
+| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Patch`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
+| `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
 **Example:**
 ```yaml
@@ -504,6 +510,14 @@ files:
       target: ~/.ssh/config
       strategy: Copy
       private: true
+
+    - target: ~/.gitconfig
+      strategy: Patch
+      patch:
+        format: Ini
+        ensure:
+          user:
+            name: "Example User"
 ```
 
 #### FileStrategy values
@@ -514,13 +528,14 @@ files:
 | `Copy` | Copy source content to `target`. The target is an independent file; changes to source are not reflected until the next reconcile. |
 | `Template` | Render the source as a Tera template and write the output to `target`. Automatically selected for `.tera` source files. |
 | `Hardlink` | Create a hard link from `target` to source. Changes to either file are immediately visible in both. |
+| `Patch` | Merge structured keys/values into the target, or pipe it through a script, leaving everything else untouched. Requires a `patch` block; `source` is not required. |
 
 #### Managed file encryption fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `encryption.backend` | string | Yes (when `encryption` present) | | Encryption backend: `"sops"` or `"age"`. Same values as `spec.secrets.backend` in `cfgd.yaml`. |
-| `encryption.mode` | enum | No | `InRepo` | `InRepo`: source must be encrypted in the repo, deployed decrypted. `Always`: encrypted in repo and encrypted at the target path. `Always` is incompatible with `strategy: Symlink` and `strategy: Hardlink`. |
+| `encryption.mode` | enum | No | `InRepo` | `InRepo`: source must be encrypted in the repo, deployed decrypted. `Always`: encrypted in repo and encrypted at the target path. `Always` is incompatible with `strategy: Symlink` and `strategy: Hardlink`; the whole `encryption` block is incompatible with `strategy: Patch`. |
 
 **Example:**
 ```yaml
@@ -740,6 +755,49 @@ Paths are relative to the config root directory. If the path resolves to an exis
 
 ---
 
+### spec.backups[]
+
+Declarative snapshot backups of a file or directory. See [Declarative Backups](../backups.md) for
+run semantics (hook ordering, atomicity, retention counting) and [restoring](../backups.md#restoring).
+A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
+[daemon's timers](../backups.md#daemon-scheduling). Either can be run on demand with
+`cfgd backup run [name]`, and any snapshot put back with `cfgd backup restore <name>`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. It becomes the directory component `<state_dir>/backups/<name>/` and the lock file `<state_dir>/locks/backup-<name>.lock`, so it must be unique across the list, non-empty/non-blank, a single segment (no `/` or `\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others. Validated at parse time. |
+| `source` | string (path) | Yes | | File or directory to snapshot; a leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive/data-stream separator on Windows) needs an explicit `namePattern` that omits `{filename}`. |
+| `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
+| `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot under the destination; the rendered value must be relative and every segment must name something (`.`, `..`, empty segments, rooted values like `/daily` or `C:/daily`, and `:` anywhere are rejected at run time — the rejection names the `{filename}` it interpolated so a colon in the source filename points at itself). |
+| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
+| `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
+| `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure skips the copy and records a failed run; `postBackup` still runs. |
+| `postBackup` | list | No | `[]` | Scripts run after the copy step, and after a failed `preBackup` — always attempted, so whatever `preBackup` stopped gets restarted. Same shape as [spec.scripts](#specscripts) entries. |
+
+**Example:**
+```yaml
+backups:
+  - name: openlist-db
+    source: /var/lib/openlist/data.db     # file or directory
+    destination: ~/backups/openlist       # optional; default <state_dir>/backups/<name>/
+    namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
+    schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
+    retention: 7                          # optional; default 10; newest N kept per backup
+    preBackup:                            # optional; existing ScriptEntry shape
+      - run: systemctl stop openlist
+    postBackup:
+      - run: systemctl start openlist
+```
+
+CRD parity for `spec.backups[]` is not yet implemented — this field is available in the YAML/TOML
+profile config path only.
+
+Every run is recorded in the state database's `backup_runs` table (source, destination, size,
+status, error, start/finish timestamps), and retention pruning walks those records rather than
+globbing the destination.
+
+---
+
 ## Profile Inheritance and Merge Semantics
 
 When a profile lists `inherits`, cfgd resolves the full ancestor chain depth-first, then merges
@@ -757,3 +815,4 @@ all layers in resolution order (earliest ancestor first, current profile last).
 | `system` | Deep merge — child keys overwrite parent keys at the leaf level. |
 | `secrets` | Append, deduplicated by `target`. |
 | `scripts` | Append in order — parent scripts run before child scripts. |
+| `backups` | Append, deduplicated by `name`; later layer overrides. |

@@ -63,11 +63,37 @@
                 "description": "When encryption must be enforced. Defaults to `InRepo`.",
                 "name": "mode",
                 "required": false,
-                "type": "object"
+                "type": "string"
               }
             ],
             "description": "Encryption settings for this module file.",
             "name": "encryption",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                "name": "ensure",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                "name": "format",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                "name": "script",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+            "name": "patch",
             "required": false,
             "type": "object"
           },
@@ -84,16 +110,16 @@
             "type": "boolean"
           },
           {
-            "description": "",
+            "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
             "name": "source",
-            "required": true,
+            "required": false,
             "type": "string"
           },
           {
             "description": "Per-file deployment strategy override. If None, uses the global default.",
             "name": "strategy",
             "required": false,
-            "type": "object"
+            "type": "string"
           },
           {
             "description": "",
@@ -263,6 +289,62 @@
       {
         "children": [
           {
+            "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.",
+            "name": "destination",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty, non-blank, a single segment (no `/` or `\\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot in a subdirectory of the destination. At run time the rendered value must be relative and every segment must name something: `.` and `..` segments, empty segments (`a//b`, `daily/`), rooted values (`/daily`, `C:/daily`, `C:daily`, `\\\\server\\share`), and `:` anywhere are all rejected. Windows shapes are rejected on every platform, so a pattern is valid everywhere or nowhere. A rejection names the `{filename}` it interpolated, so a colon in the source filename points at itself. Defaults to `\"{filename}.{timestamp}\"`.",
+            "name": "namePattern",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Scripts run after the copy step (e.g. restart the service stopped by `preBackup`). Always attempted, including after a failed `preBackup` or a failed copy.",
+            "name": "postBackup",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "description": "Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent). A failure skips the snapshot and records a failed run; `postBackup` still runs.",
+            "name": "preBackup",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration rather than a supported \"unlimited\" mode). Defaults to 10.",
+            "name": "retention",
+            "required": false,
+            "type": "integer"
+          },
+          {
+            "description": "When to run this backup: a duration interval (e.g. `\"6h\"`) or a cron expression, validated at parse time. Cron expressions may be 5-field (`minute hour day month weekday`, e.g. `\"0 3 * * *\"`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `\"30 0 3 * * *\"`), and are evaluated in the machine's LOCAL timezone, like a crontab entry. An interval is measured from the unit's last recorded run, so a `\"1d\"` backup on a machine rebooted daily still fires daily. Setting this hands the backup to the daemon's timers and takes it out of apply; omitted means \"run on every apply\".",
+            "name": "schedule",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "File or directory to snapshot. A leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive and data-stream separator on Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
+            "name": "source",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "description": "",
+        "name": "backups",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "children": [
+          {
             "description": "",
             "name": "name",
             "required": true,
@@ -284,7 +366,7 @@
         "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
         "name": "envScope",
         "required": false,
-        "type": "object"
+        "type": "string"
       },
       {
         "children": [
@@ -302,11 +384,37 @@
                     "description": "When encryption must be enforced. Defaults to `InRepo`.",
                     "name": "mode",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   }
                 ],
                 "description": "Encryption settings for this file.",
                 "name": "encryption",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                    "name": "ensure",
+                    "required": false,
+                    "type": "object"
+                  },
+                  {
+                    "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                    "name": "format",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                    "name": "script",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                "name": "patch",
                 "required": false,
                 "type": "object"
               },
@@ -323,16 +431,16 @@
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                 "name": "source",
-                "required": true,
+                "required": false,
                 "type": "string"
               },
               {
                 "description": "Per-file deployment strategy override. If None, uses the global default.",
                 "name": "strategy",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "",
@@ -757,7 +865,7 @@
                     "description": "If set, restrict which encryption mode is acceptable.",
                     "name": "mode",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "Glob patterns or explicit paths that must be encrypted.",
@@ -851,11 +959,37 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
+                    "required": false,
+                    "type": "object"
+                  },
+                  {
+                    "children": [
+                      {
+                        "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                        "name": "ensure",
+                        "required": false,
+                        "type": "object"
+                      },
+                      {
+                        "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "name": "format",
+                        "required": false,
+                        "type": "string"
+                      },
+                      {
+                        "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                        "name": "script",
+                        "required": false,
+                        "type": "string"
+                      }
+                    ],
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -872,16 +1006,16 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
-                    "required": true,
+                    "required": false,
                     "type": "string"
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -1275,11 +1409,37 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
+                    "required": false,
+                    "type": "object"
+                  },
+                  {
+                    "children": [
+                      {
+                        "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                        "name": "ensure",
+                        "required": false,
+                        "type": "object"
+                      },
+                      {
+                        "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "name": "format",
+                        "required": false,
+                        "type": "string"
+                      },
+                      {
+                        "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                        "name": "script",
+                        "required": false,
+                        "type": "string"
+                      }
+                    ],
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -1296,16 +1456,16 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
-                    "required": true,
+                    "required": false,
                     "type": "string"
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -1699,11 +1859,37 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
+                    "required": false,
+                    "type": "object"
+                  },
+                  {
+                    "children": [
+                      {
+                        "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                        "name": "ensure",
+                        "required": false,
+                        "type": "object"
+                      },
+                      {
+                        "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "name": "format",
+                        "required": false,
+                        "type": "string"
+                      },
+                      {
+                        "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                        "name": "script",
+                        "required": false,
+                        "type": "string"
+                      }
+                    ],
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -1720,16 +1906,16 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
-                    "required": true,
+                    "required": false,
                     "type": "string"
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -2123,11 +2309,37 @@
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
                         "name": "mode",
                         "required": false,
-                        "type": "object"
+                        "type": "string"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
+                    "required": false,
+                    "type": "object"
+                  },
+                  {
+                    "children": [
+                      {
+                        "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                        "name": "ensure",
+                        "required": false,
+                        "type": "object"
+                      },
+                      {
+                        "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "name": "format",
+                        "required": false,
+                        "type": "string"
+                      },
+                      {
+                        "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                        "name": "script",
+                        "required": false,
+                        "type": "string"
+                      }
+                    ],
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "name": "patch",
                     "required": false,
                     "type": "object"
                   },
@@ -2144,16 +2356,16 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "",
+                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "source",
-                    "required": true,
+                    "required": false,
                     "type": "string"
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
                     "name": "strategy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -2732,7 +2944,7 @@
                 "description": "Policy for daemon auto-reconciliation of detected drift. `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't apply (safe default), `Prompt` = future interactive approval.",
                 "name": "driftPolicy",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "",
@@ -2758,7 +2970,7 @@
                     "description": "Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.",
                     "name": "driftPolicy",
                     "required": false,
-                    "type": "object"
+                    "type": "string"
                   },
                   {
                     "description": "",
@@ -2849,10 +3061,10 @@
         "type": "object"
       },
       {
-        "description": "Global default file deployment strategy. Per-file overrides take precedence.",
+        "description": "Global default file deployment strategy. Per-file overrides take precedence. `Patch` is rejected here: it is defined by a per-file `patch:` block, which a file inheriting the global default cannot have.",
         "name": "fileStrategy",
         "required": false,
-        "type": "object"
+        "type": "string"
       },
       {
         "children": [
@@ -2914,7 +3126,7 @@
             "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
             "name": "sshStrictHostKeyChecking",
             "required": false,
-            "type": "object"
+            "type": "string"
           },
           {
             "description": "",
@@ -3022,7 +3234,7 @@
                 "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
                 "name": "sshStrictHostKeyChecking",
                 "required": false,
-                "type": "object"
+                "type": "string"
               },
               {
                 "description": "",
@@ -3051,7 +3263,7 @@
                 "type": "boolean"
               },
               {
-                "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.no_scripts` would otherwise reject them. Default `false`: the source's own `no_scripts` constraint governs.",
+                "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.noScripts` would otherwise reject them. Default `false`: the source's own `noScripts` constraint governs.",
                 "name": "allowScripts",
                 "required": false,
                 "type": "boolean"
@@ -3290,7 +3502,7 @@
             "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`.",
             "name": "policy",
             "required": false,
-            "type": "object"
+            "type": "string"
           },
           {
             "children": [
@@ -3298,7 +3510,7 @@
                 "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy).",
                 "name": "policy",
                 "required": false,
-                "type": "object"
+                "type": "string"
               }
             ],
             "description": "Update policy for authored skills. Defaults to inheriting `policy`.",
@@ -3793,7 +4005,7 @@
         "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
         "name": "mountPolicy",
         "required": false,
-        "type": "object"
+        "type": "string"
       },
       {
         "description": "",

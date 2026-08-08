@@ -567,6 +567,7 @@ fn resolve_local_files() {
         name: "nvim".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                patch: None,
                 source: "config/".into(),
                 target: "/home/user/.config/nvim/".into(),
                 strategy: None,
@@ -1534,6 +1535,7 @@ fn diff_module_specs_detects_changes() {
                 },
             ],
             files: vec![ModuleFileEntry {
+                patch: None,
                 source: "config/".into(),
                 target: "~/.config/test/".into(),
                 strategy: None,
@@ -1579,6 +1581,7 @@ fn diff_module_specs_detects_changes() {
                 },
             ],
             files: vec![ModuleFileEntry {
+                patch: None,
                 source: "config/".into(),
                 target: "~/.config/new/".into(),
                 strategy: None,
@@ -2340,6 +2343,7 @@ fn diff_module_specs_added_file() {
     let old = make_loaded_module("test", crate::config::ModuleSpec::default());
     let new_spec = crate::config::ModuleSpec {
         files: vec![crate::config::ModuleFileEntry {
+            patch: None,
             source: "zshrc".to_string(),
             target: "~/.zshrc".to_string(),
             strategy: None,
@@ -2783,6 +2787,7 @@ fn resolve_module_files_local_relative() {
         name: "mymod".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                patch: None,
                 source: "vimrc".into(),
                 target: "/tmp/test-target/.vimrc".into(),
                 strategy: None,
@@ -2809,6 +2814,49 @@ fn resolve_module_files_local_relative() {
 }
 
 #[test]
+fn resolve_module_files_accepts_a_source_that_names_the_module_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("wholetree");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(mod_dir.join("vimrc"), "set nocompat").unwrap();
+
+    // `source: .` is the module's own directory — the documented way to deploy
+    // a module's whole tree, so it must resolve rather than trip the
+    // names-nothing-of-its-own guard that `..` shares.
+    let module = LoadedModule {
+        name: "wholetree".into(),
+        version: None,
+        spec: ModuleSpec {
+            files: vec![ModuleFileEntry {
+                patch: None,
+                source: ".".into(),
+                target: "/tmp/everything".into(),
+                strategy: None,
+                private: false,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        },
+        dir: mod_dir.clone(),
+        origin: None,
+    };
+
+    let printer = test_printer();
+    let cache_base = dir.path().join("cache");
+    let resolved = resolve_module_files(&module, &cache_base, &printer)
+        .expect("a source of '.' names the module directory and must resolve");
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].source.components().collect::<Vec<_>>(),
+        mod_dir.components().collect::<Vec<_>>(),
+        "'.' must resolve to the module directory itself"
+    );
+    assert_eq!(resolved[0].target, PathBuf::from("/tmp/everything"));
+}
+
+#[test]
 fn resolve_module_files_path_traversal_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let mod_dir = dir.path().join("modules").join("evil");
@@ -2819,6 +2867,7 @@ fn resolve_module_files_path_traversal_rejected() {
         name: "evil".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                patch: None,
                 source: "../../../etc/passwd".into(),
                 target: "/tmp/stolen".into(),
                 strategy: None,
@@ -2858,6 +2907,7 @@ fn resolve_module_files_multiple_files() {
         spec: ModuleSpec {
             files: vec![
                 ModuleFileEntry {
+                    patch: None,
                     source: "bashrc".into(),
                     target: "/tmp/test-resolve/.bashrc".into(),
                     strategy: Some(crate::config::FileStrategy::Copy),
@@ -2866,6 +2916,7 @@ fn resolve_module_files_multiple_files() {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    patch: None,
                     source: "zshrc".into(),
                     target: "/tmp/test-resolve/.zshrc".into(),
                     strategy: Some(crate::config::FileStrategy::Symlink),
@@ -2939,6 +2990,7 @@ fn resolve_module_files_symlink_escape_rejected() {
         name: "tricky".into(),
         spec: ModuleSpec {
             files: vec![ModuleFileEntry {
+                patch: None,
                 source: "escape.txt".into(),
                 target: "/tmp/test-tricky/out".into(),
                 strategy: None,
@@ -3535,6 +3587,79 @@ fn load_source_modules_allows_script_body_when_subscriber_opted_in() {
     );
 }
 
+/// Write a source module body whose `strategy: Patch` file computes its merge
+/// by running a filter script; returns the `modules/` directory path.
+fn write_source_module_with_patch_script(root: &Path, name: &str) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  files:\n    - target: ~/.config/app/x.ini\n      strategy: Patch\n      patch:\n        script: \"curl -fsSL https://example.com/install.sh | sh\"\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
+#[test]
+fn load_source_modules_rejects_patch_script_body_when_not_permitted() {
+    // A patch filter runs on every command that evaluates the file, read-only
+    // ones included — it is the same delivered-code surface as a lifecycle
+    // script and must be gated the same way.
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_patch_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        scripts_permitted: false,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
+        ),
+        "expected ScriptsNotAllowed for a patch filter, got: {msg}"
+    );
+    assert!(
+        msg.contains("team") && msg.contains("dev-tools") && msg.contains("~/.config/app/x.ini"),
+        "error must name source + module + the patched target: {msg}"
+    );
+    assert!(
+        !modules.contains_key("dev-tools"),
+        "rejected body must not be inserted"
+    );
+}
+
+#[test]
+fn load_source_modules_allows_patch_script_body_when_subscriber_opted_in() {
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_patch_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+    assert!(
+        modules.contains_key("dev-tools"),
+        "permitted patch filter must load"
+    );
+}
+
 #[test]
 fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
     let source = tempfile::tempdir().unwrap();
@@ -3863,6 +3988,7 @@ fn diff_module_specs_file_changes() {
         spec: ModuleSpec {
             files: vec![
                 ModuleFileEntry {
+                    patch: None,
                     source: "old.conf".into(),
                     target: "~/.config/app/old.conf".into(),
                     strategy: None,
@@ -3871,6 +3997,7 @@ fn diff_module_specs_file_changes() {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    patch: None,
                     source: "shared.conf".into(),
                     target: "~/.config/app/shared.conf".into(),
                     strategy: None,
@@ -3890,6 +4017,7 @@ fn diff_module_specs_file_changes() {
         spec: ModuleSpec {
             files: vec![
                 ModuleFileEntry {
+                    patch: None,
                     source: "new.conf".into(),
                     target: "~/.config/app/new.conf".into(),
                     strategy: None,
@@ -3898,6 +4026,7 @@ fn diff_module_specs_file_changes() {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    patch: None,
                     source: "shared.conf".into(),
                     target: "~/.config/app/shared.conf".into(),
                     strategy: None,

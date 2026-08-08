@@ -1,4 +1,3 @@
-use crate::config::MergedProfile;
 use crate::errors::Result;
 use crate::output::Printer;
 use crate::providers::FileAction;
@@ -9,14 +8,14 @@ impl<'a> super::Reconciler<'a> {
     pub(super) fn apply_file_action(
         &self,
         action: &FileAction,
-        profile: &MergedProfile,
+        profile_name: &str,
         config_dir: &std::path::Path,
         printer: &Printer,
     ) -> Result<String> {
         if let Some(ref fm) = self.registry.file_manager {
             fm.apply(&[action.clone_action()], printer)?;
         } else {
-            apply_file_action_direct(action, config_dir, profile)?;
+            apply_file_action_direct(action, config_dir, profile_name)?;
         }
 
         // Resource ids are drift-correlation keys: this string is matched

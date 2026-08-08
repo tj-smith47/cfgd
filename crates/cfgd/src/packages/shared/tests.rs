@@ -1138,6 +1138,10 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         }
     }
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
         "PATH",
@@ -1186,6 +1190,10 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     // CFGD_BREW_BIN is already set by ToolShim — brew_available() finds the shim
     // via the env var before consulting PATH, so the brew path is intact.
@@ -1233,6 +1241,10 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&shim, perms).unwrap();
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
         "PATH",
@@ -1265,6 +1277,10 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
 
+    // Exclude concurrent spawns for the whole PATH-replacement window: the
+    // shim dir holds only this test's fake binaries, so any other test's
+    // `Command` lookup would miss its real tool. Declared first so it drops
+    // last.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
         "PATH",

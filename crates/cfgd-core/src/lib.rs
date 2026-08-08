@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod compliance;
 pub mod composition;
 pub mod config;

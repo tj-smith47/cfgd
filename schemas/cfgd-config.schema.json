@@ -191,9 +191,15 @@
           "default": null
         },
         "fileStrategy": {
-          "$ref": "#/definitions/FileStrategy",
           "default": "Symlink",
-          "description": "Global default file deployment strategy. Per-file overrides take precedence."
+          "description": "Global default file deployment strategy. Per-file overrides take precedence.\n\n`Patch` is rejected here: it is defined by a per-file `patch:` block,\nwhich a file inheriting the global default cannot have.",
+          "enum": [
+            "Symlink",
+            "Copy",
+            "Template",
+            "Hardlink"
+          ],
+          "type": "string"
         },
         "modules": {
           "anyOf": [
@@ -341,31 +347,6 @@
         {
           "const": "Prompt",
           "description": "Future: notify with actionable prompt.",
-          "type": "string"
-        }
-      ]
-    },
-    "FileStrategy": {
-      "description": "File deployment strategy.",
-      "oneOf": [
-        {
-          "const": "Symlink",
-          "description": "Create a symbolic link from target to source (default).",
-          "type": "string"
-        },
-        {
-          "const": "Copy",
-          "description": "Copy source content to target.",
-          "type": "string"
-        },
-        {
-          "const": "Template",
-          "description": "Render a Tera template and write the output (auto-selected for .tera files).",
-          "type": "string"
-        },
-        {
-          "const": "Hardlink",
-          "description": "Create a hard link from target to source.",
           "type": "string"
         }
       ]
@@ -784,7 +765,7 @@
         },
         "allowScripts": {
           "default": false,
-          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.no_scripts` would otherwise reject them. Default `false`:\nthe source's own `no_scripts` constraint governs.",
+          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.noScripts` would otherwise reject them. Default `false`:\nthe source's own `noScripts` constraint governs.",
           "type": "boolean"
         },
         "optIn": {

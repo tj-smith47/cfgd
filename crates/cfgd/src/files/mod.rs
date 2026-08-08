@@ -14,6 +14,7 @@ mod template;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use plan::{module_patch_binding, patch_drift_result, render_patch_diff};
 pub(crate) use template::is_tera_template;
 
 /// Concrete FileManager implementation for cfgd.
@@ -29,6 +30,9 @@ pub struct CfgdFileManager {
     source_contexts: HashMap<String, Context>,
     /// Global default file deployment strategy.
     global_strategy: FileStrategy,
+    /// Name of the resolved profile, stamped into `CFGD_PROFILE` for
+    /// `patch.script` filters.
+    profile_name: String,
 }
 
 impl CfgdFileManager {
@@ -61,6 +65,7 @@ impl CfgdFileManager {
             secret_providers: Vec::new(),
             source_contexts: HashMap::new(),
             global_strategy: FileStrategy::default(),
+            profile_name: resolved.profile_name().to_string(),
         })
     }
 

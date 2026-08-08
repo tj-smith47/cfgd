@@ -89,6 +89,7 @@ fn happy_manifest() -> ConfigSourceDocument {
             policy: ConfigSourcePolicy {
                 required: PolicyItems {
                     files: vec![ManagedFileSpec {
+                        patch: None,
                         source: "bashrc".into(),
                         target: PathBuf::from("~/.bashrc"),
                         strategy: None,

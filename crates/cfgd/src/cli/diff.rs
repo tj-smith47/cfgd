@@ -3,6 +3,50 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
+/// Render one module-deployed file's inline diff and report whether it drifts.
+///
+/// A `Patch` file has no source to compare against — its diff is the target's
+/// current content against what re-running the merge would produce — so it
+/// routes through the patch renderer while every other strategy keeps the
+/// shared source→target renderer.
+fn diff_module_file(
+    fm: &CfgdFileManager,
+    resolved: &cfgd_core::config::ResolvedProfile,
+    module: &cfgd_core::modules::ResolvedModule,
+    file: &cfgd_core::modules::ResolvedFile,
+    config_dir: &std::path::Path,
+    printer: &Printer,
+) -> anyhow::Result<cfgd_core::providers::FileDriftResult> {
+    match &file.patch {
+        Some(spec) => {
+            let binding = crate::files::module_patch_binding(config_dir, resolved, module);
+            let evaluated =
+                cfgd_core::reconciler::evaluate_patch(spec, &file.target, &binding.context());
+            Ok(crate::files::render_patch_diff(
+                &file.target,
+                evaluated,
+                printer,
+            ))
+        }
+        // Module sources carry no tera origin, so pass None.
+        None => Ok(fm.diff_one(&file.source, &file.target, None, printer)?),
+    }
+}
+
+/// Keep only the records worth reporting: a converged file is the absence of a
+/// finding, and listing every one of them would bury the drifted and the
+/// unevaluable entries a consumer actually acts on.
+fn record_file_drift(
+    payload: &mut DiffOutput,
+    record: cfgd_core::providers::FileDriftResult,
+) -> bool {
+    let drifted = !record.matches;
+    if drifted {
+        payload.files.push(record);
+    }
+    drifted
+}
+
 pub fn cmd_diff(
     cli: &Cli,
     printer: &Printer,
@@ -48,12 +92,16 @@ pub fn cmd_diff(
     let has_file_drift = {
         printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let mut drift = fm.diff(&resolved.merged, printer)?;
+        let mut drift = false;
+        for record in fm.diff(&resolved.merged, printer)? {
+            drift |= record_file_drift(&mut diff_payload, record);
+        }
         // Module-deployed files render the same inline content diff as profile
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {
             for file in &module.files {
-                if fm.diff_one(&file.source, &file.target, None, printer)? {
+                let record = diff_module_file(&fm, &resolved, module, file, &config_dir, printer)?;
+                if record_file_drift(&mut diff_payload, record) {
                     drift = true;
                 }
             }
@@ -198,10 +246,12 @@ fn cmd_diff_module(
         // carry no tera origin (None). `diff_one` emits at top level, so no
         // section is opened here (matches the full path's structure).
         printer.status_simple(Role::Info, "Files");
-        let fm = CfgdFileManager::new(config_dir, &empty_resolved_profile(mod_name))?;
+        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
+        let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
             for file in &module.files {
-                if fm.diff_one(&file.source, &file.target, None, printer)? {
+                let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
+                if record_file_drift(&mut diff_payload, record) {
                     has_file_diff = true;
                 }
             }

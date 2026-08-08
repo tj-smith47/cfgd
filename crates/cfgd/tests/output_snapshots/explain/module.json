@@ -62,11 +62,37 @@
               "description": "When encryption must be enforced. Defaults to `InRepo`.",
               "name": "mode",
               "required": false,
-              "type": "object"
+              "type": "string"
             }
           ],
           "description": "Encryption settings for this module file.",
           "name": "encryption",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "children": [
+            {
+              "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+              "name": "ensure",
+              "required": false,
+              "type": "object"
+            },
+            {
+              "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+              "name": "format",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+              "name": "script",
+              "required": false,
+              "type": "string"
+            }
+          ],
+          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+          "name": "patch",
           "required": false,
           "type": "object"
         },
@@ -83,16 +109,16 @@
           "type": "boolean"
         },
         {
-          "description": "",
+          "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
           "name": "source",
-          "required": true,
+          "required": false,
           "type": "string"
         },
         {
           "description": "Per-file deployment strategy override. If None, uses the global default.",
           "name": "strategy",
           "required": false,
-          "type": "object"
+          "type": "string"
         },
         {
           "description": "",

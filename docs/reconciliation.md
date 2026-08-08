@@ -33,6 +33,8 @@ cfgd distinguishes between user-initiated apply and daemon-initiated reconciliat
 
 Both contexts run `onChange` hooks when actions produce changes. `onDrift` hooks fire only in the daemon's drift detection path, before any reconciliation plan is generated.
 
+The context also reaches `spec.backups[]` hooks as `$CFGD_CONTEXT`: a backup fired by the daemon's [schedule timer](backups.md#daemon-scheduling) sees `reconcile`, one run by `cfgd apply` or `cfgd backup run` sees `apply`. The engine itself is the same either way.
+
 Use `cfgd plan --context reconcile` to preview what the daemon would run.
 
 ## Plan Output
@@ -57,6 +59,9 @@ Files:
 
 System:
   ~ macosDefaults: com.apple.dock.autohide: false → true
+
+Backups (run on apply)
+  mydata
 ```
 
 ## Filtering

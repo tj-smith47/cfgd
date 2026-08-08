@@ -1,0 +1,6 @@
+Backups
+
+Name    Source                  Schedule   Retention  Last Run  Next Run            
+────────────────────────────────────────────────────────────────────────────────────
+docs    /var/lib/app/notes.txt  -          3          never     -                   
+weekly  /var/lib/app/notes.txt  0 3 * * *  3          never     <NEXT_RUN>

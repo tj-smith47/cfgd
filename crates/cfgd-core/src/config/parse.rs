@@ -117,6 +117,27 @@ pub(crate) fn validate_api_version(api_version: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject `spec.fileStrategy: Patch`.
+///
+/// The global strategy is the fallback for files that declare none, and a
+/// `Patch` file is defined by its own `patch:` block — which a file
+/// inheriting the global cannot have. Every such file would fail at apply with
+/// `PatchBlockMissing`, and the unmanaged-file prompt (which reads the file's
+/// *declared* strategy) would back the target up before the merge, destroying
+/// the content `Patch` exists to preserve. It is only ever meaningful per
+/// file.
+pub(crate) fn validate_global_file_strategy(strategy: FileStrategy) -> Result<()> {
+    if !strategy.valid_as_global_default() {
+        return Err(ConfigError::Invalid {
+            message: "spec.fileStrategy: 'Patch' cannot be a global default — it requires a \
+                      per-file 'patch' block, so set 'strategy: Patch' on the individual file"
+                .to_string(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Parse a ConfigSource manifest from YAML content.
 pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
     check_yaml_anchor_limit(contents, Path::new("ConfigSource"))?;
@@ -218,6 +239,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
     };
 
     validate_api_version(&raw.api_version)?;
+    validate_global_file_strategy(raw.spec.file_strategy)?;
 
     // Normalize origin to Vec
     let origin = match raw.spec.origin {

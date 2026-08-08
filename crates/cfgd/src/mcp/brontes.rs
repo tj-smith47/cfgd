@@ -12,6 +12,7 @@ use brontes::{Config, TaskMode, ToolAnnotations};
 const READ_ONLY: &[&str] = &[
     "alias list",
     "alias show",
+    "backup list",
     "clusterconfigpolicy validate",
     "compliance",
     "compliance diff",
@@ -149,6 +150,7 @@ const GROUPS: &[(&str, &str, &[&str])] = &[
         "Reconcile this machine: preview, apply, inspect drift, roll back",
         &[
             "apply", "plan", "status", "diff", "verify", "log", "rollback", "doctor", "paths",
+            "backup",
         ],
     ),
     (
@@ -228,6 +230,20 @@ pub fn config() -> Config {
     // than stacking, but it can replace files and restart services, so it
     // carries the destructive hint a client should prompt on.
     cfg = cfg.annotation("apply", write(true, true, true));
+
+    // `backup run` is destructive, NOT idempotent, and open-world: retention
+    // pruning deletes superseded snapshots and their emptied parents, a second
+    // identical call takes another snapshot and prunes again rather than being
+    // a no-op, and `preBackup`/`postBackup` hooks run arbitrary commands that
+    // reach outside cfgd's own state exactly as `apply`'s lifecycle scripts do.
+    // A client must prompt before calling it.
+    cfg = cfg.annotation("backup run", write(true, false, true));
+
+    // `backup restore` overwrites live data with a snapshot of it, is not
+    // idempotent (each call takes a fresh safety backup and prunes), and runs
+    // the same arbitrary `preBackup`/`postBackup` hooks. Same hint set as
+    // `backup run`, for the same three reasons.
+    cfg = cfg.annotation("backup restore", write(true, false, true));
 
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);

@@ -219,6 +219,126 @@ pub fn plan_args_module(name: &str) -> PlanArgs {
     }
 }
 
+/// Build a tempdir-backed profile with zero managed files/modules (so the
+/// reconciler plan is always empty) and two `spec.backups[]` entries: `docs`
+/// (schedule-less — runs on every apply) and `weekly` (`schedule: "0 3 * * *"`
+/// — daemon/explicit-run only). Both snapshot the same source file so a test
+/// can tell which one actually ran by checking which destination directory
+/// gained a snapshot.
+///
+/// Returns `(config_dir, state_dir, source_file)`.
+pub fn backup_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let source_file = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+    std::fs::write(&source_file, "hello backup").unwrap();
+
+    write_backup_profile(&config_dir, &source_file.display().to_string());
+    (config_dir, state_dir, source_file)
+}
+
+/// The same two backups, but `source:` is a FIXED literal instead of a tempdir
+/// path — and no file is created, because `cfgd backup list` renders the
+/// declared string and never stats it.
+///
+/// `backup list`'s Source column is padded to the widest value in it, so a
+/// host-dependent source makes the whole rendered TABLE host-dependent: a
+/// golden blessed against Linux's `/tmp/.tmpXXXXXX/...` mismatches macOS's much
+/// longer `/private/var/folders/...` and Windows' `C:\Users\...\AppData\Local\Temp\...`.
+/// Normalizing the path after rendering cannot fix it — the padding is already
+/// baked into every other column.
+pub fn backup_list_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    write_backup_profile(&config_dir, "/var/lib/app/notes.txt");
+    (config_dir, state_dir)
+}
+
+/// Write the shared `withbackups` profile (a schedule-less `docs` and a cron
+/// `weekly`) declaring `source` for both, plus the `cfgd.yaml` selecting it.
+fn write_backup_profile(config_dir: &tempfile::TempDir, source: &str) {
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+}
+
+/// Build a tempdir-backed profile with TWO schedule-less backups, declared
+/// `broken` **then** `ok`: `broken`'s source path doesn't exist (the run is
+/// recorded `Failed` with no artifact), `ok`'s source is real and succeeds.
+/// Both run automatically during `cfgd apply` in declaration order — proves
+/// a failed unit doesn't block the sibling that comes *after* it.
+///
+/// Returns `(config_dir, state_dir, ok_source)`.
+pub fn backup_profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let ok_source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(ok_source.parent().unwrap()).unwrap();
+    std::fs::write(&ok_source, "hello backup").unwrap();
+    let broken_source = config_dir.path().join("data").join("does-not-exist.txt");
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n    - name: ok\n      source: {}\n      retention: 3\n",
+        broken_source.display(),
+        ok_source.display(),
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir, ok_source)
+}
+
+/// Build a tempdir-backed profile whose SOLE file action fails at apply time
+/// (its target's parent is a regular file, so `create_dir_all` returns
+/// `ENOTDIR`) — with `failed == total`, the reconciler's own status math
+/// (`crates/cfgd-core/src/reconciler/apply.rs`) yields `ApplyStatus::Failed`,
+/// not `Partial`. Also declares one schedule-less backup whose source
+/// doesn't exist, so the backup loop's own downgrade path runs on top of an
+/// apply that is already `Failed`.
+///
+/// Returns `(config_dir, state_dir)`.
+pub fn single_failed_file_and_broken_backup_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
+
+    let blocker = config_dir.path().join("blocker");
+    std::fs::write(&blocker, "i am a file, not a dir").unwrap();
+    let target_fail = blocker.join("hello.txt");
+
+    let broken_source = config_dir.path().join("data").join("does-not-exist.txt");
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n",
+        target_fail.display(),
+        broken_source.display(),
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("tiny.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir)
+}
+
 // ---------------------------------------------------------------------------
 // Source-sync fixtures (cmd_sync).
 //
@@ -875,6 +995,195 @@ pub fn make_bare_source_repo(
         .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
         .expect("push");
     bare
+}
+
+/// Publish a `file://` git source and subscribe a fresh config dir to it.
+///
+/// `build` receives the workspace directory (so a fixture can put files the
+/// manifest or profile references inside it) and returns the source's
+/// `cfgd-source.yaml` and its `profiles/default.yaml`. `subscription_extra` is
+/// appended verbatim under the config's `subscription:` block (already indented
+/// eight spaces), e.g. `"        allowScripts: true\n"`. Returns
+/// `(workspace, config_dir, state_dir)`; the workspace owns the bare repo and
+/// must outlive the config dir so the `file://` URL resolves. Consumers must
+/// set `CFGD_ALLOW_LOCAL_SOURCES=1`.
+pub fn local_source_setup<F>(
+    subscription_extra: &str,
+    build: F,
+) -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir)
+where
+    F: FnOnce(&std::path::Path) -> (String, String),
+{
+    let workspace = tempfile::tempdir().unwrap();
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let (manifest_yaml, profile_yaml) = build(workspace.path());
+
+    let bare = workspace.path().join("acme-source.git");
+    git2::Repository::init_bare(&bare).expect("init_bare");
+
+    let src = workspace.path().join("acme-src");
+    let src_repo = git2::Repository::init(&src).expect("init_src");
+    std::fs::write(src.join("cfgd-source.yaml"), manifest_yaml).unwrap();
+    std::fs::create_dir_all(src.join("profiles")).unwrap();
+    std::fs::write(src.join("profiles").join("default.yaml"), profile_yaml).unwrap();
+
+    let mut index = src_repo.index().expect("index");
+    for path in ["cfgd-source.yaml", "profiles/default.yaml"] {
+        index
+            .add_path(std::path::Path::new(path))
+            .expect("add_path");
+    }
+    index.write().expect("index_write");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = src_repo.find_tree(tree_id).expect("find_tree");
+    let sig = git2::Signature::now("t", "t@example.com").expect("signature");
+    src_repo
+        .commit(Some("HEAD"), &sig, &sig, "source fixture", &tree, &[])
+        .expect("commit");
+    drop(tree);
+
+    let url = file_url(&bare);
+    let mut remote = src_repo.remote("origin", &url).expect("add_remote");
+    let branch = src_repo
+        .head()
+        .expect("head")
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    remote
+        .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+        .expect("push");
+
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        SOURCE_DEFAULT_PROFILE_YAML,
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n      subscription:\n        profile: default\n        priority: 500\n{subscription_extra}"
+        ),
+    )
+    .unwrap();
+
+    (workspace, config_dir, state_dir)
+}
+
+/// A source whose delivered profile declares a backup writing OUTSIDE the
+/// source's own `allowedTargetPaths` — the shape `compose` rejects in
+/// `Enforce` mode and merely records in `Report` mode.
+///
+/// Returns `(workspace, config_dir, state_dir, rejected_destination)`.
+pub fn violating_backup_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    String,
+) {
+    let mut destination = String::new();
+    let (workspace, config_dir, state_dir) = local_source_setup("", |workspace| {
+        // Both paths sit inside the workspace tempdir: the violation is that
+        // they are outside `allowedTargetPaths`, and a fixture that named a
+        // real `~/.ssh` or `/etc/...` would copy live data the moment the
+        // enforcement it guards regressed.
+        let backup_source = workspace.join("secrets.txt");
+        std::fs::write(&backup_source, "not a real secret").unwrap();
+        let backup_destination = workspace.join("elsewhere");
+        destination = cfgd_core::to_posix_string(&backup_destination);
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    constraints:\n      allowedTargetPaths:\n        - \"~/.config/acme/\"\n".to_string(),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n    - name: exfil\n      source: {}\n      destination: {}\n",
+                cfgd_core::to_posix_string(&backup_source),
+                cfgd_core::to_posix_string(&backup_destination),
+            ),
+        )
+    });
+    (workspace, config_dir, state_dir, destination)
+}
+
+/// A source whose `constraints.noScripts` is the default `true` but whose
+/// subscriber set `allowScripts: true`.
+///
+/// `carries_scripts` decides whether the delivered profile ships any script
+/// surface at all — the disclosure must name every surface when it does and
+/// stay silent when it does not.
+///
+/// Returns `(workspace, config_dir, state_dir, target)`.
+pub fn opted_in_script_source_setup(
+    carries_scripts: bool,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+) {
+    let mut target = std::path::PathBuf::new();
+    let (workspace, config_dir, state_dir) = local_source_setup(
+        "        allowScripts: true\n",
+        |workspace| {
+            let target_path = workspace.join("settings.json");
+            std::fs::write(&target_path, "{\n  \"kept\": true\n}\n").unwrap();
+            target = target_path.clone();
+            let patch = if carries_scripts {
+                "          script: cat\n"
+            } else {
+                "          ensure:\n            kept: true\n"
+            };
+            let scripts = if carries_scripts {
+                "  scripts:\n    postApply:\n      - \"true\"\n"
+            } else {
+                ""
+            };
+            (
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n{scripts}  files:\n    managed:\n      - target: {}\n        strategy: Patch\n        patch:\n{patch}",
+                    cfgd_core::to_posix_string(&target_path),
+                ),
+            )
+        },
+    );
+    (workspace, config_dir, state_dir, target)
+}
+
+/// A source whose delivered profile declares a `strategy: Patch` file driven by
+/// a `patch.script` filter, while the source's own `constraints.noScripts`
+/// (the default) bars it from running scripts.
+///
+/// The filter writes `marker` before echoing stdin back, so a test can prove by
+/// its absence that no surface ran it. Returns
+/// `(workspace, config_dir, state_dir, target, marker)`.
+pub fn barred_patch_script_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let mut target = std::path::PathBuf::new();
+    let mut marker = std::path::PathBuf::new();
+    let (workspace, config_dir, state_dir) = local_source_setup("", |workspace| {
+        let target_path = workspace.join("settings.json");
+        std::fs::write(&target_path, "{\n  \"kept\": true\n}\n").unwrap();
+        let marker_path = workspace.join("filter-ran.marker");
+        target = target_path.clone();
+        marker = marker_path.clone();
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - target: {}\n        strategy: Patch\n        patch:\n          script: \"touch {} && cat\"\n",
+                cfgd_core::to_posix_string(&target_path),
+                cfgd_core::to_posix_string(&marker_path),
+            ),
+        )
+    });
+    (workspace, config_dir, state_dir, target, marker)
 }
 
 /// Clone `bare` into a fresh workdir, replace its `cfgd-source.yaml` with

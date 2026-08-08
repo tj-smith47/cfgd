@@ -172,6 +172,37 @@ impl<'a> super::Reconciler<'a> {
                         None => None,
                     };
 
+                    // `Patch` rewrites the target's own content, so the merge is
+                    // computed against the live file here rather than against
+                    // what planning saw. A failure aborts with the target still
+                    // intact.
+                    let patched = if strategy == crate::config::FileStrategy::Patch {
+                        let spec = file.patch.as_ref().ok_or_else(|| {
+                            crate::errors::FileError::PatchBlockMissing {
+                                path: target.clone(),
+                            }
+                        })?;
+                        let binding = match resolved_mod {
+                            Some(m) => super::patch::PatchBinding::module(
+                                config_dir,
+                                resolved.profile_name(),
+                                context,
+                                m,
+                            ),
+                            None => super::patch::PatchBinding::profile(
+                                config_dir,
+                                resolved.profile_name(),
+                                context,
+                            ),
+                        };
+                        Some(
+                            super::patch::evaluate_patch(spec, &target, &binding.context())?
+                                .patched,
+                        )
+                    } else {
+                        None
+                    };
+
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
                         && let Err(e) = self.state.store_file_backup(
@@ -183,8 +214,12 @@ impl<'a> super::Reconciler<'a> {
                         tracing::warn!("failed to backup module file {}: {}", target.posix(), e);
                     }
 
-                    // Remove existing target before deploying
-                    if target.symlink_metadata().is_ok() {
+                    // Remove existing target before deploying. A `Patch` file is
+                    // exempt: the removal clears a stale link ahead of
+                    // `create_symlink`/`hard_link`, while `Patch` writes through
+                    // `atomic_write_merged`, which replaces by rename and so
+                    // keeps the target's mode and follows its symlink.
+                    if patched.is_none() && target.symlink_metadata().is_ok() {
                         if target.is_dir() && !target.is_symlink() {
                             std::fs::remove_dir_all(&target)?;
                         } else {
@@ -192,7 +227,9 @@ impl<'a> super::Reconciler<'a> {
                         }
                     }
 
-                    if file.source.is_dir() {
+                    if let Some(content) = patched {
+                        crate::atomic_write_merged(&target, &content)?;
+                    } else if file.source.is_dir() {
                         match strategy {
                             crate::config::FileStrategy::Symlink => {
                                 crate::create_symlink(&file.source, &target)?;
@@ -210,7 +247,9 @@ impl<'a> super::Reconciler<'a> {
                                 std::fs::hard_link(&file.source, &target)?;
                             }
                             crate::config::FileStrategy::Copy
-                            | crate::config::FileStrategy::Template => {
+                            | crate::config::FileStrategy::Template
+                            // Unreachable: a `Patch` file took the branch above.
+                            | crate::config::FileStrategy::Patch => {
                                 let content = std::fs::read(&file.source)?;
                                 crate::atomic_write(&target, &content)?;
                             }

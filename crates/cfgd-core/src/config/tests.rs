@@ -37,6 +37,69 @@ fn parse_config_rejects_unknown_apiversion() {
     assert!(err.to_string().contains("cfgd.io/v1alpha1")); // names the supported version
 }
 
+/// The global strategy is the fallback for files that declare none, and a
+/// `Patch` file is defined by its own `patch:` block — so a file inheriting
+/// the global could never satisfy it. Rejecting at load keeps that
+/// unrepresentable instead of failing every such file at apply.
+#[test]
+fn parse_config_rejects_patch_as_the_global_file_strategy() {
+    let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n  fileStrategy: Patch\n";
+    let err = parse_config(yaml, Path::new("cfgd.yaml")).unwrap_err();
+    assert!(
+        err.to_string().contains("fileStrategy"),
+        "names the field: {err}"
+    );
+    assert!(
+        err.to_string().contains("per-file"),
+        "points at the per-file form: {err}"
+    );
+}
+
+#[test]
+fn parse_config_rejects_patch_as_the_global_file_strategy_in_toml() {
+    let toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"m\"\n\n[spec]\nprofile = \"default\"\nfileStrategy = \"Patch\"\n";
+    let err = parse_config(toml, Path::new("cfgd.toml")).unwrap_err();
+    assert!(
+        err.to_string().contains("fileStrategy"),
+        "names the field: {err}"
+    );
+}
+
+/// Drives off `FileStrategy::ALL` so a newly added variant is exercised here
+/// automatically — the rejection must stay confined to what
+/// `valid_as_global_default` excludes.
+#[test]
+fn parse_config_accepts_exactly_the_globally_valid_file_strategies() {
+    for strategy in FileStrategy::ALL {
+        let value = strategy.as_str();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n  fileStrategy: {value}\n"
+        );
+        let parsed = parse_config(&yaml, Path::new("cfgd.yaml"));
+        assert_eq!(
+            parsed.is_ok(),
+            strategy.valid_as_global_default(),
+            "{value}: parse acceptance must match valid_as_global_default"
+        );
+    }
+}
+
+/// `ALL` is hand-maintained next to the enum; this pins it against the
+/// deserializer, which has its own token list in `case_insensitive_enum!`.
+#[test]
+fn file_strategy_all_round_trips_through_the_deserializer() {
+    for strategy in FileStrategy::ALL {
+        let parsed: FileStrategy = serde_yaml::from_str(strategy.as_str())
+            .unwrap_or_else(|e| panic!("{} must deserialize: {e}", strategy.as_str()));
+        assert_eq!(parsed, *strategy);
+        assert_eq!(
+            serde_yaml::to_string(strategy).unwrap().trim(),
+            strategy.as_str(),
+            "as_str must match the serialized form"
+        );
+    }
+}
+
 #[test]
 fn load_profile_rejects_unknown_apiversion() {
     let dir = tempfile::tempdir().unwrap();
@@ -206,6 +269,7 @@ fn merge_files_overlay() {
         spec: ProfileSpec {
             files: Some(FilesSpec {
                 managed: vec![ManagedFileSpec {
+                    patch: None,
                     source: "base/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -227,6 +291,7 @@ fn merge_files_overlay() {
         spec: ProfileSpec {
             files: Some(FilesSpec {
                 managed: vec![ManagedFileSpec {
+                    patch: None,
                     source: "work/.zshrc".into(),
                     target: PathBuf::from("/home/user/.zshrc"),
                     strategy: None,
@@ -1515,6 +1580,136 @@ fn secret_spec_validation_passes_with_envs() {
     let envs = specs[0].envs.as_ref().expect("envs should be Some");
     assert_eq!(envs.len(), 1);
     assert_eq!(envs[0], "SECRET_KEY");
+}
+
+#[test]
+fn managed_file_spec_patch_ensure_parses_for_each_format() {
+    for fmt in ["ini", "json", "yaml", "toml"] {
+        let yaml = format!(
+            "target: /tmp/settings.{fmt}\nstrategy: patch\npatch:\n  format: {fmt}\n  ensure:\n    General:\n      theme: dark\n"
+        );
+        let spec: ManagedFileSpec = serde_yaml::from_str(&yaml)
+            .unwrap_or_else(|e| panic!("format {fmt} should parse: {e}"));
+        assert_eq!(spec.strategy, Some(FileStrategy::Patch));
+        let patch = spec.patch.as_ref().expect("patch block should be present");
+        assert!(patch.ensure.is_some());
+        assert!(patch.script.is_none());
+        validate_managed_file_specs(std::slice::from_ref(&spec))
+            .unwrap_or_else(|e| panic!("format {fmt} should validate: {e}"));
+    }
+}
+
+#[test]
+fn managed_file_spec_patch_script_parses() {
+    let yaml = "target: ~/.zshrc\nstrategy: patch\npatch:\n  script: scripts/patch-zshrc.sh\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(spec.strategy, Some(FileStrategy::Patch));
+    let patch = spec.patch.as_ref().expect("patch block should be present");
+    assert!(patch.script.is_some());
+    assert!(patch.ensure.is_none());
+    assert_eq!(spec.source, "");
+    validate_managed_file_specs(&[spec]).expect("script-mode patch should validate");
+}
+
+#[test]
+fn managed_file_spec_patch_rejects_ensure_and_script_together() {
+    let yaml = "target: /tmp/a.ini\nstrategy: patch\npatch:\n  ensure:\n    a: b\n  script: x.sh\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("exactly one of 'ensure' or 'script'")
+    );
+}
+
+#[test]
+fn managed_file_spec_patch_rejects_neither_ensure_nor_script() {
+    let yaml = "target: /tmp/a.ini\nstrategy: patch\npatch: {}\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("exactly one of 'ensure' or 'script'")
+    );
+}
+
+#[test]
+fn managed_file_spec_patch_block_without_patch_strategy_rejected() {
+    let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\npatch:\n  ensure:\n    a: b\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("only valid when strategy is 'patch'")
+    );
+}
+
+/// `encryption` and `private` both constrain the SOURCE file a strategy
+/// deploys. `Patch` has no source, so honouring either is impossible — the
+/// parser must reject the pair rather than silently ignore the flag.
+#[test]
+fn managed_file_spec_patch_rejects_encryption() {
+    let yaml = "target: /tmp/a.ini\nstrategy: patch\npatch:\n  ensure:\n    a: b\nencryption:\n  backend: sops\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'encryption' is not supported with strategy 'patch'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn managed_file_spec_patch_rejects_private() {
+    let yaml = "target: /tmp/a.ini\nstrategy: patch\nprivate: true\npatch:\n  ensure:\n    a: b\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert!(spec.private);
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'private' is not supported with strategy 'patch'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn managed_file_spec_patch_strategy_without_patch_block_rejected() {
+    let yaml = "target: /tmp/a.ini\nstrategy: patch\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(err.to_string().contains("requires a 'patch' block"));
+}
+
+#[test]
+fn managed_file_spec_non_patch_strategy_requires_nonempty_source() {
+    let yaml = "target: /tmp/a.ini\nstrategy: copy\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(spec.source, "");
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'source' is required unless strategy is 'patch'")
+    );
+}
+
+#[test]
+fn managed_file_spec_default_strategy_also_requires_source() {
+    // strategy omitted entirely (defaults to Symlink at plan time) still needs a source.
+    let yaml = "target: /tmp/a.ini\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    assert!(spec.strategy.is_none());
+    let err = validate_managed_file_specs(&[spec]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'source' is required unless strategy is 'patch'")
+    );
+}
+
+#[test]
+fn managed_file_spec_ordinary_copy_with_source_validates() {
+    let yaml = "source: a\ntarget: /tmp/a.ini\nstrategy: copy\n";
+    let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+    validate_managed_file_specs(&[spec]).expect("ordinary copy spec with a source should validate");
 }
 
 #[test]

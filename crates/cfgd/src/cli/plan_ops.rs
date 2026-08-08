@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
+use cfgd_core::config::FileStrategy;
 use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
@@ -309,6 +310,7 @@ pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
     phase_filter: Option<&PhaseName>,
+    pending_backups: &[String],
 ) -> PlanOutput {
     let mut phases = Vec::new();
     for phase_item in &plan.phases {
@@ -345,6 +347,7 @@ pub(in crate::cli) fn build_plan_output(
         phases,
         total_actions,
         warnings: plan.warnings.clone(),
+        pending_backups: pending_backups.to_vec(),
     }
 }
 
@@ -520,15 +523,32 @@ pub(in crate::cli) fn report_no_in_scope_actions(
     }
 }
 
+/// Bundles `display_plan_preview`'s non-core arguments (everything but the
+/// plan/printer/state it acts on) so the call stays under clippy's
+/// too-many-arguments budget as fields accrue.
+#[derive(Clone, Copy)]
+pub(in crate::cli) struct PlanPreviewArgs<'a> {
+    pub context: &'a str,
+    pub phase_filter: Option<&'a PhaseName>,
+    pub dry_run_fm: Option<&'a CfgdFileManager>,
+    pub scope: &'a ScopeReport,
+    pub pending_backups: &'a [String],
+}
+
 pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
     state: &cfgd_core::state::StateStore,
-    context: &str,
-    phase_filter: Option<&PhaseName>,
-    dry_run_fm: Option<&CfgdFileManager>,
-    scope: &ScopeReport,
+    args: &PlanPreviewArgs<'_>,
 ) {
+    let PlanPreviewArgs {
+        context,
+        phase_filter,
+        dry_run_fm,
+        scope,
+        pending_backups,
+    } = *args;
+
     // Show pending decisions (not included in this plan)
     if let Ok(pending) = state.pending_decisions()
         && !pending.is_empty()
@@ -546,7 +566,7 @@ pub(in crate::cli) fn display_plan_preview(
     }
 
     // Build structured output
-    let plan_output = build_plan_output(plan, context, phase_filter);
+    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups);
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
     // doc's data payload and skip the human render.
@@ -558,6 +578,17 @@ pub(in crate::cli) fn display_plan_preview(
     // Table mode display
     display_plan_table(plan, printer, phase_filter);
 
+    // Schedule-less backups are not reconciler actions (they always run, no
+    // diff against desired state), so they never appear in `display_plan_table`
+    // above — surface them separately so a preview doesn't silently omit work
+    // a real (non-dry-run) apply would do.
+    if !pending_backups.is_empty() {
+        let section = printer.section("Backups (run on apply)");
+        for name in pending_backups {
+            section.status_simple(Role::Info, name);
+        }
+    }
+
     // Show diffs for file updates
     if let Some(fm) = dry_run_fm {
         for phase_item in &plan.phases {
@@ -565,10 +596,30 @@ pub(in crate::cli) fn display_plan_preview(
                 continue;
             }
             for action in &phase_item.actions {
-                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
+                if let reconciler::Action::File(FileAction::Update {
+                    source,
+                    target,
+                    patch,
+                    ..
+                }) = action
                     && let Ok(target_content) = std::fs::read_to_string(target)
                 {
-                    let source_content = if crate::files::is_tera_template(source) {
+                    // A `Patch` action has no source file: its preview is the
+                    // target against what re-running the merge would produce.
+                    let source_content = if let Some(spec) = patch {
+                        match fm.evaluate_spec(spec, target, reconciler::ReconcileContext::Apply) {
+                            Ok(outcome) => outcome.patched,
+                            Err(e) => {
+                                printer
+                                    .status(
+                                        Role::Warn,
+                                        format!("cannot preview {}", target.posix()),
+                                    )
+                                    .detail(cfgd_core::output::collapse_to_subject_line(e));
+                                continue;
+                            }
+                        }
+                    } else if crate::files::is_tera_template(source) {
                         fm.render_template_for_display(source).unwrap_or_default()
                     } else {
                         std::fs::read_to_string(source).unwrap_or_default()
@@ -729,6 +780,19 @@ pub(in crate::cli) fn is_unmanaged_file(
     true
 }
 
+/// Whether a strategy adopts an existing unmanaged target in place instead of
+/// replacing it.
+///
+/// `Patch` merges into the target's own bytes, so the unmanaged-file prompt
+/// must never fire for it: every one of its choices is wrong. "Adopt
+/// (overwrite)" misdescribes a merge, and "Backup" renames the target away
+/// *before* apply — the merge would then read an empty current content and
+/// write only the ensured keys, destroying exactly the content the strategy
+/// exists to preserve.
+fn adopts_in_place(strategy: FileStrategy) -> bool {
+    matches!(strategy, FileStrategy::Patch)
+}
+
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -747,11 +811,20 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
         while i < phase.actions.len() {
             // Profile file actions
             if let reconciler::Action::File(
-                FileAction::Create { target, .. } | FileAction::Update { target, .. },
+                FileAction::Create {
+                    target, strategy, ..
+                }
+                | FileAction::Update {
+                    target, strategy, ..
+                },
             ) = &phase.actions[i]
             {
                 let target = target.clone();
-                if is_unmanaged_file(&target, config_dir, state) && !auto_yes {
+                let strategy = *strategy;
+                if !adopts_in_place(strategy)
+                    && is_unmanaged_file(&target, config_dir, state)
+                    && !auto_yes
+                {
                     let choice = prompt_backup_choice(&target, None, printer, &options)?;
                     apply_backup_choice(choice, &target, &mut phase.actions[i], printer)?;
                 }
@@ -764,7 +837,8 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                 let needs_prompt = !auto_yes
                     && files.iter().any(|f| {
                         let t = cfgd_core::expand_tilde(&f.target);
-                        is_unmanaged_file(&t, config_dir, state)
+                        !f.strategy.is_some_and(adopts_in_place)
+                            && is_unmanaged_file(&t, config_dir, state)
                     });
                 if needs_prompt {
                     let module_name = ma.module_name.clone();
@@ -774,7 +848,9 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                         let mut j = 0;
                         while j < files.len() {
                             let file_target = cfgd_core::expand_tilde(&files[j].target);
-                            if is_unmanaged_file(&file_target, config_dir, state) {
+                            if !files[j].strategy.is_some_and(adopts_in_place)
+                                && is_unmanaged_file(&file_target, config_dir, state)
+                            {
                                 let choice = prompt_backup_choice(
                                     &file_target,
                                     Some(&module_name),

@@ -133,7 +133,9 @@ impl Cache {
             if freed >= overflow {
                 break;
             }
-            let size = dir_size(path);
+            // An unreadable entry reads as zero freed bytes: cache accounting is
+            // advisory, and a transient read failure must not abort the sweep.
+            let size = cfgd_core::dir_size(path).unwrap_or(0);
             if let Err(e) = std::fs::remove_dir_all(path) {
                 tracing::warn!(path = %path.posix(), error = %e, "failed to evict cache entry");
                 continue;
@@ -155,15 +157,15 @@ impl Cache {
     }
 
     fn entry_path(&self, module: &str, version: &str) -> Result<PathBuf, CsiError> {
-        cfgd_core::validate_no_traversal(Path::new(module)).map_err(|e| {
-            CsiError::InvalidAttribute {
-                key: format!("module: {e}"),
-            }
+        // Plain names, not merely traversal-free paths: these two segments are
+        // the whole containment story for an entry that gets `remove_dir_all`ed
+        // by eviction and bind-mounted into a pod. A `.` would resolve the entry
+        // to the cache root and hand a pod every cached module.
+        cfgd_core::validate_plain_name(module).map_err(|e| CsiError::InvalidAttribute {
+            key: format!("module: {e}"),
         })?;
-        cfgd_core::validate_no_traversal(Path::new(version)).map_err(|e| {
-            CsiError::InvalidAttribute {
-                key: format!("version: {e}"),
-            }
+        cfgd_core::validate_plain_name(version).map_err(|e| CsiError::InvalidAttribute {
+            key: format!("version: {e}"),
         })?;
         Ok(self.root.join(module).join(version))
     }
@@ -240,6 +242,10 @@ fn is_complete(path: &Path) -> bool {
 }
 
 /// Recursively compute the total size of files, excluding marker files.
+///
+/// Deliberately not `cfgd_core::dir_size`: eviction accounting must exclude the
+/// cache's own bookkeeping files, and it follows symlinks (a module may publish
+/// one) where the core helper skips them.
 fn dir_size_excluding_markers(path: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -255,22 +261,6 @@ fn dir_size_excluding_markers(path: &Path) -> u64 {
                 if let Ok(meta) = p.metadata() {
                     total = total.saturating_add(meta.len());
                 }
-            }
-        }
-    }
-    total
-}
-
-/// Recursively compute total dir size (all files).
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                total = total.saturating_add(dir_size(&p));
-            } else if let Ok(meta) = p.metadata() {
-                total = total.saturating_add(meta.len());
             }
         }
     }
@@ -382,6 +372,27 @@ mod tests {
         let cache = make_cache(dir.path(), 1024);
         assert!(cache.entry_path("../../etc", "passwd").is_err());
         assert!(cache.entry_path("good-mod", "../../../tmp").is_err());
+    }
+
+    #[test]
+    fn entry_path_rejects_segments_that_resolve_to_the_cache_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024);
+        // Each of these would hand a pod the whole cache and expose every other
+        // module's contents through one volume.
+        for (module, version) in [
+            (".", "1.0.0"),
+            ("good-mod", "."),
+            (".", "."),
+            ("./good-mod", "1.0.0"),
+            ("good-mod/.", "1.0.0"),
+            ("", "1.0.0"),
+        ] {
+            assert!(
+                cache.entry_path(module, version).is_err(),
+                "entry_path({module:?}, {version:?}) escaped its own directory"
+            );
+        }
     }
 
     #[test]

@@ -226,6 +226,7 @@ pub(super) fn build_module_crd_json(
                 private: _private,         // no CRD counterpart today
                 encryption: _encryption,   // no CRD counterpart today
                 permissions: _permissions, // no CRD counterpart today
+                patch: _patch,             // no CRD counterpart today
             } = entry;
             cfgd_crd::ModuleFileSpec {
                 source: source.clone(),

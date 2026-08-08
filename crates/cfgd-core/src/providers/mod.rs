@@ -205,6 +205,11 @@ pub enum FileAction {
         strategy: crate::config::FileStrategy,
         /// SHA256 of source content at plan time (for TOCTOU verification).
         source_hash: Option<String>,
+        /// Merge spec carried from the profile entry, set exactly when
+        /// `strategy` is `Patch`. Apply re-runs it against the target's live
+        /// content, so `source` is empty and `source_hash` is `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        patch: Option<crate::config::PatchSpec>,
     },
     Update {
         source: PathBuf,
@@ -214,6 +219,9 @@ pub enum FileAction {
         strategy: crate::config::FileStrategy,
         /// SHA256 of source content at plan time (for TOCTOU verification).
         source_hash: Option<String>,
+        /// See [`FileAction::Create::patch`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        patch: Option<crate::config::PatchSpec>,
     },
     Delete {
         target: PathBuf,
@@ -245,6 +253,29 @@ pub struct FileDriftResult {
     pub matches: bool,
     pub expected: String,
     pub actual: String,
+}
+
+/// Serialized in the same shape as a `VerifyResult`: `resourceType` is the
+/// constant `"file"` and the target path is the `resourceId`.
+///
+/// Hand-written rather than derived because `resourceType` is not a field —
+/// making it one would let a construction site set it to something other than
+/// `"file"`, and the whole point is that a structured consumer can read a
+/// drifted file and a failed verify check through one code path.
+impl serde::Serialize for FileDriftResult {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("FileDriftResult", 5)?;
+        state.serialize_field("resourceType", "file")?;
+        state.serialize_field("resourceId", &self.target)?;
+        state.serialize_field("matches", &self.matches)?;
+        state.serialize_field("expected", &self.expected)?;
+        state.serialize_field("actual", &self.actual)?;
+        state.end()
+    }
 }
 
 pub trait FileManager: Send + Sync {

@@ -244,44 +244,7 @@ pub(crate) fn execute_script(
     };
     let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
 
-    // A stale `working_dir` (e.g. a tempdir from a prior `cfgd init` test that was
-    // cleaned up off tmpfs) would otherwise surface as a cryptic `io error: No such
-    // file or directory (os error 2)` from `cmd.spawn()` — naming neither the path
-    // nor the script. Probe with a single metadata syscall so the failure mode
-    // points at the actual offender.
-    match std::fs::metadata(working_dir) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(meta) => {
-            let kind = if meta.is_file() { "file" } else { "other" };
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' cannot run: working directory is not a directory ({}): {}",
-                    run_label,
-                    kind,
-                    working_dir.posix()
-                ),
-            }));
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' cannot run: working directory does not exist: {}",
-                    run_label,
-                    working_dir.posix()
-                ),
-            }));
-        }
-        Err(e) => {
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' cannot run: working directory inaccessible ({}): {}",
-                    run_label,
-                    e,
-                    working_dir.posix()
-                ),
-            }));
-        }
-    }
+    ensure_working_dir(&run_label, working_dir)?;
 
     let label = format!("Running script: {}", run_label);
     // Resource-id / state-matching key, NOT a display string: the onChange /
@@ -456,7 +419,9 @@ pub(crate) fn execute_script(
             cmd.stdin(std::process::Stdio::inherit());
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::inherit());
-            let status = cmd.status()?;
+            // Spawn-then-wait rather than `status()`: identical semantics with
+            // stdio already inherited, but it routes through the ETXTBSY retry.
+            let status = spawn_retry_on_busy(&mut cmd)?.wait()?;
             if !status.success() {
                 let exit_code = status.code().unwrap_or(-1);
                 return Err(CfgdError::Config(ConfigError::Invalid {
@@ -487,7 +452,7 @@ pub(crate) fn execute_script(
     // (e.g. `shell: bash` on a FreeBSD base that ships only POSIX sh) or
     // because a `spec.env` PATH entry overwrote PATH. Name the real causes
     // instead of a bare os error 2.
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = spawn_retry_on_busy(&mut cmd).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CfgdError::Config(ConfigError::Invalid {
                 message: format!(
@@ -645,6 +610,228 @@ pub(crate) fn execute_script(
     }
 }
 
+/// Reject a working directory that cannot host a script before spawning.
+///
+/// A stale `working_dir` (e.g. a tempdir from a prior `cfgd init` test that was
+/// cleaned up off tmpfs) would otherwise surface as a cryptic `io error: No such
+/// file or directory (os error 2)` from `cmd.spawn()` — naming neither the path
+/// nor the script. One metadata syscall makes the failure point at the offender.
+fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()> {
+    let invalid = |message: String| CfgdError::Config(ConfigError::Invalid { message });
+    match std::fs::metadata(working_dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(meta) => {
+            let kind = if meta.is_file() { "file" } else { "other" };
+            Err(invalid(format!(
+                "script '{}' cannot run: working directory is not a directory ({}): {}",
+                run_str,
+                kind,
+                working_dir.posix()
+            )))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(invalid(format!(
+            "script '{}' cannot run: working directory does not exist: {}",
+            run_str,
+            working_dir.posix()
+        ))),
+        Err(e) => Err(invalid(format!(
+            "script '{}' cannot run: working directory inaccessible ({}): {}",
+            run_str,
+            e,
+            working_dir.posix()
+        ))),
+    }
+}
+
+/// Spawn a command, retrying briefly while the OS reports the executable busy.
+///
+/// A `fork` in any other thread duplicates every open write descriptor, so a
+/// script this process just finished writing can still be held open by an
+/// unrelated child when we `exec` it — the kernel answers `ETXTBSY`. The window
+/// closes the instant the racing child execs (its descriptors are `CLOEXEC`),
+/// so a short bounded retry converges where a single attempt fails at random.
+/// Every other spawn error is returned untouched on the first attempt.
+fn spawn_retry_on_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    const ATTEMPTS: u32 = 5;
+    let mut delay = std::time::Duration::from_millis(10);
+    let mut outcome = cmd.spawn();
+    for _ in 1..ATTEMPTS {
+        match &outcome {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
+            _ => return outcome,
+        }
+        std::thread::sleep(delay);
+        delay *= 2;
+        outcome = cmd.spawn();
+    }
+    outcome
+}
+
+/// Result of running a script as a content filter (see [`run_filter_script`]).
+pub(crate) struct FilterScriptOutcome {
+    /// Everything the script wrote to stdout — the new file content.
+    pub stdout: String,
+    /// Everything the script wrote to stderr, trimmed; carried into the error
+    /// message on failure so the operator sees why the filter refused.
+    pub stderr: String,
+    /// Process exit code; `None` when the process was killed by a signal.
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub timed_out: bool,
+}
+
+/// Run a script as a *content filter*: `stdin_content` goes in on stdin, the
+/// script's stdout comes back out as the new content.
+///
+/// Distinct from [`execute_script`] on three axes, which is why it is a separate
+/// entry point rather than a flag on that function: stdin carries data instead
+/// of being `/dev/null`, stdout is captured as a value instead of being merged
+/// with stderr for display, and there is no spinner (the caller is computing a
+/// value, not narrating a phase). It shares this module's interpreter
+/// resolution, environment injection, and process-group kill semantics so
+/// filters cannot become a second, divergent execution path.
+///
+/// A non-zero exit is reported through the returned outcome, not an error — the
+/// caller owns the typed error because it knows which target file is involved.
+pub(crate) fn run_filter_script(
+    run_str: &str,
+    script_dir: &std::path::Path,
+    working_dir: &std::path::Path,
+    env_vars: &[(String, String)],
+    stdin_content: &str,
+    timeout: std::time::Duration,
+) -> Result<FilterScriptOutcome> {
+    // Same `environ` race as `execute_script`: hold the read lock across
+    // interpreter resolution and spawn. Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+
+    ensure_working_dir(run_str, working_dir)?;
+
+    let resolved = if std::path::Path::new(run_str).is_relative() {
+        script_dir.join(run_str)
+    } else {
+        std::path::PathBuf::from(run_str)
+    };
+
+    let mut cmd = if resolved.exists() {
+        let meta = std::fs::metadata(&resolved)?;
+        if !crate::is_executable(&resolved, &meta) {
+            #[cfg(unix)]
+            let hint = "chmod +x";
+            #[cfg(windows)]
+            let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
+            return Err(CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "patch script '{}' exists but is not executable ({})",
+                    resolved.posix(),
+                    hint,
+                ),
+            }));
+        }
+        let mut c = std::process::Command::new(&resolved);
+        c.current_dir(working_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            c.process_group(0);
+        }
+        c
+    } else {
+        build_inline_command(ScriptShell::Auto, run_str, working_dir, None)
+    };
+
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = spawn_retry_on_busy(&mut cmd)?;
+
+    // Feed stdin from its own thread while stdout/stderr drain on theirs: a
+    // filter whose output exceeds the pipe buffer would deadlock against a
+    // synchronous `write_all` here.
+    let input = stdin_content.to_string();
+    let mut stdin_pipe = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(pipe) = stdin_pipe.as_mut() {
+            use std::io::Write;
+            let _ = pipe.write_all(input.as_bytes());
+            let _ = pipe.flush();
+        }
+        drop(stdin_pipe);
+    });
+    let stdout_handle = spawn_capture_reader(child.stdout.take());
+    let stderr_handle = spawn_capture_reader(child.stderr.take());
+
+    let start = std::time::Instant::now();
+    let (status, timed_out) = loop {
+        match child.try_wait()? {
+            Some(status) => break (Some(status), false),
+            None => {
+                if start.elapsed() > timeout {
+                    kill_script_child(&mut child, true);
+                    break (None, true);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    };
+
+    let _ = writer.join();
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+
+    Ok(FilterScriptOutcome {
+        stdout,
+        stderr: stderr.trim().to_string(),
+        exit_code: status.and_then(|s| s.code()),
+        success: !timed_out && status.is_some_and(|s| s.success()),
+        timed_out,
+    })
+}
+
+/// Drain a child pipe to a `String` on a dedicated thread (lossy UTF-8).
+fn spawn_capture_reader<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let Some(mut pipe) = pipe else {
+            return String::new();
+        };
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    })
+}
+
+/// `cmd.exe /C <run>` with the script text passed through **verbatim**.
+///
+/// `Command::arg` escapes for `CommandLineToArgvW`, which `cmd.exe` does not
+/// implement: it turns every `"` in the script into `\"`, and `cmd` reads that
+/// backslash as part of the filename. A hook as ordinary as
+/// `echo hi > "C:\path\marker"` therefore redirected into `\C:\path\marker\`
+/// and silently wrote nothing. `raw_arg` appends the text unmodified, which is
+/// what `cmd.exe` is documented to expect and what a user typing the same line
+/// at a prompt gets.
+///
+/// Defined on every platform because `shell: cmd` is a config value a unix host
+/// can parse and dispatch; the spawn simply fails there, as it always has.
+fn cmd_command(run_str: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("cmd.exe");
+    c.arg("/C");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.raw_arg(run_str);
+    }
+    #[cfg(not(windows))]
+    c.arg(run_str);
+    c
+}
+
 /// Build the `Command` for an inline script based on the chosen shell interpreter.
 ///
 /// When `cfgd_env_path` is `Some`, bash and zsh commands are prepended with a
@@ -666,9 +853,7 @@ fn build_inline_command(
             }
             #[cfg(windows)]
             {
-                let mut c = std::process::Command::new("cmd.exe");
-                c.arg("/C").arg(run_str);
-                c
+                cmd_command(run_str)
             }
         }
         ScriptShell::Sh => {
@@ -707,11 +892,7 @@ fn build_inline_command(
             c.arg("-NoProfile").arg("-Command").arg(run_str);
             c
         }
-        ScriptShell::Cmd => {
-            let mut c = std::process::Command::new("cmd.exe");
-            c.arg("/C").arg(run_str);
-            c
-        }
+        ScriptShell::Cmd => cmd_command(run_str),
     };
     c.current_dir(working_dir);
     #[cfg(unix)]
@@ -812,16 +993,25 @@ pub(super) fn kill_script_child(child: &mut std::process::Child, graceful: bool)
 /// Pre-hooks abort on failure; post-hooks, onChange, onDrift continue.
 pub(super) fn default_continue_on_error(phase: &ScriptPhase) -> bool {
     match phase {
-        ScriptPhase::PreApply | ScriptPhase::PreReconcile => false,
+        // A failed `patch` filter leaves the target unwritten; continuing past
+        // it would apply a half-configured machine.
+        // A failed `preBackup` leaves the source in whatever state the hook was
+        // meant to prepare (typically a still-running service), so the snapshot
+        // would be inconsistent — the backup unit aborts instead.
+        ScriptPhase::PreApply
+        | ScriptPhase::PreReconcile
+        | ScriptPhase::Patch
+        | ScriptPhase::PreBackup => false,
         ScriptPhase::PostApply
         | ScriptPhase::PostReconcile
         | ScriptPhase::OnChange
-        | ScriptPhase::OnDrift => true,
+        | ScriptPhase::OnDrift
+        | ScriptPhase::PostBackup => true,
     }
 }
 
 /// Resolve the effective `continue_on_error` for a script entry in a given phase.
-pub(super) fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
+pub(crate) fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
     match entry {
         ScriptEntry::Full {
             continue_on_error: Some(v),

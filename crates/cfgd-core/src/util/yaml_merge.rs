@@ -65,6 +65,24 @@ pub fn merge_aliases(base: &mut Vec<config::ShellAlias>, updates: &[config::Shel
     }
 }
 
+/// Merge backup units by name: later entries override earlier ones with the same name.
+/// Same semantics as `merge_env`.
+pub fn merge_backups(base: &mut Vec<config::BackupSpec>, updates: &[config::BackupSpec]) {
+    let mut index: std::collections::HashMap<String, usize> = base
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.name.clone(), i))
+        .collect();
+    for backup in updates {
+        if let Some(&pos) = index.get(&backup.name) {
+            base[pos] = backup.clone();
+        } else {
+            index.insert(backup.name.clone(), base.len());
+            base.push(backup.clone());
+        }
+    }
+}
+
 /// Split a list of values into adds and removes.
 ///
 /// Values starting with `-` are treated as removals (the leading `-` is stripped).

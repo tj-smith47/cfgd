@@ -28,13 +28,15 @@ git:
   prerelease_suffix: "-"
 
 tag:
-  # Require an explicit bump signal per commit range. The ONLY signals autotag
-  # honours are Conventional Commit markers on a commit's SUBJECT line
-  # (`feat:` -> minor, `fix:` / `perf:` / `revert:` -> patch, `<type>!:`
-  # shorthand or a `BREAKING CHANGE` / `BREAKING-CHANGE` note anywhere ->
-  # major). There is NO `#patch` / `#minor` / `#major` hashtag-token support —
-  # a token in the body is ignored (classify_commit in anodizer_core reads only
-  # the subject prefix). Ranges containing only chore / docs / style / refactor
+  # Require an explicit bump signal per commit range. Autotag honours two
+  # signal kinds, both read from a commit's SUBJECT line only (the scan uses
+  # `--pretty=format:%s`, so anything in the body is invisible): Conventional
+  # Commit markers (`feat:` -> minor, `fix:` / `perf:` / `revert:` -> patch,
+  # `<type>!:` shorthand or a `BREAKING CHANGE` / `BREAKING-CHANGE` note ->
+  # major), and explicit `#major` / `#minor` / `#patch` hashtag tokens, which
+  # take precedence over the conventional marker on the same range
+  # (bump_detect in the anodizer `tag` command; `anodizer bump` ignores
+  # tokens). Ranges containing only chore / docs / style / refactor
   # / test / build / ci commits — including `chore(deps)` dependency bumps —
   # no-op, so autotag won't mint a spurious patch bump after a stable crate's
   # chore touch. A dep bump that should ship uses a `fix(deps):` subject.

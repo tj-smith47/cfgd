@@ -1,0 +1,5 @@
+Snapshots: docs
+
+Snapshot                    Created               Size
+──────────────────────────────────────────────────────
+notes.txt.<TIMESTAMP>  <NEXT_RUN>  12 B

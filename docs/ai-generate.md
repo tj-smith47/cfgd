@@ -342,7 +342,7 @@ The same flags work on `mcp start`, `mcp stream`, and `mcp <editor> enable` — 
 
 ### Safety Hints and Long Runs
 
-Every tool carries annotations a client can gate on: `plan` is `readOnlyHint`, `apply` is `destructiveHint`, and the `* remove` / `rollback` commands are marked non-idempotent. A client can prompt on a write without prompting on a preview.
+Every tool carries annotations a client can gate on: `plan` is `readOnlyHint`, `apply` is `destructiveHint`, and the `* remove` / `rollback` commands are marked non-idempotent. `backup run` and `backup restore` join them — retention pruning removes superseded snapshots, their hooks stop and start services, and repeating either takes another snapshot rather than being a no-op. A client can prompt on a write without prompting on a preview.
 
 Eleven commands routinely run for minutes — `apply`, `sync`, `pull`, `upgrade`, `image pack`, the `module build/pull/push/upgrade` set, and daemon install/uninstall. Those return a task handle rather than holding the request open, so a client that speaks the MCP tasks extension can poll for progress and cancel.
 

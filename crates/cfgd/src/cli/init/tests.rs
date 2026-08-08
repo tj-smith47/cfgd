@@ -7,7 +7,7 @@ use cfgd_core::test_helpers::test_printer as quiet_printer;
 // window does not fail one test — it terminates the whole test binary. Only for a
 // `cmd_init` call that reaches neither a clone nor workflow regeneration: those
 // take the same lock internally and would deadlock beneath this guard.
-fn git_resolution_guard() -> std::sync::RwLockReadGuard<'static, ()> {
+fn git_resolution_guard() -> cfgd_core::test_helpers::SpawnEnvGuard {
     cfgd_core::test_helpers::path_env_read_guard()
 }
 
@@ -596,6 +596,7 @@ fn cmd_init_scaffolds_local_directory() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -651,6 +652,7 @@ fn cmd_init_skips_if_already_initialized() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -682,6 +684,7 @@ fn cmd_init_creates_directory_if_missing() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -888,6 +891,7 @@ fn cmd_init_with_from_local_path() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -965,6 +969,7 @@ fn cmd_init_scaffold_to_new_dir() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -1020,6 +1025,7 @@ fn cmd_init_already_initialized() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -1054,6 +1060,7 @@ fn cmd_init_with_theme() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -1545,6 +1552,7 @@ fn cmd_init_with_name_overrides_dir_name() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -1578,6 +1586,7 @@ fn cmd_init_creates_git_repo() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -1613,6 +1622,7 @@ fn cmd_init_with_theme_and_name_together() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -1865,6 +1875,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -2534,6 +2545,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -2602,6 +2614,7 @@ fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -2655,6 +2668,7 @@ fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -2712,6 +2726,7 @@ fn cmd_init_from_git_with_theme_override() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -2771,6 +2786,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -4151,6 +4167,7 @@ mod cmd_init_from_local_bare {
             apply_modules: &[],
             cache_dir: None,
             state_dir: None,
+            runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
         cmd_init(&printer, &args).expect("cmd_init --from should succeed");
@@ -4196,6 +4213,7 @@ mod cmd_init_from_local_bare {
             apply_modules: &[],
             cache_dir: None,
             state_dir: None,
+            runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
         cmd_init(&printer, &args).expect("cmd_init --from --theme should succeed");
@@ -4232,6 +4250,7 @@ mod cmd_init_from_local_bare {
             apply_modules: &[],
             cache_dir: None,
             state_dir: None,
+            runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
         cmd_init(&printer, &args).expect("clone of empty repo should still return Ok");
@@ -4298,6 +4317,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &[],
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             let err = cmd_init(&printer, &args)
@@ -4342,6 +4362,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &modules,
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             let err = cmd_init(&printer, &args)
@@ -4381,6 +4402,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &[],
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             let err = cmd_init(&printer, &args)
@@ -4481,6 +4503,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &[],
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             cmd_init(&printer, &args).expect("--from + --apply --dry-run should succeed");
@@ -4530,6 +4553,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &[],
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             cmd_init(&printer, &args).expect("--apply-profile default should drive apply branch");
@@ -4622,6 +4646,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &modules,
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             cmd_init(&printer, &args).expect("--apply-module drives module-only branch");
@@ -4709,6 +4734,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &[],
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             cmd_init(&printer, &args).expect("pick_profile should select the sole profile");
@@ -4814,6 +4840,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &modules,
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             cmd_init(&printer, &args)
@@ -4874,6 +4901,7 @@ mod cmd_init_apply_orchestration {
                 apply_modules: &modules,
                 cache_dir: None,
                 state_dir: None,
+                runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
             let err = cmd_init(&printer, &args).expect_err(
@@ -4916,6 +4944,7 @@ mod cmd_init_apply_orchestration {
             apply_modules: &[],
             cache_dir: None,
             state_dir: None,
+            runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
         cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
@@ -4971,6 +5000,7 @@ mod cmd_init_apply_orchestration {
             apply_modules: &[],
             cache_dir: None,
             state_dir: None,
+            runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
         cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");

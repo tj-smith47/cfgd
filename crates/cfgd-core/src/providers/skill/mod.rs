@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::{Result, SkillError};
 use crate::generate::{SkillKind, SkillModel};
-use crate::{ApplyLockGuard, acquire_apply_lock, atomic_write_str};
+use crate::{FileLockGuard, acquire_apply_lock, atomic_write_str};
 
 mod body;
 mod claude_code;
@@ -325,7 +325,7 @@ const ALL_SKILL_KINDS: [SkillKind; 6] = [
 /// contend on one lock (preserving the no-delimiter-corruption guarantee) while
 /// distinct targets never falsely contend. The path is hashed verbatim, not
 /// canonicalized, because the target need not exist yet on a fresh install.
-fn lock_for(target: &Path) -> Result<ApplyLockGuard> {
+fn lock_for(target: &Path) -> Result<FileLockGuard> {
     let runtime = crate::default_runtime_dir_for(crate::Scope::User).ok_or_else(|| {
         SkillError::Lock(Box::new(
             crate::errors::ConfigError::HomeUnresolved {

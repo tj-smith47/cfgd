@@ -36,6 +36,8 @@ SUITES=(
     test-enroll.sh
     test-plan.sh
     test-rollback.sh
+    test-backup.sh
+    test-patch.sh
     test-output-formats.sh
     test-compliance.sh
     test-generate.sh

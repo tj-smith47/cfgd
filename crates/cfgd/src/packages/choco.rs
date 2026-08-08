@@ -502,7 +502,7 @@ Tags: git vcs dvcs
             exit_code: u8,
             stdout: &str,
             stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::PathShimGuard) {
             install_named_path_shim("choco", exit_code, stdout, stderr)
         }
 

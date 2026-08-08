@@ -1,5 +1,6 @@
 pub mod alias;
 pub mod apply;
+pub mod backup;
 pub mod checkin;
 pub mod compliance;
 pub mod config_cmd;
@@ -388,6 +389,15 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// The daemon directory flags this invocation ran under, so an installed
+    /// unit and a foreground run resolve the same directories.
+    pub fn daemon_dir_overrides(&self) -> cfgd_core::daemon::DaemonDirOverrides {
+        cfgd_core::daemon::DaemonDirOverrides {
+            runtime_dir: self.runtime_dir.clone(),
+            state_dir: self.state_dir.clone(),
+        }
+    }
+
     /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`Scope::System`]
     /// for `system`, [`Scope::User`] otherwise. Threaded into every directory
     /// resolver so the whole CLI surface agrees on one root.
@@ -644,6 +654,15 @@ pub enum Command {
     Source {
         #[command(subcommand)]
         command: SourceCommand,
+    },
+
+    /// Run declarative backups (`spec.backups[]`)
+    #[command(
+        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, taking a safety snapshot of the current contents first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd backup list openlist-db --snapshots\n  cfgd backup restore openlist-db\n  cfgd backup restore openlist-db --at 20260730T120000Z\n  cfgd backup restore openlist-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
+    )]
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
     },
 
     /// Check for and install updates
@@ -1116,6 +1135,50 @@ pub enum SourceCommand {
         /// Path to a ConfigSource YAML document, or `-` to read from stdin
         #[arg(value_hint = clap::ValueHint::FilePath)]
         source: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommand {
+    /// Run one declarative backup, or every declared backup when name is omitted
+    Run {
+        /// Backup name (default: run every backup declared in the active profile)
+        name: Option<String>,
+    },
+
+    /// List declared backups and their last recorded run, or one backup's snapshots
+    #[command(alias = "ls")]
+    List {
+        /// Backup name (default: list every backup declared in the active profile)
+        name: Option<String>,
+
+        /// List the named backup's snapshots instead of the backup itself
+        #[arg(long, requires = "name")]
+        snapshots: bool,
+    },
+
+    /// Restore a snapshot back over the backup's source
+    #[command(
+        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety snapshot of the current contents is taken first and recorded as an\nordinary run, unless --to points outside the source (nothing of the backup's is\nbeing overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore openlist-db\n  cfgd backup restore openlist-db --at 20260730T120000Z\n  cfgd backup restore openlist-db --at openlist-db-20260730T120000Z\n  cfgd backup restore openlist-db --to /tmp/inspect --yes\n  cfgd --output json backup restore openlist-db --yes"
+    )]
+    Restore {
+        /// Backup name
+        name: String,
+
+        /// Snapshot to restore — its full name, or the timestamp portion of it
+        /// (default: the newest snapshot)
+        #[arg(long)]
+        at: Option<String>,
+
+        /// Restore into this path instead of the backup's source; a path
+        /// outside the source leaves the live source untouched and skips the
+        /// safety snapshot
+        #[arg(long, value_hint = clap::ValueHint::AnyPath)]
+        to: Option<PathBuf>,
+
+        /// Skip the confirmation prompt
+        #[arg(long, short, env = "CFGD_YES")]
+        yes: bool,
     },
 }
 
@@ -1994,6 +2057,7 @@ pub fn execute(
                 apply_modules,
                 cache_dir: cli.cache_dir.as_deref(),
                 state_dir: cli.state_dir.as_deref(),
+                runtime_dir: cli.runtime_dir.as_deref(),
                 scope: cli.scope(),
             },
         ),
@@ -2165,6 +2229,22 @@ pub fn execute(
                 version.as_deref(),
             ),
             SourceCommand::Validate { source } => validate::cmd_source_validate(printer, source),
+        },
+        Command::Backup { command } => match command {
+            BackupCommand::Run { name } => backup::cmd_backup_run(cli, printer, name.as_deref()),
+            BackupCommand::List { name, snapshots } => {
+                backup::cmd_backup_list(cli, printer, name.as_deref(), *snapshots)
+            }
+            BackupCommand::Restore { name, at, to, yes } => backup::cmd_backup_restore(
+                cli,
+                printer,
+                &backup::RestoreArgs {
+                    name,
+                    at: at.as_deref(),
+                    to: to.as_deref(),
+                    yes: *yes,
+                },
+            ),
         },
         Command::Explain {
             resource,

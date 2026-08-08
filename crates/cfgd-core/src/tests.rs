@@ -396,6 +396,102 @@ fn validate_no_traversal_rejects_dotdot() {
 }
 
 #[test]
+fn validate_no_traversal_keeps_a_leading_dot_slash_legal() {
+    // Ordinary user syntax for "relative to here" — it still names a file.
+    assert!(validate_no_traversal(std::path::Path::new("./configs/vimrc")).is_ok());
+    assert!(validate_no_traversal(std::path::Path::new("configs/.")).is_ok());
+}
+
+#[test]
+fn validate_no_traversal_rejects_a_path_that_names_nothing_of_its_own() {
+    for candidate in [".", "./", "./.", "/"] {
+        let err = validate_no_traversal(std::path::Path::new(candidate)).expect_err(&format!(
+            "'{candidate}' resolves to whatever it is joined onto and must be rejected"
+        ));
+        assert!(err.contains("names no file or directory"), "got: {err}");
+    }
+}
+
+#[test]
+fn is_self_reference_recognizes_only_a_pure_dot_path() {
+    for candidate in [".", "./", "./."] {
+        assert!(
+            is_self_reference(std::path::Path::new(candidate)),
+            "'{candidate}' resolves to the directory it is joined onto"
+        );
+    }
+    for candidate in ["", "./configs", "configs", "..", "/"] {
+        assert!(
+            !is_self_reference(std::path::Path::new(candidate)),
+            "'{candidate}' is not a pure self-reference"
+        );
+    }
+}
+
+#[test]
+fn validate_plain_name_accepts_ordinary_names() {
+    for candidate in ["snapshot", "daily/2026", "a.b.c", "..hidden", "x..y"] {
+        assert!(
+            validate_plain_name(candidate).is_ok(),
+            "'{candidate}' should be a usable name"
+        );
+    }
+}
+
+#[test]
+fn validate_plain_name_rejects_every_directory_reference() {
+    // `daily/.` is the one `Path::components()` cannot see: it normalizes to the
+    // single component `daily` while the joined path still resolves to `daily`
+    // itself rather than to something new inside it.
+    for candidate in [".", "..", "daily/.", "./daily", "a/../b", "/daily", "a//b"] {
+        assert!(
+            validate_plain_name(candidate).is_err(),
+            "'{candidate}' does not name something new and must be rejected"
+        );
+    }
+    assert!(validate_plain_name("").is_err());
+    // Windows separators are judged too — the check runs before any `Path` parse,
+    // where a `\` would otherwise be an ordinary character on unix.
+    assert!(validate_plain_name(r"daily\.").is_err());
+}
+
+#[test]
+fn validate_plain_name_rejects_a_rooted_value_on_every_host() {
+    // `Path::join` discards the base for a rooted right-hand side, so any of
+    // these would silently relocate whatever the caller was building. Windows
+    // shapes are rejected on unix too: the name may have been written into
+    // shared state by a Windows host.
+    for candidate in [
+        "/abs",
+        r"\abs",
+        "C:/evil",
+        r"C:\evil",
+        "C:evil",
+        r"\\server\share",
+    ] {
+        assert!(
+            validate_plain_name(candidate).is_err(),
+            "'{candidate}' is rooted and must not be accepted as a name"
+        );
+    }
+    // A colon anywhere is an NTFS alternate-data-stream selector, not a name.
+    assert!(validate_plain_name("notes.txt:hidden").is_err());
+    assert!(validate_plain_name("daily/C:evil").is_err());
+}
+
+#[test]
+fn resolve_relative_path_rejects_an_input_that_collapses_onto_the_base() {
+    let base = std::path::Path::new("/srv/config");
+    // Validated before the join: `base.join(".")` carries the base's own
+    // components, so a check on the joined path would wave this through.
+    assert!(resolve_relative_path(std::path::Path::new("."), base).is_err());
+    assert_eq!(
+        resolve_relative_path(std::path::Path::new("a/b"), base).expect("plain relative path"),
+        std::path::PathBuf::from("/srv/config/a/b")
+    );
+}
+
+#[test]
 fn shell_escape_value_simple() {
     assert_eq!(shell_escape_value("hello"), "\"hello\"");
 }
@@ -421,13 +517,16 @@ fn xml_escape_passthrough() {
 }
 
 #[test]
-#[cfg(unix)] // Windows LockFileEx prevents reading lock file content while held
 fn acquire_apply_lock_works() {
     let dir = tempfile::tempdir().unwrap();
     let guard = acquire_apply_lock(dir.path()).unwrap();
-    // Lock file should contain our PID
+    // The record is newline-terminated so a contender can tell a complete PID
+    // from a prefix it caught mid-write. Asserted on every OS: the Windows
+    // byte-range lock sits far past any content, so the file stays readable
+    // while held, and this is the only test that pins the on-disk shape both
+    // writers produce.
     let content = std::fs::read_to_string(dir.path().join("apply.lock")).unwrap();
-    assert_eq!(content, format!("{}", std::process::id()));
+    assert_eq!(content, format!("{}\n", std::process::id()));
     drop(guard);
 }
 
@@ -446,6 +545,88 @@ fn acquire_apply_lock_detects_contention() {
         ),
         "expected ApplyLockHeld, got: {}",
         err
+    );
+}
+
+#[test]
+fn a_held_lock_reports_the_holding_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = acquire_apply_lock(dir.path()).unwrap();
+    let err = acquire_apply_lock(dir.path()).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains(&format!("pid {}", std::process::id())),
+        "the refusal must name who to go look at: {err}"
+    );
+}
+
+#[test]
+fn a_lock_with_no_recorded_pid_says_so_rather_than_printing_a_bare_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let guard = acquire_backup_lock(dir.path(), "db").unwrap();
+    // A holder that has not yet written its PID, or a non-cfgd holder such as
+    // `flock(1)`, leaves the file empty.
+    std::fs::write(dir.path().join("locks").join("backup-db.lock"), b"").unwrap();
+    let err = acquire_backup_lock(dir.path(), "db").unwrap_err();
+    assert!(
+        err.to_string().contains("unknown pid"),
+        "an unnamed holder must not render as a bare `pid `: {err}"
+    );
+    drop(guard);
+}
+
+#[test]
+fn a_lock_holding_a_torn_or_garbled_pid_says_unknown_rather_than_naming_a_stranger() {
+    let dir = tempfile::tempdir().unwrap();
+    let guard = acquire_backup_lock(dir.path(), "db").unwrap();
+    let lock = dir.path().join("locks").join("backup-db.lock");
+    // `12` is what a contender reads if it catches the holder mid-write of
+    // `12345` — it parses as a perfectly good PID and would name whatever
+    // unrelated process owns it. The other cases are a non-cfgd holder writing
+    // its own format and a numeric value too large to be a PID.
+    for content in ["12", "1234\r\n", "flock(1)\n", "  \n", "99999999999999\n"] {
+        std::fs::write(&lock, content.as_bytes()).unwrap();
+        let err = acquire_backup_lock(dir.path(), "db")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown pid"),
+            "'{content:?}' is not a complete PID record and must not be reported as one: {err}"
+        );
+    }
+    drop(guard);
+}
+
+#[test]
+fn backup_locks_are_per_unit_and_live_under_the_locks_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let _db = acquire_backup_lock(dir.path(), "db").unwrap();
+    // A different unit is unaffected — the lock must not serialize the whole
+    // machine's backups behind one slow one.
+    let _home = acquire_backup_lock(dir.path(), "home").expect("a different unit must not block");
+    assert!(dir.path().join("locks").join("backup-db.lock").exists());
+    assert!(dir.path().join("locks").join("backup-home.lock").exists());
+    assert!(acquire_backup_lock(dir.path(), "db").is_err());
+}
+
+#[test]
+fn backup_lock_rejects_a_name_that_would_escape_the_locks_dir() {
+    // The name is interpolated into the lock filename, and this is a `pub`
+    // cfgd-core API — a caller that skipped `validate_backup_specs` must be
+    // stopped rather than obeyed.
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["..", ".", "a/b", "a\\b", "C:db", "", "   "] {
+        let err = acquire_backup_lock(dir.path(), name)
+            .expect_err("an unvalidated name must be refused")
+            .to_string();
+        assert!(
+            err.contains("backup name"),
+            "'{name}' must be refused with the same wording the config parser uses, got: {err}"
+        );
+    }
+    assert!(
+        !dir.path().join("locks").exists(),
+        "a refused name must not even create the locks dir"
     );
 }
 
@@ -669,6 +850,119 @@ fn copy_dir_recursive_copies_tree() {
         std::fs::read_to_string(dst_path.join("sub/b.txt")).unwrap(),
         "world"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_dir_recursive_preserves_directory_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let dst_path = dst.path().join("copy");
+    std::fs::create_dir_all(src.path().join("private")).unwrap();
+    std::fs::write(src.path().join("private/secret"), "s").unwrap();
+    std::fs::set_permissions(
+        src.path().join("private"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+
+    copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode(&dst_path.join("private")),
+        0o700,
+        "a 0700 source directory must not land as a 0755 copy"
+    );
+    // A restrictive mode is applied after the walk, so its children still copied.
+    assert_eq!(
+        std::fs::read_to_string(dst_path.join("private/secret")).unwrap(),
+        "s"
+    );
+}
+
+#[test]
+fn copy_dir_recursive_does_not_descend_into_its_own_output() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("tree");
+    std::fs::create_dir_all(src.join("data")).unwrap();
+    std::fs::write(src.join("data/a.txt"), "a").unwrap();
+    // The output lives inside the tree being walked.
+    let dst = src.join("copy");
+
+    copy_dir_recursive(&src, &dst).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("data/a.txt")).unwrap(),
+        "a"
+    );
+    assert!(
+        !dst.join("copy").exists(),
+        "the walk copied its own output into itself"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_dir_recursive_does_not_descend_into_a_symlinked_output() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("tree");
+    std::fs::create_dir_all(src.join("data")).unwrap();
+    std::fs::write(src.join("data/a.txt"), "a").unwrap();
+    // Lexically disjoint from `src`, physically inside it: without resolving the
+    // link, the walk finds `tree/copy` and recurses until the path length gives
+    // out.
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&src, &link).unwrap();
+    let dst = link.join("copy");
+
+    copy_dir_recursive(&src, &dst).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("data/a.txt")).unwrap(),
+        "a"
+    );
+    assert!(
+        !src.join("copy/copy").exists(),
+        "the walk followed its own output back through the link"
+    );
+}
+
+#[test]
+fn dir_size_sums_the_whole_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub/deeper")).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    std::fs::write(dir.path().join("sub/b.txt"), "bb").unwrap();
+    std::fs::write(dir.path().join("sub/deeper/c.txt"), "c").unwrap();
+    assert_eq!(dir_size(dir.path()).unwrap(), 6);
+}
+
+#[test]
+fn dir_size_of_a_file_is_its_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "12345").unwrap();
+    assert_eq!(dir_size(&file).unwrap(), 5);
+}
+
+#[test]
+fn dir_size_errors_on_a_missing_path() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(dir_size(&dir.path().join("nope")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn dir_size_skips_symlinks_instead_of_following_them() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    // A link back to the tree root would recurse forever if followed.
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("a.txt"), dir.path().join("link")).unwrap();
+    assert_eq!(dir_size(dir.path()).unwrap(), 3);
 }
 
 #[test]

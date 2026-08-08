@@ -81,6 +81,7 @@ fn happy_show_output() -> ModuleShowOutput {
             packages: vec![],
             files: vec![
                 ModuleFileEntry {
+                    patch: None,
                     source: "vimrc".into(),
                     target: "~/.vimrc".into(),
                     strategy: None,
@@ -89,6 +90,7 @@ fn happy_show_output() -> ModuleShowOutput {
                     permissions: None,
                 },
                 ModuleFileEntry {
+                    patch: None,
                     source: "git@example.com:org/dotfiles.git//tmux.conf".into(),
                     target: "~/.tmux.conf".into(),
                     strategy: None,

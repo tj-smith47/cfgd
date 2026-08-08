@@ -31,7 +31,7 @@
 //! [`NotFound`]: ExitCode::NotFound
 //! [`ApplyFailed`]: ExitCode::ApplyFailed
 
-use crate::errors::{CfgdError, ConfigError, ModuleError, SourceError};
+use crate::errors::{BackupError, CfgdError, ConfigError, ModuleError, SourceError};
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +84,12 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         CfgdError::Module(ModuleError::RegistryNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Backup(BackupError::UnknownName { .. }) => ExitCode::NotFound,
+        // A restore that names a snapshot the unit does not have — or a unit
+        // that has none at all — is the same scriptable "you asked for a thing
+        // that is not there" condition as an unknown backup name.
+        CfgdError::Backup(BackupError::SnapshotNotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Backup(BackupError::NoSnapshots { .. }) => ExitCode::NotFound,
         // A source-delivered module carrying disallowed scripts is a policy
         // violation in the resolved config, not a missing resource — it maps to
         // ConfigInvalid (4), matching how composition constraint violations are
@@ -200,6 +206,7 @@ mod tests {
         let err = CfgdError::Composition(Box::new(
             crate::errors::CompositionError::ScriptsNotAllowed {
                 source_name: "team".into(),
+                kind: "a preApply script".into(),
             },
         ));
         assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
@@ -241,6 +248,15 @@ mod tests {
         let err = CfgdError::Source(crate::errors::SourceError::ProfileNotFound {
             name: "acme".into(),
             profile: "dev".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn backup_unknown_name_maps_to_not_found() {
+        let err = CfgdError::Backup(crate::errors::BackupError::UnknownName {
+            name: "openlist-db".into(),
+            valid: vec!["photos".into()],
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
     }

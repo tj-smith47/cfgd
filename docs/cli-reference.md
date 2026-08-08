@@ -194,6 +194,30 @@ cfgd status --module nvim                   # status for a single module (no pro
 
 Show detailed file diffs with syntax highlighting.
 
+```sh
+cfgd diff -o json            # structured drift payload
+```
+
+The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
+
+```json
+{
+  "files": [
+    {
+      "resourceType": "file",
+      "resourceId": "~/.config/acme/app.ini",
+      "matches": false,
+      "expected": "content satisfies patch spec",
+      "actual": "cannot evaluate patch spec: file error: patch script for ~/.config/acme/app.ini is blocked: source 'acme' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"
+    }
+  ]
+}
+```
+
+A file cfgd could not evaluate — an unparseable target, a filter that exited non-zero, a patch script a source is [barred from running](sources.md#noscripts) — appears with the reason as its `actual`, so the cause is visible without reading the terminal rendering.
+
+A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
+
 ### `cfgd verify`
 
 Check that all managed resources match desired state.
@@ -202,6 +226,8 @@ Check that all managed resources match desired state.
 cfgd verify -o json          # structured pass/fail results
 cfgd verify --module nvim    # verify only a single module's resources (no profile required)
 ```
+
+Each entry in `results[]` carries `resourceType`, `resourceId`, `matches`, `expected`, and `actual`, alongside the top-level `passCount` / `failCount`.
 
 ### `cfgd doctor`
 
@@ -727,6 +753,63 @@ cfgd decide accept --source acme-corp      # accept all from source
 cfgd decide accept --all                   # accept everything
 ```
 
+## Backup Commands
+
+Run, inspect, or restore declarative backups (`spec.backups[]`). See [backups.md](backups.md) for
+the full field reference and run semantics.
+
+```sh
+cfgd backup run                # run every backup declared in the active profile
+cfgd backup run openlist-db    # run just the named backup
+cfgd backup list                # inventory + last-run status + next scheduled run; alias: ls
+cfgd backup list openlist-db    # just that unit's row
+cfgd backup list openlist-db --snapshots   # its snapshots: name, created, size
+cfgd backup restore openlist-db                          # newest snapshot, back over the source
+cfgd backup restore openlist-db --at 20260730T120000Z    # pick an older one
+cfgd backup restore openlist-db --to /tmp/inspect --yes  # somewhere else, no prompt
+cfgd --output json backup list
+```
+
+An unknown name given to `cfgd backup run`, `backup list`, or `backup restore` is exit code `6`
+(see [Exit Codes](#exit-codes)) and lists every valid name; an unknown `--at` snapshot is exit `6`
+too and lists every available snapshot. A run that recorded a failure — a bad copy, or
+`postBackup` erroring after a good one — also exits nonzero.
+
+`backup restore` overlays the snapshot onto the target (names only in the target are left alone;
+a target entry whose kind differs from the snapshot's — a symlink, or a directory where the
+snapshot holds a file — is removed and replaced, never written through), takes a safety snapshot of the current contents first, and requires confirmation
+unless `--yes` (`CFGD_YES`) is given. `--to <path>` redirects the restore; a path outside the
+backup's source also skips the safety snapshot, while a path at or inside the source still takes
+one. The unit's `preBackup` / `postBackup` hooks wrap the whole restore exactly once and see
+`CFGD_OPERATION=restore`. Where cfgd cannot prompt — piped stdin, CI, or `-o json` — a restore
+without `--yes` is an error rather than a silent no-op. See [Restoring](backups.md#restoring).
+
+A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
+rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
+other units it was asked to run still run. See
+[One run at a time](backups.md#run-semantics).
+
+Structured output (`-o json`) payload for `backup run`: an array of
+`{ name, status, clean, destinationPath?, error? }`, where `status` is `success`, `failed`, or
+`skipped` (the unit was already running). A refused unit does not add a second document to stdout —
+the payload is always one JSON value and the nonzero exit code carries the failure. For
+`backup list`: an array of
+`{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
+where `name` is the snapshot's path relative to the backup's `destination`. For `backup restore`:
+a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetySnapshot?, error? }` —
+or, when the operator declines at the confirmation prompt,
+`{ name, snapshot, restoredTo, restored: false, declined: true }`. The declined payload omits
+`clean` deliberately: a decline exits `0`, and reporting `clean: false` beside a zero exit would
+contradict whichever of the two a consumer trusted.
+`nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
+same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
+unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).
+
+`backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`
+additionally runs on the [daemon's timer](backups.md#daemon-scheduling), and a schedule-less one
+runs during `cfgd apply`.
+
 ## Image Commands
 
 ### `cfgd image pack <DIR> <ARTIFACT>`
@@ -887,13 +970,13 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). | Any command whose `Result` resolves to a non-config error. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), and a `cfgd backup restore` whose overlay or hooks failed. | Any command whose `Result` resolves to a non-config error. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
-| `7` | An apply ran but at least one action failed (partial or total). | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module add --apply` when one or more actions fail. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `7` | An apply ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module add --apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
 

@@ -55,6 +55,27 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (y, m, d)
 }
 
+/// `strftime`-style UTC timestamp format for `spec.backups[]` snapshot
+/// filenames (rendered via the `{timestamp}` `namePattern` variable). Fixed
+/// here so the backup engine and the schema/docs agree on one format without
+/// re-deriving it.
+pub const BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%SZ";
+
+/// Render a Unix timestamp in [`BACKUP_TIMESTAMP_FORMAT`]
+/// (`20260512T143025Z`) — the `{timestamp}` `namePattern` variable.
+///
+/// Derived from [`unix_secs_to_iso8601`] rather than a second date algorithm:
+/// the two formats differ only in the `:`/`-` separators, so folding them out
+/// keeps one calendar implementation in the crate.
+pub fn unix_secs_to_backup_stamp(secs: u64) -> String {
+    unix_secs_to_iso8601(secs).replace([':', '-'], "")
+}
+
+/// Convenience: the current UTC time in [`BACKUP_TIMESTAMP_FORMAT`].
+pub fn utc_now_backup_stamp() -> String {
+    unix_secs_to_backup_stamp(unix_secs_now())
+}
+
 /// Parse a duration string like "30s", "5m", "1h", or a plain number (as seconds).
 ///
 /// Returns an error description on invalid input.
@@ -94,6 +115,20 @@ mod tests {
             iso8601_to_filename_safe("2026-05-12T14:30:25.123Z"),
             "20260512143025.123"
         );
+    }
+
+    #[test]
+    fn unix_secs_to_backup_stamp_matches_the_pinned_format() {
+        // 2026-05-12T14:30:25Z
+        assert_eq!(unix_secs_to_backup_stamp(1_778_596_225), "20260512T143025Z");
+    }
+
+    #[test]
+    fn utc_now_backup_stamp_is_sortable_and_separator_free() {
+        let s = utc_now_backup_stamp();
+        assert_eq!(s.len(), 16, "expected YYYYMMDDTHHMMSSZ shape: {s:?}");
+        assert!(!s.contains([':', '-']), "stamp kept a separator: {s:?}");
+        assert!(s.ends_with('Z'), "stamp is not UTC-marked: {s:?}");
     }
 
     #[test]

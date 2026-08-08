@@ -11,7 +11,7 @@ use cfgd_core::modules::ResolvedModule;
 use cfgd_core::providers::{PackageAction, ProviderRegistry};
 use cfgd_core::reconciler::VerifyResult;
 
-use crate::files::CfgdFileManager;
+use crate::files::{CfgdFileManager, module_patch_binding};
 use crate::packages;
 
 /// Content-aware verify results for every managed file in the profile.
@@ -55,7 +55,21 @@ pub(super) fn module_file_verify_results(
     let mut results = Vec::new();
     for module in modules {
         for file in &module.files {
-            let drift = fm.file_drift_one(&file.source, &file.target, None)?;
+            let drift = match &file.patch {
+                // A `Patch` file has no source to compare against: it has
+                // converged when re-running its merge over the target's current
+                // content would change nothing.
+                Some(spec) => {
+                    let binding = module_patch_binding(config_dir, resolved, module);
+                    let evaluated = cfgd_core::reconciler::evaluate_patch(
+                        spec,
+                        &file.target,
+                        &binding.context(),
+                    );
+                    crate::files::patch_drift_result(&file.target, evaluated)
+                }
+                None => fm.file_drift_one(&file.source, &file.target, None)?,
+            };
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
                 resource_id: format!("{}/{}", module.name, drift.target),
@@ -193,6 +207,7 @@ mod tests {
     fn resolved_with_file(target: std::path::PathBuf) -> ResolvedProfile {
         let files = FilesSpec {
             managed: vec![ManagedFileSpec {
+                patch: None,
                 source: "managed.txt".to_string(),
                 target,
                 strategy: Some(FileStrategy::Copy),
@@ -344,6 +359,7 @@ mod tests {
                 strategy: None,
                 encryption: None,
                 permissions: None,
+                patch: None,
             }],
             env: Vec::new(),
             aliases: Vec::new(),
@@ -398,6 +414,83 @@ mod tests {
             "tampered module file must fail: {results:?}"
         );
         assert!(results[0].actual.contains("differs"));
+    }
+
+    #[test]
+    fn module_file_verify_results_patch_reports_drift_and_convergence() {
+        // A `Patch` module file has no source to compare against, so its
+        // verify result comes from re-evaluating the merge over the target.
+        // Covers both `cfgd status --exit-code` and `cfgd verify`, which share
+        // this function.
+        let dir = tempfile::tempdir().unwrap();
+        let drifted = dir.path().join("drifted.json");
+        std::fs::write(&drifted, "{\n  \"keep\": 1\n}\n").unwrap();
+        let converged = dir.path().join("converged.json");
+        std::fs::write(&converged, "{\n  \"telemetry\": false\n}\n").unwrap();
+
+        let resolved = resolved_with_file(dir.path().join("unused.txt"));
+        let mut modules = vec![module_with_file(
+            "accmod",
+            std::path::PathBuf::new(),
+            drifted,
+        )];
+        let spec = cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+            blocked_by: None,
+        };
+        modules[0].files[0].strategy = Some(FileStrategy::Patch);
+        modules[0].files[0].patch = Some(spec.clone());
+        modules[0].files.push(cfgd_core::modules::ResolvedFile {
+            source: std::path::PathBuf::new(),
+            target: converged,
+            is_git_source: false,
+            strategy: Some(FileStrategy::Patch),
+            encryption: None,
+            permissions: None,
+            patch: Some(spec),
+        });
+
+        let results = module_file_verify_results(dir.path(), &resolved, &modules).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(!results[0].matches, "drifted Patch target must fail");
+        assert_eq!(results[0].resource_type, "module");
+        assert!(results[0].resource_id.starts_with("accmod/"));
+        assert!(results[1].matches, "converged Patch target must pass");
+    }
+
+    #[test]
+    fn module_file_verify_results_reports_an_unevaluable_patch_as_drift() {
+        // `cfgd verify` / `status --exit-code` scan every resource: a target
+        // cfgd cannot parse is drift, not a reason to abort and hide the rest.
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{ this is not json").unwrap();
+
+        let resolved = resolved_with_file(dir.path().join("unused.txt"));
+        let mut modules = vec![module_with_file(
+            "accmod",
+            std::path::PathBuf::new(),
+            broken,
+        )];
+        modules[0].files[0].strategy = Some(FileStrategy::Patch);
+        modules[0].files[0].patch = Some(cfgd_core::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str("telemetry: false").unwrap()),
+            script: None,
+            blocked_by: None,
+        });
+
+        let results = module_file_verify_results(dir.path(), &resolved, &modules)
+            .expect("one unevaluable file must not fail the scan");
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].matches);
+        assert!(
+            results[0].actual.starts_with("cannot evaluate patch spec:"),
+            "the failure is surfaced per-file, got: {}",
+            results[0].actual
+        );
     }
 
     #[test]

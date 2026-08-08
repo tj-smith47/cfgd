@@ -1,4 +1,4 @@
-⚠ Skipping seccomp profile traversal-profile: path traversal in file name
+⚠ Skipping seccomp profile traversal-profile (../../etc/cfgd-snap-traversal.json): path traversal — it contains '..'
 ⊙ Writing seccomp profile allow-audit: <TMPDIR>/cfgd-seccomp/allow-audit.json
 
 ⚠ seccomp apply completed with warnings

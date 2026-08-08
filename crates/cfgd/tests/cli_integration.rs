@@ -2405,3 +2405,157 @@ fn canonical_jsonpath_output_no_deprecation_warning() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// `cfgd backup run` exit-code coverage.
+//
+// `cmd_backup_run`'s `ExitCode::Error.exit()` (a direct `process::exit`) can
+// only be exercised out-of-process — see `crates/cfgd/tests/backup_snapshots.rs`
+// for the in-process capture tests that cover the clean/output-shape side.
+// ---------------------------------------------------------------------------
+
+/// Helper: create a config + profile declaring `spec.backups[]` from the given
+/// YAML block, plus a real source file at `<dir>/data/notes.txt` for
+/// scenarios that reference `backup_source_path(dir)`.
+fn create_backup_config(dir: &std::path::Path, backups_yaml: &str) {
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    let source_file = backup_source_path(dir);
+    std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+    std::fs::write(&source_file, "hello backup").unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("profiles/base.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  backups:\n{backups_yaml}"
+        ),
+    )
+    .unwrap();
+}
+
+fn backup_source_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("data").join("notes.txt")
+}
+
+/// All declared backups run clean (no hooks) — `cfgd backup run` exits `0`.
+#[test]
+fn backup_run_all_clean_exits_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = backup_source_path(dir.path());
+    let backups_yaml = format!(
+        "    - name: clean\n      source: {}\n      retention: 3\n",
+        source.display()
+    );
+    create_backup_config(dir.path(), &backups_yaml);
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("backup")
+        .arg("run")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+}
+
+/// A `postBackup` hook fails after a good copy — the run is recorded
+/// `Success` but not *clean* (`BackupRunRecord::is_clean() == false`), which
+/// `cmd_backup_run` must still surface as a nonzero exit.
+#[test]
+fn backup_run_dirty_success_exits_nonzero() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = backup_source_path(dir.path());
+    let backups_yaml = format!(
+        "    - name: dirty\n      source: {}\n      retention: 3\n      postBackup:\n        - \"exit 1\"\n",
+        source.display()
+    );
+    create_backup_config(dir.path(), &backups_yaml);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("backup")
+        .arg("run")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("dirty"),
+        "stderr must name the dirty backup, got:\n{err}"
+    );
+}
+
+/// The source path doesn't exist — the run is recorded `Failed` with no
+/// artifact, which `cmd_backup_run` must surface as a nonzero exit.
+#[test]
+fn backup_run_failed_unit_exits_nonzero() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let missing_source = dir.path().join("does-not-exist.txt");
+    let backups_yaml = format!(
+        "    - name: broken\n      source: {}\n      retention: 3\n",
+        missing_source.display()
+    );
+    create_backup_config(dir.path(), &backups_yaml);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("backup")
+        .arg("run")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("broken"),
+        "stderr must name the failed backup, got:\n{err}"
+    );
+}
+
+/// `cfgd backup run <missing-name>` — `ExitCode::NotFound` (6), and the
+/// valid-names hint must render in human mode (stderr), not just JSON.
+#[test]
+fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = backup_source_path(dir.path());
+    let backups_yaml = format!(
+        "    - name: clean\n      source: {}\n      retention: 3\n",
+        source.display()
+    );
+    create_backup_config(dir.path(), &backups_yaml);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("backup")
+        .arg("run")
+        .arg("nosuchbackup")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("nosuchbackup"),
+        "stderr must name the unknown backup, got:\n{err}"
+    );
+    assert!(
+        err.contains("clean"),
+        "stderr must list the valid backup name via the hint, got:\n{err}"
+    );
+}

@@ -247,6 +247,99 @@ pub struct FileBackupRecord {
     pub existed: bool,
 }
 
+/// Outcome of one declarative backup run (`spec.backups[]`).
+///
+/// Only two outcomes exist because the artifact is what the operator cares
+/// about: either a snapshot was written (`Success`) or none was
+/// (`Failed`). A `postBackup` hook that fails *after* a good copy leaves the
+/// run `Success` with [`BackupRunRecord::error`] populated — see
+/// [`crate::backup::run_backup`] for why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupRunStatus {
+    /// A snapshot was written to the destination.
+    Success,
+    /// No snapshot was written: a `preBackup` hook failed, or the copy did.
+    Failed,
+}
+
+impl BackupRunStatus {
+    /// The persisted token, and the one every `-o json` payload reports — the
+    /// DB spelling and the wire spelling are the same string by construction.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BackupRunStatus::Success => "success",
+            BackupRunStatus::Failed => "failed",
+        }
+    }
+
+    /// Parse the persisted form. An unrecognized token reads as `Failed`: a row
+    /// cfgd cannot interpret must never be treated as a restorable snapshot.
+    pub(in crate::state) fn from_str(s: &str) -> Self {
+        match s {
+            "success" => BackupRunStatus::Success,
+            _ => BackupRunStatus::Failed,
+        }
+    }
+}
+
+/// The values a backup run supplies when it is recorded — every column of
+/// `backup_runs` except the autoincrement `id`.
+///
+/// Separate from [`BackupRunRecord`] so the insert cannot be called with a
+/// fabricated id, and so the returned record's id is always the real rowid.
+#[derive(Debug, Clone)]
+pub struct BackupRunDraft {
+    pub name: String,
+    /// Source path, posix-folded so a run recorded on Windows compares equal to
+    /// the same source recorded on Unix.
+    pub source: String,
+    /// Posix-folded path of the snapshot on disk; `None` when the run produced
+    /// no artifact. Retention pruning treats `Some` as "there is something to
+    /// delete".
+    pub destination_path: Option<String>,
+    /// Bytes the snapshot occupies (file length, or the sum of the copied tree).
+    pub size_bytes: Option<u64>,
+    pub status: BackupRunStatus,
+    /// Failure detail. Set on every `Failed` run, and on a `Success` run whose
+    /// `postBackup` hook failed.
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: String,
+}
+
+/// A recorded backup run, as read back from `backup_runs`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRunRecord {
+    pub id: i64,
+    pub name: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    pub status: BackupRunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: String,
+}
+
+impl BackupRunRecord {
+    /// Whether the run wrote a snapshot AND every hook succeeded — the
+    /// predicate a caller uses to decide its exit code. A `Success` run
+    /// carrying a `postBackup` failure is deliberately not clean.
+    pub fn is_clean(&self) -> bool {
+        self.status == BackupRunStatus::Success && self.error.is_none()
+    }
+
+    /// Whether this run left a snapshot on disk.
+    pub fn has_artifact(&self) -> bool {
+        self.destination_path.is_some()
+    }
+}
+
 /// A journal entry for a single action within an apply. Internal-only DAO;
 /// used by rollback and apply-recovery paths.
 #[derive(Debug, Clone)]

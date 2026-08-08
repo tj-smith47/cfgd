@@ -56,12 +56,10 @@ async fn reconcile_machine_config_adds_finalizer_when_missing() {
             .returning_json(&mc),
         // 2. LIST DriftAlerts (has_active_drift_alerts)
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // 3. LIST DriftAlerts (cleanup_drift_alerts, since !has_drift)
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // 4. PATCH /status (no LIST modules — module_refs is empty)
+        // 3. PATCH /status (no LIST modules — module_refs is empty)
         ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-noface")))
             .returning_json(&mc),
-        // 5. POST event (Reconciled)
+        // 4. POST event (Reconciled)
         expect_event_post(NS),
     ]);
 
@@ -72,7 +70,7 @@ async fn reconcile_machine_config_adds_finalizer_when_missing() {
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 5);
+    assert_eq!(report.captured.len(), 4);
 
     // Finalizer-add patch contains MACHINE_CONFIG_FINALIZER.
     let finalizer_patch = report.captured[0].body_json();
@@ -143,21 +141,19 @@ async fn reconcile_machine_config_when_deletion_and_no_finalizer_skips_patch_and
         // No finalizer-add or finalizer-remove patch.
         // 1. LIST DriftAlerts (has_active_drift_alerts)
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // 2. LIST DriftAlerts (cleanup_drift_alerts)
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // 3. PATCH /status
+        // 2. PATCH /status
         ExpectedCall::patch_status(format!(
             "{}/status",
             machine_config_path(NS, "mc-deleted-clean")
         ))
         .returning_json(&mc),
-        // 4. POST event
+        // 3. POST event
         expect_event_post(NS),
     ]);
 
     reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(report.captured.len(), 3);
 }
 
 // -----------------------------------------------------------------------
@@ -210,7 +206,6 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         // Only 1 LIST — has_active_drift_alerts (returns no drift).
-        // No cleanup_drift_alerts because reconcile short-circuits before that.
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
     ]);
 
@@ -246,7 +241,6 @@ async fn reconcile_machine_config_emits_drift_event_when_active_alerts_match() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         // 1. has_active_drift_alerts → returns true
         ExpectedCall::list(drift_alerts_path()).returning_json(&drift_list),
-        // No cleanup_drift_alerts call (because has_drift)
         // 2. PATCH /status
         ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-drifted")))
             .returning_json(&mc),
@@ -301,7 +295,6 @@ async fn reconcile_machine_config_resolves_module_refs_and_records_modules_resol
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         // resolve_module_refs LISTs all Modules (cluster-scoped).
         ExpectedCall::list(modules_list_path()).returning_json(&empty_module_list()),
         ExpectedCall::patch_status(format!(
@@ -315,10 +308,10 @@ async fn reconcile_machine_config_resolves_module_refs_and_records_modules_resol
     reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 5);
+    assert_eq!(report.captured.len(), 4);
 
     // The status-patch must contain ModulesResolved=False with reason ModulesNotFound.
-    let status_body = report.captured[3].body_json();
+    let status_body = report.captured[2].body_json();
     let conditions = status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");
@@ -347,7 +340,6 @@ async fn reconcile_machine_config_when_status_patch_fails_emits_reconcile_error_
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         ExpectedCall::patch_status(format!(
             "{}/status",
@@ -396,7 +388,6 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         ExpectedCall::patch_status(format!(
             "{}/status",
             machine_config_path(NS, "mc-with-compliant")
@@ -408,7 +399,7 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
     reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
 
     let report = harness.finish().await;
-    let status_body = report.captured[2].body_json();
+    let status_body = report.captured[1].body_json();
     let conditions = status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");

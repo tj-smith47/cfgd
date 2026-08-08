@@ -309,6 +309,31 @@ pub fn atomic_write_str(
     atomic_write(target, content.as_bytes())
 }
 
+/// Atomically write merged content back over a file cfgd does not own,
+/// following `target` to the real file when it is a symlink.
+///
+/// The write publishes the merge where readers of the file see it while
+/// leaving the path's identity alone. [`atomic_write`] replaces the path it is
+/// handed, so a symlinked target would become a regular file and orphan the
+/// file it pointed at — the `~/.gitconfig -> ~/dotfiles/gitconfig` layout is
+/// exactly the shape partial-file edits exist to serve, and the merge already
+/// read *through* the link. A dangling link resolves to nothing and is written
+/// at the link path itself, matching the merge's treatment of a missing target
+/// as empty content.
+///
+/// Returns the SHA256 hex digest of the written content.
+pub fn atomic_write_merged(
+    target: &std::path::Path,
+    content: &str,
+) -> std::result::Result<String, std::io::Error> {
+    let resolved = if target.is_symlink() {
+        std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf())
+    } else {
+        target.to_path_buf()
+    };
+    atomic_write_str(&resolved, content)
+}
+
 /// Atomically write content to the file `target` ultimately names, following a
 /// symlink rather than replacing it.
 ///

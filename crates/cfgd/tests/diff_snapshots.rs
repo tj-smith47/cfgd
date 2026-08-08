@@ -163,6 +163,7 @@ fn diff_no_drift_human() {
 #[test]
 fn diff_no_drift_json() {
     let output = DiffOutput {
+        files: Vec::new(),
         packages: Vec::new(),
         system: Vec::new(),
         summary: DiffSummary {
@@ -234,6 +235,7 @@ fn diff_package_drift_human() {
 #[test]
 fn diff_system_drift_human() {
     let output = DiffOutput {
+        files: Vec::new(),
         packages: Vec::new(),
         system: vec![SystemDriftOutput {
             key: "sysctl.kernel.somaxconn".to_string(),
@@ -277,6 +279,7 @@ fn diff_module_only_human() {
 #[test]
 fn diff_bridge_one_blank_line() {
     let output = DiffOutput {
+        files: Vec::new(),
         packages: vec![PackageDrift {
             manager: "drift-mgr".to_string(),
             shape: "missing".to_string(),

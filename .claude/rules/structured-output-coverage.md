@@ -12,6 +12,9 @@ missing from the table.
 |------------------------------|-------------------|----------------------------------------------------|
 | alias_list                   | yes               | alias inventory                                    |
 | apply                        | yes               | apply-result records consumed by CI                |
+| backup_list                  | yes               | backup inventory / snapshot list queried by scripts |
+| backup_restore               | yes               | restore result records                             |
+| backup_run                   | yes               | backup-run result records                          |
 | checkin                      | yes               | machine identity exposed to gateway                |
 | clusterconfigpolicy_validate | yes               | validation result consumed by scripts/CI           |
 | compliance_diff              | yes               | drift reporting                                    |

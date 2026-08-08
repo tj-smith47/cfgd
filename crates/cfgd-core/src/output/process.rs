@@ -85,6 +85,14 @@ pub(crate) fn run_command(
     cmd: &mut std::process::Command,
     label: &str,
 ) -> std::io::Result<CommandOutput> {
+    // Held for the whole run, not just the spawn: the child resolves its
+    // program through `PATH` and reads its inherited working directory after
+    // exec, so both must stay stable until it exits. Re-entrant, so a caller
+    // that already holds the guard is unaffected. Compiled out of release
+    // builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _spawn_guard = crate::test_helpers::path_env_read_guard();
+
     let start = Instant::now();
     let mut child = cmd
         .stdin(std::process::Stdio::null())

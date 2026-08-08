@@ -54,6 +54,7 @@ fn init_happy_human() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -89,6 +90,7 @@ fn init_happy_json() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -134,6 +136,7 @@ fn init_already_initialized_human() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -207,6 +210,7 @@ fn init_with_apply_renders_apply_status_streaming() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 
@@ -344,6 +348,7 @@ fn init_apply_lock_honors_state_dir_override() {
         apply_modules: &[],
         cache_dir: Some(cache_dir.as_path()),
         state_dir: Some(state_dir.as_path()),
+        runtime_dir: None,
         scope: cfgd_core::Scope::User,
     };
 

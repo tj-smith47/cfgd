@@ -50,6 +50,7 @@ fn happy_plan_output() -> PlanOutput {
         }],
         total_actions: 1,
         warnings: vec![],
+        pending_backups: vec![],
     }
 }
 

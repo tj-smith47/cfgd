@@ -1,18 +1,51 @@
 use super::super::*;
 use crate::PathDisplayExt;
 
+/// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
+///
+/// systemd splits `ExecStart` on whitespace unless a token is quoted, so an
+/// operator-chosen `--state-dir '/srv/my state'` would otherwise reach clap as
+/// two arguments and the unit would die at argument validation before the
+/// daemon ever started. Three separate systemd rules apply:
+///
+/// - `%` introduces a unit specifier (`%h`, `%i`) — doubled to pass through.
+/// - `$` introduces variable expansion — doubled to pass through.
+/// - whitespace, quotes, and backslashes need a double-quoted string with
+///   C-style escapes.
+pub(crate) fn systemd_quote(token: &str) -> String {
+    let literal = token.replace('%', "%%").replace('$', "$$");
+    let needs_quotes = literal.is_empty()
+        || literal
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '\\'));
+    if !needs_quotes {
+        return literal;
+    }
+    let escaped = literal.replace('\\', r"\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 /// Generate systemd unit file content for the daemon service.
+///
+/// `dirs` carries the process-level `--state-dir` / `--runtime-dir` the install
+/// was invoked with. They MUST reach the unit: the installed service is a fresh
+/// process with none of the invoking shell's flags, so a daemon installed from
+/// `cfgd --state-dir /srv/cfgd daemon install` would otherwise write its drift
+/// events and backups under the scope default while the operator's CLI reads
+/// the directory they named — and the two apply locks would stop excluding
+/// each other.
 #[cfg(unix)]
 pub(crate) fn generate_systemd_unit(
     binary: &Path,
     config_path: &Path,
     profile: Option<&str>,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> String {
     let mut args = vec![
-        binary.display().to_string(),
+        binary.display().to_string(), // native-ok: argv token for this host
         "--config".to_string(),
-        config_path.display().to_string(),
+        config_path.display().to_string(), // native-ok: argv token for this host
     ];
     if let Some(p) = profile {
         args.push("--profile".to_string());
@@ -22,9 +55,17 @@ pub(crate) fn generate_systemd_unit(
         args.push("--scope".to_string());
         args.push("system".to_string());
     }
+    for (flag, dir) in service_dir_flags(dirs) {
+        args.push(flag.to_string());
+        args.push(dir.display().to_string()); // native-ok: argv token for this host
+    }
     args.push("--quiet".to_string());
     args.push("daemon".to_string());
-    let exec_start = args.join(" ");
+    let exec_start = args
+        .iter()
+        .map(|a| systemd_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     if scope == crate::Scope::System {
         format!(
@@ -69,6 +110,7 @@ pub(crate) fn install_systemd_service(
     config_path: &Path,
     profile: Option<&str>,
     scope: crate::Scope,
+    dirs: &DaemonDirOverrides,
 ) -> Result<()> {
     let unit_dir = if scope == crate::Scope::System {
         std::path::PathBuf::from(SYSTEMD_SYSTEM_DIR)
@@ -84,7 +126,7 @@ pub(crate) fn install_systemd_service(
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
 
-    let unit = generate_systemd_unit(binary, &config_abs, profile, scope);
+    let unit = generate_systemd_unit(binary, &config_abs, profile, scope, dirs);
 
     crate::atomic_write_str(&unit_path, &unit).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("write unit file: {}", e),
@@ -389,6 +431,7 @@ mod tests {
             &PathBuf::from("/etc/cfgd/config.yaml"),
             None,
             crate::Scope::System,
+            &DaemonDirOverrides::default(),
         );
         let packaged_path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/cfgd.service");
@@ -397,7 +440,7 @@ mod tests {
         assert_eq!(
             packaged.trim_end(),
             generated.trim_end(),
-            "packaging/systemd/cfgd.service drifted from generate_systemd_unit(System); regenerate it"
+            "packaging/systemd/cfgd.service drifted from generate_systemd_unit(System, &DaemonDirOverrides::default()); regenerate it"
         );
     }
 
@@ -415,6 +458,7 @@ mod tests {
             &config,
             Some("ws"),
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         )
         .expect("install");
 
@@ -437,6 +481,7 @@ mod tests {
             &PathBuf::from("/etc/cfgd/config.yaml"),
             None,
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         );
         assert!(unit.contains("Description=cfgd configuration daemon"));
         assert!(unit.contains("After=network.target"));
@@ -446,6 +491,63 @@ mod tests {
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(!unit.contains("--profile"));
+    }
+
+    #[test]
+    fn systemd_quote_leaves_an_ordinary_token_untouched() {
+        // The packaging golden and every default install depend on this: a
+        // plain path must render byte-identically to the unquoted form.
+        for tok in [
+            "/usr/local/bin/cfgd",
+            "--config",
+            "daemon",
+            "/etc/cfgd/config.yaml",
+        ] {
+            assert_eq!(systemd_quote(tok), tok);
+        }
+    }
+
+    #[test]
+    fn systemd_quote_wraps_a_token_systemd_would_split() {
+        assert_eq!(systemd_quote("/srv/my state"), "\"/srv/my state\"");
+        assert_eq!(systemd_quote(""), "\"\"");
+        assert_eq!(systemd_quote("a\tb"), "\"a\tb\"");
+    }
+
+    #[test]
+    fn systemd_quote_escapes_what_systemd_reads_as_syntax() {
+        // Inside a double-quoted ExecStart token systemd applies C-style
+        // escapes, so `\` and `"` have to be escaped or the token ends early.
+        assert_eq!(systemd_quote(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(systemd_quote(r"a\b"), r#""a\\b""#);
+        // `%` is a unit specifier and `$` a variable expansion, both expanded
+        // whether or not the token is quoted — doubling is the only escape.
+        assert_eq!(systemd_quote("/srv/100%cfgd"), "/srv/100%%cfgd");
+        assert_eq!(systemd_quote("/srv/$HOME"), "/srv/$$HOME");
+    }
+
+    #[test]
+    fn generate_systemd_unit_quotes_a_state_dir_containing_a_space() {
+        // `cfgd --state-dir '/srv/my state' daemon install` previously wrote an
+        // ExecStart systemd split into two arguments; the service then died at
+        // clap validation before the daemon ever ran.
+        let unit = generate_systemd_unit(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+            crate::Scope::User,
+            &DaemonDirOverrides {
+                state_dir: Some(PathBuf::from("/srv/my state")),
+                runtime_dir: Some(PathBuf::from("/run/my cfgd")),
+            },
+        );
+        assert!(
+            unit.contains(
+                "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml \
+                 --state-dir \"/srv/my state\" --runtime-dir \"/run/my cfgd\" --quiet daemon"
+            ),
+            "got: {unit}"
+        );
     }
 
     #[test]
@@ -525,6 +627,7 @@ mod tests {
             &PathBuf::from("/c.yaml"),
             Some("workstation"),
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         );
         assert!(
             unit.contains("ExecStart=/cfgd --config /c.yaml --profile workstation --quiet daemon")
@@ -538,6 +641,7 @@ mod tests {
             &PathBuf::from("/etc/cfgd/config.yaml"),
             None,
             crate::Scope::System,
+            &DaemonDirOverrides::default(),
         );
         assert!(unit.contains(
             "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml --scope system --quiet daemon"
@@ -580,6 +684,7 @@ mod tests {
             &config,
             None,
             crate::Scope::User,
+            &DaemonDirOverrides::default(),
         )
         .expect("install");
 
@@ -712,5 +817,105 @@ mod tests {
             !out.contains("--user"),
             "system-scope hint must not contain --user: {out}"
         );
+    }
+
+    /// The installed unit is a fresh process: whatever `--state-dir` /
+    /// `--runtime-dir` the install ran under has to be baked into ExecStart, or
+    /// the daemon and the operator's CLI resolve different directories and
+    /// their apply locks stop excluding each other.
+    #[test]
+    fn the_unit_carries_the_state_and_runtime_dir_flags() {
+        let dirs = DaemonDirOverrides {
+            state_dir: Some(PathBuf::from("/srv/cfgd/state")),
+            runtime_dir: Some(PathBuf::from("/srv/cfgd/run")),
+        };
+        let unit = generate_systemd_unit(
+            Path::new("/usr/local/bin/cfgd"),
+            Path::new("/etc/cfgd/cfgd.yaml"),
+            Some("node"),
+            crate::Scope::System,
+            &dirs,
+        );
+        assert!(
+            unit.contains("--state-dir /srv/cfgd/state"),
+            "unit dropped --state-dir: {unit}"
+        );
+        assert!(
+            unit.contains("--runtime-dir /srv/cfgd/run"),
+            "unit dropped --runtime-dir: {unit}"
+        );
+        // The flags are global (pre-subcommand) on the real CLI, so they must
+        // land before `daemon`.
+        let exec = unit
+            .lines()
+            .find(|l| l.starts_with("ExecStart="))
+            .expect("ExecStart line");
+        assert!(
+            exec.ends_with("--quiet daemon"),
+            "the subcommand must stay last: {exec}"
+        );
+    }
+
+    #[test]
+    fn the_unit_omits_the_dir_flags_that_were_not_set() {
+        let dirs = DaemonDirOverrides {
+            state_dir: Some(PathBuf::from("/srv/cfgd/state")),
+            runtime_dir: None,
+        };
+        let unit = generate_systemd_unit(
+            Path::new("/usr/local/bin/cfgd"),
+            Path::new("/etc/cfgd/cfgd.yaml"),
+            None,
+            crate::Scope::User,
+            &dirs,
+        );
+        assert!(unit.contains("--state-dir /srv/cfgd/state"));
+        assert!(
+            !unit.contains("--runtime-dir"),
+            "an unset dir must fall through to the env/scope default, not be pinned: {unit}"
+        );
+    }
+
+    #[test]
+    fn an_install_without_dir_overrides_bakes_no_dir_flags() {
+        let unit = generate_systemd_unit(
+            Path::new("/usr/local/bin/cfgd"),
+            Path::new("/etc/cfgd/cfgd.yaml"),
+            None,
+            crate::Scope::User,
+            &DaemonDirOverrides::default(),
+        );
+        assert!(!unit.contains("--state-dir"));
+        assert!(!unit.contains("--runtime-dir"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn the_installed_unit_file_carries_the_dir_flags() {
+        let home_dir = TempDir::new().expect("tempdir");
+        let _home_g = crate::with_test_home_guard(home_dir.path());
+        let config = home_dir.path().join("cfgd.yaml");
+        std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
+        let state = home_dir.path().join("state");
+        let runtime = home_dir.path().join("run");
+
+        install_systemd_service(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &config,
+            None,
+            crate::Scope::User,
+            &DaemonDirOverrides {
+                state_dir: Some(state.clone()),
+                runtime_dir: Some(runtime.clone()),
+            },
+        )
+        .expect("install");
+
+        let unit =
+            std::fs::read_to_string(home_dir.path().join(SYSTEMD_USER_DIR).join("cfgd.service"))
+                .expect("read unit");
+        assert!(unit.contains(&format!("--state-dir {}", state.display())));
+        assert!(unit.contains(&format!("--runtime-dir {}", runtime.display())));
     }
 }

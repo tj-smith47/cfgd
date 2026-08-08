@@ -1,7 +1,7 @@
 //! Package and file resolution — turn LoadedModules into ResolvedModules.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::collections::HashSet;
 
@@ -200,13 +200,33 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
+                patch: entry.patch.clone(),
+            });
+        } else if entry.source.is_empty() {
+            // A `strategy: Patch` entry needs no source. Joining an empty
+            // relative path onto the module directory would yield the module
+            // directory itself, which every downstream `source.is_dir()` /
+            // `source.exists()` branch would read as a deployable payload.
+            resolved.push(ResolvedFile {
+                source: PathBuf::new(),
+                target: crate::expand_tilde(Path::new(&entry.target)),
+                is_git_source: false,
+                strategy: entry.strategy,
+                encryption: entry.encryption.clone(),
+                permissions: entry.permissions.clone(),
+                patch: entry.patch.clone(),
             });
         } else {
             // Local path — relative to module directory
             let rel = std::path::Path::new(&entry.source);
-            crate::validate_no_traversal(rel).map_err(|_| ModuleError::InvalidSpec {
-                name: module.name.clone(),
-                message: format!("file source contains path traversal: {}", entry.source),
+            // `source: .` is the module's own directory — the documented way to
+            // deploy a module's whole tree, and a legitimate answer here even
+            // though it names nothing of its own.
+            crate::validate_no_traversal_allowing_self(rel).map_err(|e| {
+                ModuleError::InvalidSpec {
+                    name: module.name.clone(),
+                    message: format!("file source '{}' is not usable: {e}", entry.source),
+                }
             })?;
             let source = module.dir.join(rel);
             // Verify the resolved path stays within the module directory
@@ -232,6 +252,7 @@ pub fn resolve_module_files(
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
                 permissions: entry.permissions.clone(),
+                patch: entry.patch.clone(),
             });
         }
     }

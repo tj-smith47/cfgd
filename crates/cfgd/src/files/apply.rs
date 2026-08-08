@@ -126,12 +126,14 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     source,
                     target,
                     strategy,
+                    patch,
                     ..
                 }
                 | FileAction::Update {
                     source,
                     target,
                     strategy,
+                    patch,
                     ..
                 } => {
                     let file_origin = match action {
@@ -148,8 +150,15 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     // Ensure parent directory exists and is writable
                     ensure_target_writable(target)?;
 
-                    // Remove existing target (symlink, file, etc.) before deploying
-                    if target.exists() || target.symlink_metadata().is_ok() {
+                    // Remove existing target (symlink, file, etc.) before deploying.
+                    // `Patch` is exempt: the removal exists to clear a stale
+                    // link before `create_symlink`/`hard_link`, and `Patch`
+                    // instead writes through `atomic_write_merged`, which
+                    // replaces by rename and so carries the target's own mode
+                    // and follows its symlink. Deleting first would strip both.
+                    if !matches!(strategy, FileStrategy::Patch)
+                        && (target.exists() || target.symlink_metadata().is_ok())
+                    {
                         fs::remove_file(target).map_err(|e| FileError::Io {
                             path: target.clone(),
                             source: e,
@@ -169,6 +178,29 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                             fs::hard_link(source, target).map_err(|e| FileError::Io {
                                 path: target.clone(),
                                 source: e,
+                            })?;
+                        }
+                        FileStrategy::Patch => {
+                            // The merge runs against the live file here — against
+                            // whatever the target holds now rather than what
+                            // planning saw, so an out-of-band edit between plan
+                            // and apply is folded in.
+                            let spec =
+                                patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
+                                    path: target.clone(),
+                                })?;
+                            let patched = self
+                                .evaluate_spec(
+                                    spec,
+                                    target,
+                                    cfgd_core::reconciler::ReconcileContext::Apply,
+                                )?
+                                .patched;
+                            cfgd_core::atomic_write_merged(target, &patched).map_err(|e| {
+                                FileError::Io {
+                                    path: target.clone(),
+                                    source: e,
+                                }
                             })?;
                         }
                         FileStrategy::Copy | FileStrategy::Template => {

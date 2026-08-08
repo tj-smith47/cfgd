@@ -40,6 +40,11 @@ pub struct ApplyOutput {
     pub failed: usize,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub source_commits: HashMap<String, String>,
+    /// Schedule-less `spec.backups[]` runs executed alongside this apply.
+    /// Empty (and omitted from the wire) on the no-op paths and whenever the
+    /// profile declares no schedule-less backups.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub backups: Vec<BackupRunOutput>,
 }
 
 impl ApplyOutput {
@@ -50,6 +55,7 @@ impl ApplyOutput {
             succeeded: 0,
             failed: 0,
             source_commits: HashMap::new(),
+            backups: Vec::new(),
         }
     }
 
@@ -60,6 +66,7 @@ impl ApplyOutput {
             succeeded: 0,
             failed: 0,
             source_commits: HashMap::new(),
+            backups: Vec::new(),
         }
     }
 }
@@ -117,6 +124,12 @@ pub struct CheckinOutput {
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffOutput {
+    /// One record per managed file that does NOT match desired state, in the
+    /// same shape `verify` reports a resource: what was expected, what was
+    /// found. An unevaluable `strategy: Patch` file lands here with the reason
+    /// as its `actual`, so a blocked filter is visible to a structured consumer
+    /// and not only in the terminal.
+    pub files: Vec<cfgd_core::providers::FileDriftResult>,
     pub packages: Vec<PackageDrift>,
     pub system: Vec<SystemDriftOutput>,
     pub summary: DiffSummary,
@@ -166,6 +179,14 @@ pub struct PlanOutput {
     pub total_actions: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Names of schedule-less `spec.backups[]` entries that a non-dry-run
+    /// apply would run alongside this plan. Backups are not reconciler
+    /// actions (no diff against desired state — they always run), so they
+    /// are reported here rather than folded into `total_actions`. Empty (and
+    /// omitted from the wire) when the profile declares none, or every
+    /// declared backup carries a `schedule`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending_backups: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -333,6 +354,151 @@ pub struct SourceListEntry {
     pub version: Option<String>,
     pub status: String,
     pub last_fetched: Option<String>,
+}
+
+/// One `spec.backups[]` entry plus its last recorded run, for
+/// `cfgd backup list`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupListEntry {
+    pub name: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    pub retention: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    /// `Some(false)` when the last run wrote a snapshot but a `postBackup`
+    /// hook still failed (`BackupRunRecord::is_clean() == false`) — lets a
+    /// structured consumer gate on cleanliness without parsing
+    /// `lastRunStatus` text. `None` when there is no recorded run yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_clean: Option<bool>,
+    /// When the daemon's timer will next fire this unit, as an ISO 8601 UTC
+    /// stamp on the same scale as `lastRunAt`. `None` for a schedule-less unit
+    /// (it runs during `cfgd apply`, on no clock of its own) and for a
+    /// schedule with no upcoming occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<String>,
+}
+
+/// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
+///
+/// `name` is the snapshot's path relative to the unit's destination, so a
+/// nested `namePattern` renders `daily/notes.txt.20260801T031500Z` — the exact
+/// string `cfgd backup restore --at` accepts.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSnapshotEntry {
+    pub name: String,
+    /// ISO 8601 UTC time the run that wrote the snapshot finished, on the same
+    /// scale as `BackupListEntry::last_run_at`.
+    pub created: String,
+    pub size_bytes: u64,
+}
+
+impl From<&cfgd_core::backup::SnapshotInfo> for BackupSnapshotEntry {
+    fn from(info: &cfgd_core::backup::SnapshotInfo) -> Self {
+        Self {
+            name: info.name.clone(),
+            created: info.created.clone(),
+            size_bytes: info.size_bytes,
+        }
+    }
+}
+
+/// Outcome of `cfgd backup restore`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreOutput {
+    pub name: String,
+    /// The snapshot restored from, as `BackupSnapshotEntry::name` spells it.
+    pub snapshot: String,
+    /// Where the snapshot landed — the unit's source, or `--to`.
+    pub restored_to: String,
+    /// Whether the overlay actually ran and completed.
+    pub restored: bool,
+    /// The overlay completed AND every hook succeeded — the same predicate
+    /// `BackupRunOutput::clean` carries, and what the exit code gates on.
+    pub clean: bool,
+    /// Size recorded for the snapshot that was restored, matching
+    /// `BackupSnapshotEntry::size_bytes` for the same snapshot.
+    pub size_bytes: u64,
+    /// Snapshot of the target's previous contents, taken immediately before
+    /// the overlay. Omitted when the restore was redirected away from the live
+    /// source or the source did not exist yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_snapshot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::RestoreOutcome> for BackupRestoreOutput {
+    fn from(outcome: &cfgd_core::backup::RestoreOutcome) -> Self {
+        Self {
+            name: outcome.name.clone(),
+            snapshot: outcome.snapshot.clone(),
+            restored_to: outcome.restored_to.clone(),
+            restored: outcome.restored,
+            clean: outcome.is_clean(),
+            size_bytes: outcome.size_bytes,
+            safety_snapshot: outcome.safety_snapshot.clone(),
+            error: outcome.error.clone(),
+        }
+    }
+}
+
+/// A restore the operator declined at the confirmation prompt.
+///
+/// Deliberately not a [`BackupRestoreOutput`] with `restored: false`: that
+/// struct's `clean` is the predicate the exit code gates on, and a decline exits
+/// `0` — reporting `clean: false` alongside a zero exit would make every
+/// consumer that trusts one of the two wrong. `declined` says what happened
+/// without claiming anything about a restore that never ran.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreDeclinedOutput {
+    pub name: String,
+    /// The snapshot that would have been restored.
+    pub snapshot: String,
+    /// Where it would have landed.
+    pub restored_to: String,
+    /// Always `false`; present so a consumer can read the same key on both the
+    /// declined and the completed payload.
+    pub restored: bool,
+    /// Always `true` — the discriminator between this payload and a restore
+    /// that ran.
+    pub declined: bool,
+}
+
+/// Outcome of one unit run by `cfgd backup run`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRunOutput {
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+    /// [`cfgd_core::state::BackupRunRecord::is_clean`] — the run wrote a
+    /// snapshot AND every hook succeeded. `false` on a run that recorded
+    /// `Success` but a `postBackup` hook still failed.
+    pub clean: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
+    fn from(record: &cfgd_core::state::BackupRunRecord) -> Self {
+        Self {
+            name: record.name.clone(),
+            status: record.status.as_str().to_string(),
+            destination_path: record.destination_path.clone(),
+            clean: record.is_clean(),
+            error: record.error.clone(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -546,6 +712,10 @@ mod tests {
             json.get("sourceCommits").is_none(),
             "sourceCommits must be skipped when HashMap is empty"
         );
+        assert!(
+            json.get("backups").is_none(),
+            "backups must be skipped when Vec is empty"
+        );
     }
 
     #[test]
@@ -557,6 +727,29 @@ mod tests {
         assert_eq!(json["failed"], json!(0));
         assert!(json.get("applyId").is_none());
         assert!(json.get("sourceCommits").is_none());
+        assert!(json.get("backups").is_none());
+    }
+
+    #[test]
+    fn apply_output_with_backups_includes_backup_results() {
+        let v = ApplyOutput {
+            status: "partial".to_string(),
+            apply_id: Some(7),
+            succeeded: 2,
+            failed: 0,
+            source_commits: HashMap::new(),
+            backups: vec![BackupRunOutput {
+                name: "photos".to_string(),
+                status: "success".to_string(),
+                destination_path: Some("/backups/photos/20260801T000000Z".to_string()),
+                clean: false,
+                error: Some("postBackup hook failed".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["backups"][0]["name"], json!("photos"));
+        assert_eq!(json["backups"][0]["clean"], json!(false));
+        assert_eq!(json["backups"][0]["error"], json!("postBackup hook failed"));
     }
 
     #[test]
@@ -569,6 +762,7 @@ mod tests {
             succeeded: 3,
             failed: 1,
             source_commits: commits,
+            backups: Vec::new(),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["status"], json!("success"));
@@ -655,8 +849,14 @@ mod tests {
     }
 
     #[test]
-    fn diff_output_nests_packages_system_and_summary() {
+    fn diff_output_nests_files_packages_system_and_summary() {
         let v = DiffOutput {
+            files: vec![cfgd_core::providers::FileDriftResult {
+                target: "~/.config/app/x.ini".to_string(),
+                matches: false,
+                expected: "content satisfies patch spec".to_string(),
+                actual: "cannot evaluate patch spec: blocked".to_string(),
+            }],
             packages: vec![PackageDrift {
                 manager: "brew".to_string(),
                 shape: "missing".to_string(),
@@ -675,6 +875,16 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&v).unwrap();
+        let files = json["files"].as_array().expect("files is array");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["resourceType"], json!("file"));
+        assert_eq!(files[0]["resourceId"], json!("~/.config/app/x.ini"));
+        assert_eq!(files[0]["matches"], json!(false));
+        assert_eq!(
+            files[0]["actual"],
+            json!("cannot evaluate patch spec: blocked"),
+            "the reason a file could not be evaluated must survive to the structured path"
+        );
         let pkgs = json["packages"].as_array().expect("packages is array");
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0]["manager"], json!("brew"));
@@ -780,6 +990,7 @@ mod tests {
             }],
             total_actions: 1,
             warnings: vec![],
+            pending_backups: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -787,6 +998,10 @@ mod tests {
         assert!(
             json.get("warnings").is_none(),
             "warnings must be skipped when Vec is empty"
+        );
+        assert!(
+            json.get("pendingBackups").is_none(),
+            "pendingBackups must be skipped when Vec is empty"
         );
         let phases = json["phases"].as_array().expect("phases is array");
         assert_eq!(phases.len(), 1);
@@ -802,9 +1017,23 @@ mod tests {
             phases: vec![],
             total_actions: 0,
             warnings: vec!["missing tool".to_string()],
+            pending_backups: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
+    }
+
+    #[test]
+    fn plan_output_includes_pending_backups_when_present() {
+        let v = PlanOutput {
+            context: "default".to_string(),
+            phases: vec![],
+            total_actions: 0,
+            warnings: vec![],
+            pending_backups: vec!["photos".to_string()],
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["pendingBackups"], json!(["photos"]));
     }
 
     #[test]

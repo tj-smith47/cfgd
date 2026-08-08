@@ -10,15 +10,34 @@
 //! `Option<E>`, `HashMap<_, E>`. A new field can never silently lack it.
 
 /// Generate a case-insensitive `serde::Deserialize` impl for a string-valued
-/// config enum.
+/// config enum, plus the variant list and canonical spellings derived from the
+/// same tokens.
 ///
 /// `$token` must equal the enum's serde token (the variant name, or its
 /// `#[serde(rename)]` / `rename_all` form). Matching is ASCII-case-insensitive,
 /// so every casing of every variant parses while unknown values still error via
 /// `unknown_variant`. The `Serialize` derive is left untouched, so output stays
 /// canonical and round-trips remain stable.
+///
+/// `ALL` and `as_str` come from this one token list too, so the parser, the
+/// published schemas, and any rendered spelling cannot drift apart: adding a
+/// variant here updates all three at once, and forgetting to is a compile error
+/// rather than a silently stale list.
 macro_rules! case_insensitive_enum {
-    ($name:ty { $($token:literal => $variant:expr),+ $(,)? }) => {
+    ($name:ty { $($token:literal => $variant:path),+ $(,)? }) => {
+        impl $name {
+            /// Every variant, in declaration order.
+            pub const ALL: &'static [Self] = &[$($variant),+];
+
+            /// Canonical spelling — what cfgd serializes and what the published
+            /// editor schemas offer.
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $($variant => $token),+
+                }
+            }
+        }
+
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
             where
