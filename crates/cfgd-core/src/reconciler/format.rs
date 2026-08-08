@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::PathDisplayExt;
 use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
@@ -395,8 +393,11 @@ pub(super) fn format_module_action_item(action: &ModuleAction) -> String {
 fn format_module_action_body(action: &ModuleAction) -> String {
     match &action.kind {
         ModuleActionKind::InstallPackages { resolved } => {
-            // Group by manager for display
-            let mut by_manager: HashMap<&str, Vec<String>> = HashMap::new();
+            // Group by manager in first-appearance order: this string is also
+            // the persisted plan/description payload, so its manager segments
+            // must be deterministic across runs (a HashMap here reshuffled
+            // multi-manager modules on every plan).
+            let mut by_manager: Vec<(&str, Vec<String>)> = Vec::new();
             for pkg in resolved {
                 let display = if let Some(ref ver) = pkg.version {
                     if pkg.canonical_name != pkg.resolved_name {
@@ -412,7 +413,10 @@ fn format_module_action_body(action: &ModuleAction) -> String {
                 } else {
                     pkg.resolved_name.clone()
                 };
-                by_manager.entry(&pkg.manager).or_default().push(display);
+                match by_manager.iter_mut().find(|(mgr, _)| *mgr == pkg.manager) {
+                    Some((_, pkgs)) => pkgs.push(display),
+                    None => by_manager.push((&pkg.manager, vec![display])),
+                }
             }
             let parts: Vec<String> = by_manager
                 .iter()

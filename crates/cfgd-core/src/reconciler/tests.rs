@@ -1069,9 +1069,13 @@ fn format_module_plan_items_packages() {
 
     let items = format_plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"));
-    // Should show alias info for fd→fd-find
-    assert!(items[0].contains("fd-find"));
+    // Exact string: manager groups must render in first-appearance order of
+    // the resolved list — this description is also the plan payload, and a
+    // hashed grouping reshuffled multi-manager modules on every plan.
+    assert_eq!(
+        items[0],
+        "[nvim] brew install neovim (0.10.2); apt install fd-find (8.7.0, alias: fd)"
+    );
 }
 
 #[test]
