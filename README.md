@@ -88,7 +88,7 @@ I recently switched jobs, and spent the last week of my old job backing up scrip
 
 Another inspiring aspect had to do with working in devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment inside the container once they shell in. At minimum, I wanted my full neovim editor setup available in any ephemeral container without having to modify the devcontainer config in every team's repository I worked in just to accommodate my setup. I needed something that could bootstrap my config into any environment from the outside, regardless of which / whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick and easy way to share my exact setup, down to the alias.
 
-`cfgd` was architected by a platform / infrastructure engineer, and borrows from the best ideas across practices:
+`cfgd` borrows from the best ideas across practices:
 
 - **Kubernetes**: declarative reconciliation loop, KRM resource model
 - **Terraform**: plan/apply workflow, state tracking, drift detection
@@ -100,7 +100,7 @@ Another inspiring aspect had to do with working in devcontainers. At my previous
 
 ## Shareable Modules
 
-This is my favorite feature; a single, packaged, works anywhere in no time at all config file for a tool.
+This is my favorite feature: a single packaged config for a tool that works anywhere.
 
 ```sh
 cfgd module create my-dev-env
@@ -219,7 +219,6 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, both MCP servers (`mcp-server` for authoring, `mcp` for driving the CLI) |
 | [Authoring Skills](docs/skill.md) | `cfgd skill` installer, supported agent providers, choosing between generate and skills |
-| [Releasing](docs/releasing.md) | CI-cut release pipeline, pre-release checklist, done-definition, failure recovery |
 
 ## Distribution
 
