@@ -14181,6 +14181,10 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
 #[test]
 fn workstation_daemon_hooks_expand_tilde() {
     use cfgd_core::daemon::DaemonHooks;
+    // Thread-local test home: the ambient HOME var is a race in the threaded
+    // suite (any test holding an EnvVarGuard over HOME can unset it mid-call).
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
     let hooks = super::WorkstationDaemonHooks;
     let expanded = hooks.expand_tilde(std::path::Path::new("~/test/file"));
     // Should not start with ~ after expansion
