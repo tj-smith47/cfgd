@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-08
+
+### Features
+
+* a007ffeb508d partial-file Patch strategy + declarative backups with restore (#36) ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.6.1] - 2026-07-27
 
 ### Bug Fixes
@@ -107,7 +113,8 @@
 * b3a2b1383c79 drop orphaned OciError::SignatureRequired variant (TJ Smith)
 * 1dc200e1e6d6 pin client to real release manifest (ground-truth contract test) (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.6.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.7.0...HEAD
+[0.7.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.6.1...core-v0.7.0
 [0.6.1]: https://github.com/tj-smith47/cfgd/compare/core-v0.6.0...core-v0.6.1
 [0.6.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.5.0...core-v0.6.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.4.0...core-v0.5.0

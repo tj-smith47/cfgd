@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-08
+
+### Features
+
+* a007ffeb508d partial-file Patch strategy + declarative backups with restore (#36) ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.5.1] - 2026-07-20
 
 ### Bug Fixes
@@ -36,6 +42,7 @@
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 * d7d3bf6bc720 gen_crds render_all + file-writing, sourced from cfgd-crd ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.6.0...HEAD
+[0.6.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...operator-v0.6.0
 [0.5.1]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.0...operator-v0.5.1
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.4.0...operator-v0.5.0

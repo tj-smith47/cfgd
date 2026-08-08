@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-08
+
+### Features
+
+* a007ffeb508d partial-file Patch strategy + declarative backups with restore (#36) ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.7.0] - 2026-08-02
 
 ### Features
@@ -130,7 +136,8 @@
 * 018a7ff7b259 migrate upgrade CLI test fixtures to split/keyless contract (TJ Smith)
 * a397277605a9 serialize LOCALAPPDATA env tests to fix full-suite flake (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/tj-smith47/cfgd/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.6.1
