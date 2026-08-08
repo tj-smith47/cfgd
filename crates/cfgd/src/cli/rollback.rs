@@ -28,9 +28,7 @@ pub fn cmd_rollback(
     let file_count = file_paths.len();
     let non_file_actions: Vec<String> = after_entries
         .iter()
-        .filter(|e| {
-            !(e.phase == "files" || e.action_type == "file" || e.resource_id.starts_with("file:"))
-        })
+        .filter(|e| !e.is_file_work())
         .map(|e| e.resource_id.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()

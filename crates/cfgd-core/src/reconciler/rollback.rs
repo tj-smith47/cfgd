@@ -42,9 +42,7 @@ impl<'a> super::Reconciler<'a> {
 
         // Collect non-file actions from subsequent applies
         for entry in &after_entries {
-            let is_file = entry.phase == "files"
-                || entry.action_type == "file"
-                || entry.resource_id.starts_with("file:");
+            let is_file = entry.is_file_work();
             let already_listed = non_file_actions
                 .iter()
                 .any(|(_, rid): &(String, String)| rid == &entry.resource_id);

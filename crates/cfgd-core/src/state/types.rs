@@ -359,6 +359,20 @@ pub struct JournalEntry {
     pub script_output: Option<String>,
 }
 
+impl JournalEntry {
+    /// Whether this entry's writes are covered by the file-backup restore
+    /// path, so rollback must not report it as an unrecoverable action.
+    /// Module file deploys journal as `action_type = "module"` with a
+    /// `<name>:files:<n>` resource id — their writes go through
+    /// `store_file_backup` like plain file actions, only the id shape differs.
+    pub fn is_file_work(&self) -> bool {
+        self.phase == "files"
+            || self.action_type == "file"
+            || self.resource_id.starts_with("file:")
+            || (self.action_type == "module" && self.resource_id.split(':').nth(1) == Some("files"))
+    }
+}
+
 /// A compliance snapshot summary row from the state store.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

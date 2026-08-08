@@ -2680,3 +2680,38 @@ fn forget_package_manager_prefix_is_scoped_per_manager() {
         Some(("/home/u/.local/pipx".to_string(), false))
     );
 }
+
+#[test]
+fn journal_entry_is_file_work_covers_module_file_deploys() {
+    let entry = |phase: &str, action_type: &str, resource_id: &str| JournalEntry {
+        id: 1,
+        apply_id: 1,
+        action_index: 0,
+        phase: phase.to_string(),
+        action_type: action_type.to_string(),
+        resource_id: resource_id.to_string(),
+        pre_state: None,
+        post_state: None,
+        status: "success".to_string(),
+        error: None,
+        started_at: String::new(),
+        completed_at: None,
+        script_output: None,
+    };
+
+    // The three original disjuncts.
+    assert!(entry("files", "file", "~/.gitconfig").is_file_work());
+    assert!(entry("modules", "file", "~/.tmux.conf").is_file_work());
+    assert!(entry("modules", "unknown", "file:~/.vimrc").is_file_work());
+
+    // Module file deploys journal as module:<name>:files:<n> — action_type
+    // "module", id "<name>:files:<n>". Their writes are restored from
+    // file_backups, so rollback must not list them as unrecoverable.
+    assert!(entry("modules", "module", "nvim:files:3").is_file_work());
+
+    // Other module verbs stay non-file work.
+    assert!(!entry("modules", "module", "nvim:script").is_file_work());
+    assert!(!entry("modules", "module", "nvim:skip").is_file_work());
+    assert!(!entry("modules", "module", "nvim:packages:fd,rg").is_file_work());
+    assert!(!entry("packages", "package", "apt:install:sl").is_file_work());
+}
