@@ -342,6 +342,11 @@ preBackup:
       [ "$CFGD_OPERATION" = restore ] && rm -f /var/lib/openlist/data.db-wal
 ```
 
+Snapshots do not pause a concurrently running `cfgd apply`: each file is copied atomically, but a
+multi-file source captured while an apply is rewriting it can mix pre- and post-apply contents
+across files. If a source needs a point-in-time-consistent snapshot, quiesce its writer in
+`preBackup` and restart it in `postBackup`.
+
 ## Run Semantics
 
 ```

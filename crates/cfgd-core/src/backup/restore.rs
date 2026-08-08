@@ -15,8 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::errors::{BackupError, Result};
-use crate::output::{Printer, Role, collapse_to_subject_line};
+use crate::errors::{BackupError, CfgdError, Result};
+use crate::output::{Printer, collapse_to_subject_line};
 use crate::reconciler::ScriptPhase;
 use crate::state::StateStore;
 
@@ -351,10 +351,14 @@ pub fn restore_backup(
     .err();
 
     if let Some(fatal) = fatal {
-        // The abort is what the caller is told about, so a `postBackup` failure
-        // on the way out would otherwise vanish.
+        // A `postBackup` failure on the way out must reach the structured
+        // error itself, not just stderr — a status line never reaches a
+        // `-o json` consumer.
         if let Some(e) = post_error {
-            printer.status_simple(Role::Warn, collapse_to_subject_line(&e));
+            return Err(CfgdError::Backup(BackupError::RestoreAbortHookFailed {
+                fatal: Box::new(fatal),
+                post_message: collapse_to_subject_line(&e),
+            }));
         }
         return Err(fatal);
     }

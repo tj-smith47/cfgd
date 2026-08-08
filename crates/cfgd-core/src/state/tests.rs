@@ -2094,6 +2094,34 @@ fn schema_version_after_open() {
     );
 }
 
+#[test]
+fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+
+    // Simulate a database last migrated by a build that predates
+    // `backup_runs`: every earlier table exists and schema_version already
+    // stands at 12. The migration runner is positional, so `backup_runs` must
+    // sit at the array tail — inserted mid-array it would never run for this
+    // database. Dropping the table instead of rebuilding the old schema by
+    // hand keeps the fixture from rotting as earlier migrations change.
+    {
+        let store = StateStore::open(&path).unwrap();
+        store.conn.execute("DROP TABLE backup_runs", []).unwrap();
+        store
+            .conn
+            .execute("UPDATE schema_version SET version = 12", [])
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+    assert!(
+        state.backup_runs("any").unwrap().is_empty(),
+        "backup_runs must exist and be readable after replaying the tail migration"
+    );
+    assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+}
+
 // --- get_apply by id ---
 
 #[test]

@@ -426,6 +426,17 @@ pub enum BackupError {
     )]
     SafetyBackupFailed { name: String, message: String },
 
+    /// A fatal failure aborted a restore while the unit's `postBackup` hook
+    /// ALSO failed on the way out. Carried as one error because the abort is
+    /// the primary condition, but a structured-output consumer would never
+    /// see a hook failure reported only as a stderr status line.
+    #[error("{fatal}; additionally: {post_message}")]
+    RestoreAbortHookFailed {
+        #[source]
+        fatal: Box<CfgdError>,
+        post_message: String,
+    },
+
     /// A `--to` that points at (or into) the unit's own snapshot destination.
     /// Restoring there would overwrite the snapshot store with one of its own
     /// snapshots and desynchronize it from the run records retention walks.

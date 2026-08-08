@@ -25,12 +25,12 @@ pub(crate) fn generate_launchd_plist(
     let mut args = vec![
         format!(
             "<string>{}</string>",
-            crate::xml_escape(&binary.display().to_string())
+            crate::xml_escape(&binary.display().to_string()) // native-ok: argv token for this host
         ),
         "<string>--config</string>".to_string(),
         format!(
             "<string>{}</string>",
-            crate::xml_escape(&config_path.display().to_string())
+            crate::xml_escape(&config_path.display().to_string()) // native-ok: argv token for this host
         ),
     ];
     if let Some(p) = profile {
@@ -45,7 +45,7 @@ pub(crate) fn generate_launchd_plist(
         args.push(format!("<string>{}</string>", flag));
         args.push(format!(
             "<string>{}</string>",
-            crate::xml_escape(&dir.display().to_string())
+            crate::xml_escape(&dir.display().to_string()) // native-ok: argv token for this host
         ));
     }
     args.push("<string>--quiet</string>".to_string());

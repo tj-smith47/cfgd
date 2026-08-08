@@ -1903,6 +1903,39 @@ fn restore_aborts_when_the_safety_backup_produces_nothing() {
 }
 
 #[test]
+fn restore_abort_carries_a_post_hook_failure_in_the_returned_error() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let mut s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(&source, "live").expect("live edit");
+
+    // Same fatal abort as above, but the postBackup hook ALSO fails on the
+    // way out. Both failures must reach the returned error itself — a stderr
+    // status line never reaches a `-o json` consumer.
+    s.name_pattern = "../escape".to_string();
+    s.post_backup = vec![hook("exit 9")];
+    let err = h
+        .restore(&s, None, None)
+        .expect_err("an uncaptured source must not be overwritten");
+    let rendered = format!("{err}");
+    assert!(
+        rendered.contains("safety backup"),
+        "the abort must stay the primary condition, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("postBackup"),
+        "the post-hook failure must not vanish from the error, got: {rendered}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&source).expect("source"),
+        "live",
+        "the source must be exactly as the caller left it"
+    );
+}
+
+#[test]
 fn restore_of_a_missing_source_skips_the_safety_backup() {
     let h = Harness::new();
     let source = h.root.join("tree");

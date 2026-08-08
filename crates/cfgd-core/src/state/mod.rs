@@ -237,26 +237,7 @@ const MIGRATIONS: &[&str] = &[
     // content. DEFAULT 1 keeps every legacy row at today's content-restore
     // behavior.
     "ALTER TABLE file_backups ADD COLUMN existed INTEGER NOT NULL DEFAULT 1;",
-    // Migration 9: declarative backup runs (`spec.backups[]`). Distinct from
-    // `file_backups`: that table stores pre-overwrite content inline for
-    // rollback, while a backup run is an out-of-band snapshot whose payload
-    // lives on the filesystem. `destination_path`/`size_bytes` are NULL when a
-    // run produced no artifact (a pre-hook or copy failure), which is also the
-    // predicate retention pruning uses to find deletable snapshots.
-    "CREATE TABLE IF NOT EXISTS backup_runs (
-        id                INTEGER PRIMARY KEY AUTOINCREMENT,
-        name              TEXT NOT NULL,
-        source            TEXT NOT NULL,
-        destination_path  TEXT,
-        size_bytes        INTEGER,
-        status            TEXT NOT NULL,
-        error             TEXT,
-        started_at        TEXT NOT NULL,
-        finished_at       TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_backup_runs_name ON backup_runs (name);",
-    // Migration 10: drop managed_resources bookkeeping rows whose resource_id
+    // Migration 9: drop managed_resources bookkeeping rows whose resource_id
     // shape changed. Four id derivations were corrected at once:
     //   - `Running script: {body}` and `system:{cfg}.{key} ({cur} → {des})`
     //     were split by a blind `splitn(3, ':')`, which truncated any body or
@@ -278,7 +259,7 @@ const MIGRATIONS: &[&str] = &[
     "DELETE FROM managed_resources
         WHERE resource_type IN ('Running script', 'system', 'module', 'secret')
            OR (resource_type = 'package' AND resource_id IN ('bootstrap', 'skip'));",
-    // Migration 11: fold the persisted file-path keys to `/`. Every writer of
+    // Migration 10: fold the persisted file-path keys to `/`. Every writer of
     // `file_backups.file_path` and `module_file_manifest.file_path` now uses
     // `to_posix_fs_key`, so a Windows row written with the native separator
     // would no longer join: the manifest drives `latest_backup_for_path`, and a
@@ -306,7 +287,7 @@ const MIGRATIONS: &[&str] = &[
       UPDATE OR REPLACE module_file_manifest
          SET file_path = REPLACE(file_path, '\', '/')
        WHERE file_path LIKE '_:\%' OR file_path LIKE '_:/%' OR file_path LIKE '\\%';",
-    // Migration 12: remember which package managers cfgd itself bootstrapped and
+    // Migration 11: remember which package managers cfgd itself bootstrapped and
     // the PATH directories each contributed. `PackageManager::path_dirs()` is a
     // live probe of the machine — npm's creates a global prefix directory, and
     // brew's answer flips with what already exists on disk — so it is accurate
@@ -320,7 +301,7 @@ const MIGRATIONS: &[&str] = &[
         path_dirs       TEXT NOT NULL,
         bootstrapped_at TEXT NOT NULL
     );",
-    // Migration 13: persist the resolved global-install prefix a package
+    // Migration 12: persist the resolved global-install prefix a package
     // manager is actually using. `bootstrapped_managers` only gets a row when
     // cfgd itself installs the manager; most machines already have npm
     // present, so nothing ever writes one for it, and every install/uninstall
@@ -336,6 +317,28 @@ const MIGRATIONS: &[&str] = &[
         is_fallback INTEGER NOT NULL,
         resolved_at TEXT NOT NULL
     );",
+    // Migration 13: declarative backup runs (`spec.backups[]`). Distinct from
+    // `file_backups`: that table stores pre-overwrite content inline for
+    // rollback, while a backup run is an out-of-band snapshot whose payload
+    // lives on the filesystem. `destination_path`/`size_bytes` are NULL when a
+    // run produced no artifact (a pre-hook or copy failure), which is also the
+    // predicate retention pruning uses to find deletable snapshots. Appended
+    // after the migrations that shipped on master before it: the runner is
+    // positional, so an element inserted mid-array is silently skipped by any
+    // database already past that index.
+    "CREATE TABLE IF NOT EXISTS backup_runs (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        name              TEXT NOT NULL,
+        source            TEXT NOT NULL,
+        destination_path  TEXT,
+        size_bytes        INTEGER,
+        status            TEXT NOT NULL,
+        error             TEXT,
+        started_at        TEXT NOT NULL,
+        finished_at       TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_backup_runs_name ON backup_runs (name);",
 ];
 
 /// SQLite-backed state store for cfgd.
