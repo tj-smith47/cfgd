@@ -5580,6 +5580,14 @@ fn parse_resource_from_description_cases() {
         // the string) and dropped the configurator name; now the whole
         // remainder after the first colon is preserved.
         ("system:brew:skip", "system", "brew:skip"),
+        // Env rows: the write/inject verb is dropped, leaving the target path
+        // as the id; the live-session refresh leaves the literal "refresh".
+        // `JournalEntry::is_file_work` keys its env disjunct on exactly these
+        // shapes (path = file-backed, "refresh" = nothing to restore), so a
+        // change here must move that predicate with it.
+        ("env:write:/home/u/.cfgd.env", "env", "/home/u/.cfgd.env"),
+        ("env:inject:~/.bashrc", "env", "~/.bashrc"),
+        (super::format::LIVE_SESSION_RESOURCE_ID, "env", "refresh"),
     ];
     for (input, expected_type, expected_id) in cases {
         let (rtype, rid) = super::parse_resource_from_description(input);

@@ -2714,4 +2714,17 @@ fn journal_entry_is_file_work_covers_module_file_deploys() {
     assert!(!entry("modules", "module", "nvim:skip").is_file_work());
     assert!(!entry("modules", "module", "nvim:packages:fd,rg").is_file_work());
     assert!(!entry("packages", "package", "apt:install:sl").is_file_work());
+
+    // Env write/inject rows journal as action_type "env" with the target
+    // path as the id (the write/inject verb is dropped by the two-colon
+    // parse). Their pre-states are captured through `action_target_path`
+    // into file_backups, so rollback restores them and must not list them
+    // as unrecoverable.
+    assert!(entry("env", "env", "/home/u/.cfgd.env").is_file_work());
+    assert!(entry("env", "env", "~/.bashrc").is_file_work());
+
+    // The one env row with no file behind it: the live-session refresh
+    // (`env:session:refresh` parses to id "refresh"). Session-manager state
+    // has no backup, so it stays in the unrecoverable report.
+    assert!(!entry("env", "env", "refresh").is_file_work());
 }

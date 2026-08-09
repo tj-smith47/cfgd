@@ -365,11 +365,16 @@ impl JournalEntry {
     /// Module file deploys journal as `action_type = "module"` with a
     /// `<name>:files:<n>` resource id — their writes go through
     /// `store_file_backup` like plain file actions, only the id shape differs.
+    /// Env rows are file work too: `env:write:*` / `env:inject:*` journal with
+    /// the target path as the id and are captured via `action_target_path` —
+    /// except the live-session refresh (`env:session:refresh`, id `"refresh"`),
+    /// whose session-manager state has no backup to restore.
     pub fn is_file_work(&self) -> bool {
         self.phase == "files"
             || self.action_type == "file"
             || self.resource_id.starts_with("file:")
             || (self.action_type == "module" && self.resource_id.split(':').nth(1) == Some("files"))
+            || (self.action_type == "env" && self.resource_id != "refresh")
     }
 }
 
