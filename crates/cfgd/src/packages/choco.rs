@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::{PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live};
@@ -71,13 +70,8 @@ impl PackageManager for ChocolateyManager {
         true
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        run_pkg_cmd_live(
-            printer,
-            // `bootstrap` takes only a printer, so there is no action context
-            // to attach a note to; the installer's own output already streamed
-            // through the window above.
-            cfgd_core::providers::NoteSink::discarded(),
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+        run_pkg_cmd_live(cx,
             "chocolatey",
             Command::new("powershell").args([
                 "-NoProfile",
@@ -131,8 +125,7 @@ impl PackageManager for ChocolateyManager {
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "chocolatey",
             Command::new("choco").args(&args),
             "Installing chocolatey packages",
@@ -150,8 +143,7 @@ impl PackageManager for ChocolateyManager {
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "chocolatey",
             Command::new("choco").args(&args),
             "Uninstalling chocolatey packages",
@@ -162,8 +154,7 @@ impl PackageManager for ChocolateyManager {
 
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "chocolatey",
             Command::new("choco").args(["upgrade", "all", "-y"]),
             "Upgrading all chocolatey packages",
@@ -522,8 +513,39 @@ Tags: git vcs dvcs
             let (_bin, _path) = install_named_path_shim("powershell", 0, "", "");
             let p = test_printer();
             ChocolateyManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect("bootstrap Ok via shim");
+        }
+
+        /// The chocolatey install script warns on stderr about things the user
+        /// must act on (an execution policy left in place, a shell restart).
+        /// Those notes are the reason `bootstrap` takes the whole context and
+        /// not a bare printer: they belong to the caller's sink, which renders
+        /// them under the action's own status line.
+        #[test]
+        #[serial]
+        fn bootstrap_caveats_reach_the_callers_sink() {
+            let (_bin, _path) = install_named_path_shim(
+                "powershell",
+                0,
+                "",
+                "WARNING: Restart your shell to pick up choco",
+            );
+            let p = test_printer();
+            let notes = cfgd_core::providers::NoteSink::default();
+            ChocolateyManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                    &p, &notes,
+                ))
+                .expect("bootstrap Ok via shim");
+            let drained = notes.take();
+            assert_eq!(drained.len(), 1, "expected one caveat, got {drained:?}");
+            assert_eq!(drained[0].manager, "chocolatey");
+            assert!(
+                drained[0].message.contains("Restart your shell"),
+                "got: {}",
+                drained[0].message
+            );
         }
 
         #[test]
@@ -532,7 +554,7 @@ Tags: git vcs dvcs
             let (_bin, _path) = install_named_path_shim("powershell", 1, "", "install failed");
             let p = test_printer();
             let err = ChocolateyManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("nonzero powershell must error");
             let _ = err.to_string();
         }

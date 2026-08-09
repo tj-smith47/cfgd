@@ -365,7 +365,6 @@ fn test_scan_shell_config_unknown_shell_returns_empty() {
 
 use std::collections::HashSet;
 
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageInfo;
 
 struct TestPackageManager {
@@ -384,7 +383,10 @@ impl PackageManager for TestPackageManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+    fn bootstrap(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
     fn installed_packages(
@@ -1154,7 +1156,10 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         fn can_bootstrap(&self) -> bool {
             false
         }
-        fn bootstrap(&self, _p: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+        fn bootstrap(
+            &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
         fn installed_packages(

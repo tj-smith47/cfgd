@@ -1642,19 +1642,48 @@ fn with_guard(mut entry: ScriptEntry, f: impl FnOnce(&mut ScriptEntry)) -> Scrip
     entry
 }
 
-/// A `chmod +x` file whose shebang names an interpreter that does not exist:
-/// the pre-window spawn seam, which fails identically on every host and needs
-/// no absent binary of its own.
+/// Write a file the OS will accept as executable but refuse to load, and return
+/// its path. The pre-window spawn seam: `Command::spawn` fails AFTER the file
+/// branch is chosen and BEFORE `output_window_at` opens anything, with an error
+/// that is not `NotFound`. Unix spells it as a shebang naming an absent
+/// interpreter, Windows as `.exe` bytes that are not a PE image.
 #[cfg(unix)]
-fn bad_shebang_script(dir: &std::path::Path) -> ScriptEntry {
+fn write_unspawnable(dir: &std::path::Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("bad-shebang.sh");
     std::fs::write(&path, "#!/nonexistent/interp\ntrue\n").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // Absolute, because `drive` runs every case from a tempdir of its own and a
-    // relative name that resolves to nothing lands in the inline-command
-    // branch instead — a case that passes for the wrong reason.
-    script(&path.display().to_string())
+    path
+}
+
+#[cfg(windows)]
+fn write_unspawnable(dir: &std::path::Path) -> std::path::PathBuf {
+    // `is_executable` answers true on the extension alone, so no mode bit is
+    // needed and the file branch is still the one taken.
+    let path = dir.join("not-an-image.exe");
+    std::fs::write(&path, "this is not a PE image\n").unwrap();
+    path
+}
+
+/// The exit table's shell bodies, spelled for the shell `ScriptShell::Auto`
+/// resolves to: `sh -c` on Unix, `cmd.exe /C` on Windows.
+#[cfg(unix)]
+mod body {
+    pub const OK: &str = "true";
+    pub const FAIL: &str = "exit 1";
+    pub const FAIL_3: &str = "exit 3";
+    /// Outlives the 50ms timeout the guard-timeout row drives.
+    pub const SLOW: &str = "sleep 5";
+}
+
+#[cfg(windows)]
+mod body {
+    pub const OK: &str = "exit 0";
+    pub const FAIL: &str = "exit 1";
+    pub const FAIL_3: &str = "exit 3";
+    /// `ping -n` rather than `timeout /t`: `timeout` reads the console input
+    /// handle and fails outright when stdin is redirected, which it is here.
+    pub const SLOW: &str = "ping -n 6 127.0.0.1";
 }
 
 /// Run one entry through the shipped wrapper and return the settled lines it
@@ -1678,18 +1707,21 @@ fn drive(entry: &ScriptEntry, stdin_is_tty: bool, timeout_ms: u64) -> Vec<String
     settled_lines(&crate::output::strip_ansi(&cap.human()))
 }
 
-#[cfg(unix)]
 #[test]
 fn every_script_exit_emits_one_status() {
     let spawn_dir = tempfile::tempdir().unwrap();
     let existing = tempfile::tempdir().unwrap();
     let creates_path = existing.path().join("already-there");
     std::fs::write(&creates_path, "x").unwrap();
+    // Absolute, because `drive` runs every case from a tempdir of its own and a
+    // relative name that resolves to nothing lands in the inline-command
+    // branch instead — a case that passes for the wrong reason.
+    let unspawnable = script(&write_unspawnable(spawn_dir.path()).display().to_string());
 
     let cases: Vec<(&str, ScriptEntry, bool, u64, char)> = vec![
         (
             "creates path exists",
-            with_guard(script("true"), |e| {
+            with_guard(script(body::OK), |e| {
                 if let ScriptEntry::Full { creates, .. } = e {
                     *creates = Some(creates_path.display().to_string());
                 }
@@ -1700,9 +1732,9 @@ fn every_script_exit_emits_one_status() {
         ),
         (
             "onlyIf fails",
-            with_guard(script("true"), |e| {
+            with_guard(script(body::OK), |e| {
                 if let ScriptEntry::Full { only_if, .. } = e {
-                    *only_if = Some("exit 1".to_string());
+                    *only_if = Some(body::FAIL.to_string());
                 }
             }),
             false,
@@ -1711,9 +1743,9 @@ fn every_script_exit_emits_one_status() {
         ),
         (
             "unless holds",
-            with_guard(script("true"), |e| {
+            with_guard(script(body::OK), |e| {
                 if let ScriptEntry::Full { unless, .. } = e {
-                    *unless = Some("true".to_string());
+                    *unless = Some(body::OK.to_string());
                 }
             }),
             false,
@@ -1722,7 +1754,7 @@ fn every_script_exit_emits_one_status() {
         ),
         (
             "interactive without a tty",
-            with_guard(script("true"), |e| {
+            with_guard(script(body::OK), |e| {
                 if let ScriptEntry::Full { interactive, .. } = e {
                     *interactive = true;
                 }
@@ -1733,7 +1765,7 @@ fn every_script_exit_emits_one_status() {
         ),
         (
             "interactive success",
-            with_guard(script("true"), |e| {
+            with_guard(script(body::OK), |e| {
                 if let ScriptEntry::Full { interactive, .. } = e {
                     *interactive = true;
                 }
@@ -1744,7 +1776,7 @@ fn every_script_exit_emits_one_status() {
         ),
         (
             "interactive failure",
-            with_guard(script("exit 3"), |e| {
+            with_guard(script(body::FAIL_3), |e| {
                 if let ScriptEntry::Full { interactive, .. } = e {
                     *interactive = true;
                 }
@@ -1753,29 +1785,29 @@ fn every_script_exit_emits_one_status() {
             5_000,
             '\u{2717}',
         ),
-        ("windowed success", script("true"), false, 5_000, '\u{2713}'),
+        (
+            "windowed success",
+            script(body::OK),
+            false,
+            5_000,
+            '\u{2713}',
+        ),
         (
             "windowed failure",
-            script("exit 1"),
+            script(body::FAIL),
             false,
             5_000,
             '\u{2717}',
         ),
-        (
-            "missing interpreter",
-            bad_shebang_script(spawn_dir.path()),
-            false,
-            5_000,
-            '\u{2717}',
-        ),
+        ("unspawnable image", unspawnable, false, 5_000, '\u{2717}'),
         (
             // The guard body outlives the timeout, so `run_guard_command`
             // returns a real error before any window is opened. No absent
             // binary is needed and nothing spawned can hang the suite.
             "guard command times out",
-            with_guard(script("true"), |e| {
+            with_guard(script(body::OK), |e| {
                 if let ScriptEntry::Full { only_if, .. } = e {
-                    *only_if = Some("sleep 5".to_string());
+                    *only_if = Some(body::SLOW.to_string());
                 }
             }),
             false,
@@ -1802,7 +1834,7 @@ fn every_script_exit_emits_one_status() {
     // rendered as a `Fail` is exactly what the outcome-branching tail exists
     // to prevent, so it must carry a duration and no ` — ` detail.
     let interactive_ok = drive(
-        &with_guard(script("true"), |e| {
+        &with_guard(script(body::OK), |e| {
             if let ScriptEntry::Full { interactive, .. } = e {
                 *interactive = true;
             }
@@ -1822,22 +1854,21 @@ fn every_script_exit_emits_one_status() {
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn missing_interpreter_emits_one_status_without_opening_a_window() {
-    // A file `run:` whose shebang names an interpreter that does not exist:
-    // `resolved.exists()` and the exec bit both pass, so the file branch is
-    // taken and `execve` answers ENOENT for the INTERPRETER — above
-    // `output_window_at`, which is the ordering this test pins.
-    use std::os::unix::fs::PermissionsExt;
+fn unspawnable_script_emits_one_status_without_opening_a_window() {
+    // `resolved.exists()` and the exec check both pass, so the file branch is
+    // taken and the spawn fails on the IMAGE — above `output_window_at`, which
+    // is the ordering this test pins.
     let dir = tempfile::tempdir().unwrap();
-    let script_path = dir.path().join("bad-shebang.sh");
-    std::fs::write(&script_path, "#!/nonexistent/interp\ntrue\n").unwrap();
-    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = write_unspawnable(dir.path());
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("the helper names its own file");
 
     let (printer, cap) = crate::output::Printer::for_test_doc();
     let result = execute_script(
-        &script("bad-shebang.sh"),
+        &script(name),
         dir.path(),
         dir.path(),
         &[],
@@ -1850,7 +1881,7 @@ fn missing_interpreter_emits_one_status_without_opening_a_window() {
     drop(printer);
     let out = crate::output::strip_ansi(&cap.human());
 
-    assert!(result.is_err(), "a missing interpreter must not succeed");
+    assert!(result.is_err(), "an unloadable image must not succeed");
     let lines = settled_lines(&out);
     assert_eq!(lines.len(), 1, "exactly one status line: {out}");
     assert!(lines[0].starts_with('\u{2717}'), "got: {}", lines[0]);
@@ -1869,7 +1900,6 @@ fn missing_interpreter_emits_one_status_without_opening_a_window() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn script_failure_role_follows_non_fatal() {
     let mut rendered = Vec::new();
@@ -1877,7 +1907,7 @@ fn script_failure_role_follows_non_fatal() {
         let dir = tempfile::tempdir().unwrap();
         let (printer, cap) = crate::output::Printer::for_test_doc();
         let _ = execute_script(
-            &script("exit 1"),
+            &script(body::FAIL),
             dir.path(),
             dir.path(),
             &[],

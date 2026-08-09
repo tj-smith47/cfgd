@@ -170,6 +170,27 @@ impl<'p> OutputWindow<'p> {
         self.finish_with(Role::Fail, subject)
     }
 
+    /// Collapse the window leaving NO status line behind.
+    ///
+    /// For the one case the window is not the action: when a caller further up
+    /// emits the action's own status line (the reconciler's tree), a settled
+    /// window line would be a second line for one action. The live tail still
+    /// renders while the command runs; only the collapse is silent.
+    pub fn finish_silent(mut self) {
+        self.spinner.bar.finish_and_clear();
+        // Suppresses `Spinner`'s Drop-emitted `Status(Info)`: an abandoned
+        // spinner leaves a record, but this one was closed on purpose.
+        self.spinner.finished = true;
+    }
+
+    /// Collapse the window into the deepest level of the phase → owner →
+    /// action tree: [`Self::finish_with`] with the subject painted
+    /// `theme.primary`, so a script's line matches every other action line.
+    pub fn finish_action(self, role: Role, subject: impl Into<String>) -> StatusBuilder<'p> {
+        let style = self.spinner.renderer.theme.primary.clone();
+        self.finish_with(role, subject).with_subject_style(style)
+    }
+
     /// True when the tail lived in the repainting window and is therefore gone
     /// after the collapse — the only case where a failure has to replay it. In
     /// the streaming degradation the lines are already in the scrollback, and

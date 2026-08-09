@@ -332,6 +332,18 @@ impl Printer {
 
     /// Status builder at the ambient depth (0 unless a `DepthInheritGuard`
     /// is open). Commits on Drop.
+    /// [`Self::status`] with the subject painted `theme.primary` — the same
+    /// seam `SectionGuard::action_status` applies, for an action line emitted
+    /// without a section guard in hand (a script settling its own status).
+    pub fn action_status(
+        &self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> super::status_builder::StatusBuilder<'_> {
+        let style = self.renderer.theme.primary.clone();
+        self.status(role, subject).with_subject_style(style)
+    }
+
     pub fn status(
         &self,
         role: Role,
@@ -408,7 +420,36 @@ impl Printer {
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
         let depth = self.renderer.inherit_depth();
-        super::process::run_command(self, depth, cmd, &label.into())
+        super::process::run_command(
+            self,
+            depth,
+            cmd,
+            &label.into(),
+            super::process::StatusOwner::Window,
+        )
+    }
+
+    /// [`Self::run`] for a command that is part of a larger action whose status
+    /// line the CALLER emits: the live window renders exactly as it does for
+    /// `run`, but collapses without a line of its own.
+    ///
+    /// Use it wherever a status line already names the work — a package
+    /// install inside the reconciler's action tree. Reaching for `run` there
+    /// renders the action twice, once with the command's label and once with
+    /// the plan's.
+    pub fn run_silent(
+        &self,
+        cmd: &mut std::process::Command,
+        label: impl Into<String>,
+    ) -> std::io::Result<super::process::CommandOutput> {
+        let depth = self.renderer.inherit_depth();
+        super::process::run_command(
+            self,
+            depth,
+            cmd,
+            &label.into(),
+            super::process::StatusOwner::Caller,
+        )
     }
 
     /// Final flush — call at the end of a streaming command to ensure any

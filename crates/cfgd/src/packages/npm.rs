@@ -6,11 +6,11 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 use cfgd_core::providers::{PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, run_pkg_cmd_live, run_pkg_query,
+    bootstrap_via_brew_then_system, brew_available, pkg_run, run_pkg_cmd_live, run_pkg_query,
     tool_cmd_with_resolver,
 };
 
@@ -493,16 +493,16 @@ impl PackageManager for NpmManager {
             || command_available("curl")
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if bootstrap_via_brew_then_system(printer, "npm", "node", &["nodejs", "npm"])? {
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        if bootstrap_via_brew_then_system(cx, "npm", "node", &["nodejs", "npm"])? {
             return Ok(());
         }
 
         // Fall back to nvm
         if command_available("curl") {
-            let result = printer
-                .run(
-                    Command::new("bash")
+            let result = pkg_run(
+                cx,
+                Command::new("bash")
                         .arg("-c")
                         .arg(concat!(
                             "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
@@ -557,7 +557,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.arg("install").arg("-g").args(packages);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, cx.notes, "npm", &mut cmd, &label, "install")?;
+        run_pkg_cmd_live(cx, "npm", &mut cmd, &label, "install")?;
         Ok(())
     }
 
@@ -570,7 +570,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.arg("uninstall").arg("-g").args(packages);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, cx.notes, "npm", &mut cmd, &label, "uninstall")?;
+        run_pkg_cmd_live(cx, "npm", &mut cmd, &label, "uninstall")?;
         Ok(())
     }
 
@@ -579,14 +579,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.args(["update", "-g"]);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
-            "npm",
-            &mut cmd,
-            "npm update -g",
-            "update",
-        )?;
+        run_pkg_cmd_live(cx, "npm", &mut cmd, "npm update -g", "update")?;
         Ok(())
     }
 
@@ -1166,6 +1159,80 @@ mod tests {
             );
         }
 
+        /// The apply tree renders one line per action, and a manager's own
+        /// output window must not settle a second one for the same work. Every
+        /// other test of that invariant uses a mock manager, which never opens a
+        /// window at all — this one drives a REAL manager through a REAL
+        /// shell-out, so a window that settles its own line is visible here.
+        #[test]
+        #[serial]
+        fn a_real_install_shell_out_emits_one_line_under_apply() {
+            use cfgd_core::providers::{PackageAction, ProviderRegistry};
+            use cfgd_core::reconciler::{
+                Action, Owner, Phase, PhaseName, Plan, ReconcileContext, Reconciler,
+            };
+
+            let _clear = clear_npm_env_prefix();
+            let home = tempfile::tempdir().expect("tempdir");
+            let _home_guard = cfgd_core::with_test_home_guard(home.path());
+            let (_shim, _prefix_dir) = NpmShim::with_writable_prefix(0, "added 1 package\n", "");
+
+            let state = cfgd_core::test_helpers::test_state();
+            let mut registry = ProviderRegistry::new();
+            registry.package_managers = crate::packages::all_package_managers();
+            let reconciler = Reconciler::new(&registry, &state);
+
+            let plan = Plan {
+                phases: vec![Phase::from_actions(
+                    PhaseName::Packages,
+                    &Owner::profile("work"),
+                    vec![Action::Package(PackageAction::Install {
+                        manager: "npm".to_string(),
+                        packages: vec!["typescript".to_string()],
+                        origin: "local".to_string(),
+                    })],
+                )],
+                warnings: vec![],
+            };
+
+            let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+            let result = reconciler
+                .apply(
+                    &plan,
+                    &cfgd_core::test_helpers::make_empty_resolved(),
+                    Path::new("."),
+                    &printer,
+                    None,
+                    &[],
+                    ReconcileContext::Apply,
+                    false,
+                    None,
+                    &cfgd_core::AbortFlag::new(),
+                )
+                .expect("apply");
+            assert_eq!(result.action_results.len(), 1, "one action was planned");
+
+            let out = cfgd_core::output::strip_ansi(&cap.human());
+            let settled: Vec<&str> = out
+                .lines()
+                .map(str::trim_start)
+                .filter(|l| {
+                    ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}']
+                        .iter()
+                        .any(|g| l.starts_with(*g))
+                })
+                .collect();
+            assert_eq!(
+                settled.len(),
+                1,
+                "the tree's line and nothing settled by the window: {out}"
+            );
+            assert!(
+                settled[0].contains("npm install typescript"),
+                "the action's line is the tree's, built from the plan: {out}"
+            );
+        }
+
         #[test]
         #[serial]
         fn npm_install_passes_install_g_with_packages() {
@@ -1385,7 +1452,9 @@ mod tests {
         fn npm_bootstrap_via_brew_returns_ok() {
             let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
             let p = test_printer();
-            NpmManager.bootstrap(&p).expect("bootstrap Ok via brew");
+            NpmManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via brew");
             assert!(
                 s.argv_log().contains("install node"),
                 "brew argv must include `install node`: {}",
@@ -1593,7 +1662,8 @@ mod tests {
             let configured = Path::new("cfgd-absent-prefix-root/relative-prefix");
             let shim = NpmShim::install(configured, 0, "{}", "");
             let home = tempfile::tempdir().expect("tempdir");
-            let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
             // Two INDEPENDENT in-memory state stores, not one shared between
             // the two calls: the point of this test is proving both methods

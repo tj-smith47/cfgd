@@ -80,7 +80,8 @@ fn brew_tap_manager_name_and_bootstrap() {
     assert!(!mgr.can_bootstrap());
     // bootstrap is a no-op
     let printer = cfgd_core::test_helpers::test_printer();
-    mgr.bootstrap(&printer).unwrap();
+    mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -89,7 +90,8 @@ fn brew_cask_manager_name_and_bootstrap() {
     assert_eq!(mgr.name(), "brew-cask");
     assert!(!mgr.can_bootstrap());
     let printer = cfgd_core::test_helpers::test_printer();
-    mgr.bootstrap(&printer).unwrap();
+    mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -910,7 +912,7 @@ mod brew_shim {
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shim("bash", 0, "", "");
         let p = test_printer();
         BrewManager
-            .bootstrap(&p)
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
             .expect("non-root bootstrap Ok with passing bash shim");
     }
 
@@ -924,7 +926,7 @@ mod brew_shim {
             cfgd_core::test_helpers::install_named_path_shim("bash", 1, "", "boom");
         let p = test_printer();
         let err = BrewManager
-            .bootstrap(&p)
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
             .expect_err("a non-zero bash install script must surface as BootstrapFailed");
         let msg = err.to_string();
         assert!(
@@ -980,7 +982,9 @@ mod brew_shim {
         ]);
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            BrewManager.bootstrap(&p).expect("bootstrap ok with shim");
+            BrewManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap ok with shim");
         }
     }
 
@@ -995,7 +999,7 @@ mod brew_shim {
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             let err = BrewManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("useradd exit 1 → BootstrapFailed");
             assert!(
                 err.to_string().contains("brew"),
@@ -1016,7 +1020,7 @@ mod brew_shim {
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             let err = BrewManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("sudo exit 1 → BootstrapFailed");
             assert!(
                 err.to_string().contains("brew"),

@@ -295,7 +295,7 @@ pub fn apply_packages(
                 manager: mgr_name, ..
             } => {
                 if let Some(mgr) = managers.iter().find(|m| m.name() == mgr_name) {
-                    mgr.bootstrap(cx.printer)?;
+                    mgr.bootstrap(cx)?;
                 }
             }
             PackageAction::Install {

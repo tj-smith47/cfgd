@@ -50,7 +50,7 @@ impl<'a> super::Reconciler<'a> {
         printer: &Printer,
         notes: &NoteSink,
     ) -> Result<String> {
-        let cx = PackageContext::with_notes(printer, self.state, notes);
+        let cx = PackageContext::with_notes(printer, self.state, notes).caller_owns_status();
         match action {
             PackageAction::Bootstrap { manager, .. } => {
                 // Find in ALL managers (not just available — it isn't available yet)
@@ -64,7 +64,7 @@ impl<'a> super::Reconciler<'a> {
                         // what it promises is an available manager, not an
                         // installation.
                         if !pm.is_available() {
-                            pm.bootstrap(printer)?;
+                            pm.bootstrap(&cx)?;
                         }
                         // Profile-level packages reach bootstrap through here
                         // rather than through the Modules phase, so this site

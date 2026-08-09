@@ -266,7 +266,13 @@ impl<'p> SectionGuard<'p> {
         cmd: &mut std::process::Command,
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
-        super::process::run_command(self.printer, self.depth, cmd, &label.into())
+        super::process::run_command(
+            self.printer,
+            self.depth,
+            cmd,
+            &label.into(),
+            super::process::StatusOwner::Window,
+        )
     }
 
     /// Manually close (alternative to drop). Useful when the caller needs the

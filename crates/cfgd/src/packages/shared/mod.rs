@@ -9,8 +9,8 @@ use std::process::{Command, Output};
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{CommandOutput, Printer, Role};
-use cfgd_core::providers::{NoteSink, PostInstallNote};
+use cfgd_core::output::{CommandOutput, Role};
+use cfgd_core::providers::{PackageContext, PostInstallNote};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
@@ -292,24 +292,41 @@ pub(super) fn run_pkg_query(
     })
 }
 
+/// Run `cmd` through a live output window, letting the CONTEXT decide whether
+/// that window settles a status line of its own.
+///
+/// The one entry point for a package manager's shell-outs. Under the
+/// reconciler the action already has exactly one status line, built from the
+/// plan and carrying the phase's alignment column, so a window that settled its
+/// own would render the same install twice; standalone (`cfgd doctor`, a manual
+/// bootstrap) the window IS the only line and must settle.
+pub(super) fn pkg_run(
+    cx: &PackageContext<'_>,
+    cmd: &mut Command,
+    label: impl Into<String>,
+) -> std::io::Result<CommandOutput> {
+    if cx.caller_owns_status {
+        cx.printer.run_silent(cmd, label)
+    } else {
+        cx.printer.run(cmd, label)
+    }
+}
+
 /// Run a package manager command with live progress display via Printer.
 /// Use for long-running operations (install, uninstall, update, bootstrap).
-/// Maps spawn errors to PackageError::CommandFailed and non-zero exit to
+/// Maps spawn errors to `PackageError::CommandFailed` and non-zero exit to
 /// the appropriate variant based on `error_kind`.
 pub(super) fn run_pkg_cmd_live(
-    printer: &Printer,
-    notes: &NoteSink,
+    cx: &PackageContext<'_>,
     manager: &str,
     cmd: &mut Command,
     label: &str,
     error_kind: &str,
 ) -> std::result::Result<CommandOutput, PackageError> {
-    let output = printer
-        .run(cmd, label)
-        .map_err(|e| PackageError::CommandFailed {
-            manager: manager.into(),
-            source: e,
-        })?;
+    let output = pkg_run(cx, cmd, label).map_err(|e| PackageError::CommandFailed {
+        manager: manager.into(),
+        source: e,
+    })?;
     if !output.status.success() {
         let code = output.status.code().unwrap_or(-1);
         // Surface stderr in the error message for parity with `run_pkg_cmd`
@@ -346,7 +363,7 @@ pub(super) fn run_pkg_cmd_live(
     // belongs to.
     if error_kind == "install" {
         for note in extract_caveats(manager, &output) {
-            notes.push(note);
+            cx.notes.push(note);
         }
     }
     Ok(output)
@@ -364,8 +381,7 @@ pub(super) fn run_pkg_cmd_live(
 /// retried — there is nothing to isolate, so its original error is surfaced
 /// verbatim.
 pub(super) fn install_batch_then_per_package<F>(
-    printer: &Printer,
-    notes: &NoteSink,
+    cx: &PackageContext<'_>,
     manager: &str,
     packages: &[String],
     build_cmd: F,
@@ -379,13 +395,13 @@ where
 
     let batch_label = format!("{} install {}", manager, packages.join(" "));
     let mut batch = build_cmd(packages);
-    match run_pkg_cmd_live(printer, notes, manager, &mut batch, &batch_label, "install") {
+    match run_pkg_cmd_live(cx, manager, &mut batch, &batch_label, "install") {
         Ok(_) => return Ok(()),
         Err(e) => {
             if packages.len() == 1 {
                 return Err(e);
             }
-            printer.status_simple(
+            cx.printer.status_simple(
                 Role::Warn,
                 format!("{manager}: batch install failed; retrying each package individually"),
             );
@@ -396,7 +412,7 @@ where
     for pkg in packages {
         let label = format!("{} install {}", manager, pkg);
         let mut cmd = build_cmd(std::slice::from_ref(pkg));
-        if run_pkg_cmd_live(printer, notes, manager, &mut cmd, &label, "install").is_err() {
+        if run_pkg_cmd_live(cx, manager, &mut cmd, &label, "install").is_err() {
             failed.push(pkg.clone());
         }
     }
@@ -555,7 +571,7 @@ fn brew_owner() -> Option<String> {
 /// Try to install a package via common system package managers (apt, then dnf, then zypper).
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
 pub(super) fn bootstrap_via_system_manager(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     target_pkg: &str,
     manager_name: &str,
 ) -> Result<()> {
@@ -564,15 +580,15 @@ pub(super) fn bootstrap_via_system_manager(
         // honors — a seam-shimmed tool must look available on hosts that lack
         // the real binary (see require_tool_with_seam's pairing note).
         if cfgd_core::command_available_with_seam(&tool_seam_var(cmd_name), cmd_name) {
-            let result = printer
-                .run(
-                    sudo_cmd_with_seam(cmd_name).args(["install", "-y", target_pkg]),
-                    format!("Installing {} via {}", target_pkg, cmd_name),
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: manager_name.into(),
-                    message: format!("{} install failed: {}", cmd_name, e),
-                })?;
+            let result = pkg_run(
+                cx,
+                sudo_cmd_with_seam(cmd_name).args(["install", "-y", target_pkg]),
+                format!("Installing {} via {}", target_pkg, cmd_name),
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: manager_name.into(),
+                message: format!("{} install failed: {}", cmd_name, e),
+            })?;
             if result.status.success() {
                 return Ok(());
             }
@@ -590,21 +606,21 @@ pub(super) fn bootstrap_via_system_manager(
 /// Returns `Ok(true)` if installed, `Ok(false)` if no method succeeded (caller should
 /// try alternative), or `Err` on command execution failure.
 pub(super) fn bootstrap_via_brew_then_system(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     manager_name: &str,
     brew_pkg: &str,
     system_pkgs: &[&str],
 ) -> Result<bool> {
     if brew_available() {
-        let result = printer
-            .run(
-                brew_cmd().args(["install", brew_pkg]),
-                format!("Installing {} via brew", brew_pkg),
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: manager_name.into(),
-                message: format!("brew install {} failed: {}", brew_pkg, e),
-            })?;
+        let result = pkg_run(
+            cx,
+            brew_cmd().args(["install", brew_pkg]),
+            format!("Installing {} via brew", brew_pkg),
+        )
+        .map_err(|e| PackageError::BootstrapFailed {
+            manager: manager_name.into(),
+            message: format!("brew install {} failed: {}", brew_pkg, e),
+        })?;
         if result.status.success() {
             return Ok(true);
         }
@@ -612,17 +628,17 @@ pub(super) fn bootstrap_via_brew_then_system(
 
     for cmd_name in ["apt-get", "dnf"] {
         if command_available(cmd_name) {
-            let result = printer
-                .run(
-                    sudo_cmd_with_seam(cmd_name)
-                        .args(["install", "-y"])
-                        .args(system_pkgs),
-                    format!("Installing {} via {}", manager_name, cmd_name),
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: manager_name.into(),
-                    message: format!("{} install failed: {}", cmd_name, e),
-                })?;
+            let result = pkg_run(
+                cx,
+                sudo_cmd_with_seam(cmd_name)
+                    .args(["install", "-y"])
+                    .args(system_pkgs),
+                format!("Installing {} via {}", manager_name, cmd_name),
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: manager_name.into(),
+                message: format!("{} install failed: {}", cmd_name, e),
+            })?;
             if result.status.success() {
                 return Ok(true);
             }
@@ -642,17 +658,17 @@ pub(super) fn bootstrap_via_brew_then_system(
 /// (npm's nvm path) invokes `bash` inside its own script string rather than
 /// relying on this helper's outer interpreter.
 pub(super) fn bootstrap_via_shell_script(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     manager_name: &str,
     label: impl Into<String>,
     script: &str,
 ) -> Result<()> {
-    let result = printer
-        .run(Command::new("sh").arg("-c").arg(script), label)
-        .map_err(|e| PackageError::BootstrapFailed {
+    let result = pkg_run(cx, Command::new("sh").arg("-c").arg(script), label).map_err(|e| {
+        PackageError::BootstrapFailed {
             manager: manager_name.into(),
             message: format!("{manager_name} install failed: {e}"),
-        })?;
+        }
+    })?;
     if !result.status.success() {
         return Err(PackageError::BootstrapFailed {
             manager: manager_name.into(),

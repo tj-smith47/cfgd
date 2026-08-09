@@ -575,7 +575,10 @@ mod tests {
         fn can_bootstrap(&self) -> bool {
             false
         }
-        fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+        fn bootstrap(
+            &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
         fn installed_packages(

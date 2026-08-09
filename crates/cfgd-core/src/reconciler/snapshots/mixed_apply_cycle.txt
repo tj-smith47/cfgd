@@ -6,6 +6,6 @@ Phase: Packages
 Phase: Post-Scripts
   profile:test
     ◐ Running script: exit 42
-    ⚠ postApply: exit 42            — exit 42
+    ⚠ run postApply script: exit 42 — exit 42
 
 ⚠ Apply partial

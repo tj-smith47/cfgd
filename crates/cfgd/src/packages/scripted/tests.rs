@@ -765,7 +765,8 @@ fn scripted_manager_bootstrap_through_trait() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.bootstrap(&printer).unwrap();
+    mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
     // Exercise installed_packages through the same trait object post-bootstrap.
     assert!(mgr.installed_packages(&cx).unwrap().is_empty());
 }

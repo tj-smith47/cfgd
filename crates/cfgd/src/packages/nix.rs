@@ -6,7 +6,6 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -53,9 +52,9 @@ impl PackageManager for NixManager {
         command_available("curl")
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
-            printer,
+            cx,
             "nix",
             "Installing Nix",
             "curl -L https://nixos.org/nix/install | sh -s -- --daemon",
@@ -105,8 +104,7 @@ impl PackageManager for NixManager {
             if nix_available() {
                 let label = format!("nix profile install nixpkgs#{}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
-                    cx.notes,
+                    cx,
                     "nix",
                     nix_cmd().args(["profile", "install", &format!("nixpkgs#{}", pkg)]),
                     &label,
@@ -115,8 +113,7 @@ impl PackageManager for NixManager {
             } else {
                 let label = format!("nix-env -iA nixpkgs.{}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
-                    cx.notes,
+                    cx,
                     "nix",
                     nix_env_cmd().args(["-iA", &format!("nixpkgs.{}", pkg)]),
                     &label,
@@ -142,8 +139,7 @@ impl PackageManager for NixManager {
                 // the element name.
                 let label = format!("nix profile remove {}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
-                    cx.notes,
+                    cx,
                     "nix",
                     nix_cmd().args(["profile", "remove", pkg]),
                     &label,
@@ -152,8 +148,7 @@ impl PackageManager for NixManager {
             } else {
                 let label = format!("nix-env -e {}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
-                    cx.notes,
+                    cx,
                     "nix",
                     nix_env_cmd().args(["-e", pkg]),
                     &label,
@@ -672,7 +667,9 @@ mod tests {
         fn nix_bootstrap_runs_sh_install_pipeline_ok() {
             let (_bin, _path) = install_named_path_shim("sh", 0, "", "");
             let p = test_printer();
-            NixManager.bootstrap(&p).expect("bootstrap Ok via shim");
+            NixManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via shim");
         }
 
         #[test]
@@ -681,7 +678,7 @@ mod tests {
             let (_bin, _path) = install_named_path_shim("sh", 1, "", "nix install failed");
             let p = test_printer();
             let err = NixManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("non-zero sh must error");
             let msg = err.to_string();
             assert!(

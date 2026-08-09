@@ -6,7 +6,7 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -52,9 +52,10 @@ impl PackageManager for GoInstallManager {
         any_system_manager_available()
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         if brew_available() {
-            let result = printer
+            let result = cx
+                .printer
                 .run(brew_cmd().args(["install", "go"]), "Installing Go via brew")
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "go".into(),
@@ -65,7 +66,7 @@ impl PackageManager for GoInstallManager {
             }
         }
 
-        bootstrap_via_system_manager(printer, "golang", "go")
+        bootstrap_via_system_manager(cx, "golang", "go")
     }
 
     fn installed_packages(
@@ -93,8 +94,7 @@ impl PackageManager for GoInstallManager {
             let install_path = go_install_path(pkg);
             let label = format!("go install {}", install_path);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "go",
                 go_cmd().args(["install", &install_path]),
                 &label,
@@ -663,7 +663,7 @@ mod tests {
             let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
             let p = test_printer();
             GoInstallManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect("bootstrap Ok via brew shim");
             assert!(
                 s.argv_log().contains("install go"),

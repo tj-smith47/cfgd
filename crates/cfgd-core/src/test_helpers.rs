@@ -1011,6 +1011,41 @@ pub fn test_printer() -> crate::output::Printer {
 /// pair every `PackageManager` fixture now needs alongside `test_printer()` /
 /// `test_state()` since `PackageContext` threading replaced the bare
 /// `&Printer` parameter on the state-touching trait methods.
+/// A `PackageStateStore` that remembers nothing — for a fixture whose subject
+/// (`bootstrap`) reaches no state.
+pub struct NullPackageState;
+
+impl crate::providers::PackageStateStore for NullPackageState {
+    fn resolved_prefix(&self, _manager: &str) -> crate::errors::Result<Option<(String, bool)>> {
+        Ok(None)
+    }
+    fn record_resolved_prefix(
+        &self,
+        _manager: &str,
+        _prefix: &str,
+        _is_fallback: bool,
+    ) -> crate::errors::Result<()> {
+        Ok(())
+    }
+}
+
+/// A `PackageContext` for a fixture that drives `bootstrap`, which touches no
+/// state — so the fixture needs no `StateStore` of its own.
+pub fn test_bootstrap_context(
+    printer: &crate::output::Printer,
+) -> crate::providers::PackageContext<'_> {
+    crate::providers::PackageContext::new(printer, &NullPackageState)
+}
+
+/// [`test_bootstrap_context`] over a caller-owned sink, for a fixture asserting
+/// that a bootstrap's post-install caveats travel back to the reconciler.
+pub fn test_bootstrap_context_with_notes<'a>(
+    printer: &'a crate::output::Printer,
+    notes: &'a crate::providers::NoteSink,
+) -> crate::providers::PackageContext<'a> {
+    crate::providers::PackageContext::with_notes(printer, &NullPackageState, notes)
+}
+
 pub fn test_package_context<'a>(
     printer: &'a crate::output::Printer,
     state: &'a crate::state::StateStore,
@@ -2087,7 +2122,7 @@ impl crate::providers::PackageManager for MockPackageManager {
         self.bootstrap_capable
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> crate::errors::Result<()> {
+    fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
 
@@ -2615,7 +2650,7 @@ mod tests {
             mgr.can_bootstrap(),
             "`bootstrappable()` must enable bootstrap"
         );
-        mgr.bootstrap(&printer).unwrap();
+        mgr.bootstrap(&cx).unwrap();
 
         assert_eq!(
             mgr.installed_packages(&cx).unwrap(),

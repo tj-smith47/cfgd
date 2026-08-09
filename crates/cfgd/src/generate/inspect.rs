@@ -187,7 +187,6 @@ mod tests {
     use std::collections::HashSet;
 
     use cfgd_core::errors::Result;
-    use cfgd_core::output::Printer;
     use cfgd_core::providers::PackageManager;
     use tempfile::TempDir;
 
@@ -210,7 +209,7 @@ mod tests {
             false
         }
 
-        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
             Ok(())
         }
 

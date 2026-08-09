@@ -6,12 +6,11 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    bootstrap_via_brew_then_system, brew_available, pkg_run, resolve_tool_with_fallbacks,
+    run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct PipxManager;
@@ -58,8 +57,8 @@ impl PackageManager for PipxManager {
             || command_available("pip")
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if bootstrap_via_brew_then_system(printer, "pipx", "pipx", &["pipx"])? {
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+        if bootstrap_via_brew_then_system(cx, "pipx", "pipx", &["pipx"])? {
             return Ok(());
         }
 
@@ -77,15 +76,15 @@ impl PackageManager for PipxManager {
         };
 
         let label = format!("Installing pipx via {}", pip_cmd);
-        let result = printer
-            .run(
-                Command::new(pip_cmd).args(["install", "--user", "pipx"]),
-                &label,
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: "pipx".into(),
-                message: format!("{} install failed: {}", pip_cmd, e),
-            })?;
+        let result = pkg_run(
+            cx,
+            Command::new(pip_cmd).args(["install", "--user", "pipx"]),
+            &label,
+        )
+        .map_err(|e| PackageError::BootstrapFailed {
+            manager: "pipx".into(),
+            message: format!("{} install failed: {}", pip_cmd, e),
+        })?;
         if !result.status.success() {
             return Err(PackageError::BootstrapFailed {
                 manager: "pipx".into(),
@@ -113,8 +112,7 @@ impl PackageManager for PipxManager {
         for pkg in packages {
             let label = format!("pipx install {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "pipx",
                 pipx_cmd().args(["install", pkg]),
                 &label,
@@ -132,8 +130,7 @@ impl PackageManager for PipxManager {
         for pkg in packages {
             let label = format!("pipx uninstall {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "pipx",
                 pipx_cmd().args(["uninstall", pkg]),
                 &label,
@@ -145,8 +142,7 @@ impl PackageManager for PipxManager {
 
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "pipx",
             pipx_cmd().args(["upgrade-all"]),
             "pipx upgrade-all",
@@ -645,7 +641,9 @@ mod tests {
         fn pipx_bootstrap_via_brew_returns_ok() {
             let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
             let p = test_printer();
-            PipxManager.bootstrap(&p).expect("bootstrap Ok via brew");
+            PipxManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via brew");
             assert!(
                 s.argv_log().contains("install pipx"),
                 "brew argv must include `install pipx`: {}",

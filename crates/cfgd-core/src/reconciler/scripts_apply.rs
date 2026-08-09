@@ -39,6 +39,13 @@ impl<'a> super::Reconciler<'a> {
                 });
 
                 let working = script_default_workdir(config_dir);
+                // The whole `run <phase> script` prefix, not the bare phase
+                // name: `format_plan_item` spells a profile script that way, and
+                // the preview and the execution tree must render one action with
+                // one subject — the phase's alignment column is measured from
+                // the plan string, so a shorter executed subject also mis-pads
+                // every trailing field in the phase.
+                let marker = format!("run {} script", phase.display_name());
                 let (_desc, changed, captured) = execute_script(
                     entry,
                     config_dir,
@@ -49,7 +56,7 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                     Some(abort),
                     ScriptReport {
-                        marker: Some(phase.display_name()),
+                        marker: Some(&marker),
                         non_fatal: effective_continue_on_error(entry, phase),
                     },
                 )?;

@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::{PackageContext, PackageManager};
 
 #[cfg(target_os = "linux")]
@@ -50,8 +49,8 @@ impl PackageManager for FlatpakManager {
         }
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        bootstrap_via_system_manager(printer, "flatpak", "flatpak")
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        bootstrap_via_system_manager(cx, "flatpak", "flatpak")
     }
 
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -69,8 +68,7 @@ impl PackageManager for FlatpakManager {
         for pkg in packages {
             let label = format!("flatpak install -y {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "flatpak",
                 flatpak_cmd().args(["install", "-y", pkg]),
                 &label,
@@ -84,8 +82,7 @@ impl PackageManager for FlatpakManager {
         for pkg in packages {
             let label = format!("flatpak uninstall -y {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "flatpak",
                 flatpak_cmd().args(["uninstall", "-y", pkg]),
                 &label,
@@ -97,8 +94,7 @@ impl PackageManager for FlatpakManager {
 
     fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "flatpak",
             flatpak_cmd().args(["update", "-y"]),
             "flatpak update -y",

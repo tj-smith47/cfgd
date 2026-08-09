@@ -375,9 +375,6 @@ impl<'a> super::Reconciler<'a> {
                 // twice in one apply (Env phase, then the late regeneration)
                 // would otherwise return two different ids and be recorded as
                 // two separate results.
-                // the same surface reached twice in one apply (Env phase, then
-                // the late regeneration) would otherwise return two different
-                // ids and be recorded as two separate results.
                 Ok(LIVE_SESSION_RESOURCE_ID.to_string())
             }
         }

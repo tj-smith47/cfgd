@@ -169,7 +169,7 @@ impl PackageManager for ScriptedManager {
         false
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 

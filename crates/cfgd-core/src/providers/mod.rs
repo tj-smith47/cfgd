@@ -51,6 +51,12 @@ pub struct PackageContext<'a> {
     pub printer: &'a Printer,
     pub state: &'a dyn PackageStateStore,
     pub notes: &'a NoteSink,
+    /// True when something further up already emits one status line for the
+    /// action this call is part of, so a command's live-output window must
+    /// collapse silently ([`Printer::run_silent`]) instead of settling a second
+    /// line for the same work. Set by [`PackageContext::caller_owns_status`];
+    /// false everywhere else, where a manager's command IS the action.
+    pub caller_owns_status: bool,
 }
 
 impl<'a> PackageContext<'a> {
@@ -62,6 +68,7 @@ impl<'a> PackageContext<'a> {
             printer,
             state,
             notes: NoteSink::discarded(),
+            caller_owns_status: false,
         }
     }
 
@@ -76,7 +83,20 @@ impl<'a> PackageContext<'a> {
             printer,
             state,
             notes,
+            caller_owns_status: false,
         }
+    }
+
+    /// Declare that the CALLER emits the one status line for this action.
+    ///
+    /// The reconciler's tree renders `✓ brew install ripgrep` from the plan,
+    /// with the phase's alignment column and any drained notes under it. A
+    /// manager command run under such a context shows its live window and then
+    /// collapses without a line, so the action renders once rather than twice.
+    #[must_use]
+    pub fn caller_owns_status(mut self) -> Self {
+        self.caller_owns_status = true;
+        self
     }
 }
 
@@ -145,7 +165,7 @@ pub trait PackageManager: Send + Sync {
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
     fn can_bootstrap(&self) -> bool;
-    fn bootstrap(&self, printer: &Printer) -> Result<()>;
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()>;
     fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>>;
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
@@ -640,7 +660,7 @@ impl PackageManager for StubPackageManager {
     fn can_bootstrap(&self) -> bool {
         self.bootstrap_capable
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {

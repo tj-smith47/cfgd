@@ -1,6 +1,23 @@
-use cfgd_core::output::{CommandOutput, Printer};
+use cfgd_core::output::CommandOutput;
+// Gated with their consumers: every fixture that builds a context drives a real
+// shell-out through a `/bin/sh`-backed `ToolShim`.
+#[cfg(unix)]
+use cfgd_core::output::Printer;
+#[cfg(unix)]
+use cfgd_core::providers::{NoteSink, PackageContext};
+#[cfg(unix)]
+use cfgd_core::test_helpers::NullPackageState;
 
 use super::*;
+
+/// The context `run_pkg_cmd_live` takes, over the printer and sink these
+/// fixtures already build. `caller_owns_status` stays false unless a case sets
+/// it: with nothing above emitting a line, the window is the action and must
+/// settle its own.
+#[cfg(unix)]
+fn cx_for<'a>(printer: &'a Printer, notes: &'a NoteSink) -> PackageContext<'a> {
+    PackageContext::with_notes(printer, &NullPackageState, notes)
+}
 
 fn test_cmd_output(stdout: &str, stderr: &str) -> CommandOutput {
     CommandOutput {
@@ -871,8 +888,7 @@ fn run_pkg_cmd_live_success_returns_command_output() {
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_BIN").unwrap());
     cmd.args(["arg1"]);
     let out = run_pkg_cmd_live(
-        &printer,
-        &notes,
+        &cx_for(&printer, &notes),
         "test-mgr",
         &mut cmd,
         "running test",
@@ -892,8 +908,7 @@ fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_FAIL_BIN").unwrap());
     let err = run_pkg_cmd_live(
-        &printer,
-        &notes,
+        &cx_for(&printer, &notes),
         "test-mgr",
         &mut cmd,
         "running test",
@@ -923,8 +938,7 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UNINST_BIN").unwrap());
     let err = run_pkg_cmd_live(
-        &printer,
-        &notes,
+        &cx_for(&printer, &notes),
         "test-mgr",
         &mut cmd,
         "removing test",
@@ -949,8 +963,7 @@ fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_NOOUT_BIN").unwrap());
     let err = run_pkg_cmd_live(
-        &printer,
-        &notes,
+        &cx_for(&printer, &notes),
         "test-mgr",
         &mut cmd,
         "test label",
@@ -980,8 +993,7 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
     let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_CAVEAT_BIN").unwrap());
     run_pkg_cmd_live(
-        &printer,
-        &notes,
+        &cx_for(&printer, &notes),
         "brew",
         &mut cmd,
         "installing brew package",
@@ -1000,6 +1012,60 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
     assert!(
         !captured.contains("Post-install notes"),
         "the note travels back to the reconciler; nothing prints here: {captured}"
+    );
+}
+
+/// Line ownership at its decision point, driven by a REAL shell-out rather than
+/// a mock manager: both arms run the same binary through the same entry point,
+/// so the only thing that may differ between the two transcripts is whether the
+/// window settled a line the reconciler is about to render itself.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn caller_owned_status_suppresses_the_windows_own_line() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_OWNER_BIN", 0, "ok\n", "");
+    let bin = std::env::var("CFGD_SH_OWNER_BIN").expect("shim seam is set");
+    let settled = |line: &str| {
+        let t = line.trim_start();
+        ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}']
+            .iter()
+            .any(|g| t.starts_with(*g))
+    };
+
+    let notes = NoteSink::default();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(&bin);
+    run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "brew",
+        &mut cmd,
+        "brew install jq",
+        "install",
+    )
+    .expect("shim exits 0");
+    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    assert_eq!(
+        standalone.lines().filter(|l| settled(l)).count(),
+        1,
+        "standalone, the window IS the action's only line: {standalone}"
+    );
+
+    let owned_notes = NoteSink::default();
+    let (owned_printer, owned_buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut owned_cmd = std::process::Command::new(&bin);
+    run_pkg_cmd_live(
+        &cx_for(&owned_printer, &owned_notes).caller_owns_status(),
+        "brew",
+        &mut owned_cmd,
+        "brew install jq",
+        "install",
+    )
+    .expect("shim exits 0");
+    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    assert_eq!(
+        owned.lines().filter(|l| settled(l)).count(),
+        0,
+        "the caller renders the action's line; the window must settle silently: {owned}"
     );
 }
 
@@ -1029,7 +1095,11 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
         shim.to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    let result = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "snapd",
+        "snap",
+    );
     assert!(result.is_ok(), "expected Ok when apt-get shim exits 0");
 }
 
@@ -1064,7 +1134,11 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    let result = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "snapd",
+        "snap",
+    );
     assert!(
         result.is_err(),
         "expected BootstrapFailed when no package manager is available"
@@ -1087,7 +1161,12 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
         "",
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    let result = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    );
     assert!(
         result.expect("should succeed via brew"),
         "expected true when brew install exits 0"
@@ -1118,7 +1197,12 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    let result = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    );
     assert!(
         !result.expect("no error when both paths simply unavailable"),
         "expected false when brew fails and no system manager present"
@@ -1134,9 +1218,15 @@ fn run_pkg_cmd_live_unknown_error_kind_maps_to_install_failed() {
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPDATE_BIN", 1, "", "update broke\n");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UPDATE_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, &notes, "test-mgr", &mut cmd, "updating", "update")
-        .err()
-        .expect("expected Err from exit-1 shim");
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "updating",
+        "update",
+    )
+    .err()
+    .expect("expected Err from exit-1 shim");
     assert!(
         matches!(&err, PackageError::InstallFailed { manager, .. }
             if manager == "test-mgr"),
@@ -1168,7 +1258,11 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    let result = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "snapd",
+        "snap",
+    );
     assert!(
         result.is_err(),
         "expected BootstrapFailed when apt-get exits 1 and dnf/zypper absent"
@@ -1209,7 +1303,12 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
         shim.to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    let result = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    );
     assert!(
         result.expect("apt-get fallback should succeed"),
         "expected true when apt-get shim exits 0"
@@ -1339,8 +1438,7 @@ fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-test-path-xyz");
     let err = run_pkg_cmd_live(
-        &printer,
-        &notes,
+        &cx_for(&printer, &notes),
         "test-mgr",
         &mut cmd,
         "spawn test",
@@ -1364,8 +1462,13 @@ fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
 #[serial_test::serial]
 fn bootstrap_via_shell_script_returns_ok_when_exit_zero() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    bootstrap_via_shell_script(&printer, "test-mgr", "Installing test", "exit 0")
-        .expect("exit 0 → Ok");
+    bootstrap_via_shell_script(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "Installing test",
+        "exit 0",
+    )
+    .expect("exit 0 → Ok");
 }
 
 #[cfg(unix)]
@@ -1373,8 +1476,13 @@ fn bootstrap_via_shell_script_returns_ok_when_exit_zero() {
 #[serial_test::serial]
 fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let err = bootstrap_via_shell_script(&printer, "test-mgr", "Installing test", "exit 7")
-        .expect_err("non-zero exit must surface BootstrapFailed");
+    let err = bootstrap_via_shell_script(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "Installing test",
+        "exit 7",
+    )
+    .expect_err("non-zero exit must surface BootstrapFailed");
     let msg = err.to_string();
     assert!(
         msg.contains("test-mgr"),

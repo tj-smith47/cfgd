@@ -204,9 +204,12 @@ fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path
 /// bare parameter is what lets the two drift apart at one arm.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ScriptReport<'a> {
-    /// The hook the body belongs to (`postApply`), rendered as a styled
-    /// `postApply: ` prefix on the status subject. `None` for a script no hook
-    /// phase names.
+    /// The prefix the body belongs under, rendered styled and followed by
+    /// `: ` on the status subject. It is whatever the action's plan display
+    /// string puts before the body — the bare hook name for a module script
+    /// (`postApply`), the full `run postApply script` for a profile one — so
+    /// the preview and the execution tree render one subject. `None` for a
+    /// script no hook phase names.
     pub marker: Option<&'a str>,
     /// The caller has already decided a failure here will not stop the run, so
     /// the one line renders `Role::Warn` rather than `Role::Fail`.
@@ -278,8 +281,10 @@ impl<'p> ScriptStatus<'p> {
             drop(builder);
         };
         match std::mem::replace(&mut self.state, ScriptState::Reported) {
-            ScriptState::Pending { printer, subject } => apply(printer.status(role, subject)),
-            ScriptState::Windowed { window, subject } => apply(window.finish_with(role, subject)),
+            ScriptState::Pending { printer, subject } => {
+                apply(printer.action_status(role, subject))
+            }
+            ScriptState::Windowed { window, subject } => apply(window.finish_action(role, subject)),
             ScriptState::Reported => {
                 debug_assert!(false, "a script emitted a second status line");
             }
@@ -355,9 +360,6 @@ pub(crate) fn execute_script(
     abort: Option<&crate::AbortFlag>,
     report: ScriptReport<'_>,
 ) -> Result<(String, bool, Option<String>)> {
-    // Single-line, width-bounded stand-in for the body in every status subject
-    // / error message below — the body itself may be a multi-line inline
-    // script, which a status subject must never carry.
     // The one environment read the inner body must not make for itself:
     // passing it in is what lets a test drive the interactive arm.
     execute_script_with_tty(

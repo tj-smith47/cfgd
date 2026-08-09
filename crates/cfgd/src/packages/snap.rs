@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 #[cfg(target_os = "linux")]
@@ -51,8 +50,8 @@ impl PackageManager for SnapManager {
         }
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        bootstrap_via_system_manager(printer, "snapd", "snap")
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+        bootstrap_via_system_manager(cx, "snapd", "snap")
     }
 
     fn installed_packages(
@@ -72,8 +71,7 @@ impl PackageManager for SnapManager {
         for pkg in packages {
             let label = format!("snap install {}", pkg);
             let result = run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "snap",
                 sudo_cmd_with_seam("snap").arg("install").arg(pkg),
                 &label,
@@ -84,8 +82,7 @@ impl PackageManager for SnapManager {
                 if e.to_string().contains("classic") {
                     let label = format!("snap install --classic {}", pkg);
                     run_pkg_cmd_live(
-                        cx.printer,
-                        cx.notes,
+                        cx,
                         "snap",
                         sudo_cmd_with_seam("snap").args(["install", "--classic", pkg]),
                         &label,
@@ -109,8 +106,7 @@ impl PackageManager for SnapManager {
         }
         let label = format!("snap remove {}", packages.join(" "));
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "snap",
             sudo_cmd_with_seam("snap").arg("remove").args(packages),
             &label,
@@ -121,8 +117,7 @@ impl PackageManager for SnapManager {
 
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "snap",
             sudo_cmd_with_seam("snap").arg("refresh"),
             "snap refresh",

@@ -77,6 +77,18 @@ fn spawn_readers(child: &mut std::process::Child) -> mpsc::Receiver<Captured> {
     rx
 }
 
+/// Who emits the one status line for the work a [`run_command`] call is part of.
+///
+/// A command run on its own behalf settles its own line; a command run *inside*
+/// an action whose line the reconciler emits must not, or the action renders
+/// twice. The window's live tail is unaffected either way — only the collapse
+/// differs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusOwner {
+    Window,
+    Caller,
+}
+
 /// Run `cmd` with live output displayed through an [`OutputWindow`], capturing
 /// stdout and stderr for the returned `CommandOutput`.
 pub(crate) fn run_command(
@@ -84,6 +96,7 @@ pub(crate) fn run_command(
     depth: usize,
     cmd: &mut std::process::Command,
     label: &str,
+    settle: StatusOwner,
 ) -> std::io::Result<CommandOutput> {
     // Held for the whole run, not just the spawn: the child resolves its
     // program through `PATH` and reads its inherited working directory after
@@ -123,15 +136,25 @@ pub(crate) fn run_command(
     let status = child.wait()?;
     let duration = start.elapsed();
     if status.success() {
-        drop(window.finish_ok(label).duration(duration));
+        match settle {
+            StatusOwner::Window => drop(window.finish_ok(label).duration(duration)),
+            StatusOwner::Caller => window.finish_silent(),
+        }
     } else {
         let needs_replay = window.tail_needs_replay();
-        drop(
-            window
-                .finish_fail(label)
-                .detail(failure_detail(&status))
-                .duration(duration),
-        );
+        match settle {
+            StatusOwner::Window => drop(
+                window
+                    .finish_fail(label)
+                    .detail(failure_detail(&status))
+                    .duration(duration),
+            ),
+            // The caller renders the failure — with this command's stderr in
+            // its detail, since the error it builds carries it. The tail below
+            // is still replayed: it is the diagnostic, and the caller has only
+            // the collapsed first line of it.
+            StatusOwner::Caller => window.finish_silent(),
+        }
         // Streaming already left every line in the scrollback; replaying them
         // here would print the whole of stderr a second time.
         if needs_replay {
@@ -218,7 +241,14 @@ mod tests {
     fn captures_stdout_and_surfaces_the_label() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Normal);
-            let out = run_command(&p, 0, &mut sh("printf 'hello\nworld\n'"), "say hi").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'hello\nworld\n'"),
+                "say hi",
+                StatusOwner::Window,
+            )
+            .unwrap();
             assert!(out.status.success());
             assert_eq!(out.stdout, "hello\nworld");
             let captured = crate::output::strip_ansi(&buf.lock().unwrap());
@@ -236,6 +266,7 @@ mod tests {
                 0,
                 &mut sh("printf 'out\n'; printf 'err\n' 1>&2"),
                 "split",
+                StatusOwner::Window,
             )
             .unwrap();
             assert!(out.status.success());
@@ -249,8 +280,14 @@ mod tests {
     fn failure_emits_fail_status_and_propagates_exit_code() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Normal);
-            let out =
-                run_command(&p, 0, &mut sh("printf 'partial\n'; exit 7"), "fail-job").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'partial\n'; exit 7"),
+                "fail-job",
+                StatusOwner::Window,
+            )
+            .unwrap();
 
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(7));
@@ -276,6 +313,7 @@ mod tests {
                 0,
                 &mut sh("printf 'boom-1\n' 1>&2; printf 'boom-2\n' 1>&2; exit 9"),
                 "spin-fail",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -304,6 +342,7 @@ mod tests {
                 0,
                 &mut sh("printf 'MARKER-LINE\n' 1>&2; exit 3"),
                 "dup-check",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -324,7 +363,14 @@ mod tests {
     fn failure_detail_carries_the_exit_code() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Normal);
-            let out = run_command(&p, 0, &mut sh("exit 42"), "exit-code-job").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("exit 42"),
+                "exit-code-job",
+                StatusOwner::Window,
+            )
+            .unwrap();
 
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(42));
@@ -342,7 +388,14 @@ mod tests {
     fn quiet_suppresses_display_but_still_captures() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Quiet);
-            let out = run_command(&p, 0, &mut sh("printf 'q1\nq2\n'"), "quiet-job").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'q1\nq2\n'"),
+                "quiet-job",
+                StatusOwner::Window,
+            )
+            .unwrap();
 
             assert!(out.status.success());
             // Capture is independent of verbosity — the caller still sees both lines.
@@ -372,6 +425,7 @@ mod tests {
                 0,
                 &mut sh("for i in $(seq 1 12); do printf 'line-%02d\n' $i; done"),
                 "many-lines",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -394,6 +448,7 @@ mod tests {
                 0,
                 &mut sh(&format!("printf '%s\n' {payload}")),
                 "long-line",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -414,6 +469,7 @@ mod tests {
                 0,
                 &mut sh(r"printf 'tool: \033[31mred\033[0m text\n'"),
                 "ansi-job",
+                StatusOwner::Window,
             )
             .unwrap();
             assert!(out.status.success());

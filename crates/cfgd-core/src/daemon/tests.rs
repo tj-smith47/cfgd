@@ -6451,7 +6451,7 @@ impl PackageManager for RecordingUninstallManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _: &crate::output::Printer) -> crate::errors::Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> crate::errors::Result<HashSet<String>> {
@@ -13102,9 +13102,14 @@ mod tests_run_daemon_wrapper {
         }
     }
 
+    // Serial + explicitly unset: `resolve_default_ipc_path` consults
+    // `CFGD_DAEMON_IPC_PATH` before it ever looks at --runtime-dir, and the
+    // socket-server tests set that variable process-wide while they run.
     #[test]
+    #[serial_test::serial]
     fn cli_run_overrides_carry_the_state_dir_and_runtime_dir_flags() {
         use crate::daemon::cli_run_overrides;
+        let _unset_override = crate::test_helpers::EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
         let over = cli_run_overrides(

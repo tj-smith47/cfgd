@@ -2721,7 +2721,7 @@ impl PackageManager for TrackingPackageManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -2912,7 +2912,7 @@ impl PackageManager for ScriptedLikeManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -4602,7 +4602,7 @@ impl PackageManager for FailingPackageManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -6639,7 +6639,7 @@ impl PackageManager for BootstrappablePackageManager {
     fn can_bootstrap(&self) -> bool {
         true
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrapped.lock().unwrap() = true;
         Ok(())
     }
@@ -7730,13 +7730,18 @@ fn apply_system_action_unknown_key_renders_warn() {
         out.contains('\u{26A0}'),
         "unknown key must warn (⚠), got: {out}"
     );
-    assert!(
-        out.contains("unknown system key 'gti'"),
-        "warning must name the typo'd key, got: {out}"
-    );
-    assert!(
-        !out.contains("gti: "),
-        "must not render as a neutral skip line ('<key>: <reason>'), got: {out}"
+    // Byte-identical, not a substring: the sentence R3 moved out of
+    // `apply_system_action` into `format_plan_items` includes the
+    // ` — no such configurator (ignored)` half, and a substring assertion
+    // would pass with that half missing.
+    let line = out
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with('\u{26A0}'))
+        .unwrap_or_else(|| panic!("no warn line in: {out}"));
+    assert_eq!(
+        line,
+        "\u{26A0} unknown system key 'gti' — no such configurator (ignored)"
     );
 }
 
@@ -10847,9 +10852,9 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
     assert_eq!(sysctl_results[0].resource_id, "sysctl");
 }
 
-// `Reconciler::apply` streams per-action status via `status_simple` (warn/fail
-// lines with `[N/M]` prefixes). Callers that want a buffered summary (e.g.
-// `cmd_apply`'s `ApplyOutput`) emit a `Doc` on the same `Printer` right after.
+// `Reconciler::apply` streams one status line per action inside its phase/owner
+// tree. Callers that want a buffered summary (e.g. `cmd_apply`'s `ApplyOutput`)
+// emit a `Doc` on the same `Printer` right after.
 // The renderer's blank-line accounting must produce exactly one blank line
 // between the last streaming line and the buffered Doc's first visible line —
 // zero blanks would let the spinner's tail bleed into the summary; two would
@@ -10891,7 +10896,7 @@ mod bridge {
     #[cfg(unix)]
     fn run_minimal_bridge() -> String {
         let (printer, cap) = Printer::for_test_doc();
-        printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");
+        printer.status_simple(Role::Ok, "write /etc/hosts");
         let doc = Doc::new().status(Role::Ok, "Apply complete");
         printer.emit(doc);
         drop(printer);
@@ -11722,7 +11727,7 @@ impl PackageManager for BootstrappingPackageManager {
     fn can_bootstrap(&self) -> bool {
         true
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrap_called.lock().unwrap() = true;
         *self.available.lock().unwrap() = true;
         Ok(())
@@ -15767,7 +15772,7 @@ impl PackageManager for DispatchLogManager {
     fn can_bootstrap(&self) -> bool {
         true
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         self.record(format!("bootstrap:{}", self.name));
         *self.available.lock().unwrap() = true;
         Ok(())
@@ -16584,6 +16589,19 @@ fn apply_transcript(
     (result, out)
 }
 
+/// The glyphs a SETTLED status line can start with. A running window's `◐` is
+/// not one: it is overwritten in place on a terminal and is not the action's
+/// line. Counting only `✓`/`✗` would let a stray `⚠` or `—` line pass.
+const SETTLED_GLYPHS: [char; 5] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}'];
+
+/// How many settled status lines a transcript holds.
+fn status_line_count(out: &str) -> usize {
+    transcript_lines(out)
+        .iter()
+        .filter(|l| l.trim_start().starts_with(|c| SETTLED_GLYPHS.contains(&c)))
+        .count()
+}
+
 /// Every non-empty line of a transcript, trimmed — the shape assertions below
 /// are about ORDER, and a trailing-space diff is not what they are pinning.
 fn transcript_lines(out: &str) -> Vec<String> {
@@ -16957,17 +16975,28 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
 
 #[test]
 fn every_action_emits_exactly_one_line() {
-    // One action from each arm whose bespoke status line the tree replaced: if
-    // any of the eleven comes back, this run emits more lines than actions.
+    // One action from each arm whose bespoke status line the tree replaced,
+    // except the one that cannot share a run (`SecretAction::ResolveEnv` feeds
+    // the collector that triggers a late env regeneration, so it is pinned by
+    // `a_resolve_env_action_emits_one_line`): if any comes back, this run emits
+    // more lines than actions.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers
         .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.secret_backend = Some(Box::new(TestSecretBackend {
+        decrypted_value: "my-secret-token".to_string(),
+    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("provider-secret-value"),
+    ));
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let tmp = tempfile::tempdir().unwrap();
     let modules = vec![make_resolved_module("nvim")];
+    let enc = tmp.path().join("token.enc");
+    std::fs::write(&enc, "encrypted-data").unwrap();
 
     let actions = vec![
         Action::Module(ModuleAction {
@@ -16986,10 +17015,26 @@ fn every_action_emits_exactly_one_line() {
             path: tmp.path().join(".cfgd.env"),
             content: "export A=1\n".to_string(),
         }),
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: tmp.path().join(".bashrc"),
+            line: "source ~/.cfgd.env".to_string(),
+        }),
         Action::Env(EnvAction::RefreshLiveSession { vars: vec![] }),
         Action::Package(PackageAction::Skip {
             manager: "apt".to_string(),
             reason: "not available on this host".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::Secret(SecretAction::Decrypt {
+            source: enc.clone(),
+            target: tmp.path().join("token.txt"),
+            backend: "test-sops".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::Secret(SecretAction::Resolve {
+            provider: "vault".to_string(),
+            reference: "secret/data/app#key".to_string(),
+            target: tmp.path().join("resolved.txt"),
             origin: "local".to_string(),
         }),
         Action::Secret(SecretAction::Skip {
@@ -17023,17 +17068,52 @@ fn every_action_emits_exactly_one_line() {
     let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
 
     assert_eq!(result.action_results.len(), planned);
-    let statuses = transcript_lines(&out)
-        .iter()
-        .filter(|l| {
-            let l = l.trim_start();
-            l.starts_with('\u{2713}')
-                || l.starts_with('\u{2717}')
-                || l.starts_with('\u{26A0}')
-                || l.starts_with('\u{2014}')
-        })
-        .count();
-    assert_eq!(statuses, planned, "one line per action, no more: {out}");
+    assert_eq!(
+        status_line_count(&out),
+        planned,
+        "one line per action, no more: {out}"
+    );
+}
+
+#[test]
+fn a_resolve_env_action_emits_one_line() {
+    // Applied on its own because a resolved env secret feeds the collector that
+    // regenerates the shell env files at the end of the run: that regeneration
+    // appends results, so this arm cannot be counted alongside the others.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("ghp_abc123"),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    // The regeneration would otherwise reach the developer's real login session,
+    // which no test home can sandbox; the surfaces that stay on disk are enough.
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::ResolveEnv {
+                provider: "vault".to_string(),
+                reference: "secret/data/gh#token".to_string(),
+                envs: vec!["GH_TOKEN".to_string()],
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert_eq!(
+        status_line_count(&out),
+        1,
+        "the resolved-env action owns one line; the regeneration owns none: {out}"
+    );
 }
 
 #[cfg(unix)]
@@ -17067,14 +17147,11 @@ fn a_script_phase_emits_one_line_per_script_not_two() {
     let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
 
     assert_eq!(result.action_results.len(), 2);
-    let settled = transcript_lines(&out)
-        .iter()
-        .filter(|l| {
-            let l = l.trim_start();
-            l.starts_with('\u{2713}') || l.starts_with('\u{2717}')
-        })
-        .count();
-    assert_eq!(settled, 2, "n scripts emit n status lines, not 2n: {out}");
+    assert_eq!(
+        status_line_count(&out),
+        2,
+        "n scripts emit n status lines, not 2n: {out}"
+    );
 }
 
 #[test]
@@ -17157,7 +17234,7 @@ fn streaming_phase_lines_appear_as_work_completes() {
     let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
 
     let first_status = out
-        .find("\u{2713} postApply: echo first-body")
+        .find("\u{2713} run postApply script: echo first-body")
         .expect("first status");
     let second_body = out.find("second-body").expect("second body");
     assert!(
@@ -17240,7 +17317,7 @@ impl PackageManager for NotePushingManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {

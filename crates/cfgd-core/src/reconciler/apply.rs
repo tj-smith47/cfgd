@@ -26,6 +26,9 @@ use crate::providers::{FileAction, NoteSink, PackageAction, PostInstallNote, Sec
 /// and written either immediately (a streaming phase) or at phase close
 /// (`Packages`, whose dispatch order is not its reading order).
 struct ActionOutcome {
+    /// The action's display subject, resolved once at record time so the
+    /// streaming writer and the deferred one cannot disagree about it.
+    subject: String,
     role: Role,
     detail: Option<String>,
     /// The detail was derived from the plan or from the action's own no-op
@@ -107,9 +110,17 @@ fn bootstrap_attribution(
 }
 
 /// Write one action's line, then the notes its manager produced under it.
-fn emit_action_line(section: &SectionGuard<'_>, subject: &str, outcome: &ActionOutcome) {
+/// The notes a manager produced during one action, under the status that
+/// action just emitted — whoever emitted it.
+fn emit_notes(section: &SectionGuard<'_>, notes: &[PostInstallNote]) {
+    for note in notes {
+        section.attached_status(Role::Warn, format!("[{}] {}", note.manager, note.message));
+    }
+}
+
+fn emit_action_line(section: &SectionGuard<'_>, outcome: &ActionOutcome) {
     {
-        let mut builder = section.action_status(outcome.role, subject);
+        let mut builder = section.action_status(outcome.role, &outcome.subject);
         if outcome.detail_muted {
             builder = builder.detail_muted_opt(outcome.detail.as_deref());
         } else {
@@ -120,9 +131,7 @@ fn emit_action_line(section: &SectionGuard<'_>, subject: &str, outcome: &ActionO
         }
         drop(builder);
     }
-    for note in &outcome.notes {
-        section.attached_status(Role::Warn, format!("[{}] {}", note.manager, note.message));
-    }
+    emit_notes(section, &outcome.notes);
 }
 
 /// Identity of one planned action, for correlating the plan-order walk with the
@@ -646,12 +655,25 @@ impl<'a> super::Reconciler<'a> {
                     changed,
                 });
 
+                // Drained unconditionally: a note left in the sink would
+                // attach to whichever action drains next, which is not the one
+                // that produced it.
+                let drained = notes.take();
                 // One status line per plan action, always — except the two
                 // script shapes, whose line `execute_script` already emitted.
-                let drained = notes.take();
-                if !action_reports_its_own_status(action) {
+                // Their notes still belong under it.
+                if action_reports_its_own_status(action) {
+                    if let Some(section) = owner_section.as_ref() {
+                        emit_notes(section, &drained);
+                    }
+                } else {
+                    let subject = subjects
+                        .get(&action_key(action))
+                        .cloned()
+                        .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
                     let outcome = match &failure_detail {
                         Some((message, continue_on_err)) => ActionOutcome {
+                            subject,
                             role: if *continue_on_err {
                                 Role::Warn
                             } else {
@@ -690,6 +712,7 @@ impl<'a> super::Reconciler<'a> {
                                 ),
                             };
                             ActionOutcome {
+                                subject,
                                 role,
                                 detail,
                                 detail_muted: true,
@@ -698,15 +721,11 @@ impl<'a> super::Reconciler<'a> {
                             }
                         }
                     };
-                    let subject = subjects
-                        .get(&action_key(action))
-                        .cloned()
-                        .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
                     match (deferred, owner_section.as_ref()) {
                         (true, _) => {
                             recorded.insert(action_key(action), outcome);
                         }
-                        (false, Some(section)) => emit_action_line(section, &subject, &outcome),
+                        (false, Some(section)) => emit_action_line(section, &outcome),
                         // `PhaseName::Modules` opens no block: its only actions
                         // are platform-gated skips, which the header's
                         // `Modules` row already annotates.
@@ -761,11 +780,7 @@ impl<'a> super::Reconciler<'a> {
                             opened.live_column(width);
                             opened
                         });
-                        let subject = subjects
-                            .get(&action_key(action))
-                            .map(String::as_str)
-                            .unwrap_or_default();
-                        emit_action_line(group_section, subject, &outcome);
+                        emit_action_line(group_section, &outcome);
                     }
                 }
             }

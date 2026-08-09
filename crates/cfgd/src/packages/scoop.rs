@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
 use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
@@ -86,13 +85,9 @@ impl PackageManager for ScoopManager {
         true
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
-            // `bootstrap` takes only a printer, so there is no action context
-            // to attach a note to; the installer's own output already streamed
-            // through the window above.
-            cfgd_core::providers::NoteSink::discarded(),
+            cx,
             "scoop",
             Command::new("powershell").args([
                 "-NoProfile",
@@ -139,8 +134,7 @@ impl PackageManager for ScoopManager {
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "scoop",
                 scoop_cmd().args(["install", pkg]),
                 &format!("Installing {}", pkg),
@@ -153,8 +147,7 @@ impl PackageManager for ScoopManager {
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "scoop",
                 scoop_cmd().args(["uninstall", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -166,8 +159,7 @@ impl PackageManager for ScoopManager {
 
     fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "scoop",
             scoop_cmd().args(["update", "*"]),
             "Upgrading all scoop packages",
@@ -332,7 +324,39 @@ mod tests {
             // requiring real Windows infrastructure.
             let (_bin, _path) = install_named_path_shim("powershell", 0, "", "");
             let p = test_printer();
-            ScoopManager.bootstrap(&p).expect("bootstrap Ok via shim");
+            ScoopManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via shim");
+        }
+
+        /// The scoop installer warns on stderr about what the user must do next
+        /// (a PATH entry that only a new shell sees). Those notes belong to the
+        /// caller's sink, which renders them under the action's status line —
+        /// the reason `bootstrap` takes the whole context, not a bare printer.
+        #[test]
+        #[serial]
+        fn scoop_bootstrap_caveats_reach_the_callers_sink() {
+            let (_bin, _path) = install_named_path_shim(
+                "powershell",
+                0,
+                "",
+                "WARNING: scoop shims are on PATH only in a new shell",
+            );
+            let p = test_printer();
+            let notes = cfgd_core::providers::NoteSink::default();
+            ScoopManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                    &p, &notes,
+                ))
+                .expect("bootstrap Ok via shim");
+            let drained = notes.take();
+            assert_eq!(drained.len(), 1, "expected one caveat, got {drained:?}");
+            assert_eq!(drained[0].manager, "scoop");
+            assert!(
+                drained[0].message.contains("new shell"),
+                "got: {}",
+                drained[0].message
+            );
         }
 
         #[test]
@@ -342,7 +366,7 @@ mod tests {
                 install_named_path_shim("powershell", 1, "", "scoop install failed");
             let p = test_printer();
             let err = ScoopManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("non-zero powershell must error");
             let _ = err.to_string();
         }

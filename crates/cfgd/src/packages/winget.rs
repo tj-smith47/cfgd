@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
@@ -79,7 +78,7 @@ impl PackageManager for WingetManager {
         false
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Err(PackageError::BootstrapFailed {
             manager: "winget".into(),
             message: "winget ships with Windows; install App Installer from the Microsoft Store"
@@ -123,8 +122,7 @@ impl PackageManager for WingetManager {
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "winget",
                 Command::new("winget").args([
                     "install",
@@ -143,8 +141,7 @@ impl PackageManager for WingetManager {
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "winget",
                 Command::new("winget").args(["uninstall", "--id", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -156,8 +153,7 @@ impl PackageManager for WingetManager {
 
     fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
-            cx.notes,
+            cx,
             "winget",
             Command::new("winget").args([
                 "upgrade",
@@ -286,7 +282,7 @@ Git        Git.Git     2.43.0\n\
     fn winget_manager_bootstrap_returns_error() {
         let mgr = WingetManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        let result = mgr.bootstrap(&printer);
+        let result = mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer));
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Microsoft Store"));
@@ -408,7 +404,7 @@ SomeApp               Some.App                  1.0.0\n";
     fn winget_bootstrap_error_contains_microsoft_store_message() {
         let mgr = WingetManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        let result = mgr.bootstrap(&printer);
+        let result = mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(

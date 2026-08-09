@@ -6,7 +6,6 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -48,9 +47,9 @@ impl PackageManager for CargoManager {
         command_available("curl")
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
-            printer,
+            cx,
             "cargo",
             "Installing Rust via rustup",
             "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
@@ -75,8 +74,7 @@ impl PackageManager for CargoManager {
         for pkg in packages {
             let label = format!("cargo install {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "cargo",
                 cargo_cmd().args(["install", pkg]),
                 &label,
@@ -94,8 +92,7 @@ impl PackageManager for CargoManager {
         for pkg in packages {
             let label = format!("cargo uninstall {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
-                cx.notes,
+                cx,
                 "cargo",
                 cargo_cmd().args(["uninstall", pkg]),
                 &label,
@@ -589,7 +586,9 @@ tokei v12.1.2:
         fn cargo_bootstrap_runs_sh_rustup_pipeline_ok() {
             let (_bin, _path) = install_named_path_shim("sh", 0, "", "");
             let p = test_printer();
-            CargoManager.bootstrap(&p).expect("bootstrap Ok via shim");
+            CargoManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via shim");
         }
 
         #[test]
@@ -598,7 +597,7 @@ tokei v12.1.2:
             let (_bin, _path) = install_named_path_shim("sh", 1, "", "rustup unreachable");
             let p = test_printer();
             let err = CargoManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("non-zero sh must error");
             let msg = err.to_string();
             assert!(

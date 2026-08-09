@@ -72,7 +72,7 @@ impl PackageManager for MockPackageManager {
         self.bootstrappable
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -135,7 +135,7 @@ impl PackageManager for GoLikeMockManager {
     fn can_bootstrap(&self) -> bool {
         false
     }
-    fn bootstrap(&self, _: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -2067,7 +2067,8 @@ fn mock_manager_available_version_is_none() {
 fn mock_manager_bootstrap_is_noop() {
     let mock = MockPackageManager::new("test", false, vec![]).with_bootstrap();
     let printer = cfgd_core::test_helpers::test_printer();
-    mock.bootstrap(&printer).unwrap();
+    mock.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 // --- Brewfile parsing edge cases ---

@@ -328,7 +328,8 @@ fn simple_manager_is_available_without_custom_fn() {
 fn simple_manager_bootstrap_is_noop() {
     let apt = apt_manager();
     let printer = cfgd_core::test_helpers::test_printer();
-    apt.bootstrap(&printer).unwrap();
+    apt.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 #[test]

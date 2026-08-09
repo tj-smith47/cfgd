@@ -121,19 +121,20 @@ impl<'a> super::Reconciler<'a> {
                             .find(|m| m.name() == first.manager);
 
                         if let Some(pm) = pm {
+                            let cx = crate::providers::PackageContext::with_notes(
+                                printer, self.state, notes,
+                            )
+                            .caller_owns_status();
+
                             // Bootstrap if needed. The manager's PATH directories
                             // are recorded, never appended to `~/.cfgd.env` here:
                             // the generated env file has exactly one writer, and
                             // an out-of-band append would be erased by the next
                             // wholesale rewrite of that file.
                             if !pm.is_available() && pm.can_bootstrap() {
-                                pm.bootstrap(printer)?;
+                                pm.bootstrap(&cx)?;
                                 self.record_bootstrap_path_dirs(pm.as_ref(), printer);
                             }
-
-                            let cx = crate::providers::PackageContext::with_notes(
-                                printer, self.state, notes,
-                            );
 
                             // Update package index before installing
                             if pm.is_available() {
