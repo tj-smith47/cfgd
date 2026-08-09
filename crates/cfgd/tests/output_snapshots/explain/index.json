@@ -3449,6 +3449,12 @@
                 "type": "string"
               },
               {
+                "description": "Fills `Theme::primary`, the style an action subject at the deepest level of the run tree is painted with. Presets that carry no palette foreground of their own leave it unset.",
+                "name": "primary",
+                "required": false,
+                "type": "string"
+              },
+              {
                 "description": "",
                 "name": "running",
                 "required": false,

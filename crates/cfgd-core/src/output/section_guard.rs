@@ -101,9 +101,51 @@ impl<'p> SectionGuard<'p> {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         self
+    }
+
+    /// Status at this section's depth whose SUBJECT is painted
+    /// `theme.primary` — the deepest level of the phase → owner → action tree,
+    /// and the only caller of `StatusFields::subject_style`. A preset with no
+    /// palette foreground of its own answers `None` and the subject keeps its
+    /// role style, which is byte-identical to `status`.
+    pub fn action_status(
+        &self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> super::status_builder::StatusBuilder<'_> {
+        self.status(role, subject)
+            .with_subject_style(self.renderer.theme.primary.clone())
+    }
+
+    /// Mark this section live: its statuses render as they complete rather
+    /// than at close, right-padded to `width` so the trailing muted column
+    /// still aligns. `width` is computed from the plan before the run, because
+    /// a live stream cannot wait for its own close to learn it. Sections that
+    /// never call this keep buffer-and-align semantics exactly.
+    pub fn live_column(&self, width: usize) -> &Self {
+        self.renderer.render_section_live_column(width);
+        self
+    }
+
+    /// Open a child section headed by a styled owner token.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_owner(&self, label: &super::OwnerLabel) -> SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ true,
+        );
+        SectionGuard {
+            printer: self.printer,
+            renderer: self.renderer.clone(),
+            sink: self.sink.clone(),
+            depth: self.depth + 1,
+        }
     }
 
     /// Status builder at this section's depth. Commits on Drop.
@@ -152,7 +194,7 @@ impl<'p> SectionGuard<'p> {
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
         let message = message.into();
-        let bar = super::spinner::make_spinner_bar(
+        let (bar, live) = super::spinner::make_spinner_bar(
             &self.printer.multi_progress,
             &self.renderer,
             self.printer.verbosity(),
@@ -166,6 +208,7 @@ impl<'p> SectionGuard<'p> {
             bar,
             message,
             finished: false,
+            _live: live,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -177,14 +220,16 @@ impl<'p> SectionGuard<'p> {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
-        let bar = super::spinner::make_progress_bar(
+        let (bar, live) = super::spinner::make_progress_bar(
             &self.printer.multi_progress,
+            &self.renderer,
             total,
             self.printer.verbosity(),
             &message.into(),
         );
         super::spinner::ProgressBar {
             bar,
+            _live: live,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -340,6 +385,170 @@ mod tests {
         assert!(
             out.contains("parent-status"),
             "parent status missing: {out:?}"
+        );
+    }
+
+    // --- action_status / live_column / section_owner ---
+
+    /// Render one section body against `theme`, returning the captured bytes
+    /// with the section header line dropped.
+    fn capture_section(
+        theme: crate::output::Theme,
+        body: impl FnOnce(&crate::output::section_guard::SectionGuard<'_>),
+    ) -> String {
+        let (p, buf) = Printer::for_test_with_theme(theme, Verbosity::Normal);
+        {
+            let s = p.section("Files");
+            body(&s);
+        }
+        p.flush();
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        raw.lines().skip(1).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `theme.primary` is `None` under `default`, so an action subject keeps
+    /// its role style and the redesign's deepest line is byte-identical to
+    /// what `status` renders today. A preset that DOES carry a primary must
+    /// diverge, or the assertion above would pass on a seam that does nothing.
+    #[test]
+    #[serial_test::serial]
+    fn action_subject_keeps_role_style_under_default() {
+        use crate::output::Theme;
+        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+
+        let plain_default = capture_section(Theme::from_preset("default"), |s| {
+            let _ = s.status(Role::Ok, "wrote /etc/hosts");
+        });
+        let action_default = capture_section(Theme::from_preset("default"), |s| {
+            let _ = s.action_status(Role::Ok, "wrote /etc/hosts");
+        });
+        assert_eq!(
+            action_default, plain_default,
+            "default has no primary, so the subject must keep the role style"
+        );
+
+        let plain_dracula = capture_section(Theme::from_preset("dracula"), |s| {
+            let _ = s.status(Role::Ok, "wrote /etc/hosts");
+        });
+        let action_dracula = capture_section(Theme::from_preset("dracula"), |s| {
+            let _ = s.action_status(Role::Ok, "wrote /etc/hosts");
+        });
+        assert_ne!(
+            action_dracula, plain_dracula,
+            "dracula carries a primary, so the subject must take it"
+        );
+        assert_eq!(
+            strip_ansi(&action_dracula),
+            strip_ansi(&plain_dracula),
+            "the seam is colour-only; no visible text may change"
+        );
+    }
+
+    /// The glyph is the role's, whatever the subject takes — a green ✓ in
+    /// front of a palette-coloured subject is the whole point of the split.
+    #[test]
+    #[serial_test::serial]
+    fn action_status_leaves_the_glyph_on_the_role_style() {
+        use crate::output::Theme;
+        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+        let theme = Theme::from_preset("dracula");
+        let glyph_run = theme.success.apply_to(&theme.icon_ok).to_string();
+        let out = capture_section(Theme::from_preset("dracula"), |s| {
+            let _ = s.action_status(Role::Ok, "wrote /etc/hosts");
+        });
+        assert!(
+            out.contains(&glyph_run),
+            "glyph lost the role style: {out:?}"
+        );
+    }
+
+    /// A live section emits each status as it arrives; a buffered one holds
+    /// every status until close. The ordering against an interleaved bullet is
+    /// what separates the two.
+    #[test]
+    fn live_column_emits_statuses_before_close() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Live");
+            s.live_column(20);
+            let _ = s.status(Role::Ok, "first");
+            s.bullet("after");
+        }
+        p.flush();
+        let live = strip_ansi(&buf.lock().unwrap());
+        let first = live.find("first").expect("status missing");
+        let after = live.find("after").expect("bullet missing");
+        assert!(
+            first < after,
+            "live status did not emit on arrival: {live:?}"
+        );
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Buffered");
+            let _ = s.status(Role::Ok, "first");
+            s.bullet("after");
+        }
+        p.flush();
+        let buffered = strip_ansi(&buf.lock().unwrap());
+        let first = buffered.find("first").expect("status missing");
+        let after = buffered.find("after").expect("bullet missing");
+        assert!(
+            after < first,
+            "a section with no live column must still buffer to close: {buffered:?}"
+        );
+    }
+
+    /// The live column pads exactly the lines a section close would have
+    /// padded: a subject with trailing content, and no other.
+    #[test]
+    fn live_column_pads_only_subjects_with_trailing_content() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Live");
+            s.live_column(20);
+            let _ = s.status(Role::Ok, "short").detail("done");
+            let _ = s.status(Role::Ok, "bare");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(
+            out.contains(&format!("short{} — done", " ".repeat(15))),
+            "subject was not padded to the column: {out:?}"
+        );
+        assert!(
+            out.contains("✓ bare\n"),
+            "a subject with no trailing content must not be padded: {out:?}"
+        );
+    }
+
+    /// A child section headed by an owner token renders the token, not the
+    /// header slot's own styling of it.
+    #[test]
+    #[serial_test::serial]
+    fn section_owner_heads_the_group_with_the_owner_token() {
+        use crate::output::{OwnerLabel, Theme};
+        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+        let label = OwnerLabel::new("module", "nvim");
+        let expected = label.styled(&Theme::from_preset("dracula"));
+
+        let (p, buf) =
+            Printer::for_test_with_theme(Theme::from_preset("dracula"), Verbosity::Normal);
+        {
+            let phase = p.section("Phase: Files");
+            let owner = phase.section_owner(&label);
+            owner.bullet("wrote init.lua");
+        }
+        p.flush();
+        let raw = buf.lock().unwrap().clone();
+        assert!(
+            raw.contains(&expected),
+            "owner token missing or restyled: {raw:?}"
+        );
+        let plain = strip_ansi(&raw);
+        assert!(
+            plain.contains("\n  module:nvim\n"),
+            "owner group must sit one level under its phase: {plain:?}"
         );
     }
 }

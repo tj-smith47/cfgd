@@ -61,6 +61,8 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                     detail: detail.as_deref(),
                     duration: duration_ms.map(|ms| Duration::from_millis(ms as u64)),
                     target: target_pb.as_deref(),
+                    subject_style: None,
+                    detail_style: None,
                 },
             );
         }

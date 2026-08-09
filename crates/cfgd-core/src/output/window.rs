@@ -84,6 +84,8 @@ impl<'p> OutputWindow<'p> {
                     detail: None,
                     duration: None,
                     target: None,
+                    subject_style: None,
+                    detail_style: None,
                 },
             );
         }
@@ -140,14 +142,23 @@ impl<'p> OutputWindow<'p> {
         self.spinner.set_message(msg);
     }
 
+    /// Collapse the window and replace it with a single Status in `role`.
+    ///
+    /// The general form: `finish_ok` / `finish_warn` / `finish_fail` are the
+    /// three roles with names, and a caller whose role is computed needs the
+    /// parameter rather than a fourth name.
+    pub fn finish_with(self, role: Role, subject: impl Into<String>) -> StatusBuilder<'p> {
+        self.spinner.finish_with(role, subject)
+    }
+
     /// Collapse the window and replace it with a single success Status.
     pub fn finish_ok(self, subject: impl Into<String>) -> StatusBuilder<'p> {
-        self.spinner.finish_ok(subject)
+        self.finish_with(Role::Ok, subject)
     }
 
     /// Collapse the window and replace it with a single warning Status.
     pub fn finish_warn(self, subject: impl Into<String>) -> StatusBuilder<'p> {
-        self.spinner.finish_warn(subject)
+        self.finish_with(Role::Warn, subject)
     }
 
     /// Collapse the window and replace it with a single failure Status.
@@ -156,7 +167,7 @@ impl<'p> OutputWindow<'p> {
     /// child's output visible after a failure holds the full capture and
     /// renders it itself, below the Status.
     pub fn finish_fail(self, subject: impl Into<String>) -> StatusBuilder<'p> {
-        self.spinner.finish_fail(subject)
+        self.finish_with(Role::Fail, subject)
     }
 
     /// True when the tail lived in the repainting window and is therefore gone
@@ -199,7 +210,7 @@ impl super::Printer {
     #[must_use]
     pub fn output_window_at(&self, depth: usize, label: impl Into<String>) -> OutputWindow<'_> {
         let label = label.into();
-        let bar = super::spinner::make_spinner_bar(
+        let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
             self.verbosity(),
@@ -213,6 +224,7 @@ impl super::Printer {
             bar,
             message: label.clone(),
             finished: false,
+            _live: live,
             _phantom: PhantomData,
         };
         OutputWindow::new(spinner, label)
@@ -244,6 +256,7 @@ mod tests {
             bar: indicatif::ProgressBar::hidden(),
             message: "step".into(),
             finished: false,
+            _live: None,
             _phantom: PhantomData,
         };
         (OutputWindow::new(spinner, "step".into()), buf)
@@ -353,6 +366,7 @@ mod tests {
             bar: indicatif::ProgressBar::hidden(),
             message: "step".into(),
             finished: false,
+            _live: None,
             _phantom: PhantomData,
         };
         let mut w = OutputWindow::new(spinner, "step".into());
@@ -413,5 +427,21 @@ mod tests {
             available_width(&sink, 40) >= 24,
             "clamped below a usable floor"
         );
+    }
+
+    #[test]
+    fn window_finish_with_emits_the_given_role() {
+        // The Windowed script arm picks its role from `non_fatal` at the call
+        // site, so the primitive has to carry an arbitrary role through rather
+        // than offering three fixed collapses.
+        for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "—")] {
+            let (w, buf) = window(0, Verbosity::Normal);
+            let _ = w.finish_with(role, "script finished");
+            let out = strip_ansi(&buf.lock().unwrap());
+            assert!(
+                out.contains(&format!("{glyph} script finished")),
+                "role {role:?} did not reach the status line: {out:?}"
+            );
+        }
     }
 }

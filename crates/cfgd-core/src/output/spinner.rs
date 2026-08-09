@@ -14,7 +14,7 @@ use std::time::Duration;
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
 use super::Role;
-use super::renderer::{Renderer, Writer, wrap};
+use super::renderer::{LiveBarGuard, Renderer, Writer, wrap};
 use super::status_builder::StatusBuilder;
 
 pub(crate) fn stderr_is_terminal() -> bool {
@@ -48,6 +48,10 @@ pub struct Spinner<'p> {
     pub(crate) bar: IndProgressBar,
     pub(crate) message: String,
     pub(crate) finished: bool,
+    /// Held for the bar's lifetime so the renderer's live-bar count tracks it
+    /// with no paired decrement to forget. `None` for a hidden bar, which is
+    /// never added to the MultiProgress and so must not be counted.
+    pub(crate) _live: Option<LiveBarGuard>,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
 
@@ -70,7 +74,15 @@ impl<'p> Spinner<'p> {
         self.finish_with(Role::Skipped, final_text)
     }
 
-    fn finish_with(mut self, role: Role, subject: impl Into<String>) -> StatusBuilder<'p> {
+    /// The general form the four named finishes delegate to. `pub(crate)` so
+    /// `OutputWindow` can offer the same shape without widening a spinner's
+    /// finish to the public API, where it would invite a caller to bypass the
+    /// window's collapse.
+    pub(crate) fn finish_with(
+        mut self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> StatusBuilder<'p> {
         self.bar.finish_and_clear();
         self.finished = true;
         // The Arc clones below give the returned StatusBuilder an
@@ -118,6 +130,9 @@ impl Drop for Spinner<'_> {
 /// Bounded progress bar.
 pub struct ProgressBar<'p> {
     pub(crate) bar: IndProgressBar,
+    /// See `Spinner::_live`. `finish` consumes the wrapper, so the guard is
+    /// released exactly once with no `Drop` impl of its own.
+    pub(crate) _live: Option<LiveBarGuard>,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
 
@@ -142,13 +157,13 @@ impl<'p> ProgressBar<'p> {
 /// `SectionGuard::spinner` to avoid duplicating the gate.
 pub(crate) fn make_spinner_bar(
     multi: &indicatif::MultiProgress,
-    renderer: &Renderer,
+    renderer: &Arc<Renderer>,
     verbosity: super::Verbosity,
     depth: usize,
     message: &str,
-) -> IndProgressBar {
+) -> (IndProgressBar, Option<LiveBarGuard>) {
     if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
-        IndProgressBar::hidden()
+        (IndProgressBar::hidden(), None)
     } else {
         // No `Spinner` (and so no sink) exists yet at this point in
         // construction — this measures `console::Term::stderr()` directly,
@@ -157,35 +172,39 @@ pub(crate) fn make_spinner_bar(
         // `stderr_is_terminal()` just returned true, and a captured-output
         // test always trips the `IndProgressBar::hidden()` branch above
         // instead, so this can never influence a `StringSink` capture.
-        build_spinner(
+        let (bar, live) = build_spinner(
             multi,
             renderer,
             &clamp_label(&console::Term::stderr(), message, depth),
-        )
+        );
+        (bar, Some(live))
     }
 }
 
 /// Same gate as `make_spinner_bar`, for bounded progress bars.
 pub(crate) fn make_progress_bar(
     multi: &indicatif::MultiProgress,
+    renderer: &Arc<Renderer>,
     total: u64,
     verbosity: super::Verbosity,
     message: &str,
-) -> IndProgressBar {
+) -> (IndProgressBar, Option<LiveBarGuard>) {
     if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
-        IndProgressBar::hidden()
+        (IndProgressBar::hidden(), None)
     } else {
-        build_progress_bar(multi, total, message)
+        let (bar, live) = build_progress_bar(multi, renderer, total, message);
+        (bar, Some(live))
     }
 }
 
 /// Build a styled spinner ProgressBar attached to a MultiProgress.
 pub(crate) fn build_spinner(
     multi: &indicatif::MultiProgress,
-    renderer: &Renderer,
+    renderer: &Arc<Renderer>,
     message: &str,
-) -> IndProgressBar {
+) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new_spinner());
+    let live = LiveBarGuard::acquire(renderer);
     let frames_raw = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let styled: Vec<String> = frames_raw
         .iter()
@@ -200,22 +219,24 @@ pub(crate) fn build_spinner(
     );
     pb.set_message(message.to_string());
     pb.enable_steady_tick(Duration::from_millis(80));
-    pb
+    (pb, live)
 }
 
 pub(crate) fn build_progress_bar(
     multi: &indicatif::MultiProgress,
+    renderer: &Arc<Renderer>,
     total: u64,
     message: &str,
-) -> IndProgressBar {
+) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new(total));
+    let live = LiveBarGuard::acquire(renderer);
     pb.set_style(
         ProgressStyle::with_template("{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}")
             .unwrap_or_else(|_| ProgressStyle::default_bar())
             .progress_chars("━╸─"),
     );
     pb.set_message(message.to_string());
-    pb
+    (pb, live)
 }
 
 #[cfg(test)]
@@ -268,6 +289,7 @@ mod tests {
             bar: indicatif::ProgressBar::hidden(),
             message: "doing work".into(),
             finished: false,
+            _live: None,
             _phantom: std::marker::PhantomData,
         };
         let _ = sp.finish_ok("done");
@@ -289,6 +311,7 @@ mod tests {
                 bar: indicatif::ProgressBar::hidden(),
                 message: "abandoned".into(),
                 finished: false,
+                _live: None,
                 _phantom: std::marker::PhantomData,
             };
         }

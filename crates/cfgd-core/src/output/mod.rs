@@ -19,6 +19,9 @@ pub mod renderer;
 pub mod printer;
 pub use printer::{DocCapture, Printer, PromptAnswer};
 
+pub mod owner_label;
+pub use owner_label::OwnerLabel;
+
 pub mod section_guard;
 pub use section_guard::SectionGuard;
 

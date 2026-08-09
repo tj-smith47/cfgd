@@ -11,6 +11,7 @@ use std::time::Duration;
 use super::Role;
 use super::component::StatusLabel;
 use super::renderer::{Renderer, StatusFields, Writer, finalize_subject};
+use super::theme::ThemedStyle;
 
 /// Builder for one Status line. Commits on Drop.
 ///
@@ -28,6 +29,8 @@ pub struct StatusBuilder<'p> {
     pub(crate) duration: Option<Duration>,
     pub(crate) target: Option<PathBuf>,
     pub(crate) label: Option<StatusLabel>,
+    pub(crate) subject_style: Option<ThemedStyle>,
+    pub(crate) detail_style: Option<ThemedStyle>,
     /// Lifetime parameter binding to either Printer or SectionGuard.
     pub(crate) _phantom: std::marker::PhantomData<&'p ()>,
 }
@@ -52,8 +55,17 @@ impl<'p> StatusBuilder<'p> {
             duration: None,
             target: None,
             label: None,
+            subject_style: None,
+            detail_style: None,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Paint the SUBJECT with `style`. Crate-private: the theme is `output/`'s
+    /// to own, so the only caller is `SectionGuard::action_status`.
+    pub(crate) fn with_subject_style(mut self, style: Option<ThemedStyle>) -> Self {
+        self.subject_style = style;
+        self
     }
 
     pub fn detail(mut self, text: impl Into<String>) -> Self {
@@ -63,6 +75,24 @@ impl<'p> StatusBuilder<'p> {
 
     pub fn detail_opt(mut self, text: Option<&str>) -> Self {
         self.detail = text.map(|s| s.to_string());
+        self
+    }
+
+    /// A detail that is trailing METADATA: rendered `theme.muted`. The plain
+    /// `detail` / `detail_opt` pair stays the right form for an error and for
+    /// tool output, which the reader has to act on rather than skim past.
+    pub fn detail_muted(mut self, text: impl Into<String>) -> Self {
+        self.detail = Some(text.into());
+        self.detail_style = Some(self.renderer.theme.muted.clone());
+        self
+    }
+
+    pub fn detail_muted_opt(mut self, text: Option<&str>) -> Self {
+        self.detail = text.map(|s| s.to_string());
+        self.detail_style = self
+            .detail
+            .is_some()
+            .then(|| self.renderer.theme.muted.clone());
         self
     }
 
@@ -110,6 +140,8 @@ impl Drop for StatusBuilder<'_> {
                 detail,
                 duration: self.duration,
                 target,
+                subject_style: self.subject_style.clone(),
+                detail_style: self.detail_style.clone(),
             },
         );
     }
@@ -258,5 +290,51 @@ mod tests {
         );
         let visible = strip_ansi(&raw);
         assert!(visible.contains("subject with foo"), "got: {visible:?}");
+    }
+
+    /// `detail_style` paints the detail slot and nothing else. `None` — every
+    /// existing call site — must emit a detail carrying no SGR of its own, or
+    /// the seam would silently restyle output it was added beside.
+    #[test]
+    #[serial]
+    fn detail_style_paints_only_the_detail_slot() {
+        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+        let theme = Theme::from_preset("dracula");
+        let muted_detail = theme.muted.apply_to("unchanged").to_string();
+
+        let render = |muted: bool| {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let r = Arc::new(Renderer::new(
+                Theme::from_preset("dracula"),
+                Verbosity::Normal,
+            ));
+            let b = StatusBuilder::new(r, sink_for(&buf), 0, Role::Skipped, "nvim");
+            drop(if muted {
+                b.detail_muted("unchanged")
+            } else {
+                b.detail("unchanged")
+            });
+            buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+
+        let plain = render(false);
+        let muted = render(true);
+
+        // Same visible line either way.
+        assert_eq!(strip_ansi(&plain), strip_ansi(&muted));
+        // The subject half is byte-identical: the seam reaches the detail only.
+        let split = |s: &str| {
+            s.split_once(" — ")
+                .map(|(head, tail)| (head.to_string(), tail.to_string()))
+                .expect("detail separator missing")
+        };
+        let (plain_head, plain_tail) = split(&plain);
+        let (muted_head, muted_tail) = split(&muted);
+        assert_eq!(plain_head, muted_head, "the subject slot was restyled");
+        assert_eq!(muted_tail.trim_end(), muted_detail);
+        assert!(
+            !plain_tail.contains('\x1b'),
+            "an unstyled detail must carry no SGR: {plain_tail:?}"
+        );
     }
 }

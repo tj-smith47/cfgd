@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::{Renderer, Writer};
+use crate::output::theme::ThemedStyle;
 use crate::output::{Role, Verbosity};
 
 /// A Status emission deferred until section close so subjects can be right-
@@ -15,11 +16,17 @@ pub(crate) struct BufferedStatus {
     /// The depth at which the line should ultimately render (matches the
     /// section's child depth at the time the status was emitted).
     pub depth: usize,
+    pub subject_style: Option<ThemedStyle>,
+    pub detail_style: Option<ThemedStyle>,
 }
 
 /// One open section's bookkeeping. Pushed on open, popped on close.
 pub(crate) struct SectionFrame {
     pub name: String,
+    /// Pre-styled replacement for the header line's body. `None` renders
+    /// `name` through `theme.header`; `Some` is a header the caller composed
+    /// from more than one theme slot (an owner token).
+    pub styled_name: Option<String>,
     pub keep_when_empty: bool,
     pub empty_state: Option<String>,
     /// True when the parent section's depth + this section's contents have
@@ -34,24 +41,51 @@ pub(crate) struct SectionFrame {
     /// subjects to a common width when trailing content (detail/duration/
     /// target) is present, so the trailing column aligns.
     pub pending_statuses: Vec<BufferedStatus>,
+    /// When set, statuses render as they arrive and pad to this column instead
+    /// of buffering to close. A live stream cannot wait for a close to learn
+    /// its own width, so the width is computed before the run and handed in.
+    pub live_column: Option<usize>,
 }
 
 impl Renderer {
     /// Open a section: pushes a frame, increments indent. Header is NOT emitted
     /// yet — first child emit triggers it.
     pub(crate) fn render_section_open(&self, name: &str, keep_when_empty: bool) {
+        self.render_section_open_styled(name, None, keep_when_empty);
+    }
+
+    /// Open a section whose header line is `styled_name` rather than `name`
+    /// painted with `theme.header`. `name` remains the plain form the
+    /// colour-disabled and structured paths render.
+    pub(crate) fn render_section_open_styled(
+        &self,
+        name: &str,
+        styled_name: Option<String>,
+        keep_when_empty: bool,
+    ) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let header_depth = s.depth();
         s.section_stack.push(SectionFrame {
             name: name.into(),
+            styled_name,
             keep_when_empty,
             empty_state: None,
             children_emitted: false,
             header_depth,
             header_emitted: false,
             pending_statuses: Vec::new(),
+            live_column: None,
         });
         s.indent_depth += 1;
+    }
+
+    /// Mark the innermost open section live: its statuses render as they
+    /// arrive, padded to `width`.
+    pub(crate) fn render_section_live_column(&self, width: usize) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(top) = s.section_stack.last_mut() {
+            top.live_column = Some(width);
+        }
     }
 
     /// Set the empty_state placeholder for the topmost open section.
@@ -117,35 +151,14 @@ impl Renderer {
     /// always marks every frame in the stack as having children — so the section
     /// stays in the non-collapse branch even if no real child line follows.
     pub(crate) fn flush_pending_section_headers(&self, w: &dyn Writer) {
-        let frames_to_emit = {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut out = Vec::new();
-            for f in s.section_stack.iter_mut() {
-                if !f.header_emitted {
-                    out.push((f.name.clone(), f.header_depth));
-                    f.header_emitted = true;
-                }
-                f.children_emitted = true;
-            }
-            out
-        };
-        // State mutation runs even under Quiet so that close()'s collapse decision
-        // stays consistent; only the emission of header lines is suppressed.
-        if self.verbosity == Verbosity::Quiet {
-            return;
-        }
-        for (name, depth) in frames_to_emit {
-            // Mirror `write_line`'s blank-pending handling.
-            let styled = self.theme.header.apply_to(&name).to_string();
-            self.write_line(w, depth, &styled);
-        }
+        self.emit_with(w, |e| e.flush_section_headers());
     }
 
     fn emit_section_header_now(&self, w: &dyn Writer, frame: &SectionFrame) {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        let styled = self.theme.header.apply_to(&frame.name).to_string();
+        let styled = header_line(&self.theme, frame);
         self.write_line(w, frame.header_depth, &styled);
     }
 
@@ -166,31 +179,58 @@ impl Renderer {
             .unwrap_or(0);
         for s in statuses {
             let has_trailing = s.detail.is_some() || s.duration.is_some() || s.target.is_some();
-            let subject_owned;
-            let subject_ref: &str = if has_trailing && max_subject_width > 0 {
-                let cur = console::measure_text_width(&s.subject);
-                if cur < max_subject_width {
-                    subject_owned = format!("{}{}", s.subject, " ".repeat(max_subject_width - cur));
-                    subject_owned.as_str()
-                } else {
-                    s.subject.as_str()
-                }
-            } else {
-                s.subject.as_str()
-            };
+            let padded = super::status::pad_subject(&s.subject, max_subject_width, has_trailing);
             self.render_status_immediate(
                 w,
                 s.depth,
                 &super::StatusFields {
                     role: s.role,
-                    subject: subject_ref,
+                    subject: padded.as_deref().unwrap_or(&s.subject),
                     detail: s.detail.as_deref(),
                     duration: s.duration,
                     target: s.target.as_deref(),
+                    subject_style: s.subject_style.clone(),
+                    detail_style: s.detail_style.clone(),
                 },
             );
         }
     }
+}
+
+impl super::Emitting<'_> {
+    /// Collect any not-yet-emitted section headers, walking the stack
+    /// outer-to-inner. Idempotent in output (repeat calls produce no further
+    /// header lines), and always marks every frame in the stack as having
+    /// children — so the section stays in the non-collapse branch even if no
+    /// real child line follows.
+    pub(crate) fn flush_section_headers(&mut self) {
+        let mut headers = Vec::new();
+        for f in self.state.section_stack.iter_mut() {
+            if !f.header_emitted {
+                headers.push((header_line(self.theme, f), f.header_depth));
+                f.header_emitted = true;
+            }
+            f.children_emitted = true;
+        }
+        // State mutation runs even under Quiet so that close()'s collapse
+        // decision stays consistent; only the emission of header lines is
+        // suppressed.
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        for (styled, depth) in headers {
+            self.push_line(depth, &styled);
+        }
+    }
+}
+
+/// The body of a section's header line: the caller's pre-styled token when it
+/// supplied one, otherwise the name painted with `theme.header`.
+pub(crate) fn header_line(theme: &crate::output::Theme, frame: &SectionFrame) -> String {
+    frame
+        .styled_name
+        .clone()
+        .unwrap_or_else(|| theme.header.apply_to(&frame.name).to_string())
 }
 
 #[cfg(test)]

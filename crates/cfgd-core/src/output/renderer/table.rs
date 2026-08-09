@@ -59,7 +59,6 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet || t.headers.is_empty() {
             return;
         }
-        self.flush_pending_section_headers(w);
         let cols = t.headers.len();
         let mut widths = vec![0usize; cols];
         for (i, h) in t.headers.iter().enumerate() {
@@ -83,16 +82,17 @@ impl Renderer {
             })
             .collect::<Vec<_>>()
             .join("  ");
-        let styled = self.theme.header.apply_to(&header_line).to_string();
-        self.write_line(w, depth, &styled);
+        // One emission: header row, separator and every data row leave under a
+        // single state-lock acquisition, so a live bar redraws once around the
+        // whole table rather than once per row.
+        let mut body = vec![self.theme.header.apply_to(&header_line).to_string()];
         // Separator
         let sep: String = widths
             .iter()
             .map(|w| "─".repeat(*w))
             .collect::<Vec<_>>()
             .join("──");
-        let dim = self.theme.muted.apply_to(&sep).to_string();
-        self.write_line(w, depth, &dim);
+        body.push(self.theme.muted.apply_to(&sep).to_string());
         // Data rows. Padding runs against the plain string so widths stay
         // honest; per-cell roles re-style the padded cell post-hoc.
         let empty_roles: Vec<Option<Role>> = Vec::new();
@@ -115,9 +115,15 @@ impl Renderer {
                 })
                 .collect::<Vec<_>>()
                 .join("  ");
-            self.write_line(w, depth, &line);
+            body.push(line);
         }
-        self.mark_top_level_group(super::TopGroup::Table);
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            for line in &body {
+                e.push_line(depth, line);
+            }
+            e.mark_top_level_group(super::TopGroup::Table);
+        });
     }
 }
 

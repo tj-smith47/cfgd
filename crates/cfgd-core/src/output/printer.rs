@@ -122,12 +122,21 @@ impl Printer {
             verbosity
         };
         let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
+        // The MultiProgress is built first and a clone handed to the renderer,
+        // so the two are wired at construction. This is the ONE constructor
+        // whose stderr sink is that MultiProgress's own draw target, which is
+        // what makes routing lines through it correct.
+        let multi_progress = indicatif::MultiProgress::new();
         Self {
-            renderer: Arc::new(Renderer::new(theme, verbosity)),
+            renderer: Arc::new(Renderer::with_bars(
+                theme,
+                verbosity,
+                multi_progress.clone(),
+            )),
             output_format,
             sink_stderr: Arc::new(Term::stderr()),
             sink_stdout: Arc::new(Term::stdout()),
-            multi_progress: indicatif::MultiProgress::new(),
+            multi_progress,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
             theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: None,
@@ -197,7 +206,7 @@ impl Printer {
     // ----- Top-level emit methods (depth 0) -----
 
     pub fn heading(&self, text: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         // render_heading is hardcoded to depth 0 today; for the runtime-check
         // re-route path we emit a styled bold line at the section's depth so
         // the output stays readable despite the shape being wrong.
@@ -216,7 +225,7 @@ impl Printer {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread
         // through, but we still want the warn/assert at the call site.
-        let _depth = self.renderer.enforce_top_level_emit(0);
+        let _depth = self.renderer.enforce_structural_top_level(0);
         self.renderer.render_kv(&key.into(), &value.into());
     }
 
@@ -226,7 +235,7 @@ impl Printer {
         K: Into<String>,
         V: Into<String>,
     {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         let pairs: Vec<(String, String)> = pairs
             .into_iter()
             .map(|(k, v)| (k.into(), v.into()))
@@ -236,13 +245,13 @@ impl Printer {
     }
 
     pub fn hint(&self, text: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         self.renderer
             .render_hint(self.sink_stderr.as_ref(), depth, &text.into());
     }
 
     pub fn note(&self, text: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         self.renderer
             .render_note(self.sink_stderr.as_ref(), depth, &text.into());
     }
@@ -254,21 +263,36 @@ impl Printer {
     /// It writes only to `sink_stderr`, never to `sink_stdout`, keeping the
     /// `-o` data channel pure.
     pub fn deprecation(&self, msg: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
             .render_deprecation(self.sink_stderr.as_ref(), depth, &msg.into());
     }
 
     pub fn table(&self, table: Table) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
             .render_table(self.sink_stderr.as_ref(), depth, &table);
+    }
+
+    /// Enable depth inheritance for status / hint / note / spinner / run for
+    /// as long as the guard lives, so library code reached from inside an open
+    /// section renders at that section's depth instead of tripping the
+    /// top-level structural assert. Structural emits (`heading`, `kv_block`,
+    /// `table`, `emit`) keep the assert in every mode — a heading inside a
+    /// group is a bug whatever the caller is doing.
+    #[must_use = "inheritance ends when the guard drops; bind it"]
+    pub fn depth_inheritance(&self) -> super::renderer::DepthInheritGuard<'_> {
+        self.renderer.inherit_guards.fetch_add(1, Ordering::Relaxed);
+        super::renderer::DepthInheritGuard {
+            renderer: self.renderer.clone(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         let subject = subject.into();
         self.renderer.render_status(
             self.sink_stderr.as_ref(),
@@ -279,17 +303,20 @@ impl Printer {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
     }
 
-    /// Status builder at depth 0. Commits on Drop.
+    /// Status builder at the ambient depth (0 unless a `DepthInheritGuard`
+    /// is open). Commits on Drop.
     pub fn status(
         &self,
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         super::status_builder::StatusBuilder::new(
             self.renderer.clone(),
             self.sink_stderr.clone(),
@@ -299,28 +326,32 @@ impl Printer {
         )
     }
 
-    // ----- Spinners / progress (depth 0) -----
+    // ----- Spinners / progress -----
 
-    /// Top-level spinner (depth 0). Required for ~14 lib-side call sites
-    /// in cfgd-core that today take `&Printer` and have no section context
-    /// (oci/, upgrade/, sources/, modules/git.rs, reconciler/scripts.rs).
+    /// Spinner at the ambient depth — 0 unless a `DepthInheritGuard` is open,
+    /// in which case it renders inside the innermost section. Required for the
+    /// lib-side call sites in cfgd-core that take `&Printer` and have no
+    /// section context of their own (oci/, upgrade/, sources/, modules/git.rs,
+    /// reconciler/scripts.rs).
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
         let message = message.into();
-        let bar = super::spinner::make_spinner_bar(
+        let depth = self.renderer.inherit_depth();
+        let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
             self.verbosity(),
-            0,
+            depth,
             &message,
         );
         super::spinner::Spinner {
             renderer: self.renderer.clone(),
             sink: self.sink_stderr.clone(),
-            depth: 0,
+            depth,
             bar,
             message,
             finished: false,
+            _live: live,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -331,35 +362,32 @@ impl Printer {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
-        let bar = super::spinner::make_progress_bar(
+        let (bar, live) = super::spinner::make_progress_bar(
             &self.multi_progress,
+            &self.renderer,
             total,
             self.verbosity(),
             &message.into(),
         );
         super::spinner::ProgressBar {
             bar,
+            _live: live,
             _phantom: std::marker::PhantomData,
         }
     }
 
-    /// Expose the underlying MultiProgress for callers that need fine-grained
-    /// control (kept for API parity with the old Printer).
-    pub fn multi_progress(&self) -> &indicatif::MultiProgress {
-        &self.multi_progress
-    }
-
-    /// Run an external command at top-level (depth 0), displaying its output
+    /// Run an external command at the ambient depth, displaying its output
     /// through an `OutputWindow` and capturing the full stdout/stderr in the
-    /// returned `CommandOutput`.
+    /// returned `CommandOutput`. The window indents under the innermost open
+    /// section while a `DepthInheritGuard` is held, and sits at column 0
+    /// otherwise.
     pub fn run(
         &self,
         cmd: &mut std::process::Command,
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
-        // run is depth-0 only; the clamp would still return 0, so the value is discarded.
-        let _ = self.renderer.enforce_top_level_emit(0);
-        super::process::run_command(self, 0, cmd, &label.into())
+        let depth = self.renderer.inherit_depth();
+        super::process::run_command(self, depth, cmd, &label.into())
     }
 
     /// Final flush — call at the end of a streaming command to ensure any
@@ -412,6 +440,25 @@ impl Printer {
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section(&self, name: impl Into<String>) -> super::section_guard::SectionGuard<'_> {
         self.renderer.render_section_open(&name.into(), true);
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
+    /// Open a section headed by a styled owner token (`module:nvim`).
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_owner(
+        &self,
+        label: &super::OwnerLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ true,
+        );
         super::section_guard::SectionGuard {
             printer: self,
             renderer: self.renderer.clone(),
@@ -982,7 +1029,7 @@ mod tests {
     }
 
     /// In debug builds, a top-level emit reached while a section is open
-    /// trips `debug_assert!` in `Renderer::enforce_top_level_emit`. We catch
+    /// trips `debug_assert!` in `Renderer::enforce_structural_top_level`. We catch
     /// the panic to verify the assert fires.
     #[cfg(feature = "test-helpers")]
     #[test]
@@ -1018,5 +1065,103 @@ mod tests {
             !out.contains("\nMidSection\n"),
             "unindented form leaked through: {out:?}"
         );
+    }
+
+    /// With a `DepthInheritGuard` open, a library emit that has no section
+    /// context of its own renders inside the section its caller opened,
+    /// keeping the `&Printer` signature the provider traits already pass.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn status_inherits_section_depth_under_the_guard() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let _phase = p.section("Phase: Files");
+            let _owner = _phase.section("module:nvim");
+            let _inherit = p.depth_inheritance();
+            p.status_simple(Role::Ok, "wrote init.lua");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(
+            out.contains("\n    ✓ wrote init.lua\n"),
+            "expected depth 2; got: {out:?}"
+        );
+    }
+
+    /// The guard is scoped: once it drops, the codebase-wide structural guard
+    /// is armed again for the hundreds of call sites that never wanted
+    /// inheritance.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[cfg(debug_assertions)]
+    fn inheritance_ends_with_the_guard() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+            let _s = p.section("Outer");
+            {
+                let _inherit = p.depth_inheritance();
+                p.status_simple(Role::Ok, "inside");
+            }
+            p.status_simple(Role::Ok, "after"); // debug_assert! fires
+        }));
+        assert!(result.is_err(), "expected debug_assert! panic");
+    }
+
+    /// Inheritance covers NON-structural emits only. A heading inside a group
+    /// is a bug in every mode, so the structural assert stays armed even with
+    /// the guard open.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[cfg(debug_assertions)]
+    fn structural_emits_still_assert_under_the_guard() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+            let _s = p.section("Outer");
+            let _inherit = p.depth_inheritance();
+            p.heading("MidSection"); // debug_assert! fires
+        }));
+        assert!(result.is_err(), "expected debug_assert! panic");
+    }
+
+    /// A run at ambient depth 0 — every caller before the run tree existed —
+    /// renders at column 0 exactly as it did before the split.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn top_level_run_stays_at_column_zero() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let out = p
+            .run(
+                std::process::Command::new("echo").arg("hello-from-run"),
+                "echo step",
+            )
+            .expect("echo must succeed");
+        assert!(out.status.success());
+        p.flush();
+        let rendered = strip_ansi(&buf.lock().unwrap());
+        let line = rendered
+            .lines()
+            .find(|l| l.contains("echo step"))
+            .expect("label missing");
+        assert!(
+            !line.starts_with(' '),
+            "top-level run gained an indent: {line:?}"
+        );
+    }
+
+    /// A top-level owner group: the token heads the section at column 0 and
+    /// its children indent under it.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn printer_section_owner_heads_a_top_level_group() {
+        use crate::output::OwnerLabel;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let owner = p.section_owner(&OwnerLabel::new("profile", "work"));
+            owner.bullet("installed ripgrep");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.starts_with("profile:work\n"), "got: {out:?}");
+        assert!(out.contains("\n  - installed ripgrep\n"), "got: {out:?}");
     }
 }

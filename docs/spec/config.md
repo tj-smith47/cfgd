@@ -525,6 +525,7 @@ strings. An omitted field inherits the value from the active theme.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `primary` | string | Colour for an action subject at the deepest level of the run tree. Unset in presets that carry no palette foreground of their own, in which case the subject keeps its status colour. |
 | `header` | string | Colour for section headers. |
 | `success` | string | Colour for success messages and checkmarks. |
 | `warning` | string | Colour for warnings. |

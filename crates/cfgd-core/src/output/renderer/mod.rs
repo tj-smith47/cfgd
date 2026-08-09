@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 
 use super::{Theme, Verbosity};
 
@@ -121,6 +122,56 @@ impl RenderState {
             self.indent_depth -= 1;
         }
     }
+
+    /// Drop the pending blank when this emission continues the previous group
+    /// rather than starting a new one.
+    pub(crate) fn open_top_group(&mut self, kind: TopGroup) {
+        if !self.section_stack.is_empty() || !self.blank_pending {
+            return;
+        }
+        let continues = match kind {
+            // A heading introduces what follows it, so it never binds to the
+            // heading above: two consecutive headings are two groups.
+            TopGroup::Heading => false,
+            _ => {
+                self.last_was_top_heading
+                    || (kind.runs_contiguously()
+                        && self.last_top_group == Some(kind)
+                        // Streamed lines and a buffered Doc's lines are
+                        // different groups even when the kind matches: the
+                        // seam between them keeps its one blank line.
+                        && (self.doc_depth > 0) == self.last_top_in_doc)
+            }
+        };
+        if continues {
+            self.blank_pending = false;
+        }
+    }
+
+    /// Close a top-level group emission: the next top-level emit gets one
+    /// blank line unless `open_top_group` decides it continues this group.
+    pub(crate) fn mark_top_level_group(&mut self, kind: TopGroup) {
+        if self.section_stack.is_empty() {
+            self.blank_pending = true;
+            self.last_top_group = Some(kind);
+            self.last_top_in_doc = self.doc_depth > 0;
+        } else {
+            self.last_top_group = None;
+        }
+    }
+
+    pub(crate) fn clear_blank_pending(&mut self) {
+        self.blank_pending = false;
+    }
+
+    /// Arm the flag a following top-level kv block consumes to re-anchor
+    /// itself one level deeper. Only a heading at the root arms it; inside a
+    /// section there is nothing to nest under.
+    pub(crate) fn mark_top_heading(&mut self) {
+        if self.section_stack.is_empty() {
+            self.last_was_top_heading = true;
+        }
+    }
 }
 
 /// Renderer is created per Printer. All state lives in `RenderState` behind a
@@ -129,6 +180,21 @@ pub struct Renderer {
     pub(crate) theme: Theme,
     pub(crate) verbosity: Verbosity,
     pub(crate) state: Mutex<RenderState>,
+    /// The Printer's MultiProgress — `Some` only when this renderer's stderr
+    /// sink IS that MultiProgress's draw target, because `println` writes the
+    /// multi's target rather than the sink. indicatif's handle is `Clone` and
+    /// internally `Arc`-shared.
+    pub(crate) bars: Option<indicatif::MultiProgress>,
+    /// Bars currently drawn, maintained by `LiveBarGuard`. Bound to the bars
+    /// that were actually `multi.add`ed: a hidden bar is never added, so
+    /// counting one would open the routing gate over an empty multi.
+    pub(crate) live_bars: AtomicUsize,
+    /// One-way latch: set when a routed write returned an io error. Later
+    /// writes go straight to the sink, which swallows write errors exactly as
+    /// every write did before the routing existed.
+    pub(crate) bars_broken: AtomicBool,
+    /// Non-zero while a `DepthInheritGuard` is alive.
+    pub(crate) inherit_guards: AtomicUsize,
 }
 
 impl Renderer {
@@ -137,6 +203,25 @@ impl Renderer {
             theme,
             verbosity,
             state: Mutex::new(RenderState::new()),
+            bars: None,
+            live_bars: AtomicUsize::new(0),
+            bars_broken: AtomicBool::new(false),
+            inherit_guards: AtomicUsize::new(0),
+        }
+    }
+
+    /// The one production wiring: a renderer whose stderr sink is `bars`'s own
+    /// draw target, so lines emitted while a bar is live can be routed through
+    /// it. `pub(crate)` because that invariant is not something an external
+    /// caller can be trusted to hold.
+    pub(crate) fn with_bars(
+        theme: Theme,
+        verbosity: Verbosity,
+        bars: indicatif::MultiProgress,
+    ) -> Self {
+        Self {
+            bars: Some(bars),
+            ..Self::new(theme, verbosity)
         }
     }
 
@@ -153,7 +238,7 @@ impl Renderer {
     /// site loudly; release builds log a `tracing::warn!` once per process
     /// and re-route the emit to the section's current depth so the output
     /// stays readable.
-    pub(crate) fn enforce_top_level_emit(&self, expected_depth: usize) -> usize {
+    pub(crate) fn enforce_structural_top_level(&self, expected_depth: usize) -> usize {
         let actual = self.state.lock().unwrap_or_else(|e| e.into_inner()).depth();
         if expected_depth == 0 && actual > 0 {
             // Top-level emit while a section is open.
@@ -175,6 +260,188 @@ impl Renderer {
         } else {
             expected_depth
         }
+    }
+
+    /// Depth for a NON-structural emit (status / hint / note / spinner / run).
+    ///
+    /// With inheritance off this is exactly `enforce_structural_top_level(0)`,
+    /// assert and all — the guard stays armed for the hundreds of call sites
+    /// that have nothing to do with a run tree. With it on, the innermost open
+    /// section's depth is returned silently, so library code keeps its
+    /// `&Printer` signature and renders inside the group its caller opened.
+    pub(crate) fn inherit_depth(&self) -> usize {
+        if self.inherit_guards.load(Relaxed) == 0 {
+            return self.enforce_structural_top_level(0);
+        }
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).depth()
+    }
+
+    /// The ONE exit from the renderer to a terminal. Lines are emitted as one
+    /// block per logical emission: with bars live, indicatif clears and redraws
+    /// once around the whole block rather than once per line.
+    fn emit_block(&self, w: &dyn Writer, lines: &[String]) {
+        let plain = || {
+            for line in lines {
+                w.write_line(line);
+            }
+        };
+        // ONE match with a guard: a second match on `self.bars` is how the
+        // latch arm below loses its fallback without anyone noticing.
+        match &self.bars {
+            Some(mp)
+                if !self.bars_broken.load(Relaxed)
+                    && self.live_bars.load(Relaxed) > 0
+                    && !mp.is_hidden() =>
+            {
+                // `println` splits on '\n' itself, so one call is one
+                // clear/redraw cycle for the whole emission.
+                if mp.println(lines.join("\n")).is_err() {
+                    // Latch AND fall through: the emission that discovers the
+                    // broken terminal is the one most likely to explain it.
+                    self.bars_broken.store(true, Relaxed);
+                    plain();
+                }
+            }
+            _ => plain(),
+        }
+    }
+
+    /// Emit a pre-built block whose construction read and wrote no
+    /// `RenderState`. The lock is taken for ORDERING only — so one raw render
+    /// cannot be interleaved with another emission's block — rather than to
+    /// protect state the builder touched.
+    pub(crate) fn emit_raw_block(&self, w: &dyn Writer, lines: &[String]) {
+        let _ordering = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.emit_block(w, lines);
+    }
+
+    /// Run one logical emission: take the state lock once, build every line of
+    /// the emission through collectors that can reach neither the lock nor the
+    /// sink, then flush them as a single block while still holding the lock.
+    pub(crate) fn emit_with(&self, w: &dyn Writer, build: impl FnOnce(&mut Emitting<'_>)) {
+        // Read from the sink BEFORE the guard is taken.
+        let wrap_cols = w.wrap_columns();
+        let mut lines = Vec::new();
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut emitting = Emitting {
+                theme: &self.theme,
+                verbosity: self.verbosity,
+                state: &mut s,
+                wrap_cols,
+                out: &mut lines,
+            };
+            build(&mut emitting);
+        }
+        self.emit_block(w, &lines);
+    }
+}
+
+/// Increments the renderer's live-bar count on construction and decrements it
+/// on drop. Held by the `Spinner` / `ProgressBar` wrapper, so the count tracks
+/// the bar's real lifetime with no paired decrement to forget.
+pub(crate) struct LiveBarGuard(std::sync::Arc<Renderer>);
+
+impl LiveBarGuard {
+    pub(crate) fn acquire(renderer: &std::sync::Arc<Renderer>) -> Self {
+        renderer.live_bars.fetch_add(1, Relaxed);
+        Self(renderer.clone())
+    }
+}
+
+impl Drop for LiveBarGuard {
+    fn drop(&mut self) {
+        self.0.live_bars.fetch_sub(1, Relaxed);
+    }
+}
+
+/// Everything a line builder may read, and nothing it may reach the terminal
+/// or the state lock through. It holds `&mut RenderState` — the guard the
+/// entry function already took — so a collector that tried to lock would need
+/// a `&Renderer` it does not have, and one that tried to write would need a
+/// sink it does not have.
+pub(crate) struct Emitting<'a> {
+    pub(crate) theme: &'a Theme,
+    pub(crate) verbosity: Verbosity,
+    pub(crate) state: &'a mut RenderState,
+    pub(crate) wrap_cols: Option<usize>,
+    pub(crate) out: &'a mut Vec<String>,
+}
+
+impl Emitting<'_> {
+    /// Collect one physical line at the given depth, honoring blank-pending.
+    ///
+    /// Drains any pending kvs first — otherwise buffered kvs would render
+    /// *after* this non-kv line, inverting the call order.
+    pub(crate) fn push_line(&mut self, depth: usize, body: &str) {
+        self.drain_kv_buffer();
+        // The sink appends its own trailing newline per line, so a trailing
+        // newline already in `body` would smuggle a physical line break past
+        // the blank-line accounting (a Status subject ending with `\n` would
+        // produce a stray blank between this emission and the next, breaking
+        // the one-blank-between-siblings invariant). Internal newlines are a
+        // supported shape — a brew caveat is genuinely two sentences — and
+        // `wrap_body` lays them out as continuations of this line rather than
+        // as unmarked lines of their own.
+        let trimmed = body.trim_end_matches(['\n', '\r']);
+        if self.state.leading {
+            self.state.leading = false;
+            self.state.blank_pending = false;
+        } else if self.state.blank_pending {
+            self.out.push(String::new());
+            self.state.blank_pending = false;
+        }
+        // Any emission resets the heading-just-emitted flag. Heading itself
+        // sets the flag back true after this call returns.
+        self.state.last_was_top_heading = false;
+        let prefix = "  ".repeat(depth);
+        for physical in wrap::wrap_body(trimmed, &prefix, self.wrap_cols) {
+            self.out.push(physical);
+        }
+    }
+
+    /// Render the buffered kvs, if any, as one aligned block.
+    ///
+    /// The `std::mem::take` runs BEFORE rendering, which is what terminates
+    /// the recursion through `flush_section_headers` → `push_line` and what
+    /// keeps a pending kv block rendering above a deferred section header.
+    pub(crate) fn drain_kv_buffer(&mut self) {
+        if self.state.kv_buffer.is_empty() {
+            return;
+        }
+        let pairs = std::mem::take(&mut self.state.kv_buffer);
+        let depth = self.state.indent_depth;
+        self.render_kv_block(depth, &pairs);
+    }
+
+    pub(crate) fn open_top_group(&mut self, kind: TopGroup) {
+        self.state.open_top_group(kind);
+    }
+
+    pub(crate) fn mark_top_level_group(&mut self, kind: TopGroup) {
+        self.state.mark_top_level_group(kind);
+    }
+
+    pub(crate) fn clear_blank_pending(&mut self) {
+        self.state.clear_blank_pending();
+    }
+
+    pub(crate) fn mark_top_heading(&mut self) {
+        self.state.mark_top_heading();
+    }
+}
+
+/// Enables depth inheritance for the renderer it was taken from, for as long
+/// as it lives.
+#[must_use = "depth inheritance ends when the guard drops; bind it"]
+pub struct DepthInheritGuard<'p> {
+    pub(crate) renderer: std::sync::Arc<Renderer>,
+    pub(crate) _phantom: std::marker::PhantomData<&'p ()>,
+}
+
+impl Drop for DepthInheritGuard<'_> {
+    fn drop(&mut self) {
+        self.renderer.inherit_guards.fetch_sub(1, Relaxed);
     }
 }
 
@@ -211,51 +478,10 @@ impl Writer for StringSink {
 
 impl Renderer {
     /// Emit a single physical line at the given depth, honoring blank-pending.
-    ///
-    /// Flushes any pending kvs first — otherwise buffered kvs would render
-    /// *after* this non-kv line, inverting the call order. kv emission paths
-    /// must call `w.write_line(...)` directly (NOT `self.write_line`) to avoid
-    /// recursing back into `flush_kv_buffer_internal`.
+    /// One emission: the kv drain, the blank line and the wrapped physicals
+    /// all leave under one state-lock acquisition and one `emit_block`.
     pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
-        self.flush_kv_buffer_internal(w);
-        // The sink appends its own trailing newline per call, so a trailing
-        // newline already in `body` would smuggle a physical line break past
-        // the blank-line accounting (a Status subject ending with `\n` would
-        // produce a stray blank between this emission and the next, breaking
-        // the one-blank-between-siblings invariant). Internal newlines are a
-        // supported shape — a brew caveat is genuinely two sentences — and
-        // `wrap_body` lays them out as continuations of this line rather than
-        // as unmarked lines of their own.
-        let trimmed = body.trim_end_matches(['\n', '\r']);
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if s.leading {
-            s.leading = false;
-            s.blank_pending = false;
-        } else if s.blank_pending {
-            w.write_line("");
-            s.blank_pending = false;
-        }
-        // Any emission resets the heading-just-emitted flag. Heading itself
-        // sets the flag back true after this call returns.
-        s.last_was_top_heading = false;
-        let prefix = "  ".repeat(depth);
-        for physical in wrap::wrap_body(trimmed, &prefix, w.wrap_columns()) {
-            w.write_line(&physical);
-        }
-    }
-
-    /// Inner kv-buffer flush invoked from `write_line`. Does NOT recurse — it
-    /// calls `render_kv_block_no_flush` directly, which uses `w.write_line` for
-    /// every emission rather than `self.write_line`.
-    fn flush_kv_buffer_internal(&self, w: &dyn Writer) {
-        let (pairs, depth) = {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if s.kv_buffer.is_empty() {
-                return;
-            }
-            (std::mem::take(&mut s.kv_buffer), s.indent_depth)
-        };
-        self.render_kv_block_no_flush(w, depth, &pairs);
+        self.emit_with(w, |e| e.push_line(depth, body));
     }
 
     /// Mark that the next non-blank emission should be preceded by exactly
@@ -274,14 +500,10 @@ impl Renderer {
     /// One blank line precedes every top-level GROUP after the first —
     /// `open_top_group` decides what continues a group rather than starting one.
     pub(crate) fn mark_top_level_group(&self, kind: TopGroup) {
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if s.section_stack.is_empty() {
-            s.blank_pending = true;
-            s.last_top_group = Some(kind);
-            s.last_top_in_doc = s.doc_depth > 0;
-        } else {
-            s.last_top_group = None;
-        }
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mark_top_level_group(kind);
     }
 
     /// Enter buffered `Doc` rendering. Paired with `exit_doc`; nests because a
@@ -301,27 +523,10 @@ impl Renderer {
     /// rather than starting a new one. Call before writing, from every
     /// top-level emitter.
     pub(crate) fn open_top_group(&self, kind: TopGroup) {
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !s.section_stack.is_empty() || !s.blank_pending {
-            return;
-        }
-        let continues = match kind {
-            // A heading introduces what follows it, so it never binds to the
-            // heading above: two consecutive headings are two groups.
-            TopGroup::Heading => false,
-            _ => {
-                s.last_was_top_heading
-                    || (kind.runs_contiguously()
-                        && s.last_top_group == Some(kind)
-                        // Streamed lines and a buffered Doc's lines are
-                        // different groups even when the kind matches: the
-                        // seam between them keeps its one blank line.
-                        && (s.doc_depth > 0) == s.last_top_in_doc)
-            }
-        };
-        if continues {
-            s.blank_pending = false;
-        }
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .open_top_group(kind);
     }
 
     /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
@@ -330,18 +535,15 @@ impl Renderer {
             return;
         }
         let styled = self.theme.header.apply_to(text).to_string();
-        self.open_top_group(TopGroup::Heading);
-        self.write_line(w, 0, &styled);
-        // Set the heading-just-emitted flag AFTER write_line (which clears
-        // it). The next top-level kv_block consumes this to re-anchor itself
-        // at depth+1 so it visually nests under the heading.
-        {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if s.section_stack.is_empty() {
-                s.last_was_top_heading = true;
-            }
-        }
-        self.mark_top_level_group(TopGroup::Heading);
+        self.emit_with(w, |e| {
+            e.open_top_group(TopGroup::Heading);
+            e.push_line(0, &styled);
+            // The heading-just-emitted flag is armed AFTER the line, which
+            // clears it. The next top-level kv_block consumes it to re-anchor
+            // itself at depth+1 so it visually nests under the heading.
+            e.mark_top_heading();
+            e.mark_top_level_group(TopGroup::Heading);
+        });
     }
 
     /// Bullet: glyph `-`, then space, then text. Uncolored. The renderer's only
@@ -350,14 +552,16 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        self.flush_pending_section_headers(w);
         // The marker is structure, the text is content: muting the dash gives
         // a run of bullets a scan column instead of leaving every character on
         // the line at the terminal's default with nothing to read against.
-        let marker = self.theme.muted.apply_to("- ");
-        self.open_top_group(TopGroup::Bullet);
-        self.write_line(w, depth, &format!("{marker}{text}"));
-        self.mark_top_level_group(TopGroup::Bullet);
+        let body = format!("{}{text}", self.theme.muted.apply_to("- "));
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.open_top_group(TopGroup::Bullet);
+            e.push_line(depth, &body);
+            e.mark_top_level_group(TopGroup::Bullet);
+        });
     }
 
     /// One line of live output from a child process, rendered dim and indented.
@@ -370,16 +574,16 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        self.flush_pending_section_headers(w);
-        // Streamed output is the body of the line that just announced the
-        // command, so it continues that group rather than starting one: without
-        // this the status line's pending blank lands between the announcement
-        // and the first line of its own output.
-        {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            s.blank_pending = false;
-        }
-        self.write_line(w, depth, &self.theme.muted.apply_to(text).to_string());
+        let body = self.theme.muted.apply_to(text).to_string();
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            // Streamed output is the body of the line that just announced the
+            // command, so it continues that group rather than starting one:
+            // without this the status line's pending blank lands between the
+            // announcement and the first line of its own output.
+            e.clear_blank_pending();
+            e.push_line(depth, &body);
+        });
     }
 
     /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
@@ -388,15 +592,17 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        self.flush_pending_section_headers(w);
         let arrow = self
             .theme
             .muted
             .apply_to(format!("{} ", self.theme.icon_arrow));
-        let body = self.theme.muted.apply_to(text);
-        self.open_top_group(TopGroup::Hint);
-        self.write_line(w, depth, &format!("{}{}", arrow, body));
-        self.mark_top_level_group(TopGroup::Hint);
+        let body = format!("{}{}", arrow, self.theme.muted.apply_to(text));
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.open_top_group(TopGroup::Hint);
+            e.push_line(depth, &body);
+            e.mark_top_level_group(TopGroup::Hint);
+        });
     }
 
     /// Code block: a tight run of verbatim lines (e.g. a copy-pasteable YAML
@@ -410,12 +616,18 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet || lines.is_empty() {
             return;
         }
-        self.flush_pending_section_headers(w);
-        self.open_top_group(TopGroup::CodeBlock);
-        for line in lines {
-            self.write_line(w, depth, &self.theme.muted.apply_to(line).to_string());
-        }
-        self.mark_top_level_group(TopGroup::CodeBlock);
+        let bodies: Vec<String> = lines
+            .iter()
+            .map(|l| self.theme.muted.apply_to(l).to_string())
+            .collect();
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.open_top_group(TopGroup::CodeBlock);
+            for body in &bodies {
+                e.push_line(depth, body);
+            }
+            e.mark_top_level_group(TopGroup::CodeBlock);
+        });
     }
 
     /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
@@ -423,13 +635,18 @@ impl Renderer {
         if self.verbosity != Verbosity::Verbose {
             return;
         }
-        self.flush_pending_section_headers(w);
-        self.open_top_group(TopGroup::Note);
-        for line in text.lines() {
-            let dim = self.theme.muted.apply_to(line);
-            self.write_line(w, depth, &dim.to_string());
-        }
-        self.mark_top_level_group(TopGroup::Note);
+        let bodies: Vec<String> = text
+            .lines()
+            .map(|l| self.theme.muted.apply_to(l).to_string())
+            .collect();
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.open_top_group(TopGroup::Note);
+            for body in &bodies {
+                e.push_line(depth, body);
+            }
+            e.mark_top_level_group(TopGroup::Note);
+        });
     }
 }
 
@@ -515,6 +732,8 @@ mod tests {
                     detail: None,
                     duration: None,
                     target: None,
+                    subject_style: None,
+                    detail_style: None,
                 },
             )
         });
@@ -537,6 +756,8 @@ mod tests {
             detail: None,
             duration: None,
             target: None,
+            subject_style: None,
+            detail_style: None,
         };
 
         let (r, sink, buf) = capture();
@@ -695,5 +916,320 @@ mod tests {
         let s = buf.lock().unwrap();
         assert!(s.contains("line1"));
         assert!(s.contains("line2"));
+    }
+
+    // --- Line routing while a bar is live ---
+
+    /// A `TermLike` that records what indicatif drew and counts draw cycles.
+    /// One `flush` is one `draw_to_term`, so the flush delta across an
+    /// emission is exactly the number of `println` calls it made.
+    #[derive(Debug)]
+    struct RecordingTerm {
+        drawn: Arc<Mutex<String>>,
+        flushes: Arc<AtomicUsize>,
+        /// Every write fails, standing in for a terminal that went away.
+        broken: bool,
+    }
+
+    impl RecordingTerm {
+        fn result(&self) -> std::io::Result<()> {
+            if self.broken {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "terminal is gone",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn record(&self, s: &str) -> std::io::Result<()> {
+            self.drawn
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str(s);
+            self.result()
+        }
+    }
+
+    impl indicatif::TermLike for RecordingTerm {
+        fn width(&self) -> u16 {
+            200
+        }
+        fn height(&self) -> u16 {
+            40
+        }
+        fn move_cursor_up(&self, _n: usize) -> std::io::Result<()> {
+            self.result()
+        }
+        fn move_cursor_down(&self, _n: usize) -> std::io::Result<()> {
+            self.result()
+        }
+        fn move_cursor_right(&self, _n: usize) -> std::io::Result<()> {
+            self.result()
+        }
+        fn move_cursor_left(&self, _n: usize) -> std::io::Result<()> {
+            self.result()
+        }
+        fn write_line(&self, s: &str) -> std::io::Result<()> {
+            self.record(s)?;
+            self.record("\n")
+        }
+        fn write_str(&self, s: &str) -> std::io::Result<()> {
+            self.record(s)
+        }
+        fn clear_line(&self) -> std::io::Result<()> {
+            self.result()
+        }
+        fn flush(&self) -> std::io::Result<()> {
+            self.flushes.fetch_add(1, Relaxed);
+            self.result()
+        }
+    }
+
+    /// A renderer wired to a MultiProgress whose draw target is a
+    /// `RecordingTerm`, with one bar added and one live-bar guard held — the
+    /// production shape of "a bar is on screen".
+    struct BarsFixture {
+        renderer: Arc<Renderer>,
+        sink: StringSink,
+        sink_buf: Arc<Mutex<String>>,
+        drawn: Arc<Mutex<String>>,
+        flushes: Arc<AtomicUsize>,
+        _bar: indicatif::ProgressBar,
+        live: Option<LiveBarGuard>,
+    }
+
+    impl BarsFixture {
+        fn new(broken: bool) -> Self {
+            let drawn = Arc::new(Mutex::new(String::new()));
+            let flushes = Arc::new(AtomicUsize::new(0));
+            let term = RecordingTerm {
+                drawn: drawn.clone(),
+                flushes: flushes.clone(),
+                broken,
+            };
+            let multi = indicatif::MultiProgress::with_draw_target(
+                indicatif::ProgressDrawTarget::term_like(Box::new(term)),
+            );
+            let renderer = Arc::new(Renderer::with_bars(
+                Theme::default(),
+                Verbosity::Normal,
+                multi.clone(),
+            ));
+            // A real bar, added the way `build_spinner` adds one, so the
+            // multi has something to redraw around each routed emission.
+            let bar = multi.add(indicatif::ProgressBar::new_spinner());
+            let live = LiveBarGuard::acquire(&renderer);
+            let sink_buf = Arc::new(Mutex::new(String::new()));
+            Self {
+                renderer,
+                sink: StringSink(sink_buf.clone()),
+                sink_buf,
+                drawn,
+                flushes,
+                _bar: bar,
+                live: Some(live),
+            }
+        }
+
+        fn drawn(&self) -> String {
+            strip_ansi(&self.drawn.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+
+        fn sunk(&self) -> String {
+            strip_ansi(&self.sink_buf.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+
+        fn cycles(&self) -> usize {
+            self.flushes.load(Relaxed)
+        }
+    }
+
+    #[test]
+    fn live_bar_routes_lines_through_the_multi() {
+        let f = BarsFixture::new(false);
+        f.renderer.write_line(&f.sink, 0, "routed line");
+        assert!(
+            f.drawn().contains("routed line"),
+            "line did not reach the multi: {:?}",
+            f.drawn()
+        );
+        assert!(
+            !f.sunk().contains("routed line"),
+            "line also went straight to the sink, so it would print twice: {:?}",
+            f.sunk()
+        );
+    }
+
+    #[test]
+    fn no_bars_means_no_routing() {
+        // No MultiProgress at all: the sink is the only path.
+        let (r, sink, buf) = capture();
+        r.write_line(&sink, 0, "plain");
+        assert_eq!(*buf.lock().unwrap(), "plain\n");
+
+        // A MultiProgress with no LIVE bar is the same case — nothing is
+        // drawn over, so there is nothing to redraw around.
+        let mut f = BarsFixture::new(false);
+        f.live = None;
+        f.renderer.write_line(&f.sink, 0, "no bars live");
+        assert!(
+            f.sunk().contains("no bars live"),
+            "line missed the sink: {:?}",
+            f.sunk()
+        );
+        assert!(
+            !f.drawn().contains("no bars live"),
+            "line was routed with no live bar: {:?}",
+            f.drawn()
+        );
+    }
+
+    #[test]
+    fn broken_terminal_latches_and_does_not_panic() {
+        let f = BarsFixture::new(true);
+        f.renderer.write_line(&f.sink, 0, "first");
+        assert!(
+            f.renderer.bars_broken.load(Relaxed),
+            "an io error must latch the routing off"
+        );
+        assert!(
+            f.sunk().contains("first"),
+            "the emission that DISCOVERED the break was dropped: {:?}",
+            f.sunk()
+        );
+
+        let before = f.cycles();
+        f.renderer.write_line(&f.sink, 0, "second");
+        assert!(
+            f.sunk().contains("second"),
+            "later emission lost: {:?}",
+            f.sunk()
+        );
+        assert_eq!(
+            f.cycles(),
+            before,
+            "the latch must stop later emissions from retrying the dead terminal"
+        );
+    }
+
+    #[test]
+    fn emit_block_is_one_println_per_emission() {
+        let f = BarsFixture::new(false);
+
+        let before = f.cycles();
+        f.renderer.render_code_block(
+            &f.sink,
+            0,
+            &["one".to_string(), "two".to_string(), "three".to_string()],
+        );
+        let three_lines = f.cycles() - before;
+
+        let before = f.cycles();
+        f.renderer.write_line(&f.sink, 0, "single");
+        let one_line = f.cycles() - before;
+
+        assert_eq!(
+            three_lines, 1,
+            "a 3-line emission drew {three_lines} times; it must clear and redraw once"
+        );
+        assert_eq!(one_line, 1, "a 1-line emission drew {one_line} times");
+        let drawn = f.drawn();
+        for line in ["one", "two", "three", "single"] {
+            assert!(drawn.contains(line), "{line:?} missing from: {drawn:?}");
+        }
+    }
+
+    #[test]
+    fn hidden_bars_are_not_counted() {
+        // Quiet / non-TTY yields a hidden bar, which is never `multi.add`ed.
+        // Counting one would open the routing gate over a multi that draws
+        // nothing, and every line would vanish.
+        let p = crate::output::Printer::with_format(
+            Verbosity::Quiet,
+            None,
+            crate::output::OutputFormat::Table,
+        );
+        let sp = p.spinner("hidden");
+        assert!(sp.bar.is_hidden(), "Quiet must yield a hidden bar");
+        assert!(
+            sp._live.is_none(),
+            "a hidden bar must not hold a live-bar guard"
+        );
+    }
+
+    #[test]
+    fn live_bar_count_returns_to_zero() {
+        let mut f = BarsFixture::new(false);
+        assert_eq!(f.renderer.live_bars.load(Relaxed), 1);
+        let second = LiveBarGuard::acquire(&f.renderer);
+        assert_eq!(f.renderer.live_bars.load(Relaxed), 2);
+        drop(second);
+        assert_eq!(f.renderer.live_bars.load(Relaxed), 1);
+        f.live = None;
+        assert_eq!(
+            f.renderer.live_bars.load(Relaxed),
+            0,
+            "the guard's Drop is the only decrement, so it must fire"
+        );
+    }
+
+    #[test]
+    fn kv_block_travels_with_the_line_it_precedes() {
+        let f = BarsFixture::new(false);
+        f.renderer.render_section_open("Config", true);
+        f.renderer.render_kv("Profile", "work");
+        f.renderer.render_kv("Host", "jarvis");
+
+        // The bullet is what drains the kvs and what flushes the still-
+        // deferred section header. All of it is ONE emission.
+        let before = f.cycles();
+        f.renderer.render_bullet(&f.sink, 1, "applied");
+        assert_eq!(
+            f.cycles() - before,
+            1,
+            "header + kv block + bullet must leave as one block"
+        );
+
+        let drawn = f.drawn();
+        for text in ["Config", "Profile", "Host", "applied"] {
+            assert!(drawn.contains(text), "{text:?} missing from: {drawn:?}");
+        }
+        // The line the block precedes is last, which is what makes it one
+        // block rather than a kv emission followed by a separate line.
+        let bullet = drawn.find("applied").expect("bullet missing");
+        for text in ["Config", "Profile", "Host"] {
+            let at = drawn.find(text).expect("member missing");
+            assert!(
+                at < bullet,
+                "{text:?} left after the line it precedes: {drawn:?}"
+            );
+        }
+        f.renderer.render_section_close(&f.sink);
+    }
+
+    #[test]
+    fn deferred_header_and_kv_emit_without_reentry() {
+        // Same shape against a plain sink: the recursion
+        // `push_line -> drain_kv_buffer -> render_kv_block ->
+        // flush_section_headers -> push_line` must terminate and land the
+        // lines in call order.
+        let (r, sink, buf) = capture();
+        r.render_section_open("Section", true);
+        r.render_kv("Key", "value");
+        r.render_bullet(&sink, 1, "child");
+        r.render_section_close(&sink);
+
+        let out = strip_ansi(&buf.lock().unwrap());
+        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        // Byte-identical to the sequence the scoped acquisitions produced: the
+        // drain at the top of `push_line` renders the pending block before the
+        // header line that triggered the drain.
+        assert_eq!(
+            lines,
+            vec!["  Key  value", "Section", "  - child"],
+            "got: {out:?}"
+        );
     }
 }

@@ -229,7 +229,11 @@ impl<D: Display> Display for StyledText<'_, D> {
 }
 
 pub struct Theme {
-    // Style slots (12)
+    // Style slots (13)
+    /// Style for an action subject at the deepest level of the run tree.
+    /// `None` means the subject keeps the role's own style — the correct
+    /// answer for a preset with no palette foreground of its own.
+    pub primary: Option<ThemedStyle>,
     pub header: ThemedStyle,
     pub success: ThemedStyle,
     pub warning: ThemedStyle,
@@ -262,6 +266,10 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
+            // No palette foreground exists to spend here, and the terminal's
+            // own default is the fall-through this slot exists to avoid — so
+            // the subject keeps its role style.
+            primary: None,
             header: ThemedStyle::plain().bold().cyan(),
             success: ThemedStyle::plain().green(),
             warning: ThemedStyle::plain().yellow(),
@@ -302,6 +310,7 @@ impl Theme {
 
     fn dracula() -> Self {
         Self {
+            primary: Some(hex("#f8f8f2")),
             header: hex("#bd93f9").bold(),
             success: hex("#50fa7b"),
             warning: hex("#f1fa8c"),
@@ -320,6 +329,7 @@ impl Theme {
 
     fn solarized_dark() -> Self {
         Self {
+            primary: Some(hex("#eee8d5")),
             header: hex("#268bd2").bold(),
             success: hex("#859900"),
             warning: hex("#b58900"),
@@ -338,6 +348,9 @@ impl Theme {
 
     fn solarized_light() -> Self {
         Self {
+            // base02, not a light tone: on a light background the deliberate
+            // contrast colour is the dark end of the palette.
+            primary: Some(hex("#073642")),
             header: hex("#268bd2").bold(),
             success: hex("#859900"),
             warning: hex("#b58900"),
@@ -361,6 +374,13 @@ impl Theme {
         let mut t = Self::from_preset(&cfg.name);
         let ov = &cfg.overrides;
         // Style overrides
+        if let Some(c) = &ov.primary
+            && parse_hex_rgb(c).is_some()
+        {
+            // The slot is optional, so an override on a preset that answers
+            // `None` fills it rather than adjusting an existing colour.
+            apply_color(t.primary.get_or_insert_with(ThemedStyle::plain), c);
+        }
         if let Some(c) = &ov.header {
             apply_color(&mut t.header, c);
         }
@@ -427,6 +447,8 @@ impl Theme {
 
     fn minimal() -> Self {
         Self {
+            // minimal spends no colour at all.
+            primary: None,
             header: ThemedStyle::plain().bold(),
             success: ThemedStyle::plain(),
             warning: ThemedStyle::plain(),
@@ -1091,10 +1113,55 @@ mod tests {
     fn solarized_light_preset_distinct_muted_from_dark() {
         let dark = Theme::from_preset("solarized-dark");
         let light = Theme::from_preset("solarized-light");
-        // Only the muted/diff_context slot differs between solarized-dark and
-        // solarized-light; everything else matches.
+        // Only the muted/diff_context and primary slots differ between
+        // solarized-dark and solarized-light; everything else matches.
         assert_ne!(dark.muted.rgb, light.muted.rgb);
         assert_eq!(light.muted.rgb, Some((0x93, 0xa1, 0xa1)));
+        // The foreground the two palettes are deliberate about is the one slot
+        // that has to invert with the background.
+        assert_ne!(
+            dark.primary.as_ref().and_then(|s| s.rgb),
+            light.primary.as_ref().and_then(|s| s.rgb)
+        );
+        assert_eq!(
+            light.primary.as_ref().and_then(|s| s.rgb),
+            Some((0x07, 0x36, 0x42))
+        );
         assert_eq!(dark.success.rgb, light.success.rgb);
+    }
+
+    #[test]
+    fn primary_slot_differs_per_preset() {
+        let repr = |t: &Theme| format!("{:?}", t.primary);
+        let dracula = Theme::from_preset("dracula");
+        let sol_dark = Theme::from_preset("solarized-dark");
+        let sol_light = Theme::from_preset("solarized-light");
+        assert_ne!(repr(&dracula), repr(&sol_dark));
+        assert_ne!(repr(&sol_dark), repr(&sol_light));
+        assert_ne!(repr(&dracula), repr(&sol_light));
+    }
+
+    /// The fence for the claim that the majority path is unchanged: with no
+    /// primary style, an action subject keeps the role's own style.
+    #[test]
+    fn primary_is_none_for_default_and_minimal() {
+        assert!(Theme::default().primary.is_none());
+        assert!(Theme::from_preset("minimal").primary.is_none());
+    }
+
+    #[test]
+    fn primary_override_fills_the_slot_on_a_preset_that_has_none() {
+        let cfg = crate::config::ThemeConfig {
+            name: "default".into(),
+            overrides: crate::config::ThemeOverrides {
+                primary: Some("#ff0000".into()),
+                ..Default::default()
+            },
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert_eq!(
+            t.primary.as_ref().and_then(|s| s.rgb),
+            Some((0xff, 0x00, 0x00))
+        );
     }
 }

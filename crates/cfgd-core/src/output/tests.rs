@@ -10,6 +10,7 @@
 mod baseline;
 #[cfg(feature = "test-helpers")]
 mod corners;
+mod fences;
 #[cfg(feature = "test-helpers")]
 mod indent;
 #[cfg(feature = "test-helpers")]

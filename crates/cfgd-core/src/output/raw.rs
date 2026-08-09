@@ -18,6 +18,7 @@ impl Renderer {
     /// Always at depth 0 (raw renderer).
     pub fn render_diff(&self, w: &dyn Writer, old: &str, new: &str) {
         let diff = TextDiff::from_lines(old, new);
+        let mut lines = Vec::new();
         for change in diff.iter_all_changes() {
             let (sign, style) = match change.tag() {
                 ChangeTag::Insert => ("+", &self.theme.diff_add),
@@ -26,9 +27,11 @@ impl Renderer {
             };
             let body = format!("{sign}{change}");
             let body = body.trim_end_matches('\n');
-            let styled = style.apply_to(body).to_string();
-            w.write_line(&styled);
+            lines.push(style.apply_to(body).to_string());
         }
+        // One block per render, so a diff is never split across two of
+        // indicatif's clear/redraw cycles.
+        self.emit_raw_block(w, &lines);
     }
 
     /// Render syntax-highlighted code. Caller passes the `lang` hint (e.g.,
@@ -52,18 +55,20 @@ impl Renderer {
             .or_else(|| theme_set.themes.values().next())
         else {
             // No syntect themes available; emit unstyled lines.
-            for line in code.lines() {
-                w.write_line(line);
-            }
+            let plain: Vec<String> = code.lines().map(str::to_string).collect();
+            self.emit_raw_block(w, &plain);
             return;
         };
         let mut h = HighlightLines::new(syntax, theme);
+        let mut lines = Vec::new();
         for line in code.lines() {
             let ranges: Vec<(SynStyle, &str)> =
                 h.highlight_line(line, syntax_set).unwrap_or_default();
-            let escaped = as_24_bit_terminal_escaped(&ranges, false);
-            w.write_line(&escaped);
+            lines.push(as_24_bit_terminal_escaped(&ranges, false));
         }
+        // Built outside the guard: highlighting is expensive and touches no
+        // render state, so the lock is taken only around the emission.
+        self.emit_raw_block(w, &lines);
     }
 }
 

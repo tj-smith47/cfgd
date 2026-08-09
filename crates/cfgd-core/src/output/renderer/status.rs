@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::{Renderer, Writer, role_glyph};
 use crate::PathDisplayExt;
+use crate::output::theme::ThemedStyle;
 use crate::output::{Role, Verbosity, strip_ansi};
 
 /// Inputs to a single Status line. Builders convert to this for rendering.
@@ -12,6 +13,38 @@ pub struct StatusFields<'a> {
     pub detail: Option<&'a str>,
     pub duration: Option<Duration>,
     pub target: Option<&'a Path>,
+    /// Style for the SUBJECT only; the glyph always keeps the role's style.
+    /// `None` = the subject is painted with the role style.
+    pub subject_style: Option<ThemedStyle>,
+    /// Style for the DETAIL only. `None` = the detail is written unstyled, in
+    /// the terminal's default foreground.
+    pub detail_style: Option<ThemedStyle>,
+}
+
+/// Where a status emission lands: into the innermost section's close-time
+/// buffer, straight out against a pre-computed column, or straight out at the
+/// caller's depth.
+enum StatusRoute {
+    Buffered,
+    Live(usize),
+    Immediate,
+}
+
+/// True when a status carries content after its subject, which is the only
+/// case either alignment path pads for.
+pub(crate) fn has_trailing(f: &StatusFields<'_>) -> bool {
+    f.detail.is_some() || f.duration.is_some() || f.target.is_some()
+}
+
+/// Right-pad `subject` to `width`, or `None` when this status is one the
+/// buffered path would have left alone. Shared by both alignment paths so a
+/// live column pads exactly the lines a section close would have.
+pub(crate) fn pad_subject(subject: &str, width: usize, has_trailing: bool) -> Option<String> {
+    if !has_trailing || width == 0 {
+        return None;
+    }
+    let cur = console::measure_text_width(subject);
+    (cur < width).then(|| format!("{}{}", subject, " ".repeat(width - cur)))
 }
 
 impl Renderer {
@@ -26,37 +59,66 @@ impl Renderer {
         }
         // Buffer when a section is open AND this status's depth is inside
         // (not equal to) the section's header_depth. The depth==header_depth
-        // case happens for re-routed top-level emits via `enforce_top_level_emit`;
-        // those should render immediately so the warning shape stays inline.
-        let buffered = {
+        // case happens for re-routed top-level emits via
+        // `enforce_structural_top_level`; those should render immediately so
+        // the warning shape stays inline.
+        let route = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut did_buffer = false;
-            if let Some(top) = s.section_stack.last_mut()
-                && depth > top.header_depth
-            {
-                // Inside the section's child region — buffer.
-                top.pending_statuses.push(super::section::BufferedStatus {
-                    role: f.role,
-                    subject: f.subject.to_string(),
-                    detail: f.detail.map(|d| d.to_string()),
-                    duration: f.duration,
-                    target: f.target.map(|p| p.to_path_buf()),
-                    depth,
-                });
-                did_buffer = true;
+            match s.section_stack.last_mut() {
+                Some(top) if depth > top.header_depth => match top.live_column {
+                    // A live frame renders now and pads against a column that
+                    // was computed before the run, since there is no close to
+                    // buffer until.
+                    Some(width) => StatusRoute::Live(width),
+                    None => {
+                        top.pending_statuses.push(super::section::BufferedStatus {
+                            role: f.role,
+                            subject: f.subject.to_string(),
+                            detail: f.detail.map(|d| d.to_string()),
+                            duration: f.duration,
+                            target: f.target.map(|p| p.to_path_buf()),
+                            depth,
+                            subject_style: f.subject_style.clone(),
+                            detail_style: f.detail_style.clone(),
+                        });
+                        StatusRoute::Buffered
+                    }
+                },
+                _ => StatusRoute::Immediate,
             }
-            did_buffer
         };
-        if buffered {
-            // Header emission must still happen so the section's header
-            // appears before any of its children. This is idempotent — only
-            // the first call writes anything.
-            self.flush_pending_section_headers(w);
-            return;
+        match route {
+            StatusRoute::Buffered => {
+                // Header emission must still happen so the section's header
+                // appears before any of its children. This is idempotent —
+                // only the first call writes anything.
+                self.flush_pending_section_headers(w);
+            }
+            StatusRoute::Live(width) => {
+                let padded = pad_subject(f.subject, width, has_trailing(f));
+                match padded {
+                    Some(subject) => self.render_status_immediate(
+                        w,
+                        depth,
+                        &StatusFields {
+                            role: f.role,
+                            subject: &subject,
+                            detail: f.detail,
+                            duration: f.duration,
+                            target: f.target,
+                            subject_style: f.subject_style.clone(),
+                            detail_style: f.detail_style.clone(),
+                        },
+                    ),
+                    None => self.render_status_immediate(w, depth, f),
+                }
+            }
+            StatusRoute::Immediate => {
+                self.open_top_group(super::TopGroup::Status);
+                self.render_status_immediate(w, depth, f);
+                self.mark_top_level_group(super::TopGroup::Status);
+            }
         }
-        self.open_top_group(super::TopGroup::Status);
-        self.render_status_immediate(w, depth, f);
-        self.mark_top_level_group(super::TopGroup::Status);
     }
 
     /// Actually emit a Status line, without buffering. Used by the immediate
@@ -70,15 +132,15 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
             return;
         }
-        self.flush_pending_section_headers(w);
-
         let (icon_opt, style) = role_glyph(&self.theme, f.role);
         let mut line = String::new();
         if let Some(icon) = icon_opt {
             line.push_str(&style.apply_to(icon).to_string());
             line.push(' ');
         }
-        line.push_str(&style.apply_to(f.subject).to_string());
+        // The glyph keeps the role's style whatever the subject takes.
+        let subject_style = f.subject_style.as_ref().unwrap_or(&style);
+        line.push_str(&subject_style.apply_to(f.subject).to_string());
 
         // Detail may carry multi-line external tool stderr (e.g. a failed
         // `cargo install` dumps a whole error chain). Pre-split it like
@@ -95,10 +157,16 @@ impl Renderer {
             let clean = strip_ansi(detail);
             let mut lines = clean.lines();
             line.push_str(" — ");
+            // Continuation lines take the same style, so a wrapped detail
+            // cannot change colour halfway down.
+            let paint = |text: &str| match &f.detail_style {
+                Some(style) => style.apply_to(text).to_string(),
+                None => text.to_string(),
+            };
             if let Some(first) = lines.next() {
-                line.push_str(first);
+                line.push_str(&paint(first));
             }
-            detail_tail.extend(lines.map(str::to_string));
+            detail_tail.extend(lines.map(paint));
         }
         if let Some(target) = f.target {
             let dim = self.theme.muted.apply_to(format!(" ({})", target.posix()));
@@ -109,12 +177,15 @@ impl Renderer {
             let dim = self.theme.muted.apply_to(format!(" ({:.1}s)", secs));
             line.push_str(&dim.to_string());
         }
-        self.write_line(w, depth, &line);
-        // Continuation lines indent one level past the subject so they read as
-        // belonging to this status rather than as new siblings.
-        for tail in detail_tail {
-            self.write_line(w, depth + 1, &tail);
-        }
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.push_line(depth, &line);
+            // Continuation lines indent one level past the subject so they
+            // read as belonging to this status rather than as new siblings.
+            for tail in &detail_tail {
+                e.push_line(depth + 1, tail);
+            }
+        });
     }
 
     /// Emit a Warn-styled diagnostic line that is shown regardless of verbosity
@@ -122,7 +193,7 @@ impl Renderer {
     /// `Verbosity::Quiet` and `render_status` would drop every non-`Fail` role.
     /// Reserved for intentional always-visible diagnostics (deprecation
     /// notices) that belong on stderr but must never reach the stdout data
-    /// channel. `depth` comes from the caller's `enforce_top_level_emit(0)`
+    /// channel. `depth` comes from the caller's `enforce_structural_top_level(0)`
     /// (0 in normal use); subject must not contain `\n`.
     pub fn render_deprecation(&self, w: &dyn Writer, depth: usize, subject: &str) {
         let (icon_opt, style) = role_glyph(&self.theme, Role::Warn);
@@ -164,6 +235,8 @@ mod tests {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
@@ -182,6 +255,8 @@ mod tests {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
@@ -200,6 +275,8 @@ mod tests {
                 detail: Some("permission denied"),
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
@@ -221,6 +298,8 @@ mod tests {
                 detail: None,
                 duration: Some(std::time::Duration::from_millis(1234)),
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
@@ -241,6 +320,8 @@ mod tests {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
@@ -277,6 +358,8 @@ mod tests {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         assert!(buf.lock().unwrap().is_empty());
@@ -300,6 +383,8 @@ mod tests {
                 detail: Some(detail),
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let out = strip_ansi(&buf.lock().unwrap());
@@ -335,6 +420,8 @@ mod tests {
                 detail: Some(detail),
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
         let raw = buf.lock().unwrap().clone();
