@@ -13,6 +13,7 @@ mod format;
 mod modules;
 mod packages;
 mod patch;
+mod pending;
 mod plan;
 mod restore;
 mod rollback;
@@ -36,6 +37,7 @@ pub use format::{
 };
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
+pub use pending::{DecisionExclusions, withhold_from_plan};
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
     ApplyRun, BACKUPS_PHASE_LABEL, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO, PhaseCoverage,
@@ -51,10 +53,12 @@ pub use types::{
 pub use verify::{VerifyResult, verify};
 
 pub(crate) use env::all_recorded_path_dirs;
+pub(crate) use pending::withheld_decision_paths;
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
+pub(crate) use types::action_resource_info;
 
 // Re-export sibling submodule items at the parent level so the externalized
 // tests submodule can reach them via `super::*`. The `#[cfg(test)]` guard

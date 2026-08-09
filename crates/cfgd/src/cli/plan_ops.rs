@@ -260,6 +260,7 @@ pub(in crate::cli) fn build_plan_output(
     context_name: &str,
     phase_filter: Option<&PhaseFilter>,
     pending_backups: &[String],
+    pending_decisions: &[cfgd_core::state::PendingDecision],
 ) -> PlanOutput {
     let phases: Vec<PlanPhaseOutput> =
         reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete)
@@ -296,6 +297,7 @@ pub(in crate::cli) fn build_plan_output(
         total_actions,
         warnings: plan.warnings.clone(),
         pending_backups: pending_backups.to_vec(),
+        pending_decisions: pending_decisions.to_vec(),
     }
 }
 
@@ -481,10 +483,13 @@ pub(in crate::cli) fn display_plan_preview(
     // header is what states the scope every block below is read against.
     run.header(printer);
 
-    // Show pending decisions (not included in this plan)
-    if let Ok(pending) = state.pending_decisions()
-        && !pending.is_empty()
-    {
+    // The decisions awaiting the operator. The heading is literal: `plan` was
+    // pruned of these resources before it reached here, by the same
+    // `DecisionExclusions` the daemon and a real apply prune with, so this
+    // block names exactly what is missing from the tree below rather than
+    // labelling work the run would go on to do.
+    let pending = state.pending_decisions().unwrap_or_default();
+    if !pending.is_empty() {
         let section = printer.section("Pending Decisions (not included in this plan)");
         for d in &pending {
             section.status_simple(
@@ -498,7 +503,7 @@ pub(in crate::cli) fn display_plan_preview(
     }
 
     // Build structured output
-    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups);
+    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups, &pending);
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
     // doc's data payload and skip the human render.

@@ -119,6 +119,10 @@ cfgd apply --skip-scripts           # apply without running any hooks
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
 | `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
 
+`apply` reconciles exactly what `plan` previews, so a [source item awaiting a
+decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
+`cfgd decide` is the only command that resolves one.
+
 ### `cfgd plan`
 
 Preview the reconciliation plan without applying. This is the canonical preview command — `apply --dry-run` is a convenience that delegates to the same logic.
@@ -225,6 +229,33 @@ owner rather than a `module`/`section` key on the phase:
 |---|---|
 | `jq '.phases[].actions[]'` | `jq '.phases[].groups[].actions[]'` |
 | `jq '.phases[] \| select(.module=="nvim")'` | `jq '.phases[].groups[] \| select(.owner.name=="nvim")'` |
+
+A [source](sources.md#automatic-apply-decisions) item still awaiting `cfgd decide` — or one
+you rejected — is withheld from the plan: it is absent from the phases, from
+`totalActions`, and from what `apply` executes (with or without `--yes`). The
+human render lists those items under **Pending Decisions (not included in this
+plan)**; the payload carries the same rows as `pendingDecisions`, omitted when
+there are none, so a structured consumer can tell "in sync" from "waiting on
+you":
+
+```jsonc
+{
+  "totalActions": 1,
+  "pendingDecisions": [
+    {
+      "id": 1,
+      "source": "acme-corp",
+      "resource": "packages.brew.k9s",
+      "tier": "recommended",
+      "action": "install",
+      "summary": "recommended packages.brew.k9s (from acme-corp)",
+      "createdAt": "2026-08-09T17:04:11Z",
+      "resolvedAt": null,
+      "resolution": null
+    }
+  ]
+}
+```
 
 ### `cfgd status`
 

@@ -2,6 +2,7 @@ use super::*;
 // Drift helpers are reached via fully-qualified `super::drift::` paths in
 // production; tests use the bare names (e.g. `record_file_drift_to`).
 use super::drift::*;
+use crate::reconciler::{DecisionExclusions, action_resource_info, withheld_decision_paths};
 use crate::test_helpers::{test_printer, test_state};
 
 /// A never-raised abort flag with a `'static` lifetime, so a `ReconcileCtx`
@@ -466,7 +467,7 @@ fn process_source_decisions_first_run_records_decisions() {
 
     // The decision path is not the plan's vocabulary: translated, it withholds
     // `bat` from a cargo batch and leaves every unrelated package alone.
-    let exclusions = PendingExclusions::from_decision_paths(excluded, crate::expand_tilde);
+    let exclusions = DecisionExclusions::from_decision_paths(excluded, crate::expand_tilde);
     assert!(exclusions.withholds_package("cargo", "bat"));
     assert!(!exclusions.withholds_package("cargo", "ripgrep"));
     assert!(!exclusions.withholds_package("npm", "bat"));
@@ -477,6 +478,146 @@ fn process_source_decisions_first_run_records_decisions() {
         installed_batches(&phase),
         vec![("cargo".to_string(), vec!["ripgrep".to_string()])],
         "the undecided package leaves the batch; its siblings still apply"
+    );
+}
+
+/// A local profile declaring one cargo package of the subscriber's own.
+fn local_profile_declaring_bat() -> crate::config::ResolvedProfile {
+    use crate::config::*;
+    let packages = PackagesSpec {
+        cargo: Some(CargoSpec {
+            file: None,
+            packages: vec!["bat".into()],
+        }),
+        ..Default::default()
+    };
+    ResolvedProfile {
+        layers: vec![ProfileLayer {
+            source: "local".into(),
+            profile_name: "default".into(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec {
+                packages: Some(packages.clone()),
+                ..Default::default()
+            },
+        }],
+        merged: MergedProfile {
+            packages,
+            ..Default::default()
+        },
+    }
+}
+
+/// A source recommending one brew formula, subscribed with `accept_recommended`.
+fn source_recommending_k9s(accept_recommended: bool) -> crate::composition::CompositionInput {
+    use crate::config::*;
+    crate::composition::CompositionInput {
+        source_name: "acme".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            recommended: PolicyItems {
+                packages: Some(PackagesSpec {
+                    brew: Some(BrewSpec {
+                        formulae: vec!["k9s".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints::default(),
+        layers: vec![],
+        subscription: crate::composition::SubscriptionConfig {
+            accept_recommended,
+            ..Default::default()
+        },
+        allow_scripts: false,
+    }
+}
+
+#[test]
+fn a_recommended_item_the_subscriber_declined_to_accept_is_never_asked_about() {
+    let local = local_profile_declaring_bat();
+    let composed = crate::composition::compose(
+        &local,
+        &[source_recommending_k9s(false)],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let delivered = source_delivered_profile(&composed.resolved, "acme");
+    assert!(
+        extract_source_resources(&delivered).is_empty(),
+        "an unaccepted recommended tier never becomes a layer, so the source \
+         delivered nothing to decide about"
+    );
+
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let excluded = process_source_decisions(
+        &store,
+        "acme",
+        &delivered,
+        &AutoApplyPolicyConfig::default(),
+        &notifier,
+    );
+
+    assert!(
+        excluded.is_empty(),
+        "nothing was delivered, so nothing is withheld"
+    );
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "an item cfgd will not apply must mint no pending row and add no noise \
+         to a plan"
+    );
+}
+
+#[test]
+fn only_what_the_source_delivered_is_minted_as_a_decision() {
+    let local = local_profile_declaring_bat();
+    let composed = crate::composition::compose(
+        &local,
+        &[source_recommending_k9s(true)],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let delivered = source_delivered_profile(&composed.resolved, "acme");
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let excluded = process_source_decisions(
+        &store,
+        "acme",
+        &delivered,
+        &AutoApplyPolicyConfig::default(),
+        &notifier,
+    );
+
+    let pending: Vec<String> = store
+        .pending_decisions()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.resource)
+        .collect();
+    assert_eq!(
+        pending,
+        vec!["packages.brew.k9s".to_string()],
+        "the accepted recommended item is the one thing the source put in front \
+         of the operator"
+    );
+
+    // Feeding the whole composed profile instead would mint the subscriber's own
+    // declaration as if a source had sent it — and now that a pending row
+    // withholds its resource, that row would block the operator's own package.
+    let exclusions = DecisionExclusions::from_decision_paths(excluded, crate::expand_tilde);
+    assert!(exclusions.withholds_package("brew", "k9s"));
+    assert!(
+        !exclusions.withholds_package("cargo", "bat"),
+        "a local declaration is not a source decision"
     );
 }
 
@@ -499,7 +640,7 @@ fn install_of(manager: &str, packages: &[&str]) -> crate::reconciler::Action {
 
 /// The exact prune `handle_reconcile` runs, so a unit test and the daemon
 /// cannot drift apart on how the exclusions are applied.
-fn prune_with(phase: &mut crate::reconciler::Phase, exclusions: &PendingExclusions) {
+fn prune_with(phase: &mut crate::reconciler::Phase, exclusions: &DecisionExclusions) {
     phase.retain_actions_and_batches(
         |action| !exclusions.withholds_action(action),
         |manager, package| !exclusions.withholds_package(manager, package),
@@ -524,7 +665,7 @@ fn installed_batches(phase: &crate::reconciler::Phase) -> Vec<(String, Vec<Strin
 
 #[test]
 fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
         crate::expand_tilde,
     );
@@ -549,7 +690,7 @@ fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
 fn pending_package_decision_leaves_the_bootstrap_of_its_manager_alone() {
     // A bootstrap installs the package MANAGER — the prerequisite of every
     // still-decided package in the batch — so it names no decidable package.
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
         crate::expand_tilde,
     );
@@ -586,7 +727,7 @@ fn pending_package_decision_withholds_from_a_module_batch_too() {
         only_if: None,
         unless: None,
     };
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
         crate::expand_tilde,
     );
@@ -620,7 +761,7 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
     // and an undecided resource is work it will not do.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind};
 
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
         crate::expand_tilde,
     );
@@ -668,7 +809,7 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
 fn pending_brew_decision_reaches_a_cask_installed_by_brew_cask() {
     // `extract_source_resources` mints a cask as `packages.brew.<name>`, but the
     // planner installs it through the `brew-cask` manager.
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.brew.firefox".to_string()],
         crate::expand_tilde,
     );
@@ -677,7 +818,7 @@ fn pending_brew_decision_reaches_a_cask_installed_by_brew_cask() {
     assert!(!exclusions.withholds_package("brew-cask", "ripgrep"));
     // The fold is one-directional: a decision naming the cask manager outright
     // must not reach a formula of the same name.
-    let cask_only = PendingExclusions::from_decision_paths(
+    let cask_only = DecisionExclusions::from_decision_paths(
         ["packages.brew-cask.slack".to_string()],
         crate::expand_tilde,
     );
@@ -691,7 +832,7 @@ fn pending_file_decision_matches_the_expanded_action_target() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         ["files.~/.zshrc".to_string(), "files./etc/hosts".to_string()],
         crate::expand_tilde,
     );
@@ -718,8 +859,10 @@ fn pending_file_decision_reaches_a_module_deployed_target_too() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions =
-        PendingExclusions::from_decision_paths(["files.~/.zshrc".to_string()], crate::expand_tilde);
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["files.~/.zshrc".to_string()],
+        crate::expand_tilde,
+    );
 
     let resolved_file = |target: PathBuf| crate::modules::ResolvedFile {
         source: PathBuf::from("/src/file"),
@@ -771,8 +914,10 @@ fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions =
-        PendingExclusions::from_decision_paths(["files.~/.zshrc".to_string()], crate::expand_tilde);
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["files.~/.zshrc".to_string()],
+        crate::expand_tilde,
+    );
     let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: "shell".to_string(),
         kind: crate::reconciler::ModuleActionKind::DeployFiles {
@@ -811,7 +956,7 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
     use crate::reconciler::{Action, EnvAction};
 
     let exclusions =
-        PendingExclusions::from_decision_paths(["env.EDITOR".to_string()], crate::expand_tilde);
+        DecisionExclusions::from_decision_paths(["env.EDITOR".to_string()], crate::expand_tilde);
     assert!(
         exclusions.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
@@ -830,7 +975,7 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         }))
     );
     // No env decision, no env withholding.
-    let unrelated = PendingExclusions::from_decision_paths(
+    let unrelated = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
         crate::expand_tilde,
     );
@@ -849,7 +994,7 @@ fn pending_system_decision_withholds_every_action_for_its_configurator() {
     use crate::reconciler::{Action, SystemAction};
 
     let exclusions =
-        PendingExclusions::from_decision_paths(["system.sysctl".to_string()], crate::expand_tilde);
+        DecisionExclusions::from_decision_paths(["system.sysctl".to_string()], crate::expand_tilde);
     assert!(
         exclusions.withholds_action(&Action::System(SystemAction::SetValue {
             configurator: "sysctl".into(),
@@ -882,7 +1027,7 @@ fn pending_system_decision_withholds_every_action_for_its_configurator() {
 fn pending_decision_in_no_known_vocabulary_withholds_nothing() {
     // A malformed or unknown decision path cannot be translated, so it must
     // withhold nothing rather than withhold everything (or panic).
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         [
             "packages.cargo".to_string(),
             "packages..bat".to_string(),
@@ -908,7 +1053,7 @@ fn pending_decisions_never_withhold_a_secret_script_or_module_action() {
     // pending row can name one of these.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind, ScriptAction, ScriptPhase};
 
-    let exclusions = PendingExclusions::from_decision_paths(
+    let exclusions = DecisionExclusions::from_decision_paths(
         [
             "packages.cargo.bat".to_string(),
             "files./etc/hosts".to_string(),
@@ -2376,17 +2521,17 @@ fn reconcile_task_per_module() {
     assert!(task.last_reconciled.is_some());
 }
 
-// --- pending_resource_paths ---
+// --- withheld_decision_paths ---
 
 #[test]
-fn pending_resource_paths_empty_store() {
+fn withheld_decision_paths_empty_store() {
     let store = test_state();
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_decision_paths(&store);
     assert!(paths.is_empty());
 }
 
 #[test]
-fn pending_resource_paths_with_decisions() {
+fn withheld_decision_paths_with_decisions() {
     let store = test_state();
     store
         .upsert_pending_decision(
@@ -2407,7 +2552,7 @@ fn pending_resource_paths_with_decisions() {
         )
         .unwrap();
 
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_decision_paths(&store);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains("packages.cargo.bat"));
     assert!(paths.contains("env.EDITOR"));
@@ -7976,12 +8121,12 @@ fn discover_managed_paths_with_profile_override() {
     assert_eq!(paths[0], PathBuf::from("/home/user/.bashrc"));
 }
 
-// --- pending_resource_paths ---
+// --- withheld_decision_paths ---
 
 #[test]
-fn pending_resource_paths_returns_empty_for_no_decisions() {
+fn withheld_decision_paths_returns_empty_for_no_decisions() {
     let store = test_state();
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_decision_paths(&store);
     assert!(paths.is_empty());
 }
 
@@ -12499,7 +12644,7 @@ mod harness {
 // daemon/reconcile.rs — extra branch coverage:
 //   * Plural-message branch fires when count > 1 new pending decisions in
 //     one call (singular path is already covered by *_detects_new_items_on_change)
-//   * pending_resource_paths direct read-back contract — empty / multi-decision
+//   * withheld_decision_paths direct read-back contract — empty / multi-decision
 //     / post-resolution-empty
 // ---------------------------------------------------------------------------
 
@@ -12548,12 +12693,10 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
 }
 
 #[test]
-fn pending_resource_paths_returns_decision_resources_as_set() {
-    use crate::daemon::reconcile::pending_resource_paths;
-
+fn withheld_decision_paths_returns_decision_resources_as_set() {
     let store = test_state();
     // Empty store → empty set
-    let empty = pending_resource_paths(&store);
+    let empty = withheld_decision_paths(&store);
     assert!(empty.is_empty(), "no decisions → empty set");
 
     // Two distinct decisions
@@ -12576,7 +12719,7 @@ fn pending_resource_paths_returns_decision_resources_as_set() {
         )
         .unwrap();
 
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_decision_paths(&store);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains("packages.cargo.bat"));
     assert!(paths.contains("files.security/rules.yaml"));
@@ -12585,7 +12728,7 @@ fn pending_resource_paths_returns_decision_resources_as_set() {
     store
         .resolve_decisions_for_source("acme", "accepted")
         .unwrap();
-    let after = pending_resource_paths(&store);
+    let after = withheld_decision_paths(&store);
     assert!(
         after.is_empty(),
         "resolving all decisions empties the pending-resource set"

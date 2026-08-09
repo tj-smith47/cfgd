@@ -61,7 +61,7 @@ pub use profile_spec::{
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{
     ALL_MANAGER_NAMES, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer, ResolvedProfile,
-    desired_packages_for, desired_packages_for_spec, resolve_profile,
+    desired_packages_for, desired_packages_for_spec, merge_layers, resolve_profile,
 };
 pub use root::{
     CfgdConfig, ConfigMetadata, ConfigSpec, SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig,

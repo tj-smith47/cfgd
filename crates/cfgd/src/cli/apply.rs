@@ -316,7 +316,15 @@ pub fn run_apply(
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
 
-    let reconciler = Reconciler::new(&registry, &state);
+    // A resource awaiting (or declined by) a source decision is not this run's
+    // to touch, in any mode: the confirm prompt, `--yes` and `--dry-run` all
+    // act on the plan below. The env arm withholds its surface as a unit and
+    // apply rebuilds that surface from the DECLARED set after the phases run,
+    // so the reconciler carries the flag as well — pruning alone would leave
+    // an undecided variable reaching the machine through the regeneration.
+    let exclusions = reconciler::DecisionExclusions::from_store(&state);
+    let reconciler = Reconciler::new(&registry, &state)
+        .withholding_env_surface(exclusions.withholds_env_surface());
     let mut plan = reconciler.plan(
         &effective_resolved,
         file_actions,
@@ -324,6 +332,7 @@ pub fn run_apply(
         resolved_modules.clone(),
         reconcile_context,
     )?;
+    reconciler::withhold_from_plan(&mut plan, &exclusions);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // outcome distinguishes "in sync" from "a filter excluded pending work".

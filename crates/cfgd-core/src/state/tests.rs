@@ -659,6 +659,104 @@ fn upsert_config_source_updates_on_conflict() {
 // --- Pending decision tests ---
 
 #[test]
+fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "st",
+        )
+        .unwrap();
+    store
+        .upsert_pending_decision("acme", "files.~/.zshrc", "recommended", "install", "rc")
+        .unwrap();
+    store
+        .resolve_decision("packages.brew.stern", "rejected")
+        .unwrap();
+    store
+        .resolve_decision("files.~/.zshrc", "accepted")
+        .unwrap();
+
+    let mut withheld = store.withheld_decision_paths().unwrap();
+    withheld.sort();
+    assert_eq!(
+        withheld,
+        vec![
+            "packages.brew.k9s".to_string(),
+            "packages.brew.stern".to_string()
+        ],
+        "awaiting and declined both withhold; only an accepted decision releases its resource"
+    );
+}
+
+#[test]
+fn accepting_a_resource_that_was_once_rejected_releases_it() {
+    // A source update re-asks about an item the operator declined earlier
+    // (`docs/sources.md`: "Rejection doesn't persist across source versions"),
+    // so a resource can carry a resolved rejection AND a newer decision. The
+    // newest answer is the one that counts — otherwise accepting the fresh
+    // decision would be silently overruled by the stale rejection.
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+        .unwrap();
+    store
+        .resolve_decision("packages.brew.k9s", "rejected")
+        .unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v2")
+        .unwrap();
+    assert_eq!(
+        store.withheld_decision_paths().unwrap(),
+        vec!["packages.brew.k9s".to_string()],
+        "the fresh decision withholds while it is unanswered"
+    );
+
+    store
+        .resolve_decision("packages.brew.k9s", "accepted")
+        .unwrap();
+    assert!(
+        store.withheld_decision_paths().unwrap().is_empty(),
+        "the stale rejection must not outlive the answer that replaced it"
+    );
+}
+
+#[test]
+fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "other",
+            "packages.brew.bat",
+            "recommended",
+            "install",
+            "bat",
+        )
+        .unwrap();
+
+    assert_eq!(store.discard_decisions_for_source("acme").unwrap(), 1);
+    assert_eq!(
+        store.withheld_decision_paths().unwrap(),
+        vec!["packages.brew.bat".to_string()],
+        "an unsubscribed source stops withholding the paths it named"
+    );
+    assert_eq!(
+        store.pending_decisions().unwrap().len(),
+        1,
+        "only the removed source's rows are gone"
+    );
+}
+
+#[test]
 fn upsert_and_list_pending_decisions() {
     let store = StateStore::open_in_memory().unwrap();
     let id = store

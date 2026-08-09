@@ -187,6 +187,16 @@ pub struct PlanOutput {
     /// declared backup carries a `schedule`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_backups: Vec<String>,
+    /// The source decisions awaiting the operator, whose resources are
+    /// withheld from `phases[]` and from `totalActions` above.
+    ///
+    /// The structured counterpart of the human preview's "Pending Decisions"
+    /// block: under `-o json` that block is suppressed with every other human
+    /// row, so without this key a consumer would see a smaller plan with
+    /// nothing to explain it. Empty (and omitted from the wire) when no
+    /// decision is outstanding.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1032,6 +1042,7 @@ mod tests {
             total_actions: 1,
             warnings: vec![],
             pending_backups: vec![],
+            pending_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -1060,6 +1071,7 @@ mod tests {
             total_actions: 0,
             warnings: vec!["missing tool".to_string()],
             pending_backups: vec![],
+            pending_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
@@ -1073,6 +1085,7 @@ mod tests {
             total_actions: 0,
             warnings: vec![],
             pending_backups: vec!["photos".to_string()],
+            pending_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["pendingBackups"], json!(["photos"]));

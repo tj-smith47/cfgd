@@ -72,6 +72,51 @@ impl StateStore {
         Ok(rows)
     }
 
+    /// Every resource path a decision currently withholds from reconciliation.
+    ///
+    /// Two decision states withhold, and the plan cannot tell them apart: an
+    /// unresolved row is awaiting the operator's answer, and a `rejected` row
+    /// already has it. `docs/sources.md` gives both the same effect — "awaiting
+    /// user action" is not applied, "user declined" is "excluded from
+    /// reconciliation" — so one query answers "may this resource be planned",
+    /// and `accepted` is the only resolution that releases it.
+    ///
+    /// Only the NEWEST row per `(source, resource)` is consulted. A rejection
+    /// does not persist across source versions: an update to the item mints a
+    /// fresh decision beside the resolved one, and the answer to that fresh
+    /// decision is the operator's current intent. Reading every row instead
+    /// would let a stale rejection quietly overrule the acceptance that
+    /// replaced it.
+    pub fn withheld_decision_paths(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resource FROM pending_decisions AS d
+                 WHERE (resolved_at IS NULL OR resolution = 'rejected')
+                   AND id = (SELECT MAX(id) FROM pending_decisions AS newer
+                             WHERE newer.source = d.source AND newer.resource = d.resource)",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Drop every decision belonging to `source`, resolved or not.
+    ///
+    /// For a source the subscriber no longer has: its decisions describe items
+    /// that are gone with it, so they are discarded rather than resolved.
+    /// Resolving them as `rejected` would be a lasting exclusion of the
+    /// resource PATHS they name — a later local declaration of the same file or
+    /// package would be withheld by a source the machine no longer subscribes
+    /// to — and re-subscribing would find the items already answered rather
+    /// than asking again.
+    pub fn discard_decisions_for_source(&self, source: &str) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM pending_decisions WHERE source = ?1",
+            params![source],
+        )?;
+        Ok(deleted)
+    }
+
     /// Get pending decisions for a specific source.
     pub fn pending_decisions_for_source(&self, source: &str) -> Result<Vec<PendingDecision>> {
         let mut stmt = self

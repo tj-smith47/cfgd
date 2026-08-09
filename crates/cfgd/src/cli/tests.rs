@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 
+use cfgd_core::PathDisplayExt;
+
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
 
@@ -9620,7 +9622,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None, &[]);
+    let output = super::build_plan_output(&plan, "apply", None, &[], &[]);
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -9640,7 +9642,7 @@ fn build_plan_output_with_actions() {
         )],
         warnings: vec!["something".into()],
     };
-    let output = super::build_plan_output(&plan, "reconcile", None, &[]);
+    let output = super::build_plan_output(&plan, "reconcile", None, &[], &[]);
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -9680,6 +9682,7 @@ fn build_plan_output_with_phase_filter() {
         &plan,
         "apply",
         Some(&PhaseFilter::Phase(reconciler::PhaseName::Files)),
+        &[],
         &[],
     );
     assert_eq!(output.total_actions, 1);
@@ -20013,4 +20016,345 @@ fn build_doctor_doc_unscannable_profiles_dir_fails() {
         text.contains("Some checks failed"),
         "an unscannable profiles dir must fail doctor, got: {text}"
     );
+}
+
+// --- Source decisions: what `plan` and `apply` may execute ---
+//
+// `docs/sources.md` states one behaviour for a source-delivered item awaiting a
+// decision — recorded, notified, NOT applied — and one for an item the operator
+// declined: excluded from reconciliation. The interactive commands are held to
+// it here, at the same three levers the daemon is: the human preview, the
+// structured payload, and what a real (non-dry-run) apply writes to disk.
+
+/// A config + profile declaring two managed files, one of which a decision can
+/// withhold. Returns the harness plus the two targets, in declaration order.
+fn decision_fixture(pending: &[(&str, &str)]) -> (CliTestHarness, PathBuf, PathBuf) {
+    let staging = tempfile::tempdir().unwrap();
+    let out = staging.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let kept = out.join("kept.txt");
+    let withheld = out.join("withheld.txt");
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/kept.txt\n        target: {}\n        strategy: Copy\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
+        kept.posix(),
+        withheld.posix(),
+    );
+    let h = CliTestHarness::builder()
+        .config("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n")
+        .profile("sourced", &profile)
+        .build();
+
+    let files_dir = h.config_path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("kept.txt"), "kept body").unwrap();
+    std::fs::write(files_dir.join("withheld.txt"), "withheld body").unwrap();
+
+    // The staging dir must outlive the harness; leak it deliberately so the
+    // targets stay writable for the whole test rather than vanishing on drop.
+    std::mem::forget(staging);
+
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    for (resource, resolution) in pending {
+        state
+            .upsert_pending_decision(
+                "acme",
+                resource,
+                "recommended",
+                "install",
+                &format!("recommended {resource} (from acme)"),
+            )
+            .unwrap();
+        if !resolution.is_empty() {
+            state.resolve_decision(resource, resolution).unwrap();
+        }
+    }
+    (h, kept, withheld)
+}
+
+fn plan_args() -> PlanArgs {
+    PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    }
+}
+
+fn apply_args(dry_run: bool) -> ApplyArgs {
+    ApplyArgs {
+        from: None,
+        dry_run,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    }
+}
+
+#[test]
+fn plan_preview_excludes_the_resource_its_pending_block_names() {
+    let (h, kept, withheld) = decision_fixture(&[]);
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    state
+        .upsert_pending_decision(
+            "acme",
+            &format!("files.{}", withheld.posix()),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    super::plan::cmd_plan(&h.cli(), h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&h.output());
+
+    assert!(
+        output.contains("Pending Decisions (not included in this plan)"),
+        "the pending block is the visibility surface and still renders, got:\n{output}"
+    );
+    assert!(
+        output.contains("1 action(s) planned"),
+        "the count must describe the pruned plan — one file, not two:\n{output}"
+    );
+    // Everything from the phase tree down — the pending block sits above it and
+    // is the one place an undecided resource may be named.
+    let tree = output
+        .rsplit_once("Phase: Files")
+        .map(|(_, tail)| tail.to_string())
+        .expect("the plan tree renders a Files phase");
+    assert!(
+        tree.contains(&kept.posix().to_string()),
+        "the decided file is still planned:\n{output}"
+    );
+    assert!(
+        !tree.contains(&withheld.posix().to_string()),
+        "an undecided file must not appear outside the pending block:\n{output}"
+    );
+}
+
+#[test]
+fn plan_payload_counts_and_lists_only_the_decided_actions() {
+    let staging = tempfile::tempdir().unwrap();
+    let out = staging.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let kept = out.join("kept.txt");
+    let withheld = out.join("withheld.txt");
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/kept.txt\n        target: {}\n        strategy: Copy\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
+        kept.posix(),
+        withheld.posix(),
+    );
+    let h = CliTestHarness::builder()
+        .config("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n")
+        .profile("sourced", &profile)
+        .json()
+        .build();
+    let files_dir = h.config_path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("kept.txt"), "kept body").unwrap();
+    std::fs::write(files_dir.join("withheld.txt"), "withheld body").unwrap();
+
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    state
+        .upsert_pending_decision(
+            "acme",
+            &format!("files.{}", withheld.posix()),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    super::plan::cmd_plan(&h.cli(), h.printer(), &plan_args()).unwrap();
+    let json = h.json_output();
+
+    assert_eq!(
+        json["totalActions"], 1,
+        "the payload counts the pruned plan: {json}"
+    );
+    let rendered = json.to_string();
+    assert!(
+        !rendered.contains("withheld.txt")
+            || json["pendingDecisions"]
+                .as_array()
+                .is_some_and(|d| d.len() == 1),
+        "an undecided target may only appear under pendingDecisions: {json}"
+    );
+    let phases = json["phases"].as_array().expect("phases array");
+    let action_text: String = phases
+        .iter()
+        .flat_map(|p| p["groups"].as_array().cloned().unwrap_or_default())
+        .flat_map(|g| g["actions"].as_array().cloned().unwrap_or_default())
+        .map(|a| a.to_string())
+        .collect();
+    assert!(
+        action_text.contains("kept.txt") && !action_text.contains("withheld.txt"),
+        "phases[].groups[].actions[] must hold the decided action only: {action_text}"
+    );
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("pendingDecisions present when a decision is pending");
+    assert_eq!(pending.len(), 1, "one pending decision: {json}");
+    assert!(
+        pending[0]["resource"]
+            .as_str()
+            .is_some_and(|r| r.contains("withheld.txt")),
+        "the payload names the withheld resource: {json}"
+    );
+    // The T7 payload shape: no `warnings` / `pendingBackups` keys when empty.
+    assert!(
+        json.get("warnings").is_none() && json.get("pendingBackups").is_none(),
+        "empty collections stay off the wire: {json}"
+    );
+    std::mem::forget(staging);
+}
+
+#[test]
+fn plan_payload_omits_pending_decisions_when_there_are_none() {
+    let (h, _kept, _withheld) = decision_fixture(&[]);
+    let cli = Cli {
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+        ..h.cli()
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    super::plan::cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    printer.flush();
+    let json = extract_json(&buf.lock().unwrap());
+    assert!(
+        json.get("pendingDecisions").is_none(),
+        "no decisions → the key stays off the wire: {json}"
+    );
+}
+
+#[test]
+fn apply_does_not_execute_a_resource_awaiting_a_decision() {
+    let (h, kept, withheld) = decision_fixture(&[]);
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    state
+        .upsert_pending_decision(
+            "acme",
+            &format!("files.{}", withheld.posix()),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    super::apply::cmd_apply(&h.cli(), h.printer(), &apply_args(false)).unwrap();
+
+    assert!(kept.exists(), "the decided file still applies");
+    assert!(
+        !withheld.exists(),
+        "a file awaiting a source decision must not be written by `cfgd apply`"
+    );
+}
+
+#[test]
+fn apply_executes_a_resource_once_its_decision_is_accepted() {
+    let (h, kept, withheld) = decision_fixture(&[]);
+    let resource = format!("files.{}", withheld.posix());
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    state
+        .upsert_pending_decision(
+            "acme",
+            &resource,
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    super::decide::cmd_decide(
+        h.printer(),
+        super::DecideAction::Accept,
+        Some(&resource),
+        None,
+        false,
+        Some(h.state_path()),
+    )
+    .unwrap();
+
+    super::apply::cmd_apply(&h.cli(), h.printer(), &apply_args(false)).unwrap();
+
+    assert!(kept.exists());
+    assert!(
+        withheld.exists(),
+        "an accepted decision releases its resource to the next apply"
+    );
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "accepting resolves the row"
+    );
+}
+
+#[test]
+fn apply_never_executes_a_resource_whose_decision_was_rejected() {
+    let (h, kept, withheld) = decision_fixture(&[]);
+    let resource = format!("files.{}", withheld.posix());
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    state
+        .upsert_pending_decision(
+            "acme",
+            &resource,
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    super::decide::cmd_decide(
+        h.printer(),
+        super::DecideAction::Reject,
+        Some(&resource),
+        None,
+        false,
+        Some(h.state_path()),
+    )
+    .unwrap();
+
+    super::apply::cmd_apply(&h.cli(), h.printer(), &apply_args(false)).unwrap();
+
+    assert!(kept.exists());
+    assert!(
+        !withheld.exists(),
+        "declining an item must exclude it from reconciliation — rejecting it \
+         cannot be the act that installs it"
+    );
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a rejected item leaves the pending list"
+    );
+}
+
+#[test]
+fn dry_run_apply_previews_the_pruned_plan() {
+    let (h, _kept, withheld) = decision_fixture(&[]);
+    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    state
+        .upsert_pending_decision(
+            "acme",
+            &format!("files.{}", withheld.posix()),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    super::apply::cmd_apply(&h.cli(), h.printer(), &apply_args(true)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&h.output());
+
+    assert!(
+        output.contains("1 action(s) planned"),
+        "a dry run previews the same pruned plan a real apply would run:\n{output}"
+    );
+    assert!(!withheld.exists(), "a dry run writes nothing either way");
 }

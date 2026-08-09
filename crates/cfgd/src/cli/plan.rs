@@ -149,6 +149,15 @@ pub fn cmd_plan(
         reconcile_context,
     )?;
 
+    // A resource awaiting (or declined by) a source decision is not this run's
+    // to plan. Pruned before the scope snapshot below, so the preview, the
+    // counts and the payload all describe the set an apply would execute —
+    // `apply` prunes with the same set, from the same rows.
+    reconciler::withhold_from_plan(
+        &mut plan,
+        &reconciler::DecisionExclusions::from_store(&state),
+    );
+
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // preview distinguishes "in sync" from "a filter excluded pending work".
     let filter_active = phase_filter.is_some()

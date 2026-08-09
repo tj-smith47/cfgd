@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::config::ScriptEntry;
 use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::state::ApplyStatus;
+use crate::to_posix_string;
 
 /// Whether the reconciler is running in CLI apply mode or daemon reconcile mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -678,6 +679,88 @@ impl ApplyResult {
 
     pub fn failed(&self) -> usize {
         self.action_results.iter().filter(|r| !r.success).count()
+    }
+}
+
+/// The `(resource_type, resource_id)` pair a planned action is recorded under.
+///
+/// The ONE derivation of a persisted action identity: drift rows, journal
+/// entries and the pending-decision match in
+/// [`DecisionExclusions`](super::DecisionExclusions) all read it, so a resource
+/// cannot be recorded under one id and matched under another. It is a
+/// state-matching key, never a display string — nothing here is condensed or
+/// re-shaped for a terminal.
+pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
+    match action {
+        Action::File(fa) => match fa {
+            FileAction::Create { target, .. } => ("file".to_string(), to_posix_string(target)),
+            FileAction::Update { target, .. } => ("file".to_string(), to_posix_string(target)),
+            FileAction::Delete { target, .. } => ("file".to_string(), to_posix_string(target)),
+            FileAction::SetPermissions { target, .. } => {
+                ("file".to_string(), to_posix_string(target))
+            }
+            FileAction::Skip { target, .. } => ("file".to_string(), to_posix_string(target)),
+        },
+        Action::Package(pa) => match pa {
+            PackageAction::Bootstrap { manager, .. } => {
+                ("package".to_string(), format!("{}:bootstrap", manager))
+            }
+            PackageAction::Install {
+                manager, packages, ..
+            } => (
+                "package".to_string(),
+                format!("{}:{}", manager, packages.join(",")),
+            ),
+            PackageAction::Uninstall {
+                manager, packages, ..
+            } => (
+                "package".to_string(),
+                format!("{}:{}", manager, packages.join(",")),
+            ),
+            PackageAction::Skip { manager, .. } => ("package".to_string(), manager.clone()),
+        },
+        Action::Secret(sa) => match sa {
+            SecretAction::Decrypt { target, .. } => ("secret".to_string(), to_posix_string(target)),
+            SecretAction::Resolve { reference, .. } => ("secret".to_string(), reference.clone()),
+            SecretAction::ResolveEnv { envs, .. } => {
+                ("secret".to_string(), format!("env:[{}]", envs.join(",")))
+            }
+            SecretAction::Skip { source, .. } => ("secret".to_string(), source.clone()),
+        },
+        Action::System(sa) => match sa {
+            SystemAction::SetValue {
+                configurator, key, ..
+            } => ("system".to_string(), format!("{}:{}", configurator, key)),
+            SystemAction::Skip { configurator, .. } => ("system".to_string(), configurator.clone()),
+        },
+        Action::Script(sa) => {
+            match sa {
+                // Resource-id / state-matching key, NOT a display string:
+                // stored as `resource_id` in `drift_events` and matched by
+                // exact string on every tick (`UPDATE ... WHERE
+                // resource_id = ?`). Condensing `run_str()` here would
+                // reshape the id and re-open every already-recorded drift row
+                // for a module with a multi-line inline script. Display-side
+                // condensing for "script" rows happens where a status
+                // subject or table cell is actually built (`cli/status.rs`).
+                ScriptAction::Run { entry, .. } => {
+                    ("script".to_string(), entry.run_str().to_string())
+                }
+            }
+        }
+        Action::Module(ma) => ("module".to_string(), ma.module_name.clone()),
+        Action::Env(ea) => {
+            use crate::reconciler::EnvAction;
+            match ea {
+                EnvAction::WriteEnvFile { path, .. } => ("env".to_string(), to_posix_string(path)),
+                EnvAction::InjectSourceLine { rc_path, .. } => {
+                    ("env-rc".to_string(), to_posix_string(rc_path))
+                }
+                EnvAction::RefreshLiveSession { .. } => {
+                    ("env-session".to_string(), "live-session".to_string())
+                }
+            }
+        }
     }
 }
 

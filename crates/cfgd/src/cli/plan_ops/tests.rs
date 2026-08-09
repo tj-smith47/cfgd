@@ -787,7 +787,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None, &[]);
+    let output = build_plan_output(&plan, "my-machine", None, &[], &[]);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -832,6 +832,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         "ctx",
         Some(&PhaseFilter::Phase(PhaseName::Files)),
         &[],
+        &[],
     );
 
     assert_eq!(output.phases.len(), 1);
@@ -845,7 +846,7 @@ fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
         PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Post-Scripts");
@@ -884,7 +885,7 @@ fn build_plan_output_orders_groups_profile_first() {
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     assert_eq!(
         output.phases[0]
@@ -912,7 +913,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         PhaseName::Packages,
         vec![pkg_install("apt", vec!["sl"])],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     assert_eq!(
         output.phases[0]
@@ -932,7 +933,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -964,7 +965,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     let actions = phase_actions(&output.phases[0]);
     let sourced = actions
@@ -1001,7 +1002,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
     for phase in &output.phases {
         for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -1022,7 +1023,7 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -1041,7 +1042,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -1066,7 +1067,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2001,7 +2002,7 @@ fn platform_skip_survives_in_the_plan_payload() {
         (PhaseName::Modules, vec![skip]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", None, &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &[]);
 
     assert_eq!(output.total_actions, 2, "the skip is a counted action");
     let modules = output

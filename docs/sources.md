@@ -288,13 +288,38 @@ Pending decisions have three states:
 | **Accepted** | User approved; item included in next reconcile |
 | **Rejected** | User declined; item excluded from reconciliation |
 
+Only **Accepted** puts the item on your machine. `cfgd plan`, `cfgd apply` and the daemon all read the same decisions and withhold the resource identically — a Pending or Rejected item is absent from the plan preview, from the action counts, and from the `-o json` payload, and `cfgd apply --yes` will not install it either. `cfgd plan` lists the pending items under **Pending Decisions** (and `-o json` carries them as `pendingDecisions`) so an item missing from the plan is always explained by a decision you can see:
+
+```sh
+$ cfgd plan
+Plan
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  default
+  Phases   Packages
+
+Pending Decisions (not included in this plan)
+  ⊙ recommended packages.brew.k9s — install by acme-corp (run `cfgd decide accept/reject`)
+
+Phase: Packages
+  profile:default
+    - brew install ripgrep
+
+⊙ 1 action(s) planned
+
+$ cfgd decide accept packages.brew.k9s
+$ cfgd plan            # k9s now plans alongside ripgrep
+⊙ 2 action(s) planned
+```
+
+`cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.
+
 Notifications fire once per new pending decision, not on every reconcile cycle. If you don't act on a decision, you won't be reminded again until the source publishes another update that changes that item.
 
 ### Edge Cases
 
-- **Source removed while decisions pending** — pending decisions for that source are automatically rejected (source gone = items gone).
+- **Source removed while decisions pending** — every decision belonging to that source is discarded, resolved ones included (source gone = items gone). They are dropped rather than rejected because a rejection keeps excluding the resource path it names, and a source you no longer subscribe to must not go on withholding a file or package you later declare yourself. Re-subscribing asks again.
 - **User manually installs a pending package** — on the next reconcile, cfgd detects the package is already present and auto-accepts the decision (desired state already matches actual state).
-- **Policies only apply when `autoApply` is enabled** — when `autoApply: false`, `cfgd plan` shows everything and you decide interactively. Policies are for unattended daemon reconciles.
+- **Policies only apply when `autoApply` is enabled** — they decide what the unattended daemon does with a *new* item. With `autoApply: false` no policy runs, so nothing new is auto-accepted or auto-rejected for you.
 - **Rejection doesn't persist across source versions** — if you reject an item and the source later updates it (new version, changed description), a fresh pending decision is created. This prevents stale rejections from silently blocking items the team considers important.
 
 ## Source Constraints
@@ -601,6 +626,8 @@ cfgd source remove acme-corp --remove-all   # uninstall/delete everything from t
 ```
 
 Resources you keep become part of your local config (priority 1000) with no source policy enforcement. They behave exactly like resources you added yourself.
+
+Removal also discards every decision the source raised, answered or not — otherwise a leftover pending or rejected row would go on withholding that resource path from `plan` and `apply` with no source left to `cfgd decide` against.
 
 ## Publishing a ConfigSource
 

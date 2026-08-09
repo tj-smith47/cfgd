@@ -59,6 +59,7 @@ fn happy_plan_output() -> PlanOutput {
         total_actions: 1,
         warnings: vec![],
         pending_backups: vec![],
+        pending_decisions: vec![],
     }
 }
 
@@ -94,6 +95,7 @@ fn owner_groups_plan_output() -> PlanOutput {
         total_actions: 2,
         warnings: vec![],
         pending_backups: vec![],
+        pending_decisions: vec![],
     }
 }
 

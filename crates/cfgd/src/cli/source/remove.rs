@@ -131,6 +131,10 @@ pub fn cmd_source_remove(
     // Remove from state
     state.remove_config_source(name)?;
     state.remove_source_config_hash(name)?;
+    // Decisions go with the source that raised them, resolved ones included: a
+    // pending or rejected row withholds its resource path from every plan and
+    // apply, and there is no longer a source to `cfgd decide` against.
+    state.discard_decisions_for_source(name)?;
 
     // Remove the entry from sources.lock (best-effort — a missing entry is fine).
     let cfg_dir = config_dir(cli);
@@ -287,6 +291,41 @@ mod tests {
         assert!(
             !config_has_source(&cli, "acme"),
             "source must be gone from on-disk config after removal"
+        );
+    }
+
+    #[test]
+    fn removing_a_source_leaves_none_of_its_decisions_withholding_a_resource() {
+        // A decision withholds its resource from every plan and apply, so a row
+        // outliving its source is an invisible block on that path — the operator
+        // has no source left to `cfgd decide` against, and a resource they keep
+        // (or later declare themselves) would silently never be applied.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        state
+            .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+            .expect("seed pending decision");
+        state
+            .upsert_pending_decision("acme", "files.~/.gitconfig", "recommended", "install", "v1")
+            .expect("seed second decision");
+        state
+            .resolve_decision("files.~/.gitconfig", "rejected")
+            .expect("reject the second decision");
+        drop(state);
+
+        let (printer, _cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", true, false, false)
+            .expect("removing a source must succeed");
+        drop(printer);
+
+        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        assert!(
+            state
+                .withheld_decision_paths()
+                .expect("read withheld paths")
+                .is_empty(),
+            "no decision of a removed source may keep withholding its resource"
         );
     }
 

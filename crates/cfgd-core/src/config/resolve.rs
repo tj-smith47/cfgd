@@ -141,7 +141,7 @@ fn resolve_inheritance_order(
 /// - scripts: append in order
 /// - system: deep merge (later overrides at leaf level)
 /// - backups: append (deduplicated by name, later overrides)
-pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
+pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     let mut merged = MergedProfile::default();
 
     for layer in layers {
