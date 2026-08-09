@@ -2725,11 +2725,12 @@ fn cmd_module_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
-    // Drives crud.rs:230-298 — the `if args.apply { ... }` block at the end
-    // of cmd_module_create. With args.apply=true and args.yes=true the
-    // prompt is bypassed and the reconciler.plan + apply path runs. An
-    // empty-spec module has no packages/files so the plan ends up empty
-    // and the "Nothing to do" success branch fires at crud.rs:267-268.
+    // Drives the `if args.apply { ... }` block at the end of
+    // cmd_module_create. With args.apply=true and args.yes=true the prompt is
+    // bypassed and the reconciler.plan + run-skeleton path runs. An empty-spec
+    // module has no packages/files so the plan ends up empty: the run renders
+    // its header and the shared nothing-to-do verdict, and no heading of its
+    // own.
     let dir = setup_config_dir();
     let _home = cfgd_core::with_test_home_guard(dir.path());
     let cli = test_cli(dir.path());
@@ -2750,10 +2751,22 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
         .expect("create-with-apply-yes (empty spec) should succeed");
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
     assert!(
         output.contains("Created module 'apply-noop-mod'"),
         "should announce create: {output}"
+    );
+    assert!(
+        output.contains("Modules  apply-noop-mod"),
+        "the --apply run renders the shared header naming its one owner: {output}"
+    );
+    assert!(
+        output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "an empty plan closes on the shared verdict: {output}"
+    );
+    assert!(
+        !output.contains("Applying"),
+        "the run header replaced the old 'Applying Module' heading: {output}"
     );
 }
 

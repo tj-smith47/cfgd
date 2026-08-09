@@ -6434,6 +6434,200 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     );
 }
 
+// The `onDrift` hooks are driven with `touch`, a Unix command; the tree they
+// render under is portable, but this fixture is not.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_header() {
+    // A tick that detected drift and chose not to act still reports what
+    // drifted and who ran hooks over it: one `Drift Hooks` heading holding
+    // both owners, ABOVE the `Reconcile` header, then the preview tree, then a
+    // verdict — never a rollup, because nothing was applied.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let profile_marker = tmp.path().join("profile-on-drift.marker");
+    let module_marker = tmp.path().join("module-on-drift.marker");
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - nvim\n  scripts:\n    onDrift:\n      - \"touch '{}'\"\n",
+            profile_marker.display()
+        ),
+    )
+    .unwrap();
+    // The module's `postReconcile` script is what drifts — it is a planned
+    // module action, so `module_has_drift` fires the module's own hook.
+    let mod_dir = tmp.path().join("modules").join("nvim");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"true\"\n    onDrift:\n      - \"touch '{}'\"\n",
+            module_marker.display()
+        ),
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        profile_marker.exists() && module_marker.exists(),
+        "both onDrift hooks must have run"
+    );
+
+    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let hooks_at = out
+        .find(crate::reconciler::HOOKS_PHASE_LABEL)
+        .unwrap_or_else(|| panic!("no Drift Hooks heading in:\n{out}"));
+    let header_at = out
+        .find("\nReconcile\n")
+        .unwrap_or_else(|| panic!("no Reconcile header in:\n{out}"));
+    assert!(
+        hooks_at < header_at,
+        "the hooks ran before the reconcile, so their tree renders above its header:\n{out}"
+    );
+    assert!(
+        out.contains("\n  profile:default\n") && out.contains("\n  module:nvim\n"),
+        "both onDrift owners must open a group inside the pseudo-phase:\n{out}"
+    );
+
+    // One status per script, at owner depth, carrying the `onDrift` marker.
+    let hook_lines: Vec<&str> = out.lines().filter(|l| l.contains("onDrift:")).collect();
+    assert_eq!(hook_lines.len(), 2, "one status per hook, got:\n{out}");
+    for line in &hook_lines {
+        assert!(
+            line.starts_with("    \u{2713} onDrift: touch "),
+            "hook status must render Ok at owner depth under its group: {line:?}"
+        );
+    }
+    // Both groups share the pseudo-phase's derived column, so the trailing
+    // duration of the shorter subject lands where the longer one's does.
+    let columns: Vec<Option<usize>> = hook_lines.iter().map(|l| l.find('(')).collect();
+    assert!(
+        columns[0].is_some() && columns[0] == columns[1],
+        "the derived alignment column must be shared by every group in the pseudo-phase: {hook_lines:?}"
+    );
+
+    assert!(
+        out.contains("Trigger  drift (1 resources)"),
+        "the header names what woke the tick:\n{out}"
+    );
+    assert!(
+        out.contains("Phase: "),
+        "a notify-only tick still shows WHAT drifted:\n{out}"
+    );
+    assert!(
+        out.contains("Drift detected — 1 action(s); policy is notify-only, nothing applied"),
+        "a non-applying tick closes on a verdict:\n{out}"
+    );
+    assert!(
+        !out.contains("Reconcile complete"),
+        "nothing was applied, so no rollup may claim otherwise:\n{out}"
+    );
+    assert!(
+        !out.contains("Actions  "),
+        "a preview-only run's count belongs to its verdict, not to an Actions row:\n{out}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_apply_tick_renders_header_tree_and_rollup() {
+    // The CLI/daemon asymmetry closed: an auto-applying tick renders the same
+    // run skeleton `cfgd apply` does — header rows, the execution tree, and one
+    // rollup — under `RunTitle::Reconcile`.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let source = tmp.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let target = tmp.path().join("dst.txt");
+    let hooks = DriftingFileHooks {
+        source,
+        target: target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        out.contains("\nReconcile\n") || out.starts_with("Reconcile\n"),
+        "the tick opens with its own run header:\n{out}"
+    );
+    assert!(
+        out.contains("Profile  default")
+            && out.contains("Trigger  drift (1 resources)")
+            && out.contains("Actions  1 planned"),
+        "header rows name the profile, the trigger and the planned count:\n{out}"
+    );
+    assert!(
+        out.contains("Phase: Files") && out.contains("\n  profile:default\n"),
+        "the executed work renders as a phase/owner tree:\n{out}"
+    );
+    assert!(
+        out.contains("Reconcile complete — 1 action(s) succeeded"),
+        "the run closes on one rollup naming the title:\n{out}"
+    );
+    assert!(target.exists(), "the tick actually applied the action");
+}
+
 /// Records every package name passed to `uninstall`, so a daemon prune test can
 /// assert the reconcile actually executed the removal (not just planned it).
 struct RecordingUninstallManager {

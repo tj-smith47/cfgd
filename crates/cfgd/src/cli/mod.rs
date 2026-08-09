@@ -82,7 +82,10 @@ use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
-const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
+
+/// The run skeleton owns the wording, so the CLI's assertions and the daemon's
+/// verdict cannot drift apart.
+use cfgd_core::reconciler::MSG_NOTHING_TO_DO;
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)

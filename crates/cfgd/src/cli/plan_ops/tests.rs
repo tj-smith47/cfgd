@@ -994,13 +994,13 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
 }
 
 #[test]
-fn display_plan_table_populated_plan_shows_phase_header() {
+fn render_plan_tree_populated_plan_shows_phase_header() {
     let plan = make_plan(vec![(
         PhaseName::Files,
         vec![file_create("/etc/foo"), file_update("/etc/bar")],
     )]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer);
+    reconciler::render_plan_tree(&plan, None, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -1009,12 +1009,12 @@ fn display_plan_table_populated_plan_shows_phase_header() {
     );
 }
 
-// `display_plan_table` must condense a multi-line inline
+// `render_plan_tree` must condense a multi-line inline
 // script's `format_plan_items` line before handing it to `bullet()` — the
 // raw string returned by `format_plan_items` embeds `\n`, which would trip
 // `Renderer::write_line`'s no-embedded-newline assert.
 #[test]
-fn display_plan_table_condenses_multiline_script_bullet() {
+fn render_plan_tree_condenses_multiline_script_bullet() {
     let raw_body = "echo line-one\necho line-two\necho line-three";
     let action = Action::Script(ScriptAction::Run {
         entry: ScriptEntry::Simple(raw_body.to_string()),
@@ -1023,7 +1023,7 @@ fn display_plan_table_condenses_multiline_script_bullet() {
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer);
+    reconciler::render_plan_tree(&plan, None, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -1037,7 +1037,7 @@ fn display_plan_table_condenses_multiline_script_bullet() {
 }
 
 #[test]
-fn display_plan_table_unknown_system_key_renders_warn() {
+fn render_plan_tree_unknown_system_key_renders_warn() {
     // A typo'd system key (no configurator registered) must surface as a
     // real warning (⚠) at plan time, not a neutral bullet.
     let unknown = Action::System(SystemAction::Skip {
@@ -1048,7 +1048,7 @@ fn display_plan_table_unknown_system_key_renders_warn() {
     });
     let plan = make_plan(vec![(PhaseName::System, vec![unknown])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer);
+    reconciler::render_plan_tree(&plan, None, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -1062,12 +1062,12 @@ fn display_plan_table_unknown_system_key_renders_warn() {
 }
 
 #[test]
-fn display_plan_table_unavailable_system_key_renders_neutral() {
+fn render_plan_tree_unavailable_system_key_renders_neutral() {
     // A registered-but-unavailable configurator is expected; the plan
     // preview must render it neutrally, never as a warning.
     let plan = make_plan(vec![(PhaseName::System, vec![system_skip()])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer);
+    reconciler::render_plan_tree(&plan, None, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(

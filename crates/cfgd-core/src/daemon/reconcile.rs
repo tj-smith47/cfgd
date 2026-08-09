@@ -133,6 +133,41 @@ pub(crate) struct ReconcileCtx<'a> {
     pub abort: &'a crate::AbortFlag,
 }
 
+/// The daemon's binding of the run skeleton to `Reconciler::apply`.
+///
+/// A tick never prompts and never scopes itself with `--phase`/`--skip`, so the
+/// executor carries only what `apply` cannot derive from the plan: the profile
+/// being reconciled, the directory its scripts run in, the modules whose state
+/// it records, and the shutdown flag a `SIGTERM` raises mid-apply.
+struct TickExecutor<'a> {
+    reconciler: &'a crate::reconciler::Reconciler<'a>,
+    resolved: &'a crate::config::ResolvedProfile,
+    config_dir: &'a Path,
+    modules: &'a [crate::modules::ResolvedModule],
+    abort: &'a crate::AbortFlag,
+}
+
+impl crate::reconciler::RunExecutor for TickExecutor<'_> {
+    fn apply(
+        &mut self,
+        plan: &crate::reconciler::Plan,
+        printer: &crate::output::Printer,
+    ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+        self.reconciler.apply(
+            plan,
+            self.resolved,
+            self.config_dir,
+            printer,
+            None,
+            self.modules,
+            crate::reconciler::ReconcileContext::Reconcile,
+            false,
+            None,
+            self.abort,
+        )
+    }
+}
+
 pub(crate) fn handle_reconcile(
     config_path: &Path,
     profile_override: Option<&str>,
@@ -482,100 +517,140 @@ pub(crate) fn handle_reconcile(
             tracing::warn!(error = %e, "failed to resolve healed drift rows");
         }
 
-        // Execute onDrift scripts from resolved profile. Profile-level scripts
-        // are skipped for per-module ticks — those fire only when a default
-        // (whole-profile) reconcile detects drift.
-        if module_filter.is_none() && !resolved.merged.scripts.on_drift.is_empty() {
-            let scripts = &resolved.merged.scripts;
-            tracing::info!(count = scripts.on_drift.len(), "running onDrift script(s)");
-            let script_env =
-                crate::reconciler::build_script_env(&crate::reconciler::ScriptEnvContext {
-                    config_dir: &config_dir,
-                    profile_name,
-                    context: crate::reconciler::ReconcileContext::Reconcile,
-                    phase: &crate::reconciler::ScriptPhase::OnDrift,
-                    module_name: None,
-                    module_dir: None,
-                    path_dirs: &crate::reconciler::all_recorded_path_dirs(&store),
-                });
-            let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
-            let working = crate::reconciler::script_default_workdir(&config_dir);
-            for entry in &scripts.on_drift {
-                match crate::reconciler::execute_script(
-                    entry,
-                    &config_dir,
-                    &working,
-                    &script_env,
-                    default_timeout,
-                    printer,
-                    None,
-                    None,
-                    crate::reconciler::ScriptReport {
-                        subject: crate::reconciler::ScriptSubject::Hook(
-                            crate::reconciler::ScriptPhase::OnDrift.display_name(),
-                        ),
-                        non_fatal: true,
-                    },
-                ) {
-                    Ok((desc, _, _)) => {
-                        tracing::info!(script = %desc, "onDrift script completed");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "onDrift script failed");
+        // The onDrift hooks of the profile and of every drifted module, as one
+        // `Drift Hooks` tree above the reconcile header.
+        //
+        // Profile-level scripts are skipped for per-module ticks — those fire
+        // only when a default (whole-profile) reconcile detects drift. Module
+        // scripts fire on per-module ticks too: the plan is already pruned to
+        // the filtered module above, so `module_has_drift` scopes correctly in
+        // both cases.
+        let profile_hooks: &[crate::config::ScriptEntry] = if module_filter.is_none() {
+            &resolved.merged.scripts.on_drift
+        } else {
+            &[]
+        };
+        let drifted_modules: Vec<&crate::modules::ResolvedModule> = resolved_modules_ref
+            .iter()
+            .filter(|module| {
+                !module.on_drift_scripts.is_empty() && module_has_drift(&plan, &module.name)
+            })
+            .collect();
+        // The column is derived from config before the first script runs: the
+        // pseudo-phase streams, so there is no close to buffer against, and
+        // `execute_script` composes exactly this subject.
+        let hook_labels: Vec<String> = profile_hooks
+            .iter()
+            .chain(
+                drifted_modules
+                    .iter()
+                    .flat_map(|module| module.on_drift_scripts.iter()),
+            )
+            .map(|entry| {
+                format!(
+                    "{}: {}",
+                    crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                    crate::output::condense_script_label(entry.run_str())
+                )
+            })
+            .collect();
+
+        if !hook_labels.is_empty() {
+            let hook_width =
+                crate::reconciler::align_width_of(hook_labels.iter().map(String::as_str));
+            // Opened before the loops, not assembled after them: each script
+            // emits its own status as it finishes, and it has to land under its
+            // owner group at that moment.
+            let hooks_phase =
+                crate::reconciler::pseudo_phase(printer, crate::reconciler::HOOKS_PHASE_LABEL);
+            let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
+
+            if !profile_hooks.is_empty() {
+                tracing::info!(count = profile_hooks.len(), "running onDrift script(s)");
+                let owner = crate::reconciler::Owner::profile(profile_name);
+                let _group = hooks_phase.owner(&owner, hook_width);
+                let script_env =
+                    crate::reconciler::build_script_env(&crate::reconciler::ScriptEnvContext {
+                        config_dir: &config_dir,
+                        profile_name,
+                        context: crate::reconciler::ReconcileContext::Reconcile,
+                        phase: &crate::reconciler::ScriptPhase::OnDrift,
+                        module_name: None,
+                        module_dir: None,
+                        path_dirs: &drift_script_path_dirs,
+                    });
+                let working = crate::reconciler::script_default_workdir(&config_dir);
+                for entry in profile_hooks {
+                    match crate::reconciler::execute_script(
+                        entry,
+                        &config_dir,
+                        &working,
+                        &script_env,
+                        crate::PROFILE_SCRIPT_TIMEOUT,
+                        printer,
+                        None,
+                        None,
+                        crate::reconciler::ScriptReport {
+                            subject: crate::reconciler::ScriptSubject::Hook(
+                                crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                            ),
+                            non_fatal: true,
+                        },
+                    ) {
+                        Ok((desc, _, _)) => {
+                            tracing::info!(script = %desc, "onDrift script completed");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "onDrift script failed");
+                        }
                     }
                 }
             }
-        }
 
-        // Execute module-level onDrift scripts for each module that drifted.
-        // Unlike profile onDrift, this fires on per-module ticks too: the plan is
-        // already pruned to the filtered module above, so iterating it scopes
-        // correctly in both the whole-profile and per-module cases.
-        let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
-        for module in &resolved_modules_ref {
-            if module.on_drift_scripts.is_empty() || !module_has_drift(&plan, &module.name) {
-                continue;
-            }
-            tracing::info!(
-                module = %module.name,
-                count = module.on_drift_scripts.len(),
-                "running module onDrift script(s)"
-            );
-            let script_env = crate::reconciler::build_module_script_env(
-                &crate::reconciler::ScriptEnvContext {
-                    config_dir: &config_dir,
-                    profile_name,
-                    context: crate::reconciler::ReconcileContext::Reconcile,
-                    phase: &crate::reconciler::ScriptPhase::OnDrift,
-                    module_name: Some(&module.name),
-                    module_dir: Some(&module.dir),
-                    path_dirs: &drift_script_path_dirs,
-                },
-                &module.env,
-            );
-            let working = crate::reconciler::script_default_workdir(&config_dir);
-            for entry in &module.on_drift_scripts {
-                match crate::reconciler::execute_script(
-                    entry,
-                    &module.dir,
-                    &working,
-                    &script_env,
-                    crate::reconciler::MODULE_SCRIPT_TIMEOUT,
-                    printer,
-                    None,
-                    None,
-                    crate::reconciler::ScriptReport {
-                        subject: crate::reconciler::ScriptSubject::Hook(
-                            crate::reconciler::ScriptPhase::OnDrift.display_name(),
-                        ),
-                        non_fatal: true,
+            for module in &drifted_modules {
+                tracing::info!(
+                    module = %module.name,
+                    count = module.on_drift_scripts.len(),
+                    "running module onDrift script(s)"
+                );
+                let owner = crate::reconciler::Owner::module(&module.name);
+                let _group = hooks_phase.owner(&owner, hook_width);
+                let script_env = crate::reconciler::build_module_script_env(
+                    &crate::reconciler::ScriptEnvContext {
+                        config_dir: &config_dir,
+                        profile_name,
+                        context: crate::reconciler::ReconcileContext::Reconcile,
+                        phase: &crate::reconciler::ScriptPhase::OnDrift,
+                        module_name: Some(&module.name),
+                        module_dir: Some(&module.dir),
+                        path_dirs: &drift_script_path_dirs,
                     },
-                ) {
-                    Ok((desc, _, _)) => {
-                        tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");
-                    }
-                    Err(e) => {
-                        tracing::error!(module = %module.name, error = %e, "module onDrift script failed");
+                    &module.env,
+                );
+                let working = crate::reconciler::script_default_workdir(&config_dir);
+                for entry in &module.on_drift_scripts {
+                    match crate::reconciler::execute_script(
+                        entry,
+                        &module.dir,
+                        &working,
+                        &script_env,
+                        crate::reconciler::MODULE_SCRIPT_TIMEOUT,
+                        printer,
+                        None,
+                        None,
+                        crate::reconciler::ScriptReport {
+                            subject: crate::reconciler::ScriptSubject::Hook(
+                                crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                            ),
+                            non_fatal: true,
+                        },
+                    ) {
+                        Ok((desc, _, _)) => {
+                            tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");
+                        }
+                        Err(e) => {
+                            tracing::error!(module = %module.name, error = %e, "module onDrift script failed");
+                        }
                     }
                 }
             }
@@ -605,25 +680,51 @@ pub(crate) fn handle_reconcile(
                 .unwrap_or_default()
         });
 
+        // The rows every arm below prints above its own body: a tick reports
+        // the same run skeleton `cfgd apply` does, so the two surfaces cannot
+        // describe one machine differently. Built once, before the policy
+        // branch, because an applying tick and a notify-only tick differ in
+        // what they do — never in what they are reconciling.
+        let trigger = format!("drift ({effective_total} resources)");
+        let module_names: Vec<String> = resolved_modules_ref
+            .iter()
+            .map(|module| module.name.clone())
+            .collect();
+        let run_ctx = || crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Reconcile,
+            config_path: Some(config_path),
+            profile: Some(profile_name),
+            modules: &module_names,
+            trigger: Some(&trigger),
+        };
+
         match drift_policy {
             config::DriftPolicy::Auto => {
                 tracing::info!(
                     actions = effective_total,
                     "drift policy is Auto — applying actions"
                 );
-                match reconciler.apply(
-                    &plan,
-                    &resolved,
-                    &config_dir,
-                    printer,
-                    None,
-                    &resolved_modules_ref,
-                    crate::reconciler::ReconcileContext::Reconcile,
-                    false,
-                    None,
+                let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
+                let mut exec = TickExecutor {
+                    reconciler: &reconciler,
+                    resolved: &resolved,
+                    config_dir: &config_dir,
+                    modules: &resolved_modules_ref,
                     abort,
-                ) {
-                    Ok(result) => {
+                };
+                match run
+                    .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
+                    .map(|disposition| match disposition {
+                        crate::reconciler::RunDisposition::Applied(result) => Some(result),
+                        // A run carrying a plan, executing (not `preview_only`)
+                        // and never prompting has no other disposition.
+                        crate::reconciler::RunDisposition::NothingToDo
+                        | crate::reconciler::RunDisposition::Previewed
+                        | crate::reconciler::RunDisposition::Declined
+                        | crate::reconciler::RunDisposition::BackupsApplied(_) => None,
+                    }) {
+                    Ok(None) => {}
+                    Ok(Some(result)) => {
                         let succeeded = result.succeeded();
                         let failed = result.failed();
                         tracing::info!(
@@ -720,6 +821,18 @@ pub(crate) fn handle_reconcile(
             }
             config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => {
                 tracing::info!("drift policy is NotifyOnly — recording drift, not applying");
+                // A tick that detected drift and chose not to act still has to
+                // show WHAT drifted, so it renders the preview tree — never an
+                // execution tree — and closes on a verdict instead of a rollup.
+                let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan).preview_only();
+                run.header(printer);
+                run.preview(printer);
+                printer.status_simple(
+                    crate::output::Role::Warn,
+                    format!(
+                        "Drift detected — {effective_total} action(s); policy is notify-only, nothing applied"
+                    ),
+                );
                 if notify_on_drift {
                     notifier.notify(
                         "cfgd: drift detected",

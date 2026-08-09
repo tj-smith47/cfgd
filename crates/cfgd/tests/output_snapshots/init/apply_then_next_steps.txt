@@ -1,5 +1,12 @@
-Applying Configuration
-✓ Set active profile: default
+Plan
+  Config   <TMP>/cfgd.yaml
+  Profile  default
+  Phases   Files
+
+Phase: Files
+  profile:default
+    - create <TMP>/home/.gitconfig
+
 ⊙ 1 action(s) planned
 
 Next Steps

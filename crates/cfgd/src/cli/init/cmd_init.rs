@@ -157,8 +157,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
-            printer.heading("Applying Modules");
-
             let cfg = config::load_config(&config_path)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
@@ -202,6 +200,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     yes: args.yes,
                     state_dir: args.state_dir,
                     scope: args.scope,
+                    profile: None,
                 },
                 printer,
             )?;
@@ -229,8 +228,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     pick_profile(&profiles_dir, printer)?
                 }
             };
-
-            printer.heading("Applying Configuration");
 
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
@@ -315,6 +312,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     yes: args.yes,
                     state_dir: args.state_dir,
                     scope: args.scope,
+                    profile: Some(&profile_name),
                 },
                 printer,
             )?;
@@ -479,9 +477,13 @@ pub(super) struct ApplyPlanOpts<'a> {
     pub state_dir: Option<&'a Path>,
     /// Installation scope for the apply mutex (`--scope system` vs per-user).
     pub scope: cfgd_core::Scope,
+    /// The profile this apply reconciles, for the run header's `Profile` row.
+    /// `None` on the module-only path, which resolves no profile at all.
+    pub profile: Option<&'a str>,
 }
 
-/// Show plan, prompt for confirmation, and apply.
+/// Run the scaffolded configuration through the one run skeleton: header,
+/// preview + confirmation, execution tree, rollup.
 ///
 /// Returns the resulting [`ApplyStatus`] so the caller can map a partial or
 /// total failure to a nonzero process exit, the same way `cfgd apply` does.
@@ -497,60 +499,88 @@ pub(super) fn apply_plan(
     opts: ApplyPlanOpts<'_>,
     printer: &Printer,
 ) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
+    // The names the run acts on, not the names the flags asked for: a module
+    // that failed to resolve is absent from the plan, so naming it in the
+    // header would describe work no phase below can show.
+    let module_names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
+    let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
+    let title = if opts.dry_run {
+        cfgd_core::reconciler::RunTitle::Plan
+    } else {
+        cfgd_core::reconciler::RunTitle::Apply
+    };
+    let ctx = cfgd_core::reconciler::RunContext {
+        title,
+        config_path: Some(config_path.as_path()),
+        profile: opts.profile,
+        modules: &module_names,
+        trigger: None,
+    };
+    let run = cfgd_core::reconciler::ApplyRun::new(ctx, plan);
+
     let total = plan.total_actions();
     if total == 0 {
-        printer.status_simple(Role::Ok, "Nothing to do — system is already configured");
+        run.header(printer);
+        // `init` scaffolds nothing that filters the plan, so the report's
+        // filter-aware arms cannot fire — what it prints here is
+        // `MSG_NOTHING_TO_DO`, from the one place that owns it.
+        crate::cli::plan_ops::report_no_in_scope_actions(
+            printer,
+            &crate::cli::plan_ops::ScopeReport::capture(plan, false, None),
+        );
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
-
-    super::display_plan_table(plan, printer);
-    printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
     if opts.dry_run {
+        let run = run.preview_only();
+        run.header(printer);
+        run.preview(printer);
+        printer.status_simple(Role::Info, format!("{} action(s) planned", total));
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
-    if !opts.yes {
-        let confirmed = printer
-            .prompt_confirm("Apply these changes?")
-            .unwrap_or(false);
-        if !confirmed {
-            printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
-            return Ok(cfgd_core::state::ApplyStatus::Success);
-        }
-    }
-
-    // see helpers::apply_lock_dir — honor --state-dir so init --apply
-    // mutually-excludes against `cfgd apply` and the daemon.
-    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(opts.state_dir, opts.scope)?)?;
-
+    let abort = cfgd_core::AbortFlag::new();
     // The resolved modules have to survive planning and reach the apply: it is
     // what records module state, and what lets the post-phase env regeneration
     // see the PATH directories of a manager this very run bootstrapped. Handing
     // it an empty slice made `cfgd init --apply-module` leave both undone.
-    let result = reconciler.apply(
-        plan,
+    //
+    // see helpers::apply_lock_dir — honor --state-dir so init --apply
+    // mutually-excludes against `cfgd apply` and the daemon.
+    let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
+        reconciler,
         resolved,
         config_dir,
-        printer,
-        None,
         modules,
-        cfgd_core::reconciler::ReconcileContext::Apply,
-        false,
-        None,
-        &cfgd_core::AbortFlag::new(),
-    )?;
-    let status = cfgd_core::reconciler::render_apply_result(
-        &result,
-        cfgd_core::reconciler::RunTitle::Apply,
-        printer,
-        None,
+        &abort,
+        apply_lock_dir(opts.state_dir, opts.scope)?,
     );
-    // The one-command bootstrap is exactly where a stale shell bites hardest:
-    // this apply may have installed the first package manager on the box, and
-    // the invoking shell predates the env file naming its PATH entries.
-    crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
-    Ok(status)
+    let confirm = if opts.yes {
+        cfgd_core::reconciler::Confirm::Skip
+    } else {
+        cfgd_core::reconciler::Confirm::Ask("Apply these changes?")
+    };
+    match run.execute(printer, confirm, &mut exec)? {
+        cfgd_core::reconciler::RunDisposition::Applied(result) => {
+            // The one-command bootstrap is exactly where a stale shell bites
+            // hardest: this apply may have installed the first package manager
+            // on the box, and the invoking shell predates the env file naming
+            // its PATH entries.
+            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+            Ok(result.status)
+        }
+        cfgd_core::reconciler::RunDisposition::Declined => {
+            printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+            Ok(cfgd_core::state::ApplyStatus::Success)
+        }
+        // Unreachable for a run carrying a plan with work and no
+        // `preview_only`, and none of them ran an action.
+        cfgd_core::reconciler::RunDisposition::NothingToDo
+        | cfgd_core::reconciler::RunDisposition::Previewed
+        | cfgd_core::reconciler::RunDisposition::BackupsApplied(_) => {
+            Ok(cfgd_core::state::ApplyStatus::Success)
+        }
+    }
 }
 
 /// Interactively pick a profile from the profiles directory.

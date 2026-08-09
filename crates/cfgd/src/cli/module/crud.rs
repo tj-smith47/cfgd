@@ -248,8 +248,6 @@ pub fn cmd_module_create(
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
-        printer.heading("Applying Module");
-
         let config_path = config_dir.join("cfgd.yaml");
         let cfg = config::load_config(&config_path)?;
         let mut registry = super::build_registry_with_config(Some(&cfg));
@@ -283,17 +281,57 @@ pub fn cmd_module_create(
             cfgd_core::reconciler::ReconcileContext::Apply,
         )?;
 
-        let total = plan.total_actions();
-        if total == 0 {
-            printer.status_simple(Role::Info, "Nothing to do");
+        // The module just created is the whole of this run: one owner, no
+        // profile, and the same skeleton `cfgd apply` renders.
+        let module_names = vec![name.to_string()];
+        let ctx = cfgd_core::reconciler::RunContext {
+            title: cfgd_core::reconciler::RunTitle::Apply,
+            config_path: Some(config_path.as_path()),
+            profile: None,
+            modules: &module_names,
+            trigger: None,
+        };
+        let run = cfgd_core::reconciler::ApplyRun::new(ctx, &plan);
+
+        if plan.total_actions() == 0 {
+            run.header(printer);
+            // No filter exists on this path, so this reports `MSG_NOTHING_TO_DO`
+            // — from the one place that owns the wording.
+            crate::cli::plan_ops::report_no_in_scope_actions(
+                printer,
+                &crate::cli::plan_ops::ScopeReport::capture(&plan, false, None),
+            );
         } else {
-            if !args.yes {
-                super::display_plan_table(&plan, printer);
-                printer.status_simple(Role::Info, format!("{} action(s) planned", total));
-                let confirmed = printer
-                    .prompt_confirm("Apply these changes?")
-                    .unwrap_or(false);
-                if !confirmed {
+            // Same requirement as `cfgd init --apply-module`: the apply records
+            // module state from this slice, and regenerates the env files from
+            // the PATH directories of a manager it bootstrapped mid-run.
+            //
+            // see helpers::apply_lock_dir — honor --state-dir so this lock
+            // mutually-excludes against `cfgd apply` and the daemon.
+            let abort = cfgd_core::AbortFlag::new();
+            let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
+                &reconciler,
+                &resolved,
+                &config_dir,
+                &resolved_modules,
+                &abort,
+                apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?,
+            );
+            let confirm = if args.yes {
+                cfgd_core::reconciler::Confirm::Skip
+            } else {
+                cfgd_core::reconciler::Confirm::Ask("Apply these changes?")
+            };
+            match run.execute(printer, confirm, &mut exec)? {
+                cfgd_core::reconciler::RunDisposition::Applied(result) => {
+                    apply_status = result.status.clone();
+                    // A module whose packages come from a manager this apply
+                    // bootstrapped leaves the invoking shell one `source` away
+                    // from reaching them.
+                    crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+                    applied = true;
+                }
+                cfgd_core::reconciler::RunDisposition::Declined => {
                     printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
                     printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
@@ -302,40 +340,12 @@ pub fn cmd_module_create(
                     })));
                     return Ok(());
                 }
+                // Unreachable for a run carrying a plan with work and no
+                // `preview_only`, and none of them ran an action.
+                cfgd_core::reconciler::RunDisposition::NothingToDo
+                | cfgd_core::reconciler::RunDisposition::Previewed
+                | cfgd_core::reconciler::RunDisposition::BackupsApplied(_) => {}
             }
-
-            // see helpers::apply_lock_dir — honor --state-dir so this lock
-            // mutually-excludes against `cfgd apply` and the daemon.
-            let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(
-                cli.state_dir.as_deref(),
-                cli.scope(),
-            )?)?;
-
-            // Same requirement as `cfgd init --apply-module`: the apply records
-            // module state from this slice, and regenerates the env files from
-            // the PATH directories of a manager it bootstrapped mid-run.
-            let result = reconciler.apply(
-                &plan,
-                &resolved,
-                &config_dir,
-                printer,
-                None,
-                &resolved_modules,
-                cfgd_core::reconciler::ReconcileContext::Apply,
-                false,
-                None,
-                &cfgd_core::AbortFlag::new(),
-            )?;
-            apply_status = cfgd_core::reconciler::render_apply_result(
-                &result,
-                cfgd_core::reconciler::RunTitle::Apply,
-                printer,
-                None,
-            );
-            // A module whose packages come from a manager this apply bootstrapped
-            // leaves the invoking shell one `source` away from reaching them.
-            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
-            applied = true;
         }
     }
 

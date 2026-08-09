@@ -19,7 +19,7 @@
 //!     transition. The bridge invariant under apply data is asserted by the
 //!     companion `init_apply_then_next_steps_bridge_invariant` test below.
 //!   - `init/apply_then_next_steps.txt` — bridge anchor: a streaming portion
-//!     (heading + status lines mirroring the shape `apply_plan` emits for a
+//!     (the real `ApplyRun` header + preview tree `apply_plan` emits for a
 //!     non-empty plan) followed by a buffered Doc carrying a real
 //!     `section("Next Steps", |s| s.bullet(...))` payload. Asserts the
 //!     one-blank-line bridge rule programmatically.
@@ -241,25 +241,57 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // alone does NOT exercise a streaming → buffered human transition
     // under apply data.
     //
-    // This test fills that gap by driving the same printer with the
-    // shape `apply_plan` produces for a non-empty plan (heading +
-    // status_simple lines) and then emitting a buffered Doc carrying a
-    // real `section("Next Steps", |s| s.bullet(...))` payload. The
-    // snapshot pins the rendered output and the assertions below confirm
-    // the bridge invariant: exactly one blank line between the last
-    // streaming line and the first buffered line.
-    use cfgd_core::output::{Doc, Role};
+    // This test fills that gap by driving the same printer with the run
+    // skeleton `apply_plan` produces for a non-empty plan — the real
+    // `ApplyRun` header and preview, not a hand-written imitation of them —
+    // and then emitting a buffered Doc carrying a real
+    // `section("Next Steps", |s| s.bullet(...))` payload. The snapshot pins
+    // the rendered output and the assertions below confirm the bridge
+    // invariant: exactly one blank line between the last streaming line and
+    // the first buffered line.
+    use cfgd_core::output::Doc;
+    use cfgd_core::providers::FileAction;
+    use cfgd_core::reconciler::{Action, ApplyRun, Owner, Phase, PhaseName, Plan, RunContext};
 
+    let tmp = tempfile::tempdir().unwrap();
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    // Streaming portion — mirrors `apply_plan`'s shape for a non-empty
-    // plan: heading + plan-table section + "N action(s) planned" info
-    // line. We use status_simple rather than restanding the plan-table
-    // renderer because the bridge invariant is about the gap between
-    // streaming and buffered, not the plan-table interior.
-    printer.heading("Applying Configuration");
-    printer.status_simple(Role::Ok, "Set active profile: default");
-    printer.status_simple(Role::Info, "1 action(s) planned");
+    // Streaming portion — the header rows and preview tree `apply_plan`
+    // renders for a one-action plan.
+    let config_path = tmp.path().join("cfgd.yaml");
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("default"),
+            vec![Action::File(FileAction::Create {
+                source: tmp.path().join("files/gitconfig"),
+                target: tmp.path().join("home/.gitconfig"),
+                origin: "local".to_string(),
+                strategy: cfgd_core::config::FileStrategy::Symlink,
+                source_hash: None,
+                patch: None,
+            })],
+        )],
+        warnings: Vec::new(),
+    };
+    let modules: Vec<String> = Vec::new();
+    let run = ApplyRun::new(
+        RunContext {
+            title: cfgd_core::reconciler::RunTitle::Plan,
+            config_path: Some(config_path.as_path()),
+            profile: Some("default"),
+            modules: &modules,
+            trigger: None,
+        },
+        &plan,
+    )
+    .preview_only();
+    run.header(&printer);
+    run.preview(&printer);
+    printer.status_simple(
+        cfgd_core::output::Role::Info,
+        format!("{} action(s) planned", plan.total_actions()),
+    );
 
     // Buffered portion — a real section with bullets, matching the shape
     // cmd_init emits when `should_apply == false` (the "Next steps"
@@ -272,7 +304,8 @@ fn init_apply_then_next_steps_bridge_invariant() {
     printer.emit(doc);
     drop(printer);
 
-    let captured = strip_ansi(&cap.human());
+    let captured =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(tmp.path(), "<TMP>")]);
 
     // Bridge invariant: exactly one blank line between the streaming
     // surface's last line and the buffered Doc's first line. Two newlines

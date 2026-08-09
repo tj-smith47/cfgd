@@ -24,6 +24,12 @@ use super::types::{
 /// tree stays coherent; deliberately not a [`PhaseName`].
 pub const HOOKS_PHASE_LABEL: &str = "Drift Hooks";
 
+/// The verdict a run prints when it found nothing to do. One string for every
+/// surface that can reach it — `apply`, `plan`, `init --apply`, `module create
+/// --apply` — because two spellings of "already converged" read as two
+/// different outcomes to anyone comparing two commands' transcripts.
+pub const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
+
 /// Heading for `spec.backups[]` work. Also not a [`PhaseName`]: backups are
 /// declared work with their own hooks and record, but nothing plans them into
 /// a [`Plan`] and nothing journals them into `apply_journal`.

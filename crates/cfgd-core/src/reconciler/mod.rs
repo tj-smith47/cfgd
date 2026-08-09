@@ -38,9 +38,9 @@ pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
-    ApplyRun, BACKUPS_PHASE_LABEL, Confirm, HOOKS_PHASE_LABEL, PseudoPhase, RunContext,
-    RunDisposition, RunExecutor, RunTally, RunTitle, align_width, align_width_of, pseudo_phase,
-    render_apply_result, render_plan_tree, render_run_rollup,
+    ApplyRun, BACKUPS_PHASE_LABEL, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO, PseudoPhase,
+    RunContext, RunDisposition, RunExecutor, RunTally, RunTitle, align_width, align_width_of,
+    pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup,
 };
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Owner,

@@ -41,7 +41,7 @@ fn downgrade_to_partial(status: &mut cfgd_core::state::ApplyStatus) {
 /// the user takes to answer. The guard is stored on the executor so it lives as
 /// long as the borrow does — through the `spec.backups[]` units that run after
 /// the reconciler returns.
-struct ReconcilerExecutor<'a> {
+pub(in crate::cli) struct ReconcilerExecutor<'a> {
     reconciler: &'a Reconciler<'a>,
     resolved: &'a ResolvedProfile,
     config_dir: &'a std::path::Path,
@@ -53,6 +53,34 @@ struct ReconcilerExecutor<'a> {
     abort: &'a cfgd_core::AbortFlag,
     lock_dir: PathBuf,
     lock: Option<cfgd_core::FileLockGuard>,
+}
+
+impl<'a> ReconcilerExecutor<'a> {
+    /// The executor a caller with no scoping flags builds — `cfgd init --apply`
+    /// and `cfgd module create --apply`, which apply exactly what they just
+    /// scaffolded: no phase filter, no `--skip-scripts`, no shell override.
+    pub(in crate::cli) fn unscoped(
+        reconciler: &'a Reconciler<'a>,
+        resolved: &'a ResolvedProfile,
+        config_dir: &'a std::path::Path,
+        modules: &'a [modules::ResolvedModule],
+        abort: &'a cfgd_core::AbortFlag,
+        lock_dir: PathBuf,
+    ) -> Self {
+        Self {
+            reconciler,
+            resolved,
+            config_dir,
+            phase_filter: None,
+            modules,
+            context: ReconcileContext::Apply,
+            skip_scripts: false,
+            shell_override: None,
+            abort,
+            lock_dir,
+            lock: None,
+        }
+    }
 }
 
 impl reconciler::RunExecutor for ReconcilerExecutor<'_> {

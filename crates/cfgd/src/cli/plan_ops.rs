@@ -357,12 +357,6 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     plan.phases.retain(|p| !p.is_empty());
 }
 
-/// The phase → owner → action tree for a plan whose run header the caller has
-/// already rendered (or does not have one to render).
-pub(in crate::cli) fn display_plan_table(plan: &reconciler::Plan, printer: &Printer) {
-    reconciler::render_plan_tree(plan, None, printer);
-}
-
 /// Pre-filter snapshot of a plan's scope, captured *before* `--skip`/`--only`
 /// destructively prune it, so a later zero-action outcome can be reported
 /// honestly. Without this, `apply`/`plan` claim "everything is up to date" even

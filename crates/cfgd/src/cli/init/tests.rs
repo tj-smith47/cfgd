@@ -1672,6 +1672,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
         },
         &printer,
     );
@@ -1679,9 +1680,11 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
 
     drop(printer);
     let output = cap.human();
+    // The exact shared string, not a substring of one spelling: `init --apply`
+    // and `apply` must render one verdict, so a reworded copy here is a bug.
     assert!(
-        output.contains("Nothing to do"),
-        "should report nothing to do for empty plan, got: {output}"
+        output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "should report the shared nothing-to-do verdict for an empty plan, got: {output}"
     );
 }
 
@@ -2202,6 +2205,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
         },
         &printer,
     );
@@ -2272,6 +2276,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
         },
         &printer,
     );
@@ -2360,6 +2365,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             yes: true,
             state_dir: Some(&state_dir),
             scope: cfgd_core::Scope::User,
+            profile: None,
         },
         &printer,
     );
@@ -2428,6 +2434,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
         },
         &printer,
     );
@@ -2488,6 +2495,7 @@ fn apply_plan_dry_run_skips_apply() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
         },
         &printer,
     );
@@ -4510,9 +4518,12 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = cap.human();
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        // The run header's `Profile` row is what names the branch now that
+        // both arms render the one skeleton: the module-only arm resolves no
+        // profile and omits the row entirely.
         assert!(
-            out.contains("Applying Configuration"),
+            out.contains("Profile  default"),
             "should enter the profile-based apply branch: {out}"
         );
         // Empty profile -> 0 planned actions -> the apply_plan no-op success.
@@ -4653,10 +4664,16 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = cap.human();
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        // Module-only: the header names the module and carries no `Profile`
+        // row, because this arm resolves no profile at all.
         assert!(
-            out.contains("Applying Modules"),
-            "should hit the Applying Modules header in the module-only arm: {out}"
+            out.contains("Modules  sample"),
+            "module-only arm should name the module in the run header: {out}"
+        );
+        assert!(
+            !out.contains("Profile  "),
+            "module-only arm must render no Profile row: {out}"
         );
         // Sample module declares no packages/files → 0 actions → "Nothing to do".
         assert!(
@@ -4848,15 +4865,16 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = cap.human();
+        let out = cfgd_core::output::strip_ansi(&cap.human());
         // Profile-validation arm fires.
         assert!(
             out.contains("Set active profile: default"),
             "combined arm should still announce profile selection: {out}"
         );
-        // Profile-based apply header (not the module-only one).
+        // The run header carries both: the profile arm's `Profile` row and the
+        // module the flag merged into it.
         assert!(
-            out.contains("Applying Configuration"),
+            out.contains("Profile  default") && out.contains("Modules  extra"),
             "combined arm should drive the profile-based apply branch, not module-only: {out}"
         );
         // Profile + module both reach the reconciler — empty module + empty
