@@ -94,7 +94,7 @@ missing from the table.
 | skill_update                 | yes               | update-result records                              |
 | source_add                   | yes               | add-result records                                 |
 | source_create                | yes               | new source metadata                                |
-| source_edit                  | no                | opens $EDITOR; no data output                      |
+| source_edit                  | yes               | post-edit validation verdict (path + valid flag)   |
 | source_list                  | yes               | source inventory                                   |
 | source_override              | yes               | override records                                   |
 | source_priority              | yes               | priority change records                            |
