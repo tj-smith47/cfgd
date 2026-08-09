@@ -502,19 +502,17 @@ impl PackageManager for NpmManager {
         if command_available("curl") {
             let result = pkg_run(
                 cx,
-                Command::new("bash")
-                        .arg("-c")
-                        .arg(concat!(
-                            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
-                            "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
-                            "nvm install --lts"
-                        )),
-                    "Installing Node.js via nvm",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "npm".into(),
-                    message: format!("nvm install failed: {}", e),
-                })?;
+                Command::new("bash").arg("-c").arg(concat!(
+                    "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
+                    "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
+                    "nvm install --lts"
+                )),
+                "Installing Node.js via nvm",
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "npm".into(),
+                message: format!("nvm install failed: {}", e),
+            })?;
             if result.status.success() {
                 return Ok(());
             }
@@ -544,8 +542,9 @@ impl PackageManager for NpmManager {
         let decision = resolve_npm_prefix(cx.state)?;
         if let Some(prefix) = decision.fallback_prefix() {
             ensure_npm_fallback_prefix(prefix)?;
-            cx.printer.status_simple(
-                Role::Info,
+            cx.report(
+                Role::Warn,
+                "npm",
                 format!(
                     "npm has no writable global prefix; installing into {} — add {} to PATH",
                     prefix.display(), // native-ok: human-facing terminal notice, not a persisted key

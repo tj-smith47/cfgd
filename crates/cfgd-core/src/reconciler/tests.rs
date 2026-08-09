@@ -16589,17 +16589,9 @@ fn apply_transcript(
     (result, out)
 }
 
-/// The glyphs a SETTLED status line can start with. A running window's `◐` is
-/// not one: it is overwritten in place on a terminal and is not the action's
-/// line. Counting only `✓`/`✗` would let a stray `⚠` or `—` line pass.
-const SETTLED_GLYPHS: [char; 5] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}'];
-
 /// How many settled status lines a transcript holds.
 fn status_line_count(out: &str) -> usize {
-    transcript_lines(out)
-        .iter()
-        .filter(|l| l.trim_start().starts_with(|c| SETTLED_GLYPHS.contains(&c)))
-        .count()
+    crate::test_helpers::settled_status_lines(out).len()
 }
 
 /// Every non-empty line of a transcript, trimmed — the shape assertions below
@@ -17325,10 +17317,8 @@ impl PackageManager for NotePushingManager {
     }
     fn install(&self, _packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for message in ["add /opt/brew/bin to PATH", "restart your shell"] {
-            cx.notes.push(crate::providers::PostInstallNote {
-                manager: self.name.clone(),
-                message: message.to_string(),
-            });
+            cx.notes
+                .push(crate::providers::PostInstallNote::warn(&self.name, message));
         }
         Ok(())
     }

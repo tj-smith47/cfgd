@@ -252,12 +252,14 @@ fn strip_arch_suffix_empty_string() {
 
 #[test]
 fn post_install_note_fields() {
-    let note = PostInstallNote {
-        manager: "brew".to_string(),
-        message: "test message".to_string(),
-    };
+    let note = PostInstallNote::warn("brew", "test message");
     assert_eq!(note.manager, "brew");
     assert_eq!(note.message, "test message");
+    assert_eq!(note.role, cfgd_core::output::Role::Warn);
+    assert_eq!(
+        PostInstallNote::info("go", "removed x").role,
+        cfgd_core::output::Role::Info
+    );
 }
 
 #[test]
@@ -1025,13 +1027,6 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
 fn caller_owned_status_suppresses_the_windows_own_line() {
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_OWNER_BIN", 0, "ok\n", "");
     let bin = std::env::var("CFGD_SH_OWNER_BIN").expect("shim seam is set");
-    let settled = |line: &str| {
-        let t = line.trim_start();
-        ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}']
-            .iter()
-            .any(|g| t.starts_with(*g))
-    };
-
     let notes = NoteSink::default();
     let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(&bin);
@@ -1045,7 +1040,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
     .expect("shim exits 0");
     let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
     assert_eq!(
-        standalone.lines().filter(|l| settled(l)).count(),
+        cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
         1,
         "standalone, the window IS the action's only line: {standalone}"
     );
@@ -1063,9 +1058,76 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
     .expect("shim exits 0");
     let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
     assert_eq!(
-        owned.lines().filter(|l| settled(l)).count(),
+        cfgd_core::test_helpers::settled_status_lines(&owned).len(),
         0,
         "the caller renders the action's line; the window must settle silently: {owned}"
+    );
+}
+
+/// The FAILURE arm of the same ownership contract. A failing command is where
+/// a window is most tempted to say something of its own — the stderr replay —
+/// and the caller's line has not been written yet, so anything emitted here
+/// lands above the status it belongs to. The diagnostic rides back in the
+/// error instead.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_SH_FAIL_OWNER_BIN",
+        1,
+        "",
+        "Error: no available formula\n",
+    );
+    let bin = std::env::var("CFGD_SH_FAIL_OWNER_BIN").expect("shim seam is set");
+
+    let notes = NoteSink::default();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(&bin);
+    let err = match run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "brew",
+        &mut cmd,
+        "brew install neovim",
+        "install",
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("shim exits 1"),
+    };
+    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
+        1,
+        "standalone, the window settles the one failure line: {standalone}"
+    );
+
+    let owned_notes = NoteSink::default();
+    let (owned_printer, owned_buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut owned_cmd = std::process::Command::new(&bin);
+    let owned_err = match run_pkg_cmd_live(
+        &cx_for(&owned_printer, &owned_notes).caller_owns_status(),
+        "brew",
+        &mut owned_cmd,
+        "brew install neovim",
+        "install",
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("shim exits 1"),
+    };
+    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&owned).len(),
+        0,
+        "the caller renders the failure; the window must settle silently: {owned}"
+    );
+    assert!(
+        owned_err.to_string().contains("no available formula"),
+        "the stderr the window did not print must ride back in the error: {owned_err}"
+    );
+    assert_eq!(
+        err.to_string(),
+        owned_err.to_string(),
+        "ownership decides where the failure RENDERS, never what it says"
     );
 }
 

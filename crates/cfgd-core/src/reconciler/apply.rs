@@ -7,13 +7,13 @@ use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject
 use crate::state::ApplyStatus;
 
 use super::format::{
-    condense_action_desc_for_display, format_action_description, format_plan_items,
+    action_display_subject, condense_action_desc_for_display, format_action_description,
     parse_package_description, parse_resource_from_description,
 };
 use super::restore::action_target_path;
 use super::run::align_width;
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
@@ -114,7 +114,7 @@ fn bootstrap_attribution(
 /// action just emitted — whoever emitted it.
 fn emit_notes(section: &SectionGuard<'_>, notes: &[PostInstallNote]) {
     for note in notes {
-        section.attached_status(Role::Warn, format!("[{}] {}", note.manager, note.message));
+        section.attached_status(note.role, format!("[{}] {}", note.manager, note.message));
     }
 }
 
@@ -461,22 +461,17 @@ impl<'a> super::Reconciler<'a> {
                 })
                 .collect();
 
-            // The subject every action renders under, in both trees: the plan
-            // display string the preview printed, condensed for display only.
+            // The subject every action renders under, in both trees: the same
+            // string the preview bullet printed and `align_width` measured.
             let subjects: std::collections::HashMap<usize, String> = phase
                 .groups()
                 .iter()
-                .flat_map(|group| {
-                    group
-                        .actions
-                        .iter()
-                        .zip(format_plan_items(group))
-                        .map(|(action, item)| {
-                            (
-                                action_key(action),
-                                condense_action_desc_for_display(action, &item),
-                            )
-                        })
+                .flat_map(|group| group.actions.iter())
+                .map(|action| {
+                    (
+                        action_key(action),
+                        action_display_subject(action).to_string(),
+                    )
                 })
                 .collect();
             let width = align_width(phase);
@@ -907,7 +902,7 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                     Some(abort),
                     ScriptReport {
-                        marker: Some(ScriptPhase::OnChange.display_name()),
+                        subject: ScriptSubject::Hook(ScriptPhase::OnChange.display_name()),
                         non_fatal: effective_continue_on_error(entry, &ScriptPhase::OnChange),
                     },
                 ) {
@@ -981,7 +976,7 @@ impl<'a> super::Reconciler<'a> {
                         shell_override,
                         Some(abort),
                         ScriptReport {
-                            marker: Some(ScriptPhase::OnChange.display_name()),
+                            subject: ScriptSubject::Hook(ScriptPhase::OnChange.display_name()),
                             non_fatal: effective_continue_on_error(entry, &ScriptPhase::OnChange),
                         },
                     ) {

@@ -16,7 +16,7 @@ use crate::config::{BackupSpec, ScriptEntry, render_backup_name_pattern};
 use crate::errors::{BackupError, Result};
 use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{
-    ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, build_script_env,
+    ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, ScriptSubject, build_script_env,
     effective_continue_on_error, execute_script, script_default_workdir,
 };
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
@@ -419,7 +419,7 @@ fn run_hooks(
             None,
             unit.abort,
             ScriptReport {
-                marker: Some(phase.display_name()),
+                subject: ScriptSubject::Hook(phase.display_name()),
                 non_fatal: effective_continue_on_error(entry, &phase),
             },
         );

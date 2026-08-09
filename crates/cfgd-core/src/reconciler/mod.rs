@@ -30,8 +30,9 @@ mod tests;
 pub use apply::action_matches_phase_filter;
 pub use env_engine::launchd_env_plist;
 pub use format::{
-    condense_action_desc_for_display, format_action_description, format_plan_item,
-    format_plan_items,
+    DisplaySubject, action_display_subject, condense_action_desc_for_display,
+    format_action_description, format_plan_item, format_plan_items, module_script_subject,
+    script_run_subject,
 };
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
@@ -50,7 +51,7 @@ pub use verify::{VerifyResult, verify};
 
 pub(crate) use env::all_recorded_path_dirs;
 pub(crate) use scripts::{
-    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
 

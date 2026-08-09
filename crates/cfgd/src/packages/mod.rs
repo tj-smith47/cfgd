@@ -319,8 +319,7 @@ pub fn apply_packages(
             PackageAction::Skip {
                 manager, reason, ..
             } => {
-                cx.printer
-                    .status_simple(Role::Warn, format!("{}: {}", manager, reason));
+                cx.report(Role::Warn, manager, format!("{}: {}", manager, reason));
             }
         }
     }
@@ -558,8 +557,9 @@ pub fn prune_orphaned_packages(
                 .or_default()
                 .push(orphan.package.clone()),
             None => {
-                cx.printer.status_simple(
+                cx.report(
                     Role::Warn,
+                    &orphan.manager,
                     format!(
                         "orphaned {}/{} tracked but its custom manager left the config with no persisted uninstall script — remove it manually",
                         orphan.manager, orphan.package
@@ -578,8 +578,9 @@ pub fn prune_orphaned_packages(
                 }
             }
             Err(e) => {
-                cx.printer.status_simple(
+                cx.report(
                     Role::Warn,
+                    &manager,
                     format!(
                         "failed to uninstall orphaned packages via {manager}: {}",
                         cfgd_core::output::collapse_to_subject_line(&e)

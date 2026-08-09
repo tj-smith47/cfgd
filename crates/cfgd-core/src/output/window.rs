@@ -204,6 +204,11 @@ impl<'p> OutputWindow<'p> {
     /// the post-failure dump. Call only when the closed window's
     /// [`Self::tail_needs_replay`] was `true`; in the streaming degradation the
     /// lines this would render are already in the scrollback.
+    ///
+    /// And only from a window that settled a status of its own: the body is
+    /// positioned relative to a line already written, so a window closed with
+    /// [`Self::finish_silent`] has nothing for it to land under and the dump
+    /// would print above the caller's line instead of below it.
     pub fn dump_below(
         printer: &super::Printer,
         depth: usize,

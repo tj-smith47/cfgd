@@ -994,6 +994,25 @@ impl BareGitRepo {
 // Printer helper
 // ---------------------------------------------------------------------------
 
+/// The glyphs a SETTLED status line can start with. A running window's `◐` is
+/// not one: it is repainted in place and is never the action's own line.
+///
+/// ONE definition on purpose. Two of them is how a side-channel `⊙` came to
+/// sit beside a tree line for the same action while the fence guarding that
+/// action still read as passing.
+pub const SETTLED_GLYPHS: [char; 5] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}'];
+
+/// The settled status lines of a captured transcript, trimmed and in order.
+/// Strip ANSI before calling: a styled glyph is preceded by its escape.
+pub fn settled_status_lines(transcript: &str) -> Vec<String> {
+    transcript
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(SETTLED_GLYPHS))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Create a quiet `Printer` for tests that exercise the reconciler entry
 /// surface (`Reconciler::apply`, `Reconciler::apply_action`, and per-action
 /// helpers in `apply.rs` / `modules.rs` / `packages.rs` / `secrets.rs` /

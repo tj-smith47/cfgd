@@ -1610,17 +1610,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
 
 // --- one status line per `execute_script`, whatever the exit ---
 
-/// The four glyphs a settled status can carry. `Running`'s `◐` is the live
-/// window's own label, not an outcome, so it is deliberately absent.
-const SETTLED_GLYPHS: [char; 4] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}'];
-
-fn settled_lines(out: &str) -> Vec<String> {
-    out.lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with(SETTLED_GLYPHS))
-        .map(str::to_string)
-        .collect()
-}
+use crate::test_helpers::settled_status_lines as settled_lines;
 
 fn script(run: &str) -> ScriptEntry {
     ScriptEntry::Full {
@@ -1916,7 +1906,7 @@ fn script_failure_role_follows_non_fatal() {
             None,
             None,
             ScriptReport {
-                marker: None,
+                subject: ScriptSubject::Bare,
                 non_fatal,
             },
         );
@@ -1946,7 +1936,7 @@ fn script_status_fail_after_window_emits_one_fail() {
             &printer,
             "exit 1".to_string(),
             ScriptReport {
-                marker: Some("postApply"),
+                subject: ScriptSubject::Hook("postApply"),
                 non_fatal: false,
             },
         );
@@ -1978,7 +1968,7 @@ fn script_status_status_after_open_window_emits_one_line() {
             &printer,
             "exit 1".to_string(),
             ScriptReport {
-                marker: Some("postApply"),
+                subject: ScriptSubject::Hook("postApply"),
                 non_fatal: false,
             },
         );

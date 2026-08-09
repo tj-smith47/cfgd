@@ -330,8 +330,6 @@ impl Printer {
         );
     }
 
-    /// Status builder at the ambient depth (0 unless a `DepthInheritGuard`
-    /// is open). Commits on Drop.
     /// [`Self::status`] with the subject painted `theme.primary` — the same
     /// seam `SectionGuard::action_status` applies, for an action line emitted
     /// without a section guard in hand (a script settling its own status).
@@ -344,6 +342,8 @@ impl Printer {
         self.status(role, subject).with_subject_style(style)
     }
 
+    /// Status builder at the ambient depth (0 unless a `DepthInheritGuard`
+    /// is open). Commits on Drop.
     pub fn status(
         &self,
         role: Role,

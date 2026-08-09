@@ -3,7 +3,8 @@ use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
 use super::types::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction, SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction, ScriptPhase,
+    SystemAction,
 };
 
 /// Resource id of the live-session env refresh. The planner and
@@ -150,6 +151,94 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
     } else {
         desc.to_string()
     }
+}
+
+/// An action's display subject, split at the marker the tree paints in its own
+/// style.
+///
+/// Rendered, it is ONE string: `<marker>: <body>`, or just `<body>` when no
+/// marker applies (every action kind but a script). The split exists because
+/// the status renderer styles the marker and leaves the body in the terminal
+/// foreground — not because the two halves may be composed differently at
+/// different sites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplaySubject {
+    /// Rendered first, followed by `: `. `None` for everything but a script.
+    pub marker: Option<String>,
+    pub body: String,
+}
+
+impl std::fmt::Display for DisplaySubject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.marker {
+            Some(marker) => write!(f, "{marker}: {}", self.body),
+            None => f.write_str(&self.body),
+        }
+    }
+}
+
+/// The ONE display subject of an action.
+///
+/// The preview bullet, the phase's alignment column and the execution tree's
+/// status line all derive from this, so the three cannot disagree about what an
+/// action is called — a shorter executed subject silently mis-pads every
+/// trailing field in the phase, and a preview that names a different string
+/// than the execution is the divergence R4 forbids outright.
+///
+/// Display-only. The persisted strings — the `managed_resources` id, the
+/// journal `resource_id`, `ActionResult.description` and the `-o json` plan
+/// payload — stay byte-identical to the source body and come from
+/// [`format_action_description`] / [`format_plan_item`] instead.
+pub fn action_display_subject(action: &Action) -> DisplaySubject {
+    match action {
+        Action::Script(ScriptAction::Run {
+            entry,
+            phase,
+            origin,
+        }) => script_run_subject(entry.run_str(), phase, origin),
+        Action::Module(
+            ma @ ModuleAction {
+                kind: ModuleActionKind::RunScript { script, phase },
+                ..
+            },
+        ) => module_script_subject(script.run_str(), phase, ma.origin.as_deref()),
+        _ => DisplaySubject {
+            marker: None,
+            body: format_plan_item(action),
+        },
+    }
+}
+
+/// [`action_display_subject`] for a profile script, reachable from the apply
+/// path that holds the `ScriptAction`'s parts rather than the `Action`.
+pub fn script_run_subject(run: &str, phase: &ScriptPhase, origin: &str) -> DisplaySubject {
+    DisplaySubject {
+        marker: Some(format!("run {} script", phase.display_name())),
+        body: script_body_display(run, origin),
+    }
+}
+
+/// [`action_display_subject`] for a module script — the module's own hook name
+/// is the marker, matching `format_module_action_body`'s `RunScript` arm.
+pub fn module_script_subject(
+    run: &str,
+    phase: &ScriptPhase,
+    origin: Option<&str>,
+) -> DisplaySubject {
+    DisplaySubject {
+        marker: Some(phase.display_name().to_string()),
+        body: script_body_display(run, origin.unwrap_or("")),
+    }
+}
+
+/// Condense the body, then append provenance: a long or multi-line script body
+/// must not be able to truncate away the source that delivered it.
+fn script_body_display(run: &str, origin: &str) -> String {
+    format!(
+        "{}{}",
+        crate::output::condense_script_label(run),
+        provenance_suffix(origin)
+    )
 }
 
 /// Format one plan item for display.

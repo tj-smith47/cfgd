@@ -143,22 +143,24 @@ pub(crate) fn run_command(
     } else {
         let needs_replay = window.tail_needs_replay();
         match settle {
-            StatusOwner::Window => drop(
-                window
-                    .finish_fail(label)
-                    .detail(failure_detail(&status))
-                    .duration(duration),
-            ),
-            // The caller renders the failure — with this command's stderr in
-            // its detail, since the error it builds carries it. The tail below
-            // is still replayed: it is the diagnostic, and the caller has only
-            // the collapsed first line of it.
+            StatusOwner::Window => {
+                drop(
+                    window
+                        .finish_fail(label)
+                        .detail(failure_detail(&status))
+                        .duration(duration),
+                );
+                // Streaming already left every line in the scrollback; replaying
+                // them here would print the whole of stderr a second time.
+                if needs_replay {
+                    OutputWindow::dump_below(printer, depth, &all_stderr);
+                }
+            }
+            // No replay: the caller's failure line has not been written yet, so
+            // a dump here would land the body ABOVE the status it belongs to.
+            // The tail travels back in the returned `CommandOutput` and reaches
+            // the user as that line's detail.
             StatusOwner::Caller => window.finish_silent(),
-        }
-        // Streaming already left every line in the scrollback; replaying them
-        // here would print the whole of stderr a second time.
-        if needs_replay {
-            OutputWindow::dump_below(printer, depth, &all_stderr);
         }
     }
     Ok(make_output(status, all_stdout, all_stderr, duration))

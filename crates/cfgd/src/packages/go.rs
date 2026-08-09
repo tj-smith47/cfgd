@@ -10,7 +10,7 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
-    any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd,
+    any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd, pkg_run,
     resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
@@ -54,13 +54,15 @@ impl PackageManager for GoInstallManager {
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         if brew_available() {
-            let result = cx
-                .printer
-                .run(brew_cmd().args(["install", "go"]), "Installing Go via brew")
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "go".into(),
-                    message: format!("brew install go failed: {}", e),
-                })?;
+            let result = pkg_run(
+                cx,
+                brew_cmd().args(["install", "go"]),
+                "Installing Go via brew",
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "go".into(),
+                message: format!("brew install go failed: {}", e),
+            })?;
             if result.status.success() {
                 return Ok(());
             }
@@ -131,8 +133,7 @@ impl PackageManager for GoInstallManager {
                 })?;
             let bin_path = bin_dir.join(bin_name);
             if bin_path.exists() {
-                cx.printer
-                    .status_simple(Role::Info, format!("removing {}", bin_path.posix()));
+                cx.report(Role::Info, "go", format!("removing {}", bin_path.posix()));
                 std::fs::remove_file(&bin_path).map_err(|e| PackageError::UninstallFailed {
                     manager: "go".into(),
                     message: format!("failed to remove {}: {}", bin_path.posix(), e),
@@ -230,6 +231,58 @@ mod tests {
     fn go_install_manager_name_and_traits() {
         let mgr = GoInstallManager;
         assert_eq!(mgr.name(), "go");
+    }
+
+    /// A bootstrap is an action like any other, so under a caller-owned status
+    /// its shell-out settles no line of its own. `go`'s brew arm is the one
+    /// that reached `Printer::run` directly instead of going through `pkg_run`,
+    /// which rendered the bootstrap twice: once as the window's own line and
+    /// once as the tree's.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn caller_owned_bootstrap_settles_no_line_of_its_own() {
+        let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let settled = |transcript: &str| {
+            cfgd_core::test_helpers::settled_status_lines(&cfgd_core::output::strip_ansi(
+                transcript,
+            ))
+            .len()
+        };
+
+        let notes = cfgd_core::providers::NoteSink::default();
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        GoInstallManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                &printer, &notes,
+            ))
+            .expect("brew shim exits 0");
+        let standalone = buf.lock().unwrap().clone();
+        assert_eq!(
+            settled(&standalone),
+            1,
+            "standalone, the window IS the bootstrap's only line: {standalone}"
+        );
+
+        let owned_notes = cfgd_core::providers::NoteSink::default();
+        let (owned_printer, owned_buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        GoInstallManager
+            .bootstrap(
+                &cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                    &owned_printer,
+                    &owned_notes,
+                )
+                .caller_owns_status(),
+            )
+            .expect("brew shim exits 0");
+        let owned = owned_buf.lock().unwrap().clone();
+        assert_eq!(
+            settled(&owned),
+            0,
+            "the reconciler renders the bootstrap's line; the window must settle silently: {owned}"
+        );
     }
 
     #[test]

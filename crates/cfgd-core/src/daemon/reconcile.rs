@@ -511,7 +511,9 @@ pub(crate) fn handle_reconcile(
                     None,
                     None,
                     crate::reconciler::ScriptReport {
-                        marker: Some(crate::reconciler::ScriptPhase::OnDrift.display_name()),
+                        subject: crate::reconciler::ScriptSubject::Hook(
+                            crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                        ),
                         non_fatal: true,
                     },
                 ) {
@@ -563,7 +565,9 @@ pub(crate) fn handle_reconcile(
                     None,
                     None,
                     crate::reconciler::ScriptReport {
-                        marker: Some(crate::reconciler::ScriptPhase::OnDrift.display_name()),
+                        subject: crate::reconciler::ScriptSubject::Hook(
+                            crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                        ),
                         non_fatal: true,
                     },
                 ) {

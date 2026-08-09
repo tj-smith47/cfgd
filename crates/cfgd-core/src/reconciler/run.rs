@@ -14,7 +14,7 @@ use crate::output::{OwnerLabel, Printer, Role, SectionGuard, measure_width};
 use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
-use super::format::{condense_action_desc_for_display, format_plan_items};
+use super::format::action_display_subject;
 use super::types::{
     Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan, SystemAction,
 };
@@ -509,10 +509,10 @@ impl<'a> ApplyRun<'a> {
     }
 }
 
-/// One owner group's in-scope actions, each paired with its position in the
-/// group — the index is what pairs an action back to its `format_plan_items`
-/// line, which is rendered per group rather than per action.
-type ScopedGroup<'p> = (&'p OwnerGroup, Vec<(usize, &'p Action)>);
+/// One owner group's in-scope actions, in group order. Each renders under the
+/// subject [`action_display_subject`] derives from it alone, so no positional
+/// pairing back into a per-group line vector is needed.
+type ScopedGroup<'p> = (&'p OwnerGroup, Vec<&'p Action>);
 
 /// One phase's renderable block: the phase, and every group in it holding
 /// in-scope work.
@@ -555,11 +555,10 @@ fn in_scope_tree<'p>(plan: &'p Plan, filter: Option<&PhaseFilter>) -> Vec<Scoped
         }
         let mut groups = Vec::new();
         for group in phase.groups() {
-            let actions: Vec<(usize, &Action)> = group
+            let actions: Vec<&Action> = group
                 .actions
                 .iter()
-                .enumerate()
-                .filter(|(_, action)| match filter {
+                .filter(|action| match filter {
                     Some(f) => action_matches_phase_filter(&phase.name, &group.owner, action, f),
                     None => true,
                 })
@@ -586,9 +585,8 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
         for (group, actions) in groups {
             let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
             let owner_section = phase_section.section_owner(&label);
-            let items = format_plan_items(group);
-            for (index, action) in actions {
-                let item = condense_action_desc_for_display(action, &items[index]);
+            for action in actions {
+                let item = action_display_subject(action).to_string();
                 // An unknown system key is almost always a typo, so it keeps
                 // its warning role instead of reading as ordinary planned work.
                 if matches!(
@@ -656,11 +654,20 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
     labels.map(measure_width).max().unwrap_or(0)
 }
 
-/// The plan-phase view over [`align_width_of`]: the max over the plan display
-/// strings of **every** action in the phase, so every owner group in it opens
+/// The plan-phase view over [`align_width_of`]: the max over the DISPLAY
+/// SUBJECT of **every** action in the phase, so every owner group in it opens
 /// with the same column.
+///
+/// The subject, not the raw plan string: a condensed script body or a marker
+/// the execution renders shorter than the payload would pad every trailing
+/// field in the phase against a column nothing reaches.
 pub fn align_width(phase: &Phase) -> usize {
-    let items: Vec<String> = phase.groups().iter().flat_map(format_plan_items).collect();
+    let items: Vec<String> = phase
+        .groups()
+        .iter()
+        .flat_map(|group| group.actions.iter())
+        .map(|action| action_display_subject(action).to_string())
+        .collect();
     align_width_of(items.iter().map(String::as_str))
 }
 

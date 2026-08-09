@@ -464,8 +464,11 @@ impl SystemConfigurator for GpgKeysConfigurator {
             let mut cmd = gpg_cmd();
             cmd.args(["--batch", "--gen-key", param_path.to_str().unwrap_or("")]);
 
+            // `run_silent`, not `run`: the reconciler already settles this
+            // action's one line, so a window that settled its own would render
+            // the same key generation twice.
             let output = printer
-                .run(
+                .run_silent(
                     &mut cmd,
                     format!("Generating GPG key for {} <{}>", spec.real_name, spec.email),
                 )

@@ -21,7 +21,11 @@ impl<'a> super::Reconciler<'a> {
         abort: &crate::AbortFlag,
     ) -> Result<(String, bool, Option<String>)> {
         match action {
-            ScriptAction::Run { entry, phase, .. } => {
+            ScriptAction::Run {
+                entry,
+                phase,
+                origin,
+            } => {
                 let profile_name = resolved
                     .layers
                     .last()
@@ -39,13 +43,11 @@ impl<'a> super::Reconciler<'a> {
                 });
 
                 let working = script_default_workdir(config_dir);
-                // The whole `run <phase> script` prefix, not the bare phase
-                // name: `format_plan_item` spells a profile script that way, and
-                // the preview and the execution tree must render one action with
-                // one subject — the phase's alignment column is measured from
-                // the plan string, so a shorter executed subject also mis-pads
-                // every trailing field in the phase.
-                let marker = format!("run {} script", phase.display_name());
+                // The action's ONE display subject, from the same derivation
+                // the preview bullet and the phase's alignment column use — a
+                // subject spelled locally here is what let the executed line
+                // read shorter than the column every trailing field pads to.
+                let subject = super::format::script_run_subject(entry.run_str(), phase, origin);
                 let (_desc, changed, captured) = execute_script(
                     entry,
                     config_dir,
@@ -56,7 +58,7 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                     Some(abort),
                     ScriptReport {
-                        marker: Some(&marker),
+                        subject: super::scripts::ScriptSubject::Planned(&subject),
                         non_fatal: effective_continue_on_error(entry, phase),
                     },
                 )?;

@@ -413,7 +413,7 @@ mod tests {
             0,
             &StatusFields {
                 role: Role::Fail,
-                subject: "[1/1] Failed: package:cargo:install:bat",
+                subject: "cargo install bat",
                 detail: Some(detail),
                 duration: None,
                 target: None,
@@ -425,7 +425,7 @@ mod tests {
         // First physical line glues subject to the first detail line.
         assert!(
             out.lines().next().unwrap().contains(
-                "✗ [1/1] Failed: package:cargo:install:bat — cargo install failed: exit code 101: error: download of windows-sys failed"
+                "✗ cargo install bat — cargo install failed: exit code 101: error: download of windows-sys failed"
             ),
             "first line must glue subject + first detail line; got: {out:?}"
         );

@@ -245,8 +245,6 @@ impl PackageManager for BrewManager {
 
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
-            cx.printer
-                .status_simple(Role::Info, "Creating linuxbrew system user");
             let user_status = Command::new("useradd")
                 .args([
                     "--system",
@@ -267,6 +265,9 @@ impl PackageManager for BrewManager {
                     message: "failed to create linuxbrew system user".into(),
                 }
                 .into());
+            }
+            if user_status.success() {
+                cx.report(Role::Info, "brew", "created the 'linuxbrew' system user");
             }
 
             let result = pkg_run(

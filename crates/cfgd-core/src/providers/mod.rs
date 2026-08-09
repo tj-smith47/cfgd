@@ -9,7 +9,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::Result;
-use crate::output::Printer;
+use crate::output::{Printer, Role};
 
 // --- PackageManager trait ---
 
@@ -98,6 +98,28 @@ impl<'a> PackageContext<'a> {
         self.caller_owns_status = true;
         self
     }
+
+    /// Report something that is NOT this action's status line — work done on
+    /// the side, a degraded fallback, the expanded command a custom manager
+    /// ran.
+    ///
+    /// The counterpart of `pkg_run` for prose: under a caller-owned status the
+    /// message becomes a note rendered UNDER the action's one line, so a
+    /// manager cannot add a second settled line beside the tree's; standalone
+    /// it settles on its own, where the manager's output is all the user gets.
+    /// A `PackageManager` must never call `cx.printer.status_simple` directly.
+    pub fn report(&self, role: Role, manager: &str, message: impl Into<String>) {
+        let message = message.into();
+        if self.caller_owns_status {
+            self.notes.push(PostInstallNote {
+                manager: manager.to_string(),
+                message,
+                role,
+            });
+        } else {
+            self.printer.status_simple(role, message);
+        }
+    }
 }
 
 /// An important message a package manager emitted while one action ran — a brew
@@ -109,6 +131,30 @@ impl<'a> PackageContext<'a> {
 pub struct PostInstallNote {
     pub manager: String,
     pub message: String,
+    /// How the note renders under the action's line. A caveat or a degraded
+    /// fallback is a [`Role::Warn`]; a report of work the manager did on the
+    /// side is a [`Role::Info`].
+    pub role: Role,
+}
+
+impl PostInstallNote {
+    /// A note the user must act on — a caveat, a fallback, a retry.
+    pub fn warn(manager: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            manager: manager.into(),
+            message: message.into(),
+            role: Role::Warn,
+        }
+    }
+
+    /// A note that only reports what happened.
+    pub fn info(manager: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            manager: manager.into(),
+            message: message.into(),
+            role: Role::Info,
+        }
+    }
 }
 
 /// Collector for the notes a manager produced during one action.
@@ -255,7 +301,12 @@ pub trait SystemConfigurator: Send + Sync {
     /// Diff desired vs actual, return list of changes
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>>;
 
-    /// Apply desired state
+    /// Apply desired state.
+    ///
+    /// The CALLER owns the action's status line: the reconciler settles one
+    /// `system:<name>.<key>` line for this call from the plan. A shell-out here
+    /// therefore goes through [`Printer::run_silent`] — [`Printer::run`] settles
+    /// the window's own line too, rendering the same work twice.
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()>;
 
     /// Provide the active config directory so a configurator can resolve

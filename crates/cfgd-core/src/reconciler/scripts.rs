@@ -5,6 +5,7 @@ use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
 use crate::output::{OutputWindow, Printer, Role, collapse_to_subject_line, condense_script_label};
 
+use super::format::DisplaySubject;
 use super::types::{ReconcileContext, ScriptPhase};
 
 // ---------------------------------------------------------------------------
@@ -197,20 +198,36 @@ fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path
     crate::expand_tilde(std::path::Path::new(&expanded))
 }
 
+/// What one [`execute_script`] invocation renders as its status subject.
+///
+/// Three variants rather than an optional marker beside an optional body: a
+/// planned action's subject is derived ONCE, by
+/// [`action_display_subject`](crate::reconciler::action_display_subject), and
+/// two independent `Option`s are exactly what lets the marker and the body it
+/// belongs to drift apart at one arm.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum ScriptSubject<'a> {
+    /// No hook and no planned action names it: the condensed body alone.
+    #[default]
+    Bare,
+    /// A hook phase names it, but no planned action does — backup hooks, the
+    /// daemon's `onDrift`, a file's `onChange`. The marker is known; the body
+    /// is condensed from the entry.
+    Hook(&'a str),
+    /// A planned action: the subject the preview bullet printed and the
+    /// phase's alignment column measured, rendered verbatim so the three are
+    /// one string.
+    Planned(&'a DisplaySubject),
+}
+
 /// How one [`execute_script`] invocation reports its single status line.
 ///
 /// One parameter carrying both facts rather than two: every call site that
-/// names the hook also knows whether its failure stops the run, and a second
+/// names the subject also knows whether its failure stops the run, and a second
 /// bare parameter is what lets the two drift apart at one arm.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ScriptReport<'a> {
-    /// The prefix the body belongs under, rendered styled and followed by
-    /// `: ` on the status subject. It is whatever the action's plan display
-    /// string puts before the body — the bare hook name for a module script
-    /// (`postApply`), the full `run postApply script` for a profile one — so
-    /// the preview and the execution tree render one subject. `None` for a
-    /// script no hook phase names.
-    pub marker: Option<&'a str>,
+    pub subject: ScriptSubject<'a>,
     /// The caller has already decided a failure here will not stop the run, so
     /// the one line renders `Role::Warn` rather than `Role::Fail`.
     pub non_fatal: bool,
@@ -250,14 +267,23 @@ enum ScriptState<'p> {
 }
 
 impl<'p> ScriptStatus<'p> {
-    fn new(printer: &'p Printer, subject: String, report: ScriptReport<'_>) -> Self {
+    /// `fallback` is the condensed body, used by every subject a planned action
+    /// does not supply.
+    fn new(printer: &'p Printer, fallback: String, report: ScriptReport<'_>) -> Self {
+        let (marker, subject) = match report.subject {
+            ScriptSubject::Bare => (None, fallback),
+            ScriptSubject::Hook(marker) => (Some(marker.to_string()), fallback),
+            // Verbatim, both halves: the renderer composes them as
+            // `<marker> <subject>`, which is `DisplaySubject`'s own `Display`.
+            ScriptSubject::Planned(subject) => (subject.marker.clone(), subject.body.clone()),
+        };
         Self {
             failure_role: if report.non_fatal {
                 Role::Warn
             } else {
                 Role::Fail
             },
-            marker: report.marker.map(|m| format!("{m}:")),
+            marker: marker.map(|m| format!("{m}:")),
             state: ScriptState::Pending { printer, subject },
         }
     }

@@ -147,10 +147,10 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 if in_caveats {
                     if line.starts_with("==> ") {
                         if !caveat_lines.is_empty() {
-                            notes.push(PostInstallNote {
-                                manager: manager.to_string(),
-                                message: caveat_lines.join("\n").trim().to_string(),
-                            });
+                            notes.push(PostInstallNote::warn(
+                                manager,
+                                caveat_lines.join("\n").trim(),
+                            ));
                         }
                         in_caveats = false;
                     } else {
@@ -159,20 +159,17 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 }
             }
             if in_caveats && !caveat_lines.is_empty() {
-                notes.push(PostInstallNote {
-                    manager: manager.to_string(),
-                    message: caveat_lines.join("\n").trim().to_string(),
-                });
+                notes.push(PostInstallNote::warn(
+                    manager,
+                    caveat_lines.join("\n").trim(),
+                ));
             }
         }
         "npm" | "pnpm" => {
             for line in combined.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("npm warn") || trimmed.starts_with("npm WARN") {
-                    notes.push(PostInstallNote {
-                        manager: manager.to_string(),
-                        message: trimmed.to_string(),
-                    });
+                    notes.push(PostInstallNote::warn(manager, trimmed));
                 }
             }
         }
@@ -180,10 +177,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
             for line in combined.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("WARNING:") {
-                    notes.push(PostInstallNote {
-                        manager: manager.to_string(),
-                        message: trimmed.to_string(),
-                    });
+                    notes.push(PostInstallNote::warn(manager, trimmed));
                 }
             }
         }
@@ -194,10 +188,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 let lower = trimmed.to_lowercase();
                 if lower.contains("warning:") || lower.contains("caveat") || lower.contains("note:")
                 {
-                    notes.push(PostInstallNote {
-                        manager: manager.to_string(),
-                        message: trimmed.to_string(),
-                    });
+                    notes.push(PostInstallNote::warn(manager, trimmed));
                 }
             }
         }
@@ -401,9 +392,10 @@ where
             if packages.len() == 1 {
                 return Err(e);
             }
-            cx.printer.status_simple(
+            cx.report(
                 Role::Warn,
-                format!("{manager}: batch install failed; retrying each package individually"),
+                manager,
+                "batch install failed; retrying each package individually",
             );
         }
     }

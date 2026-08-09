@@ -71,7 +71,8 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(cx,
+        run_pkg_cmd_live(
+            cx,
             "chocolatey",
             Command::new("powershell").args([
                 "-NoProfile",

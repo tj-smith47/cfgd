@@ -318,6 +318,13 @@ impl<'a> super::Reconciler<'a> {
 
                 let source = module_dir.as_deref().unwrap_or(config_dir);
                 let working = script_default_workdir(config_dir);
+                // The action's ONE display subject, from the same derivation
+                // the preview bullet and the phase's alignment column use.
+                let subject = super::format::module_script_subject(
+                    script.run_str(),
+                    script_phase,
+                    action.origin.as_deref(),
+                );
                 let (_label, changed, _captured) = execute_script(
                     script,
                     source,
@@ -328,7 +335,7 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                     Some(abort),
                     ScriptReport {
-                        marker: Some(script_phase.display_name()),
+                        subject: super::scripts::ScriptSubject::Planned(&subject),
                         non_fatal: false,
                     },
                 )?;

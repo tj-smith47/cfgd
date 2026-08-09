@@ -2,9 +2,12 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::config::FileStrategy;
+use crate::config::ScriptEntry;
 use crate::output::{Printer, PromptAnswer, Verbosity, strip_ansi};
 use crate::providers::{FileAction, PackageAction};
-use crate::reconciler::{Action, ActionResult, Owner, Phase, PhaseName, Plan};
+use crate::reconciler::{
+    Action, ActionResult, Owner, Phase, PhaseName, Plan, ScriptAction, ScriptPhase,
+};
 
 fn install(manager: &str, packages: &[&str]) -> Action {
     Action::Package(PackageAction::Install {
@@ -41,6 +44,14 @@ fn module_install(module: &str, manager: &str, package: &str) -> Action {
             }],
         },
     ))
+}
+
+fn script_run(body: &str, script_phase: ScriptPhase, origin: &str) -> Action {
+    Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple(body.to_string()),
+        phase: script_phase,
+        origin: origin.to_string(),
+    })
 }
 
 fn phase(name: PhaseName, actions: Vec<Action>) -> Phase {
@@ -623,6 +634,83 @@ fn preview_renders_only_in_scope_phases_and_never_the_modules_phase() {
     assert!(
         !out.contains("Modules"),
         "the Modules phase renders no heading: {out:?}"
+    );
+}
+
+// The preview bullet, the string `align_width` measures and the subject the
+// execution renders are ONE derivation (`action_display_subject`). A sourced
+// script carries a ` <- <origin>` suffix on its preview line, so an execution
+// subject deriving itself independently would both rename the action and pad
+// every trailing field in the phase against a column nothing reaches.
+#[test]
+fn preview_bullet_matches_the_execution_subject_for_a_sourced_script() {
+    let body = "echo hello";
+    let plan = plan_of(vec![phase(
+        PhaseName::PostScripts,
+        vec![script_run(body, ScriptPhase::PostApply, "team-config")],
+    )]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
+    drop(printer);
+    let out = strip_ansi(&buf.lock().unwrap());
+
+    // The subject `scripts_apply` hands the status renderer, from the parts it
+    // holds at execution time.
+    let executed =
+        crate::reconciler::script_run_subject(body, &ScriptPhase::PostApply, "team-config")
+            .to_string();
+    assert!(
+        executed.ends_with(" <- team-config"),
+        "execution subject must keep the preview's provenance suffix: {executed:?}"
+    );
+    assert!(
+        out.contains(&format!("\n    - {executed}\n")),
+        "preview bullet must be the execution subject verbatim: {out:?}"
+    );
+    assert_eq!(
+        align_width(&plan.phases[0]),
+        measure_width(&executed),
+        "the alignment column must measure the subject the execution renders"
+    );
+}
+
+// The condensing half of the same contract: a multi-line body is condensed for
+// display, and the condensed form is what all three sites use — measuring the
+// raw body would pad the phase against a width no line reaches, and a preview
+// bullet naming the raw body would embed a newline.
+#[test]
+fn preview_bullet_matches_the_execution_subject_for_a_condensed_script() {
+    // Long enough that condensing the WHOLE plan line — subject marker, body
+    // and suffix as one string — truncates the suffix away.
+    let body = format!("echo {}", "very-long-argument ".repeat(6));
+    let plan = plan_of(vec![phase(
+        PhaseName::PreScripts,
+        vec![script_run(&body, ScriptPhase::PreApply, "team-config")],
+    )]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
+    drop(printer);
+    let out = strip_ansi(&buf.lock().unwrap());
+
+    let executed =
+        crate::reconciler::script_run_subject(&body, &ScriptPhase::PreApply, "team-config")
+            .to_string();
+    assert!(
+        executed.contains('\u{2026}') && crate::output::measure_width(&executed) < body.len(),
+        "execution subject must be condensed: {executed:?}"
+    );
+    assert!(
+        executed.ends_with(" <- team-config"),
+        "condensing must not truncate away the provenance suffix: {executed:?}"
+    );
+    assert!(
+        out.contains(&format!("\n    - {executed}\n")),
+        "preview bullet must be the condensed execution subject verbatim: {out:?}"
+    );
+    assert_eq!(
+        align_width(&plan.phases[0]),
+        measure_width(&executed),
+        "the alignment column must measure the condensed subject"
     );
 }
 
