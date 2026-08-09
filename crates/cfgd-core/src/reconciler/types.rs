@@ -385,14 +385,24 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
     }
 }
 
+/// Whether a package-batching action survives its batch being filtered: dropped
+/// only when the filter is what emptied it. An action that arrived empty is left
+/// exactly as any other filter found it, so
+/// [`Phase::retain_actions`] — which retains every package — stays a pure
+/// action-level filter.
+fn batch_survives(batched: usize, kept: usize) -> bool {
+    batched == 0 || kept > 0
+}
+
 /// A phase in the reconciliation plan, as owner groups in display order.
 ///
 /// `groups` is private and [`Phase::from_actions`] is the only constructor, so
 /// a phase whose owners are out of [`Owner::sort_key`] order is unrepresentable
 /// rather than merely discouraged: no caller can write a struct literal, insert
 /// a group, or re-sort the vec. The mutators below only ever shrink an existing
-/// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`]) or hand out an
-/// owner's action list ([`Phase::groups_mut`]).
+/// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`],
+/// [`Phase::retain_actions_and_packages`]) or hand out an owner's action list
+/// ([`Phase::groups_mut`]).
 #[derive(Debug, Serialize)]
 pub struct Phase {
     pub name: PhaseName,
@@ -443,9 +453,56 @@ impl Phase {
 
     /// Keep only the actions passing `keep`, dropping any group left empty —
     /// the filter path (`--skip` / `--only` / `--no-scripts`).
-    pub fn retain_actions(&mut self, mut keep: impl FnMut(&Action) -> bool) {
+    pub fn retain_actions(&mut self, keep: impl FnMut(&Action) -> bool) {
+        self.retain_actions_and_packages(keep, |_, _| true);
+    }
+
+    /// [`Phase::retain_actions`] plus per-package retention inside the two
+    /// actions that BATCH packages: `PackageAction::Install`/`Uninstall` and
+    /// `ModuleActionKind::InstallPackages`. `keep_package` is called with
+    /// `(manager, package)` for each entry of a surviving batch, and an action
+    /// whose batch empties is dropped like any other filtered action.
+    ///
+    /// The narrow mutable capability the daemon's pending-decision prune needs:
+    /// one undecided package must leave a batch its siblings still travel in.
+    /// Shrinking a batch is the ONLY in-place edit it can make — no `&mut
+    /// Action` is handed out, so the fields the persisted derivations read
+    /// (`format_action_description`, journal `resource_id`) stay unreachable
+    /// from a filter, and the [`Owner::sort_key`] group order still cannot move.
+    pub fn retain_actions_and_packages(
+        &mut self,
+        mut keep_action: impl FnMut(&Action) -> bool,
+        mut keep_package: impl FnMut(&str, &str) -> bool,
+    ) {
         for group in &mut self.groups {
-            group.actions.retain(&mut keep);
+            group.actions.retain_mut(|action| {
+                if !keep_action(action) {
+                    return false;
+                }
+                match action {
+                    Action::Package(
+                        PackageAction::Install {
+                            manager, packages, ..
+                        }
+                        | PackageAction::Uninstall {
+                            manager, packages, ..
+                        },
+                    ) => {
+                        let batched = packages.len();
+                        packages.retain(|package| keep_package(manager, package));
+                        batch_survives(batched, packages.len())
+                    }
+                    Action::Module(ModuleAction {
+                        kind: ModuleActionKind::InstallPackages { resolved },
+                        ..
+                    }) => {
+                        let batched = resolved.len();
+                        resolved.retain(|pkg| keep_package(&pkg.manager, &pkg.resolved_name));
+                        batch_survives(batched, resolved.len())
+                    }
+                    _ => true,
+                }
+            });
         }
         self.prune_empty_groups();
     }

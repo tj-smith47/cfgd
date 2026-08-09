@@ -1,6 +1,6 @@
 use super::*;
 use crate::PathDisplayExt;
-use crate::to_posix_string;
+use crate::{expand_tilde, to_posix_string};
 
 // --- File Watcher ---
 
@@ -361,9 +361,9 @@ pub(crate) fn handle_reconcile(
                 }
             }
 
-            all_excluded
+            PendingExclusions::from_decision_paths(all_excluded)
         } else {
-            HashSet::new()
+            PendingExclusions::default()
         };
 
     let reconciler = crate::reconciler::Reconciler::new(&registry, &store);
@@ -446,13 +446,21 @@ pub(crate) fn handle_reconcile(
     // the actions an auto-apply executes then describe one set, and the header
     // cannot name a number the run disagrees with.
     if !pending_exclusions.is_empty() {
+        let before = plan.total_actions();
         for phase in &mut plan.phases {
-            phase.retain_actions(|action| {
-                let (_rtype, rid) = action_resource_info(action);
-                !pending_exclusions.contains(&rid)
-            });
+            phase.retain_actions_and_packages(
+                |action| !pending_exclusions.withholds_action(action),
+                |manager, package| !pending_exclusions.withholds_package(manager, package),
+            );
         }
         plan.phases.retain(|p| !p.is_empty());
+        let withheld = before - plan.total_actions();
+        if withheld > 0 {
+            tracing::info!(
+                actions = withheld,
+                "withheld action(s) whose resource awaits a source decision"
+            );
+        }
     }
     let effective_total = plan.total_actions();
 
@@ -1161,7 +1169,127 @@ pub(crate) fn process_source_decisions(
     pending_resource_paths(store)
 }
 
+/// The resources a pending source decision withholds, in the plan's own
+/// vocabulary.
+///
+/// The ONE place that knows both grammars. A decision row carries the
+/// dot-notation path [`extract_source_resources`] mints; a planned action
+/// carries the resource id [`action_resource_info`] mints. The two never agree
+/// as strings — `packages.cargo.bat` against `cargo:bat,ripgrep`,
+/// `files.~/.zshrc` against `/home/u/.zshrc` — so the translation happens here,
+/// once, per arm:
+///
+/// | decision path | what it withholds |
+/// |---|---|
+/// | `files.<target>` | a `File` action on that target. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
+/// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. A `Bootstrap` or `Skip` names no package and is never withheld — a bootstrap installs the package MANAGER, which every still-decided package in the batch needs |
+/// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine |
+/// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>:<key>` id an individual drift carries |
+///
+/// `Secret`, `Script` and `Module` actions are never withheld: those four
+/// prefixes are the only paths [`extract_source_resources`] mints, so no
+/// pending row can name one.
+#[derive(Debug, Default)]
+pub(crate) struct PendingExclusions {
+    files: HashSet<String>,
+    packages: HashMap<String, HashSet<String>>,
+    env: HashSet<String>,
+    system: HashSet<String>,
+}
+
+impl PendingExclusions {
+    /// Translate pending decision paths into the action vocabulary.
+    pub(crate) fn from_decision_paths<I: IntoIterator<Item = String>>(paths: I) -> Self {
+        let mut out = Self::default();
+        for path in paths {
+            let unmatched = |detail: &str| {
+                tracing::warn!(
+                    decision = %path,
+                    "pending decision {detail} — it cannot be withheld from the plan"
+                );
+            };
+            if let Some(target) = path.strip_prefix("files.") {
+                if target.is_empty() {
+                    unmatched("names no file");
+                    continue;
+                }
+                out.files
+                    .insert(to_posix_string(expand_tilde(Path::new(target))));
+            } else if let Some(rest) = path.strip_prefix("packages.") {
+                match rest.split_once('.') {
+                    Some((manager, package)) if !manager.is_empty() && !package.is_empty() => {
+                        out.packages
+                            .entry(manager.to_string())
+                            .or_default()
+                            .insert(package.to_string());
+                    }
+                    _ => unmatched("names no manager and package"),
+                }
+            } else if let Some(name) = path.strip_prefix("env.") {
+                if name.is_empty() {
+                    unmatched("names no variable");
+                    continue;
+                }
+                out.env.insert(name.to_string());
+            } else if let Some(key) = path.strip_prefix("system.") {
+                if key.is_empty() {
+                    unmatched("names no configurator");
+                    continue;
+                }
+                out.system.insert(key.to_string());
+            } else {
+                unmatched("is in no known resource vocabulary");
+            }
+        }
+        out
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.files.is_empty()
+            && self.packages.is_empty()
+            && self.env.is_empty()
+            && self.system.is_empty()
+    }
+
+    /// Whether the whole action is withheld. A package batch never is — it is
+    /// withheld one package at a time, through [`Self::withholds_package`].
+    pub(crate) fn withholds_action(&self, action: &crate::reconciler::Action) -> bool {
+        use crate::reconciler::{Action, SystemAction};
+        match action {
+            // Read through `action_resource_info` so the file id this compares
+            // against is the same derivation the drift row and the journal use.
+            Action::File(_) => self.files.contains(&action_resource_info(action).1),
+            Action::Env(_) => !self.env.is_empty(),
+            // Matched on the typed field rather than on the rendered
+            // `<configurator>:<key>` id: splitting an id back apart at the match
+            // site would be a second grammar living outside this type.
+            Action::System(SystemAction::SetValue { configurator, .. })
+            | Action::System(SystemAction::Skip { configurator, .. }) => {
+                self.system.contains(configurator)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether one package inside a batch is withheld.
+    pub(crate) fn withholds_package(&self, manager: &str, package: &str) -> bool {
+        self.names_package(manager, package)
+            // Casks are minted as `packages.brew.<name>`, but the planner
+            // installs them through the `brew-cask` manager.
+            || (manager == "brew-cask" && self.names_package("brew", package))
+    }
+
+    fn names_package(&self, manager: &str, package: &str) -> bool {
+        self.packages
+            .get(manager)
+            .is_some_and(|packages| packages.contains(package))
+    }
+}
+
 /// Get all pending (unresolved) decision resource paths as a set.
+///
+/// Decision vocabulary, not action vocabulary: the caller translates the set
+/// once through [`PendingExclusions`] before matching it against a plan.
 pub(crate) fn pending_resource_paths(store: &StateStore) -> HashSet<String> {
     store
         .pending_decisions()

@@ -15819,6 +15819,14 @@ fn install_action(manager: &str, packages: &[&str]) -> Action {
     })
 }
 
+fn uninstall_action(manager: &str, packages: &[&str]) -> Action {
+    Action::Package(PackageAction::Uninstall {
+        manager: manager.to_string(),
+        packages: packages.iter().map(|p| (*p).to_string()).collect(),
+        origin: "local".to_string(),
+    })
+}
+
 fn bootstrap_action(manager: &str) -> Action {
     Action::Package(PackageAction::Bootstrap {
         manager: manager.to_string(),
@@ -16424,6 +16432,58 @@ fn retain_actions_drops_the_groups_it_empties() {
         vec!["profile:work", "module:nvim"],
         "the emptied cfgd:managers group must not survive as a zero-action group"
     );
+    assert_eq!(phase.action_count(), 2);
+}
+
+#[test]
+fn retain_actions_and_packages_shrinks_a_batch_before_dropping_it() {
+    // A filter that names ONE package must not take the whole batch with it:
+    // the action survives carrying the packages that passed, and is dropped
+    // only when nothing is left to install.
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![
+            install_action("brew", &["ripgrep", "fd"]),
+            uninstall_action("brew", &["exa"]),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    phase.retain_actions_and_packages(
+        |_| true,
+        |manager, package| !(manager == "brew" && matches!(package, "fd" | "exa" | "neovim")),
+    );
+
+    assert_eq!(
+        owner_tokens(&phase),
+        vec!["profile:work"],
+        "both emptied batches drop their action, and the module group with it"
+    );
+    let Action::Package(PackageAction::Install { packages, .. }) = phase
+        .actions()
+        .next()
+        .expect("the shrunk install batch survives")
+    else {
+        panic!("the survivor is the install batch");
+    };
+    assert_eq!(packages, &vec!["ripgrep".to_string()]);
+}
+
+#[test]
+fn retain_actions_leaves_an_already_empty_batch_exactly_as_it_found_it() {
+    // `retain_actions` retains every package, so it must stay a pure
+    // action-level filter: only a batch the filter EMPTIED loses its action.
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![install_action("brew", &[]), install_action("apt", &["fd"])],
+    );
+
+    phase.retain_actions(|_| true);
+
     assert_eq!(phase.action_count(), 2);
 }
 
