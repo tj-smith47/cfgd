@@ -1,19 +1,20 @@
+use std::path::Path;
+
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let config_dir = config_dir(cli);
-    let source_path = config_dir.join("cfgd-source.yaml");
+pub fn cmd_source_edit(printer: &Printer, dir: &Path) -> anyhow::Result<()> {
+    let source_path = dir.join("cfgd-source.yaml");
     if !source_path.exists() {
         return Err(crate::cli::cli_error(
             "cfgd-source.yaml",
             "no_config",
             format!(
                 "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
-                config_dir.posix()
+                dir.posix()
             ),
-            serde_json::json!({ "dir": cfgd_core::to_posix_string(&config_dir) }),
+            serde_json::json!({ "dir": cfgd_core::to_posix_string(dir) }),
         ));
     }
 
@@ -28,7 +29,7 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                     Doc::new()
                         .status(Role::Ok, "Source manifest is valid")
                         .with_data(serde_json::json!({
-                            "path": source_path.display().to_string(),
+                            "path": cfgd_core::to_posix_string(&source_path),
                             "valid": true,
                         })),
                 );
@@ -47,7 +48,7 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                         Doc::new()
                             .status(Role::Warn, "Saved with validation errors")
                             .with_data(serde_json::json!({
-                                "path": source_path.display().to_string(),
+                                "path": cfgd_core::to_posix_string(&source_path),
                                 "valid": false,
                             })),
                     );

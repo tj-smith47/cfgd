@@ -2111,15 +2111,19 @@ fn config_show_fails_without_config() {
 
 #[test]
 fn source_create_scaffolds_manifest() {
-    let dir = create_test_config_dir();
-    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+    // `dir` (the srcrepo) and the machine config dir are deliberately
+    // SEPARATE tempdirs -- `cfgd source create` is an authoring command
+    // that writes into the current directory, never the resolved
+    // machine config dir (see cmd_source_create's `dir: &Path` param).
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::write(config_dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-    let cli = test_cli(dir.path());
+    let srcrepo = create_test_config_dir();
     let printer = test_printer();
 
     let result = source::cmd_source_create(
-        &cli,
         &printer,
+        srcrepo.path(),
         Some("my-source"),
         Some("Test"),
         Some("1.0.0"),
@@ -2130,8 +2134,12 @@ fn source_create_scaffolds_manifest() {
         result.err()
     );
 
-    let source_path = dir.path().join("cfgd-source.yaml");
-    assert!(source_path.exists());
+    let source_path = srcrepo.path().join("cfgd-source.yaml");
+    assert!(source_path.exists(), "manifest must land in the given dir");
+    assert!(
+        !config_dir.path().join("cfgd-source.yaml").exists(),
+        "manifest must NOT land in the machine config dir"
+    );
 
     let contents = std::fs::read_to_string(&source_path).unwrap();
     assert_eq!(
@@ -2155,33 +2163,65 @@ fn source_create_scaffolds_manifest() {
 }
 
 #[test]
+fn source_create_writes_to_given_dir_not_config_dir() {
+    // Regression pin for the "source create writes to CWD" contract:
+    // a distinct config tempdir (with its own cfgd.yaml) must never
+    // receive the manifest, and the default name must come from the
+    // srcrepo dir's own name, not the config dir's.
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::write(config_dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+    let srcrepo = create_test_config_dir();
+    let printer = test_printer();
+    let expected_name = srcrepo
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
+    let result =
+        source::cmd_source_create(&printer, srcrepo.path(), None, Some("d"), Some("2.0.0"));
+    assert!(result.is_ok(), "create should succeed: {:?}", result.err());
+
+    let source_path = srcrepo.path().join("cfgd-source.yaml");
+    assert!(source_path.exists(), "manifest must exist in srcrepo");
+    assert!(
+        !config_dir.path().join("cfgd-source.yaml").exists(),
+        "manifest must NOT be written to the config dir"
+    );
+
+    let contents = std::fs::read_to_string(&source_path).unwrap();
+    assert!(
+        contents.contains(&expected_name),
+        "default name must come from the srcrepo dir name '{expected_name}', got: {contents}"
+    );
+}
+
+#[test]
 fn source_create_refuses_duplicate() {
     let dir = create_test_config_dir();
-    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
     std::fs::write(dir.path().join("cfgd-source.yaml"), "existing").unwrap();
 
-    let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = source::cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
+    let result = source::cmd_source_create(&printer, dir.path(), Some("x"), Some("x"), Some("1.0"));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
 
 #[test]
 fn source_create_interactive_mode_prompts_for_name_and_description() {
-    // All three flags (name/description/version) are None → is_interactive
-    // is true → cmd_source_create.rs:30-31 + 41-42 prompt branches fire.
+    // All three flags (name/description/version) are None -- is_interactive
+    // is true -- cmd_source_create's name/description prompt branches fire.
     // Queue Text answers via Printer::for_test_with_prompt_responses.
     let dir = create_test_config_dir();
-    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-    let cli = test_cli(dir.path());
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
         cfgd_core::output::PromptAnswer::Text("interactive-source".to_string()),
         cfgd_core::output::PromptAnswer::Text("Interactive description".to_string()),
     ]);
 
-    source::cmd_source_create(&cli, &printer, None, None, None)
+    source::cmd_source_create(&printer, dir.path(), None, None, None)
         .expect("interactive create should succeed");
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd-source.yaml")).unwrap();
@@ -2212,7 +2252,6 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     // file, so the post-edit validation reads the same valid manifest we
     // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
-    let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     std::fs::write(
         dir.path().join("cfgd-source.yaml"),
@@ -2221,7 +2260,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     .unwrap();
 
     let _editor = EditorGuard::set("/usr/bin/true");
-    source::cmd_source_edit(&cli, &printer).expect("valid manifest + no-op editor → Ok");
+    source::cmd_source_edit(&printer, dir.path()).expect("valid manifest + no-op editor -> Ok");
 
     drop(printer);
     let out = cap.human();
@@ -2229,6 +2268,10 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
         out.contains("Source manifest is valid"),
         "happy-path validation arm should announce validity: {out}"
     );
+
+    let json = cap.json().expect("emit(doc) must carry a data payload");
+    let path = json["path"].as_str().expect("path field must be a string");
+    assert!(!path.contains('\\'), "path payload must be posix: {path}");
 }
 
 #[cfg(unix)]
@@ -2237,7 +2280,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
 fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
     // Mirrors the profile/edit and config_cmd patterns: pre-stage an
     // invalid manifest, route through the no-op editor, queue
-    // Confirm(false) so the prompt at source/edit.rs:25 takes the
+    // Confirm(false) so the prompt at source/edit.rs takes the
     // "Saved with validation errors" branch.
     let dir = create_test_config_dir();
     std::fs::write(
@@ -2245,13 +2288,12 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
         "not a ConfigSource document",
     )
     .unwrap();
-    let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
 
     let _editor = EditorGuard::set("/usr/bin/true");
-    source::cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
+    source::cmd_source_edit(&printer, dir.path()).expect("save-with-errors must return Ok");
 
     drop(printer);
     let out = cap.human();
@@ -2259,14 +2301,17 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
         out.contains("Saved with validation errors"),
         "prompt-decline branch must warn: {out}"
     );
+
+    let json = cap.json().expect("emit(doc) must carry a data payload");
+    let path = json["path"].as_str().expect("path field must be a string");
+    assert!(!path.contains('\\'), "path payload must be posix: {path}");
 }
 
 #[test]
 fn source_edit_fails_without_manifest() {
     let dir = create_test_config_dir();
-    let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = source::cmd_source_edit(&cli, &printer);
+    let result = source::cmd_source_edit(&printer, dir.path());
     assert!(result.is_err());
     assert!(
         result
@@ -2462,12 +2507,11 @@ fn source_create_with_modules() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: neovim\nspec:\n  packages: []\n  files: []\n  depends: []\n",
     );
 
-    let cli = test_cli(dir.path());
     let printer = test_printer();
 
     let result = source::cmd_source_create(
-        &cli,
         &printer,
+        dir.path(),
         Some("test-source"),
         Some("Test"),
         Some("1.0.0"),
@@ -2492,12 +2536,11 @@ fn source_create_output_is_parseable() {
     let dir = create_test_config_dir();
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-    let cli = test_cli(dir.path());
     let printer = test_printer();
 
     source::cmd_source_create(
-        &cli,
         &printer,
+        dir.path(),
         Some("my-source"),
         Some("desc"),
         Some("0.1.0"),
@@ -12905,14 +12948,15 @@ fn cmd_source_show_structured_json() {
 
 #[test]
 fn cmd_source_create_initializes_manifest() {
-    let (config_dir, state_dir) = setup_test_env();
-    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (config_dir, _state_dir) = setup_test_env();
     let printer = test_printer();
 
-    // source create writes manifest in the config directory itself
+    // source create is a CWD-authoring command: it writes into the dir
+    // it is given, which the caller resolves independently of the
+    // machine config dir (see cmd_source_create's `dir: &Path` param).
     let result = super::source::cmd_source_create(
-        &cli,
         &printer,
+        config_dir.path(),
         Some("my-source"),
         Some("A test source"),
         Some("1.0.0"),
@@ -19729,7 +19773,14 @@ spec:
 }
 
 #[test]
+#[serial_test::serial]
 fn execute_source_create_dispatch() {
+    // The dispatch arm resolves `std::env::current_dir()` itself (source
+    // create is a CWD-authoring command) — pin CWD to a disposable
+    // tempdir so this test can never write `cfgd-source.yaml` into the
+    // real process working directory.
+    let dir = tempfile::tempdir().unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Source {
         command: SourceCommand::Create {
@@ -19740,6 +19791,10 @@ fn execute_source_create_dispatch() {
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
         .expect("Source Create dispatch must succeed");
+    assert!(
+        dir.path().join("cfgd-source.yaml").exists(),
+        "manifest must land in the CWD tempdir, not the harness's config dir"
+    );
 }
 
 #[test]

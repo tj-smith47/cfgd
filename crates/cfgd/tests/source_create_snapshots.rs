@@ -18,7 +18,7 @@ use cfgd::cli::source::cmd_source_create;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 
-use common::{cli_for, normalize_profile_paths, source_test_config_setup};
+use common::{normalize_profile_paths, source_test_config_setup};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -42,13 +42,12 @@ fn strip_ansi(s: &str) -> String {
 
 #[test]
 fn source_create_happy_human() {
-    let (config_dir, state_dir) = source_test_config_setup();
-    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (config_dir, _state_dir) = source_test_config_setup();
     let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_create(
-        &cli,
         &printer,
+        config_dir.path(),
         Some("my-source"),
         Some("Test source"),
         Some("1.0.0"),
@@ -66,13 +65,12 @@ fn source_create_happy_human() {
 
 #[test]
 fn source_create_happy_json() {
-    let (config_dir, state_dir) = source_test_config_setup();
-    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (config_dir, _state_dir) = source_test_config_setup();
     let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_create(
-        &cli,
         &printer,
+        config_dir.path(),
         Some("my-source"),
         Some("Test source"),
         Some("1.0.0"),
@@ -87,13 +85,18 @@ fn source_create_happy_json() {
 
 #[test]
 fn source_create_already_exists_human() {
-    let (config_dir, state_dir) = source_test_config_setup();
+    let (config_dir, _state_dir) = source_test_config_setup();
     std::fs::write(config_dir.path().join("cfgd-source.yaml"), "stub manifest").unwrap();
-    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"))
-        .expect_err("existing manifest must return Err");
+    let err = cmd_source_create(
+        &printer,
+        config_dir.path(),
+        Some("x"),
+        Some("x"),
+        Some("1.0"),
+    )
+    .expect_err("existing manifest must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

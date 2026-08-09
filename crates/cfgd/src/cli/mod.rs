@@ -2220,14 +2220,14 @@ pub fn execute(
             SourceCommand::Replace { old_name, new_url } => {
                 source::cmd_source_replace(cli, printer, old_name, new_url)
             }
-            SourceCommand::Edit => source::cmd_source_edit(cli, printer),
+            SourceCommand::Edit => source::cmd_source_edit(printer, &std::env::current_dir()?),
             SourceCommand::Create {
                 name,
                 description,
                 version,
             } => source::cmd_source_create(
-                cli,
                 printer,
+                &std::env::current_dir()?,
                 name.as_deref(),
                 description.as_deref(),
                 version.as_deref(),
