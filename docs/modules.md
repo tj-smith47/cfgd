@@ -506,24 +506,26 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ```
 Phase: Packages
-  - install via brew: extra-tool
-  - [nvim] apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd)
-  - [nvim] snap install nvim (0.10.2)
-  - [nvim] npm install neovim
-  - [nvim] pipx install pynvim
+  - brew install extra-tool
+  - apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd)
+  - snap install nvim (0.10.2)
+  - npm install neovim
+  - pipx install pynvim
 
 Phase: Files
   - update /home/you/.gitconfig
-  - [nvim] deploy: /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
+  - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
 
 Phase: Post-Scripts
-  - [nvim] postApply: nvim --headless "+Lazy! sync" +qa
-  - [nvim] postApply: nvim --headless -c "MasonInstallAll" -c "qa"
+  - postApply: nvim --headless "+Lazy! sync" +qa
+  - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 ```
 
-A module's work sits in the phase whose kind it is, beside the profile's, and each
-bullet is tagged `[<module>]`. Module-owned package work is dispatched before
-profile-owned work in the Packages phase, whatever order the two read in.
+A module's work sits in the phase whose kind it is, beside the profile's, and
+each bullet reads the same whether the profile or a module planned it — a
+manager/package or file-target name, not a `[<module>]` tag. Module-owned
+package work is dispatched before profile-owned work in the Packages phase,
+whatever order the two read in.
 
 ## Lockfile
 

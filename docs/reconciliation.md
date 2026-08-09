@@ -69,20 +69,20 @@ Use `cfgd plan --context reconcile` to preview what the daemon would run.
 
 ```
 Phase: Packages
-  - install via brew: extra-tool
+  - brew install extra-tool
   - bootstrap pipx via pip
-  - [nvim] apt install ripgrep (14.1.0)
-  - [nvim] snap install nvim (0.10.2)
+  - apt install ripgrep (14.1.0)
+  - snap install nvim (0.10.2)
 
 Phase: Files
   - update /home/you/.gitconfig
-  - [nvim] deploy: /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
+  - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
 
 Phase: System
   - set macosDefaults.com.apple.dock.autohide: false → true
 
 Phase: Post-Scripts
-  - [nvim] postApply: nvim --headless "+Lazy! sync" +qa
+  - postApply: nvim --headless "+Lazy! sync" +qa
 
 Backups (run on apply)
   ⊙ mydata

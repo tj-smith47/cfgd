@@ -287,8 +287,8 @@ Each manager supports querying available package versions without installing:
 
 ```
 Phase: Packages
-  - install via brew: ripgrep, fd, bat
-  - uninstall via brew: unused-tool
+  - brew install ripgrep, fd, bat
+  - brew uninstall unused-tool
   - skip snap: 'snap' not available — cannot auto-install on this platform
 ```
 

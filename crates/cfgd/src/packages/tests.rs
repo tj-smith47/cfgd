@@ -10,6 +10,18 @@ use super::npm::{find_npm, npm_available, npm_cmd};
 use super::pipx::{find_pipx, pipx_available, pipx_cmd};
 use super::*;
 
+/// Render each action through the real producer (`format_plan_item`) rather
+/// than a hand-rolled duplicate, so these tests fail the moment the display
+/// grammar drifts instead of asserting against a second copy of it.
+fn plan_items(actions: Vec<PackageAction>) -> Vec<String> {
+    actions
+        .into_iter()
+        .map(|a| {
+            cfgd_core::reconciler::format_plan_item(&cfgd_core::reconciler::Action::Package(a))
+        })
+        .collect()
+}
+
 struct MockPackageManager {
     mgr_name: &'static str,
     available: bool,
@@ -275,7 +287,7 @@ fn format_actions_produces_readable_strings() {
         },
     ];
 
-    let formatted = format_package_actions(&actions);
+    let formatted = plan_items(actions);
     assert_eq!(formatted.len(), 3);
     assert!(formatted[0].contains("bootstrap"));
     assert!(formatted[0].contains("rustup"));
@@ -1990,11 +2002,11 @@ fn add_package_custom_manager() {
     assert_eq!(packages.custom[0].packages, vec!["existing", "new-pkg"]);
 }
 
-// --- format_package_actions edge cases ---
+// --- format_plan_item (package arms) edge cases ---
 
 #[test]
 fn format_package_actions_empty() {
-    let formatted = format_package_actions(&[]);
+    let formatted = plan_items(vec![]);
     assert!(formatted.is_empty());
 }
 
@@ -2005,7 +2017,7 @@ fn format_package_actions_uninstall() {
         packages: vec!["eslint".into(), "prettier".into()],
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
+    let formatted = plan_items(actions);
     assert_eq!(formatted.len(), 1);
     assert!(formatted[0].contains("uninstall"));
     assert!(formatted[0].contains("npm"));
@@ -2337,7 +2349,7 @@ fn simple_manager_available_version_dispatches() {
 
 // --- parse_scoop_list additional cases ---
 
-// --- format_package_actions comprehensive ---
+// --- format_plan_item (package arms) comprehensive ---
 
 #[test]
 fn format_package_actions_all_action_types() {
@@ -2364,12 +2376,12 @@ fn format_package_actions_all_action_types() {
         },
     ];
 
-    let formatted = format_package_actions(&actions);
+    let formatted = plan_items(actions);
     assert_eq!(formatted.len(), 4);
 
     assert_eq!(formatted[0], "bootstrap brew via homebrew installer");
-    assert_eq!(formatted[1], "install via cargo: ripgrep, fd-find, bat");
-    assert_eq!(formatted[2], "uninstall via npm: old-pkg");
+    assert_eq!(formatted[1], "cargo install ripgrep, fd-find, bat");
+    assert_eq!(formatted[2], "npm uninstall old-pkg");
     assert_eq!(formatted[3], "skip snap: 'snap' not available");
 }
 
@@ -2380,8 +2392,8 @@ fn format_package_actions_single_package_install() {
         packages: vec!["curl".into()],
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted[0], "install via apt: curl");
+    let formatted = plan_items(actions);
+    assert_eq!(formatted[0], "apt install curl");
 }
 
 // --- plan_packages comprehensive scenarios ---
@@ -3554,7 +3566,7 @@ fn all_package_managers_ends_with_windows_managers() {
 
 // --- extract_caveats brew edge case: caveats section with only blank lines ---
 
-// --- format_package_actions with single-element lists ---
+// --- format_plan_item (package arms) with single-element lists ---
 
 #[test]
 fn format_package_actions_single_package_uninstall() {
@@ -3563,8 +3575,8 @@ fn format_package_actions_single_package_uninstall() {
         packages: vec!["vim".into()],
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted[0], "uninstall via apt: vim");
+    let formatted = plan_items(actions);
+    assert_eq!(formatted[0], "apt uninstall vim");
 }
 
 #[test]
@@ -3574,7 +3586,7 @@ fn format_package_actions_bootstrap_with_long_method() {
         method: "nvm".into(),
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
+    let formatted = plan_items(actions);
     assert_eq!(formatted[0], "bootstrap npm via nvm");
 }
 

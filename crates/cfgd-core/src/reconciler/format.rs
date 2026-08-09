@@ -206,7 +206,7 @@ pub fn format_plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "install via {}: {}{}",
+                "{} install {}{}",
                 manager,
                 packages.join(", "),
                 provenance_suffix(origin)
@@ -217,7 +217,7 @@ pub fn format_plan_item(action: &Action) -> String {
                 origin,
                 ..
             } => format!(
-                "uninstall via {}: {}{}",
+                "{} uninstall {}{}",
                 manager,
                 packages.join(", "),
                 provenance_suffix(origin)
@@ -393,16 +393,15 @@ fn format_module_action_body(action: &ModuleAction) -> String {
                 .iter()
                 .map(|(mgr, pkgs)| format!("{} install {}", mgr, pkgs.join(", ")))
                 .collect();
-            format!("[{}] {}", action.module_name, parts.join("; "))
+            parts.join("; ")
         }
         ModuleActionKind::DeployFiles { files } => {
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
             if targets.len() <= 3 {
-                format!("[{}] deploy: {}", action.module_name, targets.join(", "))
+                format!("deploy {}", targets.join(", "))
             } else {
                 format!(
-                    "[{}] deploy: {} ({} files)",
-                    action.module_name,
+                    "deploy {} ({} files)",
                     targets[..2].join(", "),
                     targets.len()
                 )
@@ -416,15 +415,10 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             // `format_module_action_item`. Condensing here would truncate the
             // JSON payload too — display sites condense for themselves via
             // `condense_action_desc_for_display`.
-            format!(
-                "[{}] {}: {}",
-                action.module_name,
-                phase.display_name(),
-                script.run_str()
-            )
+            format!("{}: {}", phase.display_name(), script.run_str())
         }
         ModuleActionKind::Skip { reason } => {
-            format!("[{}] skip: {}", action.module_name, reason)
+            format!("skip: {reason}")
         }
     }
 }

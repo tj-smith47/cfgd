@@ -154,10 +154,10 @@ is consumer-local and carries no origin.
 ```sh
 $ cfgd plan
 Phase: Packages
-  - install via brew: jq
-  - [dev-tools] brew install ripgrep, fd <- team
+  - brew install jq
+  - brew install ripgrep, fd <- team
 Phase: Post-Scripts
-  - [localmod] postApply: jq --version
+  - postApply: jq --version
 ```
 
 `--phase modules` selects every module-owned action wherever it was planned, so
@@ -184,7 +184,7 @@ drop those too.
 {
   "phase": "Packages",          // the filter identity; module work routes here too
   "actions": [
-    { "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
+    { "type": "install", "description": "brew install ripgrep, fd <- team", "origin": "team" }
   ]
 }
 ```

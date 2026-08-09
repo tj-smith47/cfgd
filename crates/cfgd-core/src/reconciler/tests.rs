@@ -1058,7 +1058,7 @@ fn format_module_plan_items_packages() {
     // hashed grouping reshuffled multi-manager modules on every plan.
     assert_eq!(
         items[0],
-        "[nvim] brew install neovim (0.10.2); apt install fd-find (8.7.0, alias: fd)"
+        "brew install neovim (0.10.2); apt install fd-find (8.7.0, alias: fd)"
     );
 }
 
@@ -1086,8 +1086,7 @@ fn format_module_plan_items_files() {
 
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"));
-    assert!(items[0].contains("deploy"));
+    assert!(items[0].starts_with("deploy "));
     assert!(items[0].contains(".config/nvim"));
 }
 
@@ -1107,9 +1106,7 @@ fn format_module_plan_items_skip() {
 
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[bad]"));
-    assert!(items[0].contains("skip"));
-    assert!(items[0].contains("dependency not met"));
+    assert_eq!(items[0], "skip: dependency not met");
 }
 
 #[test]
@@ -1734,7 +1731,6 @@ fn format_module_plan_script_packages() {
 
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[rustup]"));
     assert!(items[0].contains("script"));
     assert!(items[0].contains("rustup"));
 }
@@ -6369,7 +6365,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
         origin: None,
     };
     let item = super::format_module_action_item(&action);
-    assert!(item.contains("[big]"));
+    assert!(item.starts_with("deploy "));
     assert!(item.contains("5 files"));
 }
 
@@ -11167,8 +11163,7 @@ fn format_module_action_item_run_script() {
     );
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
-    assert!(items[0].contains("postApply"), "got: {}", items[0]);
+    assert!(items[0].starts_with("postApply:"), "got: {}", items[0]);
     assert!(items[0].contains("make install"), "got: {}", items[0]);
 }
 
@@ -11197,7 +11192,7 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
     );
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
+    assert!(items[0].starts_with("deploy "), "got: {}", items[0]);
     assert!(items[0].ends_with(" <- acme"), "got: {}", items[0]);
 }
 

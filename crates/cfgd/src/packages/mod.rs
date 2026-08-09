@@ -328,28 +328,6 @@ pub fn apply_packages(
     Ok(())
 }
 
-/// Format package actions as human-readable plan items.
-#[cfg(test)]
-pub fn format_package_actions(actions: &[PackageAction]) -> Vec<String> {
-    actions
-        .iter()
-        .map(|a| match a {
-            PackageAction::Bootstrap {
-                manager, method, ..
-            } => format!("bootstrap {} via {}", manager, method),
-            PackageAction::Install {
-                manager, packages, ..
-            } => format!("install via {}: {}", manager, packages.join(", ")),
-            PackageAction::Uninstall {
-                manager, packages, ..
-            } => format!("uninstall via {}: {}", manager, packages.join(", ")),
-            PackageAction::Skip {
-                manager, reason, ..
-            } => format!("skip {}: {}", manager, reason),
-        })
-        .collect()
-}
-
 /// Add a package to the profile's package spec.
 pub fn add_package(
     manager_name: &str,
