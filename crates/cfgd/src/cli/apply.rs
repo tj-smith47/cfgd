@@ -1,6 +1,5 @@
 use super::*;
 
-use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Role};
 
 /// Terminal outcome of an apply run: the final status plus, when a signal
@@ -31,6 +30,51 @@ impl ApplyOutcome {
 fn downgrade_to_partial(status: &mut cfgd_core::state::ApplyStatus) {
     if matches!(status, cfgd_core::state::ApplyStatus::Success) {
         *status = cfgd_core::state::ApplyStatus::Partial;
+    }
+}
+
+/// The CLI's binding of the run skeleton to `Reconciler::apply`.
+///
+/// The apply lock is taken here rather than around the run because the run
+/// prompts for confirmation before it calls this: holding an exclusive lock
+/// across an interactive prompt would block a concurrent apply for as long as
+/// the user takes to answer. The guard is stored on the executor so it lives as
+/// long as the borrow does — through the `spec.backups[]` units that run after
+/// the reconciler returns.
+struct ReconcilerExecutor<'a> {
+    reconciler: &'a Reconciler<'a>,
+    resolved: &'a ResolvedProfile,
+    config_dir: &'a std::path::Path,
+    phase_filter: Option<&'a PhaseFilter>,
+    modules: &'a [modules::ResolvedModule],
+    context: ReconcileContext,
+    skip_scripts: bool,
+    shell_override: Option<cfgd_core::config::ScriptShell>,
+    abort: &'a cfgd_core::AbortFlag,
+    lock_dir: PathBuf,
+    lock: Option<cfgd_core::FileLockGuard>,
+}
+
+impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
+    fn apply(
+        &mut self,
+        plan: &reconciler::Plan,
+        printer: &cfgd_core::output::Printer,
+    ) -> cfgd_core::errors::Result<cfgd_core::reconciler::ApplyResult> {
+        // Prevent concurrent applies (see helpers::apply_lock_dir).
+        self.lock = Some(cfgd_core::acquire_apply_lock(&self.lock_dir)?);
+        self.reconciler.apply(
+            plan,
+            self.resolved,
+            self.config_dir,
+            printer,
+            self.phase_filter,
+            self.modules,
+            self.context,
+            self.skip_scripts,
+            self.shell_override,
+            self.abort,
+        )
     }
 }
 
@@ -111,44 +155,28 @@ pub fn run_apply(
     let skip = &args.skip;
     let only = &args.only;
     let module_filter = args.module.as_deref();
-    if dry_run {
-        printer.heading("Plan");
-    } else {
-        printer.heading("Apply");
-    }
 
     let config_dir = config_dir(cli);
 
-    // When --module is set, try loading profile but fall back to empty if none configured
-    let (cfg, resolved) = if let Some(mod_name) = module_filter {
+    // When --module is set, try loading profile but fall back to empty if none
+    // configured. The header these rows belong to is rendered once the plan is
+    // final — it states the phase and action counts — so the profile label is
+    // carried down rather than printed here.
+    let (cfg, resolved, profile_label) = if let Some(mod_name) = module_filter {
         match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => {
-                printer.kv_block([
-                    ("Config".to_string(), cli.config.display_posix()),
-                    ("Profile".to_string(), profile_name),
-                ]);
-                (cfg, resolved)
-            }
+            Ok((cfg, profile_name, resolved)) => (cfg, resolved, profile_name),
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved =
                     empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                printer.kv_block([
-                    ("Config".to_string(), cli.config.display_posix()),
-                    ("Profile".to_string(), "(module-only)".to_string()),
-                ]);
-                (cfg, resolved)
+                (cfg, resolved, "(module-only)".to_string())
             }
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        printer.kv_block([
-            ("Config".to_string(), cli.config.display_posix()),
-            ("Profile".to_string(), profile_name),
-        ]);
-        (cfg, resolved)
+        (cfg, resolved, profile_name)
     };
 
     // Open state only after config discovery so a missing config (or an
@@ -260,6 +288,8 @@ pub fn run_apply(
         }
     };
 
+    let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
+
     let reconciler = Reconciler::new(&registry, &state);
     let mut plan = reconciler.plan(
         &effective_resolved,
@@ -294,8 +324,23 @@ pub fn run_apply(
         .map(|b| b.name.clone())
         .collect();
 
+    // The rows every path below prints above its own body. Built once so a dry
+    // run, an executing run and a no-work run cannot describe the same
+    // invocation differently.
+    let run_ctx = |title| reconciler::RunContext {
+        title,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_label.as_str()),
+        modules: &module_names,
+        trigger: None,
+    };
+
     if dry_run {
+        let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Plan), &plan)
+            .with_filter(phase_filter.as_ref())
+            .preview_only();
         display_plan_preview(
+            &run,
             &plan,
             printer,
             &state,
@@ -350,73 +395,15 @@ pub fn run_apply(
     // diff, so a converged machine (the common case once a fleet is settled)
     // must not short-circuit here — that would silently starve backups of
     // the cadence "every apply" promises.
+    let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Apply), &plan)
+        .with_filter(phase_filter.as_ref());
+
     if !has_actions && pending_backups.is_empty() {
+        run.header(printer);
         report_no_in_scope_actions(printer, &scope);
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }
-
-    let start = std::time::Instant::now();
-
-    // Both the preview and the confirmation gate are about the reconciler's
-    // file/package/module diff. A backup-only apply (has_actions == false,
-    // pending_backups non-empty) has no diff to preview or confirm — showing
-    // an empty "Plan preview" section and prompting "Apply these changes?"
-    // over nothing would confuse the one case this exists to serve.
-    if has_actions {
-        // Show what will change, nested under a section so each phase's items
-        // render at the section's indent. The preview honours the same
-        // action-level filter as the executor so users see exactly what's about
-        // to run.
-        {
-            let preview = printer.section("Plan preview");
-            for phase_item in &plan.phases {
-                let displayed: Vec<&reconciler::Action> = phase_item
-                    .owned_actions()
-                    .filter(|(owner, a)| match phase_filter {
-                        Some(ref pf) => {
-                            reconciler::action_matches_phase_filter(&phase_item.name, owner, a, pf)
-                        }
-                        None => true,
-                    })
-                    .map(|(_, a)| a)
-                    .collect();
-                if displayed.is_empty() {
-                    continue;
-                }
-                let phase_sec = preview.section(phase_item.name.display_name());
-                for action in displayed {
-                    // Display-only condensation: the raw body still reaches
-                    // the `-o json` payload through `build_plan_output`.
-                    phase_sec.bullet(reconciler::condense_action_desc_for_display(
-                        action,
-                        &reconciler::format_plan_item(action),
-                    ));
-                }
-            }
-            for w in &plan.warnings {
-                preview.status_simple(Role::Warn, w);
-            }
-        }
-
-        // Confirm
-        if !yes {
-            // Closed-TTY / non-interactive defaults to "no" — apply is destructive
-            // and silence is treated as decline, not as approval.
-            let confirmed = printer
-                .prompt_confirm("Apply these changes?")
-                .unwrap_or(false);
-            if !confirmed {
-                printer.status_simple(Role::Info, "Aborted");
-                printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
-                return Ok(ApplyOutcome::success());
-            }
-        }
-    }
-
-    // Acquire apply lock to prevent concurrent applies (see helpers::apply_lock_dir).
-    let _apply_lock =
-        cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?)?;
 
     // Register cooperative-cancellation handlers for the duration of the apply.
     // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between
@@ -424,44 +411,60 @@ pub fn run_apply(
     let abort = cfgd_core::AbortFlag::new();
     register_abort_handlers(&abort);
 
-    // Apply
-    let shell_override = args.shell.map(super::apply_shell_to_script_shell);
-    let result = reconciler.apply(
-        &plan,
-        &effective_resolved,
-        &config_dir,
-        printer,
-        phase_filter.as_ref(),
-        &resolved_modules,
-        reconcile_context,
-        args.skip_scripts,
-        shell_override,
-        &abort,
-    )?;
+    // The confirmation gate is about the reconciler's file/package/module diff.
+    // A backup-only apply (has_actions == false, pending_backups non-empty) has
+    // no diff to confirm, and `ApplyRun::execute` skips the prompt for exactly
+    // that case — prompting "Apply these changes?" over nothing would confuse
+    // the one case this exists to serve.
+    let confirm = if yes {
+        reconciler::Confirm::Skip
+    } else {
+        // Closed-TTY / non-interactive defaults to "no" — apply is destructive
+        // and silence is treated as decline, not as approval.
+        reconciler::Confirm::Ask("Apply these changes?")
+    };
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &effective_resolved,
+        config_dir: &config_dir,
+        phase_filter: phase_filter.as_ref(),
+        modules: &resolved_modules,
+        context: reconcile_context,
+        skip_scripts: args.skip_scripts,
+        shell_override: args.shell.map(super::apply_shell_to_script_shell),
+        abort: &abort,
+        lock_dir: apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?,
+        lock: None,
+    };
+    let result = match run.execute(printer, confirm, &mut exec)? {
+        reconciler::RunDisposition::Applied(result) => result,
+        reconciler::RunDisposition::Declined => {
+            printer.status_simple(Role::Info, "Aborted");
+            printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
+            return Ok(ApplyOutcome::success());
+        }
+        // Neither arm is reachable for a run carrying a plan and no
+        // `preview_only`, and both mean "no actions ran", which is what
+        // the nothing-to-do exit already reports.
+        reconciler::RunDisposition::NothingToDo | reconciler::RunDisposition::Previewed => {
+            return Ok(ApplyOutcome::success());
+        }
+    };
 
     if let Some(code) = result.aborted {
         let signal = if code == 143 { "SIGTERM" } else { "SIGINT" };
-        let applied = result.succeeded();
         // Filter-aware planned count (computed by the reconciler with the same
         // predicate the apply loop uses), so "{applied} of {total}" reflects
         // only the in-scope actions under --phase/--skip/--only, not the whole
-        // plan.
-        let total = result.planned_total;
-        printer.emit(
-            Doc::new()
-                .status(
-                    Role::Warn,
-                    format!(
-                        "apply aborted by signal — {applied} of {total} action(s) applied; no partial writes, rerun to converge"
-                    ),
-                )
-                .with_data(AbortOutput {
-                    aborted: true,
-                    signal: signal.to_string(),
-                    applied,
-                    total,
-                }),
-        );
+        // plan. The sentence itself is the rollup's `Aborted` arm; this `Doc`
+        // carries data only, so structured consumers see the payload and the
+        // human surface sees exactly one abort line.
+        printer.emit(Doc::new().with_data(AbortOutput {
+            aborted: true,
+            signal: signal.to_string(),
+            applied: result.succeeded(),
+            total: result.planned_total,
+        }));
         // An aborted run can still have completed the Env phase, so the user's
         // shell is just as stale as after a full apply.
         print_shell_env_reminder(&result, printer);
@@ -471,7 +474,7 @@ pub fn run_apply(
         });
     }
 
-    let mut status = print_apply_result(&result, printer, Some(start.elapsed()));
+    let mut status = result.status.clone();
     print_shell_env_reminder(&result, printer);
 
     // Link source commits to this apply for provenance tracking

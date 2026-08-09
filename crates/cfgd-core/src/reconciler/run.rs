@@ -1,0 +1,678 @@
+//! The one run skeleton: header block, plan preview, execution, rollup.
+//!
+//! It lives in core rather than in the CLI because the daemon renders the same
+//! run — a reconcile tick differs from `cfgd apply` in its title and its
+//! trigger row and in nothing else. A skeleton owned by the CLI would be a
+//! shape the daemon had to re-implement, and the two would drift the first time
+//! either grew a row.
+
+use std::time::{Duration, Instant};
+
+use crate::backup::BackupUnit;
+use crate::errors::Result;
+use crate::output::{OwnerLabel, Printer, Role, SectionGuard, measure_width};
+use crate::state::{ApplyStatus, StateStore};
+
+use super::apply::action_matches_phase_filter;
+use super::format::{condense_action_desc_for_display, format_plan_items};
+use super::types::{
+    Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan, SystemAction,
+};
+
+/// Heading for a hook group that runs around a reconcile but is not part of
+/// the plan. Rendered through the same section primitive as a phase so the
+/// tree stays coherent; deliberately not a [`PhaseName`].
+pub const HOOKS_PHASE_LABEL: &str = "Drift Hooks";
+
+/// Heading for `spec.backups[]` work. Also not a [`PhaseName`]: backups are
+/// declared work with their own hooks and record, but nothing plans them into
+/// a [`Plan`] and nothing journals them into `apply_journal`.
+pub const BACKUPS_PHASE_LABEL: &str = "Backups";
+
+/// What a run calls itself — the heading it prints and the noun its rollup
+/// lines are built from, so the two cannot disagree about what ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunTitle {
+    Plan,
+    Apply,
+    Reconcile,
+    Backup,
+}
+
+impl RunTitle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RunTitle::Plan => "Plan",
+            RunTitle::Apply => "Apply",
+            RunTitle::Reconcile => "Reconcile",
+            RunTitle::Backup => "Backup",
+        }
+    }
+}
+
+/// The context rows a run's header block carries. Every optional field is a row
+/// that is omitted when it has no value, so a module-only run prints no
+/// `Profile` row rather than an empty one.
+pub struct RunContext<'a> {
+    pub title: RunTitle,
+    pub config_path: Option<&'a std::path::Path>,
+    pub profile: Option<&'a str>,
+    pub modules: &'a [String],
+    /// What woke this run — the daemon's only extra row (`drift (3 resources)`,
+    /// `schedule (daily)`).
+    pub trigger: Option<&'a str>,
+}
+
+/// Whether a run asks before it acts.
+pub enum Confirm {
+    Skip,
+    Ask(&'static str),
+}
+
+/// How a run ended.
+///
+/// NOT `RunOutcome`: `backup/mod.rs` already declares a private `struct
+/// RunOutcome` that `record_run` consumes, and two meanings for one name inside
+/// one crate is the drift the naming rules exist to stop.
+pub enum RunDisposition {
+    NothingToDo,
+    Previewed,
+    Declined,
+    Applied(ApplyResult),
+}
+
+/// What [`ApplyRun::execute`] delegates the actual work to. One method, so the
+/// CLI's reconciler call and the daemon's are the same shape to the skeleton.
+pub trait RunExecutor {
+    fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult>;
+}
+
+/// Everything a rollup reads, and nothing else.
+///
+/// [`ApplyResult`] produces one; so does a set of backup units, which has no
+/// [`Plan`], no `apply_id` and no `ActionResult`s. Having the rollup take this
+/// instead of an `&ApplyResult` is what makes `Backup complete — 2 action(s)
+/// succeeded` producible without forging an apply row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunTally {
+    pub succeeded: usize,
+    pub failed: usize,
+    /// What the run set out to do. The `Actions  N planned` header row and the
+    /// `⊙ N action(s) not attempted` shortfall line read the same field.
+    pub planned_total: usize,
+    pub status: ApplyStatus,
+    pub aborted: Option<u8>,
+}
+
+impl RunTally {
+    /// A run that set out to do nothing and did nothing.
+    pub fn empty() -> Self {
+        Self {
+            succeeded: 0,
+            failed: 0,
+            planned_total: 0,
+            status: ApplyStatus::Success,
+            aborted: None,
+        }
+    }
+
+    /// Fold in work that is not in the plan (the `Backups` pseudo-phase).
+    ///
+    /// Adds to `planned_total` as well as to the counts, so the shortfall
+    /// arithmetic stays honest, and takes the worse `status` of the two.
+    pub fn merge(&mut self, other: RunTally) {
+        self.succeeded += other.succeeded;
+        self.failed += other.failed;
+        self.planned_total += other.planned_total;
+        if status_severity(&other.status) > status_severity(&self.status) {
+            self.status = other.status;
+        }
+        self.aborted = self.aborted.or(other.aborted);
+    }
+
+    /// The actions the run set out to do and never reached. `saturating_sub`
+    /// because a debug build panics on underflow and cfgd-core may not carry a
+    /// panic path.
+    fn shortfall(&self) -> usize {
+        self.planned_total
+            .saturating_sub(self.succeeded + self.failed)
+    }
+}
+
+/// Severity ordering for [`RunTally::merge`]. A backup unit's trouble must
+/// never overwrite a higher-severity reconcile outcome with a lesser one, so
+/// the merge takes the max rather than the last writer.
+fn status_severity(status: &ApplyStatus) -> u8 {
+    match status {
+        ApplyStatus::Success => 0,
+        ApplyStatus::InProgress => 1,
+        ApplyStatus::Partial => 2,
+        ApplyStatus::Aborted => 3,
+        ApplyStatus::Failed => 4,
+    }
+}
+
+impl ApplyResult {
+    /// The rollup's view of an apply. The ONE place the conversion happens:
+    /// every `ActionResult` lands in exactly one of the two counts, so the
+    /// tally's shortfall is arithmetically `planned_total - action_results.len()`.
+    pub fn tally(&self) -> RunTally {
+        RunTally {
+            succeeded: self.succeeded(),
+            failed: self.failed(),
+            planned_total: self.planned_total,
+            status: self.status.clone(),
+            aborted: self.aborted,
+        }
+    }
+}
+
+/// The `spec.backups[]` units a run must back up, and the store their records
+/// go to. Units rather than names, because the pseudo-phase's alignment column
+/// is derived from the unit before its first hook runs, which a `&[String]`
+/// cannot supply.
+struct PendingBackups<'a> {
+    units: &'a [BackupUnit<'a>],
+    store: &'a StateStore,
+}
+
+/// One run, from its header to its rollup.
+pub struct ApplyRun<'a> {
+    ctx: RunContext<'a>,
+    plan: Option<&'a Plan>,
+    filter: Option<&'a PhaseFilter>,
+    preview_only: bool,
+    backups: Option<PendingBackups<'a>>,
+}
+
+impl<'a> ApplyRun<'a> {
+    pub fn new(ctx: RunContext<'a>, plan: &'a Plan) -> Self {
+        Self {
+            ctx,
+            plan: Some(plan),
+            filter: None,
+            preview_only: false,
+            backups: None,
+        }
+    }
+
+    pub fn with_filter(mut self, f: Option<&'a PhaseFilter>) -> Self {
+        self.filter = f;
+        self
+    }
+
+    /// The units this run must back up, and the store their records go to.
+    pub fn with_pending_backups(
+        mut self,
+        units: &'a [BackupUnit<'a>],
+        store: &'a StateStore,
+    ) -> Self {
+        self.backups = Some(PendingBackups { units, store });
+        self
+    }
+
+    /// A run whose only work is `spec.backups[]` — `cfgd backup run` and the
+    /// daemon's scheduled fire. There is no [`Plan`] and none is synthesized,
+    /// which is also what suppresses the nothing-to-do verdict an empty plan
+    /// would otherwise produce.
+    pub fn backups(
+        ctx: RunContext<'a>,
+        units: &'a [BackupUnit<'a>],
+        store: &'a StateStore,
+    ) -> Self {
+        Self {
+            ctx,
+            plan: None,
+            filter: None,
+            preview_only: false,
+            backups: Some(PendingBackups { units, store }),
+        }
+    }
+
+    /// Mark this run as preview-only (`cfgd plan`, `--dry-run`, a notify-only
+    /// tick): suppresses [`ApplyRun::header`]'s `Actions` row, because such a
+    /// run's count belongs to its closing verdict line instead. One carrier per
+    /// run, decided once here rather than per call site.
+    pub fn preview_only(mut self) -> Self {
+        self.preview_only = true;
+        self
+    }
+
+    /// Title + context rows, then the plan's warnings as `Role::Warn` lines at
+    /// row depth.
+    ///
+    /// Omits every empty row (a run with no in-scope work has no `Phases` and
+    /// no `Actions` row); `Phases` lists only phases holding in-scope work
+    /// **that renders**, and `Actions` renders `{n} planned` unless the run is
+    /// preview-only. Warnings live here, not in the preview, so they survive
+    /// `--yes`.
+    ///
+    /// `n` is computed here, before the run, from whichever source this run has
+    /// — never from `ApplyResult.planned_total`, which does not exist yet. With
+    /// a plan it is the in-scope predicate over the plan and the filter, the
+    /// same predicate `Reconciler::apply` uses for its own `planned_total`,
+    /// which is what makes the two reconcilable afterwards, plus one per
+    /// pending backup unit. With no plan it is the pending backup units alone.
+    pub fn header(&self, printer: &Printer) {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        if let Some(path) = self.ctx.config_path {
+            rows.push(("Config".to_string(), crate::to_posix_string(path)));
+        }
+        if let Some(profile) = self.ctx.profile {
+            rows.push(("Profile".to_string(), profile.to_string()));
+        }
+        if !self.ctx.modules.is_empty() {
+            rows.push(("Modules".to_string(), self.ctx.modules.join(", ")));
+        }
+        if let Some(trigger) = self.ctx.trigger {
+            rows.push(("Trigger".to_string(), trigger.to_string()));
+        }
+        let phases = self.rendered_phase_names();
+        if !phases.is_empty() {
+            rows.push(("Phases".to_string(), phases.join(", ")));
+        }
+        if !self.preview_only {
+            let planned = self.planned_count();
+            if planned > 0 {
+                rows.push(("Actions".to_string(), format!("{planned} planned")));
+            }
+        }
+
+        let warnings: &[String] = self.plan.map_or(&[], |p| p.warnings.as_slice());
+        if rows.is_empty() && warnings.is_empty() {
+            printer.heading(self.ctx.title.as_str());
+            return;
+        }
+        // One section rather than a heading plus a top-level kv block: the
+        // warnings belong to the header block and have to land at the same
+        // indent as the rows they follow, which only a section's depth gives.
+        let head = printer.section(self.ctx.title.as_str());
+        head.kv_block(rows);
+        for warning in warnings {
+            head.status_simple(Role::Warn, warning);
+        }
+    }
+
+    /// The phase → owner → action tree, as bullets.
+    ///
+    /// No footer of its own — the count is the header's `Actions` row for an
+    /// executing run and part of the caller's verdict line for a preview-only
+    /// one, so a tree rendered above a confirmation prompt carries no count at
+    /// all. The ONE tree renderer.
+    pub fn preview(&self, printer: &Printer) {
+        let Some(plan) = self.plan else {
+            return;
+        };
+        for phase in &plan.phases {
+            let groups = self.in_scope_groups(phase);
+            if groups.is_empty() {
+                continue;
+            }
+            let phase_section = printer.section(format!("Phase: {}", phase.name.display_name()));
+            for (group, actions) in groups {
+                let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
+                let owner_section = phase_section.section_owner(&label);
+                let items = format_plan_items(group);
+                for (index, action) in actions {
+                    let item = condense_action_desc_for_display(action, &items[index]);
+                    // An unknown system key is almost always a typo, so it
+                    // keeps its warning role instead of reading as ordinary
+                    // planned work.
+                    if matches!(
+                        action,
+                        Action::System(SystemAction::Skip { unknown: true, .. })
+                    ) {
+                        owner_section.status_simple(Role::Warn, item);
+                    } else {
+                        owner_section.bullet(item);
+                    }
+                }
+            }
+        }
+    }
+
+    /// header → (preview + confirm, when [`Confirm::Ask`] and the plan has
+    /// work) → execute → `Backups` pseudo-phase → rollup. Never exits, and
+    /// never prompts on [`Confirm::Skip`].
+    pub fn execute(
+        &self,
+        printer: &Printer,
+        confirm: Confirm,
+        exec: &mut dyn RunExecutor,
+    ) -> Result<RunDisposition> {
+        self.header(printer);
+        let Some(plan) = self.plan else {
+            // A run built by `backups()` has no plan action to execute; its
+            // whole body is the pseudo-phase.
+            return match &self.backups {
+                Some(_) => {
+                    self.execute_backups_after_header(printer)?;
+                    Ok(RunDisposition::NothingToDo)
+                }
+                None => Ok(RunDisposition::NothingToDo),
+            };
+        };
+        if self.preview_only {
+            self.preview(printer);
+            return Ok(RunDisposition::Previewed);
+        }
+        if let Confirm::Ask(prompt) = confirm
+            && self.in_scope_action_count() > 0
+        {
+            self.preview(printer);
+            if !printer.prompt_confirm(prompt).unwrap_or(false) {
+                return Ok(RunDisposition::Declined);
+            }
+        }
+
+        let started = Instant::now();
+        let result = exec.apply(plan, printer)?;
+        let mut tally = result.tally();
+        tally.merge(self.render_backups(printer)?);
+        render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
+        Ok(RunDisposition::Applied(result))
+    }
+
+    /// header → `Backups` pseudo-phase → rollup, for a run built by
+    /// [`ApplyRun::backups`]. No preview, no confirm, no [`RunExecutor`] —
+    /// nothing here is a plan action, and [`RunDisposition`] has no arm that
+    /// would be true.
+    pub fn execute_backups(&self, printer: &Printer) -> Result<ApplyStatus> {
+        self.header(printer);
+        self.execute_backups_after_header(printer)
+    }
+
+    fn execute_backups_after_header(&self, printer: &Printer) -> Result<ApplyStatus> {
+        let started = Instant::now();
+        let tally = self.render_backups(printer)?;
+        Ok(render_run_rollup(
+            &tally,
+            self.ctx.title,
+            printer,
+            Some(started.elapsed()),
+        ))
+    }
+
+    /// The `Backups` pseudo-phase: one owner group per unit, each carrying that
+    /// unit's outcome. Emits nothing and tallies nothing when the run carries
+    /// no units, which is every run that did not ask for them.
+    fn render_backups(&self, printer: &Printer) -> Result<RunTally> {
+        let Some(pending) = &self.backups else {
+            return Ok(RunTally::empty());
+        };
+        if pending.units.is_empty() {
+            return Ok(RunTally::empty());
+        }
+        let labels: Vec<String> = pending
+            .units
+            .iter()
+            .map(|unit| backup_unit_label(unit))
+            .collect();
+        let width = align_width_of(labels.iter().map(String::as_str));
+
+        let phase = pseudo_phase(printer, BACKUPS_PHASE_LABEL);
+        let mut tally = RunTally {
+            planned_total: pending.units.len(),
+            ..RunTally::empty()
+        };
+        for unit in pending.units {
+            let owner = Owner::backup(unit.spec().name.clone());
+            let group = phase.owner(&owner, width);
+            match crate::backup::run_backup(unit, pending.store, printer) {
+                Ok(record) => {
+                    let clean = record.is_clean();
+                    crate::backup::report_backup_record(printer, &record);
+                    if clean {
+                        tally.succeeded += 1;
+                    } else {
+                        tally.failed += 1;
+                        if status_severity(&ApplyStatus::Partial) > status_severity(&tally.status) {
+                            tally.status = ApplyStatus::Partial;
+                        }
+                    }
+                }
+                // Another surface holds this unit's lock, so the unit IS being
+                // backed up right now — just not by us. Skipping is the correct
+                // outcome of the engine's one-writer-per-unit rule, so it moves
+                // neither count and surfaces as the run's shortfall.
+                Err(crate::errors::CfgdError::Backup(crate::errors::BackupError::Busy {
+                    holder,
+                    ..
+                })) => {
+                    group
+                        .status(Role::Skipped, format!("backup '{}'", unit.spec().name))
+                        .detail(format!("already running ({holder})"));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(tally)
+    }
+
+    /// The groups of `phase` that hold in-scope work, each paired with the
+    /// positions of its in-scope actions. `PhaseName::Modules` renders no
+    /// heading at all — the phase is not empty, it holds platform-gated skips,
+    /// and those are an annotation on the header's `Modules` row rather than a
+    /// tree block.
+    fn in_scope_groups<'p>(
+        &self,
+        phase: &'p Phase,
+    ) -> Vec<(&'p OwnerGroup, Vec<(usize, &'p Action)>)> {
+        if phase.name == PhaseName::Modules {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for group in phase.groups() {
+            let actions: Vec<(usize, &Action)> = group
+                .actions
+                .iter()
+                .enumerate()
+                .filter(|(_, action)| self.in_scope(&phase.name, &group.owner, action))
+                .collect();
+            if !actions.is_empty() {
+                out.push((group, actions));
+            }
+        }
+        out
+    }
+
+    fn in_scope(&self, phase: &PhaseName, owner: &Owner, action: &Action) -> bool {
+        match self.filter {
+            Some(filter) => action_matches_phase_filter(phase, owner, action, filter),
+            None => true,
+        }
+    }
+
+    /// The same in-scope predicate `Reconciler::apply` counts its own
+    /// `planned_total` with, so the header's number and the rollup's are
+    /// reconcilable rather than two independent guesses.
+    fn in_scope_action_count(&self) -> usize {
+        let Some(plan) = self.plan else {
+            return 0;
+        };
+        plan.phases
+            .iter()
+            .map(|phase| match self.filter {
+                Some(filter) => phase
+                    .owned_actions()
+                    .filter(|(owner, action)| {
+                        action_matches_phase_filter(&phase.name, owner, action, filter)
+                    })
+                    .count(),
+                None => phase.action_count(),
+            })
+            .sum()
+    }
+
+    fn pending_backup_count(&self) -> usize {
+        self.backups.as_ref().map_or(0, |p| p.units.len())
+    }
+
+    fn planned_count(&self) -> usize {
+        self.in_scope_action_count() + self.pending_backup_count()
+    }
+
+    /// The phases the tree will actually render, in plan order.
+    fn rendered_phase_names(&self) -> Vec<&str> {
+        let Some(plan) = self.plan else {
+            return Vec::new();
+        };
+        plan.phases
+            .iter()
+            .filter(|phase| !self.in_scope_groups(phase).is_empty())
+            .map(|phase| phase.name.display_name())
+            .collect()
+    }
+}
+
+/// The subject a backup unit's group is measured and reported against.
+fn backup_unit_label(unit: &BackupUnit<'_>) -> String {
+    format!("backup '{}'", unit.spec().name)
+}
+
+/// A pseudo-phase heading held open across execution, so each item's status
+/// lands under its owner.
+pub struct PseudoPhase<'a> {
+    section: SectionGuard<'a>,
+    /// Work reached from inside a pseudo-phase renders at the phase's depth
+    /// rather than tripping the top-level structural assert.
+    _inherit: crate::output::renderer::DepthInheritGuard<'a>,
+}
+
+impl PseudoPhase<'_> {
+    /// Owner group inside the pseudo-phase. `width` is the alignment column
+    /// every group in this pseudo-phase shares; the caller derives it with
+    /// [`align_width_of`] before the first item runs, because a live stream
+    /// cannot buffer to find it.
+    pub fn owner(&self, owner: &Owner, width: usize) -> SectionGuard<'_> {
+        let label = OwnerLabel::new(owner.kind.as_str(), &owner.name);
+        let group = self.section.section_owner(&label);
+        group.live_column(width);
+        group
+    }
+}
+
+/// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
+/// as a section, for work that surrounds a run without being planned. Held
+/// across execution so each item's status lands under its owner.
+///
+/// A free function, not an [`ApplyRun`] associated function: the daemon's two
+/// `onDrift` arms open a `Drift Hooks` phase around a tick that constructs no
+/// `ApplyRun` at all, and naming a type to reach a function that takes no
+/// `self` is exactly the kind of false coupling that gets copied.
+pub fn pseudo_phase<'p>(printer: &'p Printer, label: &str) -> PseudoPhase<'p> {
+    PseudoPhase {
+        section: printer.section(label),
+        _inherit: printer.depth_inheritance(),
+    }
+}
+
+/// Alignment column for a set of subjects: the max rendered width, unfiltered.
+///
+/// Unfiltered is the one semantic difference from the buffered column a section
+/// close computes: whether an action will carry a duration, a detail or a
+/// target is not knowable from the plan, so a phase whose widest action ends up
+/// carrying nothing still pads the others against it.
+pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
+    labels.map(measure_width).max().unwrap_or(0)
+}
+
+/// The plan-phase view over [`align_width_of`]: the max over the plan display
+/// strings of **every** action in the phase, so every owner group in it opens
+/// with the same column.
+pub fn align_width(phase: &Phase) -> usize {
+    let items: Vec<String> = phase.groups().iter().flat_map(format_plan_items).collect();
+    align_width_of(items.iter().map(String::as_str))
+}
+
+/// Every arm returns; `Partial` returns two lines. No path panics, so the
+/// function is safe in core and testable without a `Printer` — and it reads a
+/// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
+fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
+    match tally.status {
+        // Partial splits into two role-tagged lines so the success count and
+        // the failure count read as distinct outcomes — fusing them into one
+        // Warn line makes a "9 succeeded, 1 failed" run look the same colour as
+        // a "1 succeeded, 9 failed" run.
+        ApplyStatus::Partial => vec![
+            (Role::Ok, format!("{} action(s) succeeded", tally.succeeded)),
+            (Role::Accent, format!("{} action(s) failed", tally.failed)),
+        ],
+        ApplyStatus::Success => vec![(
+            Role::Ok,
+            format!(
+                "{} complete — {} action(s) succeeded",
+                title.as_str(),
+                tally.succeeded
+            ),
+        )],
+        ApplyStatus::Failed => vec![(
+            Role::Fail,
+            format!(
+                "{} failed — {} action(s) failed",
+                title.as_str(),
+                tally.failed
+            ),
+        )],
+        ApplyStatus::InProgress => vec![(
+            Role::Warn,
+            format!("{} still in progress (unexpected state)", title.as_str()),
+        )],
+        // The one line that folds the title's case: it is pinned as a lowercase
+        // sentence by `tests/apply_signal_abort.rs` and by the sample in
+        // `docs/safety.md`, and it reads correctly for every other title.
+        ApplyStatus::Aborted => vec![(
+            Role::Warn,
+            format!(
+                "{} aborted by signal — {} of {} action(s) applied; no partial writes, rerun to converge",
+                title.as_str().to_ascii_lowercase(),
+                tally.succeeded,
+                tally.planned_total
+            ),
+        )],
+    }
+}
+
+/// The run's closing rollup: one or two status lines naming what happened, plus
+/// the shortfall line when fewer actions ran than the run set out to do.
+///
+/// `elapsed` lands on the LAST line emitted, so a `Partial` run wears it on its
+/// failure line and a short run wears it on the shortfall.
+pub fn render_run_rollup(
+    tally: &RunTally,
+    title: RunTitle,
+    printer: &Printer,
+    elapsed: Option<Duration>,
+) -> ApplyStatus {
+    let mut lines = rollup_lines(tally, title);
+    let shortfall = tally.shortfall();
+    if shortfall > 0 {
+        // `Role::Info` and not `Role::Pending`: this is a final count, and
+        // nothing it names is still going to happen.
+        lines.push((Role::Info, format!("{shortfall} action(s) not attempted")));
+    }
+    let last = lines.len().saturating_sub(1);
+    for (index, (role, subject)) in lines.into_iter().enumerate() {
+        match elapsed {
+            Some(d) if index == last => {
+                printer.status(role, subject).duration(d);
+            }
+            _ => printer.status_simple(role, subject),
+        }
+    }
+    tally.status.clone()
+}
+
+/// The [`ApplyResult`]-shaped view over [`render_run_rollup`], and the name
+/// every plan-running call site keeps.
+pub fn render_apply_result(
+    result: &ApplyResult,
+    title: RunTitle,
+    printer: &Printer,
+    elapsed: Option<Duration>,
+) -> ApplyStatus {
+    render_run_rollup(&result.tally(), title, printer, elapsed)
+}
+
+#[cfg(test)]
+mod tests;

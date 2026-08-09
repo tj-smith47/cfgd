@@ -506,7 +506,7 @@ pub(super) fn apply_plan(
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
-    super::display_plan_table(plan, printer, None);
+    super::display_plan_table(plan, printer);
     printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
     if opts.dry_run {
@@ -543,7 +543,12 @@ pub(super) fn apply_plan(
         None,
         &cfgd_core::AbortFlag::new(),
     )?;
-    let status = super::print_apply_result(&result, printer, None);
+    let status = cfgd_core::reconciler::render_apply_result(
+        &result,
+        cfgd_core::reconciler::RunTitle::Apply,
+        printer,
+        None,
+    );
     // The one-command bootstrap is exactly where a stale shell bites hardest:
     // this apply may have installed the first package manager on the box, and
     // the invoking shell predates the env file naming its PATH entries.

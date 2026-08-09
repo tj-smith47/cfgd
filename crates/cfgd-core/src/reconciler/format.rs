@@ -316,8 +316,7 @@ pub fn format_plan_item(action: &Action) -> String {
                 ..
             } => {
                 // Raw body: this same `Vec<String>` feeds both
-                // `display_plan_table`/`cli/apply.rs`'s dry-run preview
-                // (human bullets) AND `build_plan_output`'s
+                // `ApplyRun::preview` (human bullets) AND `build_plan_output`'s
                 // `PlanActionOutput.description` (the `-o json` plan
                 // payload). Condensing here would truncate the JSON
                 // payload too — display sites condense for themselves via
@@ -408,9 +407,8 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             }
         }
         ModuleActionKind::RunScript { script, phase } => {
-            // Raw body: this same string feeds both
-            // `display_plan_table`/`cli/apply.rs`'s dry-run preview (human
-            // bullets) AND `build_plan_output`'s `PlanActionOutput.description`
+            // Raw body: this same string feeds both `ApplyRun::preview`
+            // (human bullets) AND `build_plan_output`'s `PlanActionOutput.description`
             // (the `-o json` plan payload), each through `format_plan_item` ->
             // `format_module_action_item`. Condensing here would truncate the
             // JSON payload too — display sites condense for themselves via

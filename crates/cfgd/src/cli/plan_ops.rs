@@ -5,64 +5,6 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
 
-pub(in crate::cli) fn print_apply_result(
-    result: &cfgd_core::reconciler::ApplyResult,
-    printer: &Printer,
-    elapsed: Option<std::time::Duration>,
-) -> cfgd_core::state::ApplyStatus {
-    // Partial splits into two role-tagged lines so the success count and the
-    // failure count read as distinct outcomes — fusing them into one Warn line
-    // makes a "9 succeeded, 1 failed" run look the same colour as a "1
-    // succeeded, 9 failed" run.
-    if matches!(result.status, cfgd_core::state::ApplyStatus::Partial) {
-        printer.status_simple(
-            Role::Ok,
-            format!("{} action(s) succeeded", result.succeeded()),
-        );
-        let failed_subject = format!("{} action(s) failed", result.failed());
-        match elapsed {
-            Some(d) => {
-                printer.status(Role::Accent, failed_subject).duration(d);
-            }
-            None => printer.status_simple(Role::Accent, failed_subject),
-        }
-        return result.status.clone();
-    }
-
-    let (role, subject) = match result.status {
-        cfgd_core::state::ApplyStatus::Success => (
-            Role::Ok,
-            format!(
-                "Apply complete — {} action(s) succeeded",
-                result.succeeded()
-            ),
-        ),
-        cfgd_core::state::ApplyStatus::Partial => unreachable!("handled above"),
-        cfgd_core::state::ApplyStatus::Failed => (
-            Role::Fail,
-            format!("Apply failed — {} action(s) failed", result.failed()),
-        ),
-        cfgd_core::state::ApplyStatus::InProgress => (
-            Role::Warn,
-            "Apply still in progress (unexpected state)".to_string(),
-        ),
-        cfgd_core::state::ApplyStatus::Aborted => (
-            Role::Warn,
-            format!(
-                "Apply aborted by signal — {} action(s) applied",
-                result.succeeded()
-            ),
-        ),
-    };
-    match elapsed {
-        Some(d) => {
-            printer.status(role, subject).duration(d);
-        }
-        None => printer.status_simple(role, subject),
-    }
-    result.status.clone()
-}
-
 /// Basename of the bash/zsh managed env file the reconciler writes.
 const UNIX_ENV_FILE: &str = ".cfgd.env";
 /// Basename of the PowerShell managed env file the reconciler writes.
@@ -415,50 +357,23 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     plan.phases.retain(|p| !p.is_empty());
 }
 
-pub(in crate::cli) fn display_plan_table(
-    plan: &reconciler::Plan,
-    printer: &Printer,
-    phase_filter: Option<&PhaseFilter>,
-) {
-    // `Reconciler::plan`, `strip_scripts_from_plan`, and `filter_plan` all drop
-    // any phase left with zero actions, so anything reaching here has work; a
-    // wholly empty plan yields no phases at all and gets one line below.
-    let mut printed_any = false;
-    for phase_item in &plan.phases {
-        let in_scope: Vec<&reconciler::Action> = phase_item
-            .owned_actions()
-            .filter(|(owner, action)| in_phase_scope(phase_item, owner, action, phase_filter))
-            .map(|(_, action)| action)
-            .collect();
-        if in_scope.is_empty() {
-            continue;
-        }
-        printed_any = true;
-        let phase = printer.section(format!("Phase: {}", phase_item.name.display_name()));
-        // An unknown system key (likely a typo) surfaces as a real warning
-        // instead of a neutral bullet so it isn't missed.
-        for action in in_scope {
-            // Display-only condensation: the raw body still reaches the
-            // `-o json` payload through `build_plan_output`.
-            let item = reconciler::condense_action_desc_for_display(
-                action,
-                &reconciler::format_plan_item(action),
-            );
-            if let reconciler::Action::System(reconciler::SystemAction::Skip {
-                unknown: true,
-                ..
-            }) = action
-            {
-                phase.status_simple(Role::Warn, item);
-            } else {
-                phase.bullet(item);
-            }
-        }
-    }
-    if !printed_any {
-        let phase = printer.section("Plan");
-        phase.empty_state("(nothing to do)");
-    }
+/// The phase → owner → action tree for a plan whose run header the caller has
+/// already rendered (or does not have one to render).
+///
+/// A thin view over the single tree renderer so a call site holding nothing but
+/// a plan does not have to assemble a run context it has no rows for.
+pub(in crate::cli) fn display_plan_table(plan: &reconciler::Plan, printer: &Printer) {
+    reconciler::ApplyRun::new(
+        reconciler::RunContext {
+            title: reconciler::RunTitle::Apply,
+            config_path: None,
+            profile: None,
+            modules: &[],
+            trigger: None,
+        },
+        plan,
+    )
+    .preview(printer);
 }
 
 /// Pre-filter snapshot of a plan's scope, captured *before* `--skip`/`--only`
@@ -547,6 +462,7 @@ pub(in crate::cli) struct PlanPreviewArgs<'a> {
 }
 
 pub(in crate::cli) fn display_plan_preview(
+    run: &reconciler::ApplyRun<'_>,
     plan: &reconciler::Plan,
     printer: &Printer,
     state: &cfgd_core::state::StateStore,
@@ -559,6 +475,10 @@ pub(in crate::cli) fn display_plan_preview(
         scope,
         pending_backups,
     } = *args;
+
+    // The run's own rows and warnings, before anything this command adds: the
+    // header is what states the scope every block below is read against.
+    run.header(printer);
 
     // Show pending decisions (not included in this plan)
     if let Ok(pending) = state.pending_decisions()
@@ -587,7 +507,7 @@ pub(in crate::cli) fn display_plan_preview(
     }
 
     // Table mode display
-    display_plan_table(plan, printer, phase_filter);
+    run.preview(printer);
 
     // Schedule-less backups are not reconciler actions (they always run, no
     // diff against desired state), so they never appear in `display_plan_table`
@@ -642,10 +562,6 @@ pub(in crate::cli) fn display_plan_preview(
                 }
             }
         }
-    }
-
-    for w in &plan.warnings {
-        printer.status_simple(Role::Warn, w);
     }
 
     if plan_output.total_actions == 0 {

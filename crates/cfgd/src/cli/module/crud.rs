@@ -288,7 +288,7 @@ pub fn cmd_module_create(
             printer.status_simple(Role::Info, "Nothing to do");
         } else {
             if !args.yes {
-                super::display_plan_table(&plan, printer, None);
+                super::display_plan_table(&plan, printer);
                 printer.status_simple(Role::Info, format!("{} action(s) planned", total));
                 let confirmed = printer
                     .prompt_confirm("Apply these changes?")
@@ -326,7 +326,12 @@ pub fn cmd_module_create(
                 None,
                 &cfgd_core::AbortFlag::new(),
             )?;
-            apply_status = super::print_apply_result(&result, printer, None);
+            apply_status = cfgd_core::reconciler::render_apply_result(
+                &result,
+                cfgd_core::reconciler::RunTitle::Apply,
+                printer,
+                None,
+            );
             // A module whose packages come from a manager this apply bootstrapped
             // leaves the invoking shell one `source` away from reaching them.
             crate::cli::plan_ops::print_shell_env_reminder(&result, printer);

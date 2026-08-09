@@ -4643,10 +4643,14 @@ fn cmd_apply_dry_run_with_phase_filter() {
     h.assert_header("Plan");
     let output = h.output();
     // The requested phase planned no actions, so it is not among the plan's
-    // phases at all; the empty-plan line stands in for it, and the warning below
-    // it names the phases that do have work.
+    // phases at all; the run renders no tree and reports the scope verdict
+    // instead, and the hint below it names the phases that do have work.
     assert!(
-        output.contains("(nothing to do)"),
+        !output.contains("Phase: "),
+        "a filter matching no planned actions must render no tree, got: {output}"
+    );
+    assert!(
+        output.contains("No actions in scope"),
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
@@ -5433,6 +5437,11 @@ fn cmd_apply_with_module_filter() {
 #[test]
 fn cmd_apply_with_env_vars() {
     let (config_dir, state_dir) = setup_test_env();
+    // A real (non-dry-run) apply of a profile carrying `spec.env` writes the
+    // managed env surfaces under `~`; without this the run rewrites the
+    // operator's own `~/.cfgd.env`.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
 
     // Profile with env vars
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n      value: less\n  modules: []\n";
@@ -5471,9 +5480,11 @@ fn cmd_apply_with_env_vars() {
             output.contains("Apply"),
             "should contain Apply header, got: {output}"
         );
+        // `--yes` drops the pre-confirmation preview, so the header's count is
+        // where an executing run states the work it took on.
         assert!(
-            output.contains("Plan preview") || output.contains("Nothing to do"),
-            "should mention plan preview or nothing to do, got: {output}"
+            output.contains("Actions  6 planned") || output.contains("Nothing to do"),
+            "should state the planned action count or nothing to do, got: {output}"
         );
     }
 

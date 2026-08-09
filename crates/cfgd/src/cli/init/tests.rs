@@ -2229,7 +2229,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // path. With an empty registry the apply runs a no-op flow (no package
     // managers registered → no manager spawn), but the code path that's
     // covered is the post-prompt sequence: default_state_dir, acquire_apply_lock,
-    // reconciler.apply, print_apply_result. We assert the apply lock was
+    // reconciler.apply, render_apply_result. We assert the apply lock was
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());

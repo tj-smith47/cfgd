@@ -66,6 +66,17 @@ pub use doc::{Doc, SectionBuilder, StatusFields};
 /// - **Two-byte escapes** — `ESC 7`, `ESC =`, and the charset selectors
 ///   (`ESC ( B`), which carry one further byte.
 ///
+/// The rendered column width of `text`.
+///
+/// The ONE width measurement available outside the renderer, so a caller that
+/// pre-computes an alignment column measures exactly what the renderer pads
+/// against: ANSI escapes count as zero columns and a multi-byte glyph (`✓`,
+/// `—`) counts as the columns a terminal gives it, neither of which
+/// `str::len()` answers.
+pub fn measure_width(text: &str) -> usize {
+    console::measure_text_width(text)
+}
+
 /// An unterminated escape is swallowed to end-of-string, which is the safer
 /// outcome at a sanitization boundary — a malicious unterminated escape
 /// shouldn't paint anything.

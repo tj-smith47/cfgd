@@ -286,10 +286,18 @@ Each manager supports querying available package versions without installing:
 `cfgd apply --dry-run` shows the full package plan without making changes:
 
 ```
+Plan
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  work
+  Phases   Packages
+
 Phase: Packages
-  - brew install ripgrep, fd, bat
-  - brew uninstall unused-tool
-  - skip snap: 'snap' not available — cannot auto-install on this platform
+  profile:work
+    - brew install ripgrep, fd, bat
+    - brew uninstall unused-tool
+    - skip snap: 'snap' not available — cannot auto-install on this platform
+
+⊙ 3 action(s) planned
 ```
 
 A package already at its desired version produces no action, so it gets no line:

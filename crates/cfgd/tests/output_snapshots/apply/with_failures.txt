@@ -1,11 +1,8 @@
 Apply
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
-
-Plan preview
-  Files
-    - create <TARGET_OK>
-    - create <TARGET_FAIL>
+  Phases   Files
+  Actions  2 planned
 
 ✗ [2/2] Failed: file:create:<TARGET_FAIL> — file error: io error on <CONFIG_DIR>/blocker: <os error>
 ✓ 1 action(s) succeeded

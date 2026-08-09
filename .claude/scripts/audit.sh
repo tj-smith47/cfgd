@@ -271,11 +271,14 @@ log_section "DRY — Duplicated Function Definitions"
 # point of the closed vocabulary — the collisions are with unrelated
 # constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
 # Excusing the `Owner` site keeps each name's budget for a real duplicate.
+# `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
+# subcommands. Nothing is shared between them but the verb.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
     "profile crates/cfgd-core/src/reconciler/types.rs"
     "module crates/cfgd-core/src/reconciler/types.rs"
     "source crates/cfgd-core/src/reconciler/types.rs"
+    "execute crates/cfgd-core/src/reconciler/run.rs"
 )
 allowed_pairs_file=$(mktemp)
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"

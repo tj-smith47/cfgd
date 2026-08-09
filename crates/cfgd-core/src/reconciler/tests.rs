@@ -6320,11 +6320,10 @@ fn format_plan_items_script_action_with_provenance() {
     assert!(items[0].contains("<- corp-source"));
 }
 
-// `format_plan_items`'s Script arm feeds BOTH the human
-// `display_plan_table` preview AND `build_plan_output`'s
-// `PlanActionOutput.description` JSON payload — it must return the raw,
-// uncondensed `run_str()` body; condensing is the exclusive job of the
-// human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
+// `format_plan_items`'s Script arm feeds BOTH the human `ApplyRun::preview`
+// tree AND `build_plan_output`'s `PlanActionOutput.description` JSON payload —
+// it must return the raw, uncondensed `run_str()` body; condensing is the
+// exclusive job of the human render site.
 #[test]
 fn format_plan_items_script_action_preserves_raw_multiline_body() {
     let raw_body = "echo line-one\necho line-two\necho line-three";

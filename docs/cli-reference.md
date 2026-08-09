@@ -153,11 +153,23 @@ is consumer-local and carries no origin.
 
 ```sh
 $ cfgd plan
+Plan
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  work
+  Modules  dev-tools, localmod
+  Phases   Packages, Post-Scripts
+
 Phase: Packages
-  - brew install jq
-  - brew install ripgrep, fd <- team
+  module:dev-tools
+    - brew install ripgrep, fd <- team
+  module:localmod
+    - brew install jq
+
 Phase: Post-Scripts
-  - postApply: jq --version
+  module:localmod
+    - postApply: jq --version
+
+⊙ 3 action(s) planned
 ```
 
 `--phase modules` selects every module-owned action wherever it was planned, so

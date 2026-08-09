@@ -227,35 +227,6 @@ fn make_plan_from_phases(phases: Vec<Phase>) -> Plan {
     }
 }
 
-fn apply_result(status: ApplyStatus, succeeded: usize, failed: usize) -> ApplyResult {
-    let mut results = Vec::new();
-    for _ in 0..succeeded {
-        results.push(ActionResult {
-            phase: "files".to_string(),
-            description: "create /etc/foo".to_string(),
-            success: true,
-            error: None,
-            changed: true,
-        });
-    }
-    for _ in 0..failed {
-        results.push(ActionResult {
-            phase: "packages".to_string(),
-            description: "install brew:rg".to_string(),
-            success: false,
-            error: Some("exit code 1".to_string()),
-            changed: false,
-        });
-    }
-    ApplyResult {
-        action_results: results,
-        status,
-        apply_id: 0,
-        aborted: None,
-        planned_total: succeeded + failed,
-    }
-}
-
 #[test]
 fn action_type_str_file_variants() {
     assert_eq!(action_type_str(&file_create("/etc/foo")), "create");
@@ -978,7 +949,7 @@ fn build_plan_output_empty_plan_has_zero_actions() {
 // `build_plan_output`'s `PlanActionOutput.description` is the
 // `-o json` plan payload — it must preserve a multi-line inline script's
 // run_str body byte-identical, never condensed. Condensing belongs solely to
-// human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
+// the human render site (`ApplyRun::preview`).
 #[test]
 fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
     let raw_body = "echo line-one\necho line-two\necho line-three";
@@ -1023,174 +994,18 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
 }
 
 #[test]
-fn print_apply_result_success_emits_ok_role() {
-    let result = apply_result(ApplyStatus::Success, 5, 0);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let status = print_apply_result(&result, &printer, None);
-
-    assert_eq!(status, ApplyStatus::Success);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("5 action(s) succeeded"),
-        "expected success count in output, got: {out}"
-    );
-}
-
-#[test]
-fn print_apply_result_failure_emits_fail_role() {
-    let result = apply_result(ApplyStatus::Failed, 0, 3);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let status = print_apply_result(&result, &printer, None);
-
-    assert_eq!(status, ApplyStatus::Failed);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("3 action(s) failed"),
-        "expected failure count in output, got: {out}"
-    );
-}
-
-#[test]
-fn print_apply_result_partial_emits_both_lines() {
-    let result = apply_result(ApplyStatus::Partial, 4, 2);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let status = print_apply_result(&result, &printer, None);
-
-    assert_eq!(status, ApplyStatus::Partial);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("4 action(s) succeeded"),
-        "expected success line in partial output, got: {out}"
-    );
-    assert!(
-        out.contains("2 action(s) failed"),
-        "expected failure line in partial output, got: {out}"
-    );
-}
-
-#[test]
-fn print_apply_result_in_progress_emits_warn() {
-    let result = apply_result(ApplyStatus::InProgress, 0, 0);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let status = print_apply_result(&result, &printer, None);
-
-    assert_eq!(status, ApplyStatus::InProgress);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("in progress"),
-        "expected in-progress message, got: {out}"
-    );
-}
-
-#[test]
-fn print_apply_result_with_elapsed_includes_duration() {
-    let result = apply_result(ApplyStatus::Success, 2, 0);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_apply_result(
-        &result,
-        &printer,
-        Some(std::time::Duration::from_millis(1500)),
-    );
-    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
-    assert!(
-        out.contains("action(s) succeeded"),
-        "expected success subject in output, got: {out}"
-    );
-    // Renderer formats Duration::from_millis(1500) as " (1.5s)" — see
-    // `crates/cfgd-core/src/output/renderer/status.rs::duration_trailed_in_parens`.
-    assert!(
-        out.contains("(1.5s)"),
-        "expected '(1.5s)' duration suffix, got: {out}"
-    );
-}
-
-#[test]
-fn print_apply_result_aborted_emits_warn_with_succeeded_count() {
-    let result = apply_result(ApplyStatus::Aborted, 3, 0);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let status = print_apply_result(&result, &printer, None);
-
-    assert_eq!(status, ApplyStatus::Aborted);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("aborted by signal"),
-        "expected abort message in output, got: {out}"
-    );
-    assert!(
-        out.contains("3 action(s) applied"),
-        "expected succeeded count in abort output, got: {out}"
-    );
-}
-
-#[test]
-fn print_apply_result_partial_with_elapsed_attaches_duration_to_failed_line() {
-    let result = apply_result(ApplyStatus::Partial, 1, 4);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_apply_result(
-        &result,
-        &printer,
-        Some(std::time::Duration::from_millis(2500)),
-    );
-    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
-    // Partial branch emits the Accent-tagged failure line through the
-    // StatusBuilder path that attaches `.duration(d)`. The success line
-    // does not get the duration.
-    let failed_line = out
-        .lines()
-        .find(|l| l.contains("4 action(s) failed"))
-        .unwrap_or_else(|| panic!("expected failed line in output, got: {out}"));
-    assert!(
-        failed_line.contains("(2.5s)"),
-        "expected '(2.5s)' on failed line, got: {failed_line}"
-    );
-}
-
-#[test]
-fn display_plan_table_empty_phase_shows_nothing_to_do() {
-    let plan = make_plan(vec![(PhaseName::Files, vec![])]);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, None);
-
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("nothing to do"),
-        "expected empty-state message, got: {out}"
-    );
-}
-
-#[test]
 fn display_plan_table_populated_plan_shows_phase_header() {
     let plan = make_plan(vec![(
         PhaseName::Files,
         vec![file_create("/etc/foo"), file_update("/etc/bar")],
     )]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, None);
+    display_plan_table(&plan, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(
         out.contains("Files"),
         "expected phase header in output, got: {out}"
-    );
-}
-
-#[test]
-fn display_plan_table_phase_filter_omits_other_phases() {
-    let plan = make_plan(vec![
-        (PhaseName::Files, vec![file_create("/etc/foo")]),
-        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
-    ]);
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, Some(&PhaseFilter::Phase(PhaseName::Files)));
-
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("Files"),
-        "expected Files phase header, got: {out}"
-    );
-    assert!(
-        !out.contains("Packages"),
-        "Packages phase should be filtered out, got: {out}"
     );
 }
 
@@ -1208,7 +1023,7 @@ fn display_plan_table_condenses_multiline_script_bullet() {
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, None);
+    display_plan_table(&plan, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -1233,7 +1048,7 @@ fn display_plan_table_unknown_system_key_renders_warn() {
     });
     let plan = make_plan(vec![(PhaseName::System, vec![unknown])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, None);
+    display_plan_table(&plan, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -1252,7 +1067,7 @@ fn display_plan_table_unavailable_system_key_renders_neutral() {
     // preview must render it neutrally, never as a warning.
     let plan = make_plan(vec![(PhaseName::System, vec![system_skip()])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, None);
+    display_plan_table(&plan, &printer);
 
     let out = buf.lock().unwrap().clone();
     assert!(

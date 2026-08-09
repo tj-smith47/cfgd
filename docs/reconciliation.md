@@ -68,25 +68,45 @@ Use `cfgd plan --context reconcile` to preview what the daemon would run.
 `cfgd plan` (or `cfgd apply --dry-run`) shows the full plan before any changes. Use `-o json` for structured output in CI pipelines.
 
 ```
+Plan
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  work
+  Modules  nvim
+  Phases   Packages, Files, System, Post-Scripts
+
 Phase: Packages
-  - brew install extra-tool
-  - bootstrap pipx via pip
-  - apt install ripgrep (14.1.0)
-  - snap install nvim (0.10.2)
+  profile:work
+    - brew install extra-tool
+    - apt install ripgrep (14.1.0)
+  cfgd:managers
+    - bootstrap pipx via pip
+  module:nvim
+    - snap install nvim (0.10.2)
 
 Phase: Files
-  - update /home/you/.gitconfig
-  - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
+  profile:work
+    - update /home/you/.gitconfig
+  module:nvim
+    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
 
 Phase: System
-  - set macosDefaults.com.apple.dock.autohide: false → true
+  profile:work
+    - set macosDefaults.com.apple.dock.autohide: false → true
 
 Phase: Post-Scripts
-  - postApply: nvim --headless "+Lazy! sync" +qa
+  module:nvim
+    - postApply: nvim --headless "+Lazy! sync" +qa
 
 Backups (run on apply)
   ⊙ mydata
+
+⊙ 8 action(s) planned
 ```
+
+The header block states the scope every line below is read against: which
+config and profile produced the plan, which modules are in play, which phases
+hold in-scope work, and — on an executing run (`cfgd apply`) — an
+`Actions  N planned` row in place of the closing count.
 
 The `Packages` bullets are the group order in miniature: the profile's own
 install, then `cfgd:managers`' bootstrap, then `module:nvim`. Execution reverses

@@ -2,7 +2,4 @@ Plan
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  (module-only)
 
-Plan
-  (nothing to do)
-
 ⚠ Module 'nettools' matched no actions — it was not found or could not be resolved

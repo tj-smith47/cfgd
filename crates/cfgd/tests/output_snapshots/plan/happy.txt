@@ -1,8 +1,10 @@
 Plan
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
+  Phases   Files
 
 Phase: Files
-  - create <TARGET>
+  profile:tiny
+    - create <TARGET>
 
 ⊙ 1 action(s) planned

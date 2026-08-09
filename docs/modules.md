@@ -506,20 +506,29 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ```
 Phase: Packages
-  - brew install extra-tool
-  - apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd)
-  - snap install nvim (0.10.2)
-  - npm install neovim
-  - pipx install pynvim
+  profile:work
+    - brew install extra-tool
+    - apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd)
+  module:nvim
+    - snap install nvim (0.10.2)
+    - npm install neovim
+    - pipx install pynvim
 
 Phase: Files
-  - update /home/you/.gitconfig
-  - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
+  profile:work
+    - update /home/you/.gitconfig
+  module:nvim
+    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
 
 Phase: Post-Scripts
-  - postApply: nvim --headless "+Lazy! sync" +qa
-  - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
+  module:nvim
+    - postApply: nvim --headless "+Lazy! sync" +qa
+    - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 ```
+
+Each phase groups its actions by the owner that declared them — `profile:<name>`
+for the profile's own work, `module:<name>` for a module's — so a bullet's owner
+is visible without reading the action text.
 
 A module's work sits in the phase whose kind it is, beside the profile's, and
 each bullet reads the same whether the profile or a module planned it — a
