@@ -286,11 +286,13 @@ Each manager supports querying available package versions without installing:
 `cfgd apply --dry-run` shows the full package plan without making changes:
 
 ```
-Packages:
-  + brew install ripgrep fd bat
-  - brew uninstall unused-tool
-  = apt: 5 packages up to date
-  ⊘ snap: not installed (skipping)
+Phase: Packages
+  - install via brew: ripgrep, fd, bat
+  - uninstall via brew: unused-tool
+  - skip snap: 'snap' not available — cannot auto-install on this platform
 ```
+
+A package already at its desired version produces no action, so it gets no line:
+the plan lists what would change, not the full inventory.
 
 See the [CLI reference](cli-reference.md) for `cfgd profile update --package` and `cfgd module update --package` commands.

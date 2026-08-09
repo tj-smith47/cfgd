@@ -506,14 +506,15 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ```
 Phase: Packages
-  - apt: 3 packages up to date
-  - brew install extra-tool
-  - [nvim] snap install nvim (0.10.2); apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd→fd-find)
-  - [nvim] npm install neovim; pipx install pynvim
+  - install via brew: extra-tool
+  - [nvim] apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd)
+  - [nvim] snap install nvim (0.10.2)
+  - [nvim] npm install neovim
+  - [nvim] pipx install pynvim
 
 Phase: Files
-  - 5 files up to date
-  - [nvim] deploy: ~/.config/nvim/ (12 files)
+  - update /home/you/.gitconfig
+  - [nvim] deploy: /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
 
 Phase: Post-Scripts
   - [nvim] postApply: nvim --headless "+Lazy! sync" +qa

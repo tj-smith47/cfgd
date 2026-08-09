@@ -6,7 +6,7 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 
 Apply runs in a fixed phase order:
 
-1. **Modules** — modules that do not apply to this host (platform gate, unmet dependency), reported before any work starts
+1. **Modules** — modules skipped because they do not apply to this host (a `platform:` gate that excluded it), reported before any work starts
 2. **Pre-Scripts** — `preApply` or `preReconcile` hooks (context-dependent)
 3. **Env** — write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`; inject shell rc source lines
 4. **Packages** — install/uninstall across all package managers
@@ -69,24 +69,28 @@ Use `cfgd plan --context reconcile` to preview what the daemon would run.
 
 ```
 Phase: Packages
-  - brew install extra-tool
-  - apt: 3 packages up to date
-  - [nvim] snap install nvim (0.10.2); apt install ripgrep
-  - bootstrap pipx (via pip)
+  - install via brew: extra-tool
+  - bootstrap pipx via pip
+  - [nvim] apt install ripgrep (14.1.0)
+  - [nvim] snap install nvim (0.10.2)
 
 Phase: Files
-  - update ~/.gitconfig
-  - [nvim] deploy: ~/.config/nvim/ (12 files)
+  - update /home/you/.gitconfig
+  - [nvim] deploy: /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
 
 Phase: System
-  - macosDefaults com.apple.dock.autohide: false → true
+  - set macosDefaults.com.apple.dock.autohide: false → true
 
 Phase: Post-Scripts
   - [nvim] postApply: nvim --headless "+Lazy! sync" +qa
 
 Backups (run on apply)
-  mydata
+  ⊙ mydata
 ```
+
+The `Packages` bullets are the group order in miniature: the profile's own
+install, then `cfgd:managers`' bootstrap, then `module:nvim`. Execution reverses
+the first and last of those — see the note above.
 
 ## Filtering
 

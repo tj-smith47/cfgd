@@ -749,7 +749,7 @@ mod tests {
                 },
             )
         });
-        assert_styled("deprecation", |r, s| r.render_deprecation(s, 0, "d"));
+        assert_styled("advisory", |r, s| r.render_advisory(s, 0, "d"));
         assert_styled("table header", |r, s| {
             r.render_table(s, 0, &Table::new(["col"]))
         });

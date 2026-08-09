@@ -223,11 +223,13 @@ impl Renderer {
     /// Emit a Warn-styled diagnostic line that is shown regardless of verbosity
     /// — including under structured output, where the Printer is forced to
     /// `Verbosity::Quiet` and `render_status` would drop every non-`Fail` role.
-    /// Reserved for intentional always-visible diagnostics (deprecation
-    /// notices) that belong on stderr but must never reach the stdout data
-    /// channel. `depth` comes from the caller's `enforce_structural_top_level(0)`
-    /// (0 in normal use); subject must not contain `\n`.
-    pub fn render_deprecation(&self, w: &dyn Writer, depth: usize, subject: &str) {
+    /// Reserved for intentional always-visible diagnostics that belong on
+    /// stderr but must never reach the stdout data channel — `Printer`
+    /// exposes it as `deprecation` and `alert`, which differ in what they
+    /// mean, not in how they render. `depth` comes from the caller's
+    /// `enforce_structural_top_level(0)` (0 in normal use); subject must not
+    /// contain `\n`.
+    pub fn render_advisory(&self, w: &dyn Writer, depth: usize, subject: &str) {
         let (icon_opt, style) = role_glyph(&self.theme, Role::Warn);
         let mut line = String::new();
         if let Some(icon) = icon_opt {
@@ -368,7 +370,7 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
-        r.render_deprecation(&sink, 0, "--jsonpath is deprecated");
+        r.render_advisory(&sink, 0, "--jsonpath is deprecated");
         let out = strip_ansi(&buf.lock().unwrap());
         assert!(
             out.contains("--jsonpath is deprecated"),

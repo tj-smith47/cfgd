@@ -412,7 +412,7 @@ fn format_module_action_body(action: &ModuleAction) -> String {
             // Raw body: this same string feeds both
             // `display_plan_table`/`cli/apply.rs`'s dry-run preview (human
             // bullets) AND `build_plan_output`'s `PlanActionOutput.description`
-            // (the `-o json` plan payload) via `format_plan_items` ->
+            // (the `-o json` plan payload), each through `format_plan_item` ->
             // `format_module_action_item`. Condensing here would truncate the
             // JSON payload too — display sites condense for themselves via
             // `condense_action_desc_for_display`.

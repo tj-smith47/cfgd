@@ -265,7 +265,22 @@ impl Printer {
     pub fn deprecation(&self, msg: impl Into<String>) {
         let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
-            .render_deprecation(self.sink_stderr.as_ref(), depth, &msg.into());
+            .render_advisory(self.sink_stderr.as_ref(), depth, &msg.into());
+    }
+
+    /// Emit a persistent advisory on stderr: a diagnostic about *this* run that
+    /// the user must see even when they asked for data only, because acting on
+    /// the output without it would be acting on a wrong picture (a `--skip` that
+    /// silently stranded package installs). Same routing as [`Printer::deprecation`]
+    /// — always visible, stderr only, so the `-o` data channel stays pure — and
+    /// deliberately a separate method: a deprecation is about the command's
+    /// SPELLING and stays true until the surface is removed, while an alert is
+    /// about the command's EFFECT this time. Routing both through one name makes
+    /// them indistinguishable to a reader and to a grep.
+    pub fn alert(&self, msg: impl Into<String>) {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        self.renderer
+            .render_advisory(self.sink_stderr.as_ref(), depth, &msg.into());
     }
 
     pub fn table(&self, table: Table) {
@@ -582,6 +597,50 @@ mod tests {
         assert!(
             out.contains("--jsonpath is deprecated"),
             "deprecation must be force-shown under structured/Quiet; got: {out:?}"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn alert_shows_under_structured_quiet() {
+        // An alert carries the reason the payload below it is incomplete, so
+        // it has to survive exactly what a deprecation survives — otherwise a
+        // `-o json` consumer acts on a plan whose caveat was dropped.
+        let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        assert_eq!(p.verbosity(), Verbosity::Quiet);
+
+        p.status_simple(Role::Warn, "ordinary warning");
+        p.alert("2 package action(s) will not apply");
+        p.flush();
+
+        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        assert!(
+            !out.contains("ordinary warning"),
+            "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
+        );
+        assert!(
+            out.contains("2 package action(s) will not apply"),
+            "alert must be force-shown under structured/Quiet; got: {out:?}"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn alert_never_reaches_the_data_channel() {
+        let (p, cap) = Printer::for_test_doc();
+        p.alert("stranded installs");
+        p.emit(super::super::doc::Doc::new().with_data(serde_json::json!({"ok": true})));
+        p.flush();
+
+        assert!(
+            cap.human().contains("stranded installs"),
+            "the alert belongs on the human/stderr channel: {}",
+            cap.human()
+        );
+        let payload = cap.json().expect("emit must produce a doc payload");
+        assert!(
+            !payload.to_string().contains("stranded installs"),
+            "the alert must not contaminate the -o data channel: {payload}"
         );
     }
 

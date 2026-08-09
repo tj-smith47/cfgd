@@ -1855,7 +1855,7 @@ fn skip_owner_pattern_selects_one_module_across_every_phase() {
     let owners: Vec<String> = plan
         .phases
         .iter()
-        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .flat_map(|p| p.groups().iter().map(|g| g.owner.token()))
         .collect();
     assert_eq!(
         owners,
@@ -1881,7 +1881,7 @@ fn skip_owner_pattern_selects_the_profile() {
     let owners: Vec<String> = plan
         .phases
         .iter()
-        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .flat_map(|p| p.groups().iter().map(|g| g.owner.token()))
         .collect();
     assert_eq!(owners, vec!["module:nvim"]);
 }
@@ -1906,7 +1906,7 @@ fn legacy_modules_pattern_still_skips_and_says_so() {
     let owners: Vec<String> = plan
         .phases
         .iter()
-        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .flat_map(|p| p.groups().iter().map(|g| g.owner.token()))
         .collect();
     assert_eq!(owners, vec!["profile:test"], "the pattern still works");
     assert!(
@@ -1932,7 +1932,7 @@ fn only_packages_brew_does_not_match_a_module_named_brew() {
     let owners: Vec<String> = plan
         .phases
         .iter()
-        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .flat_map(|p| p.groups().iter().map(|g| g.owner.token()))
         .collect();
     assert_eq!(
         owners,
@@ -1958,7 +1958,7 @@ fn only_packages_module_brew_selects_the_module_not_the_manager() {
     let owners: Vec<String> = plan
         .phases
         .iter()
-        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .flat_map(|p| p.groups().iter().map(|g| g.owner.token()))
         .collect();
     assert_eq!(owners, vec!["module:brew"]);
 }
@@ -2018,6 +2018,41 @@ fn skip_packages_brew_strands_the_sub_manager_it_does_not_cover() {
     assert!(
         !out.contains("--skip packages.brew "),
         "brew's own install went with the pattern, so it is not stranded: {out}"
+    );
+}
+
+#[test]
+fn stranded_warning_counts_actions_not_distinct_managers() {
+    // Two installs behind ONE stranded manager. The user is told how much work
+    // will silently not apply, so the count is over actions; the `--skip` flags
+    // stay per manager because that is what a flag can address.
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![
+            pkg_bootstrap(),
+            pkg_install("brew", vec!["ripgrep"]),
+            pkg_install("brew", vec!["fd"]),
+        ],
+    )]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["cfgd:managers".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    assert!(
+        out.contains("2 package action(s)"),
+        "both installs are stranded even though one manager is: {out}"
+    );
+    assert_eq!(
+        out.matches("--skip packages.brew").count(),
+        1,
+        "the flag list stays deduplicated by manager: {out}"
     );
 }
 

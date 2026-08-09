@@ -154,7 +154,7 @@ is consumer-local and carries no origin.
 ```sh
 $ cfgd plan
 Phase: Packages
-  - brew install jq
+  - install via brew: jq
   - [dev-tools] brew install ripgrep, fd <- team
 Phase: Post-Scripts
   - [localmod] postApply: jq --version

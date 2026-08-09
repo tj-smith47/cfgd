@@ -406,10 +406,7 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     plan.phases
         .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
     for phase in &mut plan.phases {
-        for group in &mut phase.groups {
-            group.actions.retain(|a| !is_script_work(a));
-        }
-        phase.groups.retain(|g| !g.actions.is_empty());
+        phase.retain_actions(|a| !is_script_work(a));
     }
     // A group made entirely of the filtered-out kind survives the retain above
     // with zero actions, and a phase can lose every group. Drop both here, the
@@ -891,9 +888,9 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     ];
 
     for phase in &mut plan.phases {
-        for group in &mut phase.groups {
+        for (_owner, actions) in phase.groups_mut() {
             let mut i = 0;
-            while i < group.actions.len() {
+            while i < actions.len() {
                 // Profile file actions
                 if let reconciler::Action::File(
                     FileAction::Create {
@@ -902,7 +899,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                     | FileAction::Update {
                         target, strategy, ..
                     },
-                ) = &group.actions[i]
+                ) = &actions[i]
                 {
                     let target = target.clone();
                     let strategy = *strategy;
@@ -911,12 +908,12 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                         && !auto_yes
                     {
                         let choice = prompt_backup_choice(&target, None, printer, &options)?;
-                        apply_backup_choice(choice, &target, &mut group.actions[i], printer)?;
+                        apply_backup_choice(choice, &target, &mut actions[i], printer)?;
                     }
                 }
 
                 // Module file actions
-                if let reconciler::Action::Module(ref ma) = group.actions[i]
+                if let reconciler::Action::Module(ref ma) = actions[i]
                     && let reconciler::ModuleActionKind::DeployFiles { files } = &ma.kind
                 {
                     let needs_prompt = !auto_yes
@@ -927,7 +924,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                         });
                     if needs_prompt {
                         let module_name = ma.module_name.clone();
-                        if let reconciler::Action::Module(ref mut ma) = group.actions[i]
+                        if let reconciler::Action::Module(ref mut ma) = actions[i]
                             && let reconciler::ModuleActionKind::DeployFiles { ref mut files } =
                                 ma.kind
                         {
@@ -1044,8 +1041,8 @@ pub(in crate::cli) fn filter_plan(
 
     let mut removals = BootstrapRemovals::default();
     for phase in &mut plan.phases {
-        for group in &mut phase.groups {
-            let reconciler::OwnerGroup { owner, actions } = group;
+        let phase_name = phase.name.clone();
+        for (owner, actions) in phase.groups_mut() {
             let mut filtered_actions = Vec::new();
 
             for action in std::mem::take(actions) {
@@ -1058,7 +1055,7 @@ pub(in crate::cli) fn filter_plan(
                             origin,
                         } => {
                             let kept = filter_package_list(
-                                phase.name.as_str(),
+                                phase_name.as_str(),
                                 owner,
                                 manager,
                                 packages,
@@ -1082,7 +1079,7 @@ pub(in crate::cli) fn filter_plan(
                             origin,
                         } => {
                             let kept = filter_package_list(
-                                phase.name.as_str(),
+                                phase_name.as_str(),
                                 owner,
                                 manager,
                                 packages,
@@ -1105,7 +1102,7 @@ pub(in crate::cli) fn filter_plan(
                 }
 
                 // Non-package actions: action-level filtering
-                let path = action_path(&phase.name, &action);
+                let path = action_path(&phase_name, &action);
                 let matched_skip = skip
                     .iter()
                     .find(|s| pattern_matches_action(s, owner, &path));
@@ -1127,7 +1124,7 @@ pub(in crate::cli) fn filter_plan(
 
             *actions = filtered_actions;
         }
-        phase.groups.retain(|g| !g.actions.is_empty());
+        phase.prune_empty_groups();
     }
 
     // A `--skip`/`--only` pattern can empty a group without touching its
@@ -1193,7 +1190,12 @@ fn warn_stranded_installs(
     if removals.count == 0 {
         return;
     }
+    // Two counts, deliberately: the number the user is warned about is how many
+    // ACTIONS will not apply, while the `--skip` flags they are handed are per
+    // MANAGER. Reporting `stranded.len()` for both undercounts every time one
+    // manager strands more than one install.
     let mut stranded: Vec<String> = Vec::new();
+    let mut stranded_actions = 0usize;
     for action in plan.phases.iter().flat_map(|p| p.actions()) {
         let reconciler::Action::Package(PackageAction::Install { manager, .. }) = action else {
             continue;
@@ -1209,8 +1211,11 @@ fn warn_stranded_installs(
             .package_managers
             .iter()
             .any(|pm| pm.name() == manager && pm.is_available());
-        if !available && !stranded.iter().any(|m| m == manager) {
-            stranded.push(manager.clone());
+        if !available {
+            stranded_actions += 1;
+            if !stranded.iter().any(|m| m == manager) {
+                stranded.push(manager.clone());
+            }
         }
     }
     if stranded.is_empty() {
@@ -1225,10 +1230,9 @@ fn warn_stranded_installs(
         .map(|m| format!("--skip packages.{m}"))
         .collect::<Vec<_>>()
         .join(" ");
-    printer.deprecation(format!(
-        "{culprit} removes {} bootstrap(s); {} package action(s) still name a manager that is not installed. They will not apply. Use `{flags}` to drop that work too.",
+    printer.alert(format!(
+        "{culprit} removes {} bootstrap(s); {stranded_actions} package action(s) still name a manager that is not installed. They will not apply. Use `{flags}` to drop that work too.",
         removals.count,
-        stranded.len(),
     ));
 }
 

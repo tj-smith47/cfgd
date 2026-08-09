@@ -397,8 +397,8 @@ pub(crate) fn handle_reconcile(
     // unrelated profile state.
     if let Some(name) = module_filter {
         for phase in &mut plan.phases {
-            phase.groups.retain(|g| {
-                g.owner.kind == crate::reconciler::OwnerKind::Module && g.owner.name == name
+            phase.retain_groups(|owner| {
+                owner.kind == crate::reconciler::OwnerKind::Module && owner.name == name
             });
         }
         // Every group owned by anything else, and every module group for a

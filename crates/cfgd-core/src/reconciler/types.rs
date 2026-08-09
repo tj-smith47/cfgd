@@ -375,10 +375,17 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
 }
 
 /// A phase in the reconciliation plan, as owner groups in display order.
+///
+/// `groups` is private and [`Phase::from_actions`] is the only constructor, so
+/// a phase whose owners are out of [`Owner::sort_key`] order is unrepresentable
+/// rather than merely discouraged: no caller can write a struct literal, insert
+/// a group, or re-sort the vec. The mutators below only ever shrink an existing
+/// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`]) or hand out an
+/// owner's action list ([`Phase::groups_mut`]).
 #[derive(Debug, Serialize)]
 pub struct Phase {
     pub name: PhaseName,
-    pub groups: Vec<OwnerGroup>,
+    groups: Vec<OwnerGroup>,
 }
 
 impl Phase {
@@ -401,6 +408,42 @@ impl Phase {
         }
         groups.sort_by(|a, b| a.owner.sort_key().cmp(&b.owner.sort_key()));
         Self { name, groups }
+    }
+
+    /// The phase's owner groups, in display order.
+    pub fn groups(&self) -> &[OwnerGroup] {
+        &self.groups
+    }
+
+    /// Each group's owner paired with a mutable handle on its actions — the
+    /// only mutable view. It cannot add, drop or reorder a group, so the
+    /// [`Owner::sort_key`] order set by [`Phase::from_actions`] survives any
+    /// edit. A caller that empties a group calls [`Phase::prune_empty_groups`]
+    /// afterwards.
+    pub fn groups_mut(&mut self) -> impl Iterator<Item = (&Owner, &mut Vec<Action>)> {
+        self.groups.iter_mut().map(|g| (&g.owner, &mut g.actions))
+    }
+
+    /// Keep only the groups whose owner passes `keep`. Retaining a subset of an
+    /// ordered vec preserves the order.
+    pub fn retain_groups(&mut self, mut keep: impl FnMut(&Owner) -> bool) {
+        self.groups.retain(|g| keep(&g.owner));
+    }
+
+    /// Keep only the actions passing `keep`, dropping any group left empty —
+    /// the filter path (`--skip` / `--only` / `--no-scripts`).
+    pub fn retain_actions(&mut self, mut keep: impl FnMut(&Action) -> bool) {
+        for group in &mut self.groups {
+            group.actions.retain(&mut keep);
+        }
+        self.prune_empty_groups();
+    }
+
+    /// Drop groups an in-place edit emptied. An `OwnerGroup` is never empty at
+    /// construction, so an empty one is always the residue of a filter and must
+    /// not reach display or `-o json`.
+    pub fn prune_empty_groups(&mut self) {
+        self.groups.retain(|g| !g.actions.is_empty());
     }
 
     /// Every action in the phase, in the plan's own (display) order. What

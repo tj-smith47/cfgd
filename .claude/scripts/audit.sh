@@ -854,13 +854,18 @@ fi
 # `Owner::sort_key` is the single rule for which owner precedes which, and it is
 # applied exactly once — where a phase's groups are built. A second call site is
 # a second comparator: the plan preview, the `-o json` payload and the apply
-# transcript all read the same `Phase::groups`, so one of them ordering owners
-# for itself is how two surfaces come to disagree about who owns what.
+# transcript all read the same groups, so one of them ordering owners for itself
+# is how two surfaces come to disagree about who owns what.
+#
+# `Phase.groups` is a private field, so rustc already rejects a struct literal
+# and a direct `groups.sort()` outside `types.rs`. What the compiler cannot see
+# is a caller re-sorting what `groups()` hands back, or applying `sort_key` to
+# owners it collected itself — that is what this grep catches.
 
 log_section "Owner ordering (one comparator)"
 
 owner_cmp_glob='!crates/cfgd-core/src/reconciler/types.rs'
-if oc=$(rg --type rust -n 'sort_key\(\)|groups\.sort' \
+if oc=$(rg --type rust -n 'sort_key\(\)|groups(\(\))?[^;]*\.sort' \
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob "$owner_cmp_glob" \
       --glob '!**/tests.rs' \
