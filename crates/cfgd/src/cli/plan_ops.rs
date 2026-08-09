@@ -247,65 +247,48 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
     }
 }
 
-/// Whether `action`, owned by `owner` inside `phase`, survives `phase_filter`.
-///
-/// Filtering per action rather than per phase is what keeps a preview's scope
-/// equal to the run's: `--phase modules` selects module-owned work wherever its
-/// kind routed it, and `--phase post-scripts` reaches module lifecycle scripts.
-fn in_phase_scope(
-    phase: &reconciler::Phase,
-    owner: &reconciler::Owner,
-    action: &reconciler::Action,
-    phase_filter: Option<&PhaseFilter>,
-) -> bool {
-    match phase_filter {
-        Some(pf) => reconciler::action_matches_phase_filter(&phase.name, owner, action, pf),
-        None => true,
-    }
-}
-
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
+///
+/// The phase/owner/action walk is the reconciler's own
+/// [`reconciler::in_scope_tree`] — the same one the human tree renders — so
+/// membership and group order in the payload cannot drift from what the CLI
+/// draws. It is taken at [`reconciler::PhaseCoverage::Complete`]: a structured
+/// consumer diffing plans across hosts is exactly who needs to see the
+/// `Modules` phase of platform-gated skips that the tree folds into its header.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
     phase_filter: Option<&PhaseFilter>,
     pending_backups: &[String],
 ) -> PlanOutput {
-    let mut phases = Vec::new();
-    for phase_item in &plan.phases {
-        // Walking `groups()` rather than the flat action list is what gives the
-        // payload the tree's owner axis: group order here IS `Owner::sort_key`
-        // order, because the phase can hold its groups in no other order.
-        let mut groups: Vec<PlanGroupOutput> = Vec::new();
-        for group in phase_item.groups() {
-            let actions: Vec<PlanActionOutput> = group
-                .actions
-                .iter()
-                .filter(|action| in_phase_scope(phase_item, &group.owner, action, phase_filter))
-                .map(|action| PlanActionOutput {
-                    description: reconciler::format_plan_item(action),
-                    action_type: action_type_str(action).to_string(),
-                    targets: action_targets(action),
-                    origin: action_origin(action),
-                })
-                .collect();
-            if actions.is_empty() {
-                continue;
-            }
-            groups.push(PlanGroupOutput::new(group.owner.clone(), actions));
-        }
-        if groups.is_empty() {
-            continue;
-        }
-        phases.push(PlanPhaseOutput {
-            phase: phase_item.name.display_name().to_string(),
-            groups,
-        });
-    }
+    let phases: Vec<PlanPhaseOutput> =
+        reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete)
+            .into_iter()
+            .map(|(phase_item, groups)| PlanPhaseOutput {
+                phase: phase_item.name.display_name().to_string(),
+                groups: groups
+                    .into_iter()
+                    .map(|(group, actions)| {
+                        PlanGroupOutput::new(
+                            group.owner.clone(),
+                            actions
+                                .into_iter()
+                                .map(|action| PlanActionOutput {
+                                    description: reconciler::format_plan_item(action),
+                                    action_type: action_type_str(action).to_string(),
+                                    targets: action_targets(action),
+                                    origin: action_origin(action),
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
     let total_actions = phases
         .iter()
-        .flat_map(|p| &p.groups)
-        .map(|g| g.actions.len())
+        .flat_map(|p| p.groups.iter())
+        .map(|g| g.actions().len())
         .sum();
     PlanOutput {
         context: context_name.to_string(),

@@ -311,7 +311,7 @@ impl<'a> ApplyRun<'a> {
         // is read off the tree rather than recomputed from the plan.
         let phases: Vec<&str> = self
             .plan
-            .map(|plan| in_scope_tree(plan, self.filter))
+            .map(|plan| in_scope_tree(plan, self.filter, PhaseCoverage::Rendered))
             .unwrap_or_default()
             .into_iter()
             .map(|(phase, _)| phase.name.display_name())
@@ -518,11 +518,29 @@ impl<'a> ApplyRun<'a> {
 /// One owner group's in-scope actions, in group order. Each renders under the
 /// subject [`action_display_subject`] derives from it alone, so no positional
 /// pairing back into a per-group line vector is needed.
-type ScopedGroup<'p> = (&'p OwnerGroup, Vec<&'p Action>);
+pub type ScopedGroup<'p> = (&'p OwnerGroup, Vec<&'p Action>);
 
 /// One phase's renderable block: the phase, and every group in it holding
 /// in-scope work.
-type ScopedPhase<'p> = (&'p Phase, Vec<ScopedGroup<'p>>);
+pub type ScopedPhase<'p> = (&'p Phase, Vec<ScopedGroup<'p>>);
+
+/// Which phases an [`in_scope_tree`] walk yields.
+///
+/// The one axis on which the human tree and the `-o json` payload disagree, so
+/// it is a parameter of the ONE walk rather than a second walk: everything else
+/// — the per-action filter, the empty-group prune, the empty-phase prune, the
+/// group order — is shared, and membership cannot drift between the two
+/// surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseCoverage {
+    /// Every phase the plan holds. The complete inventory a structured
+    /// consumer reads, `PhaseName::Modules` included.
+    Complete,
+    /// `PhaseName::Modules` omitted: it holds platform-gated skips, which the
+    /// header's `Modules` row annotates rather than the tree drawing them as a
+    /// block of their own.
+    Rendered,
+}
 
 /// The platform-gated module skips a plan carries, as `(module, reason)` in
 /// plan order.
@@ -548,15 +566,25 @@ fn platform_skips(plan: Option<&Plan>) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// The phases and groups that hold in-scope work, in plan order.
+/// The phases and groups that hold in-scope work, in plan order. The ONE
+/// in-scope walk, shared by the human tree and by the `-o json` payload.
 ///
-/// `PhaseName::Modules` yields nothing: the phase is not empty, it holds
-/// platform-gated skips, and those are an annotation on the header's `Modules`
-/// row rather than a tree block.
-fn in_scope_tree<'p>(plan: &'p Plan, filter: Option<&PhaseFilter>) -> Vec<ScopedPhase<'p>> {
+/// Filtering per action rather than per phase is what keeps a preview's scope
+/// equal to the run's: `--phase modules` selects module-owned work wherever its
+/// kind routed it, and `--phase post-scripts` reaches module lifecycle scripts.
+/// A group the filter empties is dropped, then a phase left with no group, so
+/// neither surface renders an owner header over nothing.
+///
+/// Group order is [`Owner::sort_key`]'s by construction — [`Phase`] can hold
+/// its groups in no other order — so nothing here sorts.
+pub fn in_scope_tree<'p>(
+    plan: &'p Plan,
+    filter: Option<&PhaseFilter>,
+    coverage: PhaseCoverage,
+) -> Vec<ScopedPhase<'p>> {
     let mut tree = Vec::new();
     for phase in &plan.phases {
-        if phase.name == PhaseName::Modules {
+        if coverage == PhaseCoverage::Rendered && phase.name == PhaseName::Modules {
             continue;
         }
         let mut groups = Vec::new();
@@ -586,7 +614,7 @@ fn in_scope_tree<'p>(plan: &'p Plan, filter: Option<&PhaseFilter>) -> Vec<Scoped
 /// plan reaches it without inventing a [`RunContext`] whose every row would be
 /// empty — a fabricated context is a header waiting to be printed by accident.
 pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Printer) {
-    for (phase, groups) in in_scope_tree(plan, filter) {
+    for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section(format!("Phase: {}", phase.name.display_name()));
         for (group, actions) in groups {
             let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);

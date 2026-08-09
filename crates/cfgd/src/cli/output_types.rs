@@ -208,24 +208,39 @@ pub struct PlanPhaseOutput {
 /// `token` is [`cfgd_core::reconciler::Owner::token`]'s rendering of it — the
 /// exact string the tree prints, carried so a consumer never re-implements the
 /// `kind:name` grammar.
+///
+/// The fields are private and [`PlanGroupOutput::new`] is the only constructor,
+/// so a `token` naming an owner other than the group's own is unrepresentable
+/// rather than merely discouraged: no caller can write a struct literal or
+/// reassign `owner` out from under a token already derived from it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanGroupOutput {
-    pub owner: cfgd_core::reconciler::Owner,
-    pub token: String,
-    pub actions: Vec<PlanActionOutput>,
+    owner: cfgd_core::reconciler::Owner,
+    token: String,
+    actions: Vec<PlanActionOutput>,
 }
 
 impl PlanGroupOutput {
-    /// Build a group from its owner, keeping `token` derived rather than
-    /// supplied — the two fields describe one owner and cannot be given
-    /// disagreeing values.
+    /// Build a group from its owner, deriving `token` rather than taking it.
     pub fn new(owner: cfgd_core::reconciler::Owner, actions: Vec<PlanActionOutput>) -> Self {
         Self {
             token: owner.token(),
             owner,
             actions,
         }
+    }
+
+    pub fn owner(&self) -> &cfgd_core::reconciler::Owner {
+        &self.owner
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn actions(&self) -> &[PlanActionOutput] {
+        &self.actions
     }
 }
 

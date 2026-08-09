@@ -197,6 +197,11 @@ consumer never rebuilds the `kind:name` grammar itself, and groups arrive in the
 same order the tree prints them (`profile` before `cfgd` before `module` before
 `backup` before `source`, then by name).
 
+The payload is the complete inventory, so it holds one phase the tree does not
+print: `Modules`, carrying the platform-gated skips that the human render folds
+into the header's `Modules` row instead. A consumer diffing plans across hosts
+therefore sees that a module was gated out on one of them.
+
 ```jsonc
 // cfgd plan -o json  →  phases[].groups[]
 {

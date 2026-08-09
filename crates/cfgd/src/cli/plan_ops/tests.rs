@@ -808,7 +808,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
 /// Every action a phase holds, flattened across its owner groups — for the
 /// assertions that are about the action set rather than about the grouping.
 fn phase_actions(phase: &PlanPhaseOutput) -> Vec<&PlanActionOutput> {
-    phase.groups.iter().flat_map(|g| &g.actions).collect()
+    phase.groups.iter().flat_map(|g| g.actions()).collect()
 }
 
 /// [`phase_actions`] on the serialized wire form.
@@ -890,14 +890,14 @@ fn build_plan_output_orders_groups_profile_first() {
         output.phases[0]
             .groups
             .iter()
-            .map(|g| g.token.as_str())
+            .map(|g| g.token())
             .collect::<Vec<_>>(),
         vec!["profile:work", "cfgd:managers", "module:dev-tools"],
     );
     for group in &output.phases[0].groups {
         assert_eq!(
-            group.token,
-            group.owner.token(),
+            group.token(),
+            group.owner().token(),
             "token must be the group owner's own rendering"
         );
     }
@@ -918,7 +918,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         output.phases[0]
             .groups
             .iter()
-            .map(|g| g.token.as_str())
+            .map(|g| g.token())
             .collect::<Vec<_>>(),
         vec!["profile:test"],
     );
@@ -1043,7 +1043,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
 
-    let desc = &output.phases[0].groups[0].actions[0].description;
+    let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
         desc.contains(raw_body),
         "PlanActionOutput.description must preserve the raw multi-line body byte-identical, got: {desc}"
@@ -1068,7 +1068,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
 
-    let desc = &output.phases[0].groups[0].actions[0].description;
+    let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
         desc.contains(raw_body),
         "PlanActionOutput.description must preserve a MODULE script's raw multi-line body byte-identical, got: {desc}"

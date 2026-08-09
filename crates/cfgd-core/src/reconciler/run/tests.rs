@@ -867,3 +867,29 @@ fn hooks_and_backups_labels_are_distinct_and_carry_no_phase_prefix() {
         );
     }
 }
+
+#[test]
+fn phase_coverage_decides_only_whether_the_modules_phase_is_walked() {
+    // The one axis on which the payload's walk and the tree's differ. Every
+    // other phase, group and action is yielded identically, which is what lets
+    // both surfaces share this function instead of filtering twice.
+    let skip = Action::Module(crate::reconciler::ModuleAction::local(
+        "wsl-tools",
+        crate::reconciler::ModuleActionKind::Skip {
+            reason: "platform not matched (requires: windows)".to_string(),
+        },
+    ));
+    let plan = plan_of(vec![
+        phase(PhaseName::Modules, vec![skip]),
+        phase(PhaseName::Packages, vec![install("brew", &["rg"])]),
+    ]);
+
+    let walked = |coverage| {
+        in_scope_tree(&plan, None, coverage)
+            .into_iter()
+            .map(|(p, _)| p.name.display_name())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(walked(PhaseCoverage::Complete), vec!["Modules", "Packages"]);
+    assert_eq!(walked(PhaseCoverage::Rendered), vec!["Packages"]);
+}
