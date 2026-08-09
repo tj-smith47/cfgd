@@ -182,6 +182,7 @@ where
     F: FnOnce() -> Result<R, GatewayError> + Send + 'static,
     R: Send + 'static,
 {
+    // spawn-blocking-ok: closure resolves no home paths (sqlite work on an already-open pool connection)
     match tokio::task::spawn_blocking(f).await {
         Ok(r) => r,
         Err(e) => {

@@ -5933,6 +5933,11 @@ fn cmd_apply_dry_run_each_phase() {
 #[test]
 fn cmd_verify_after_apply_with_env() {
     let (config_dir, state_dir) = setup_test_env();
+    // A real (non-dry-run) apply of a profile carrying `spec.env` writes the
+    // managed env surfaces under `~` and injects a source line into the shell
+    // rc files there.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
 
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  modules: []\n";
     std::fs::write(

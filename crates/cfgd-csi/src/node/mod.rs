@@ -298,6 +298,7 @@ impl Node for CfgdNode {
         let version = version.to_string();
         let oci_ref_owned = oci_ref.clone();
         let target_path_owned: std::path::PathBuf = target.to_path_buf();
+        // spawn-blocking-ok: closure resolves no home paths (cache pull + bind mount on kubelet-supplied paths)
         tokio::task::spawn_blocking(move || {
             let source = cache
                 .get_or_pull(&module, &version, &oci_ref_owned)
@@ -369,6 +370,7 @@ impl Node for CfgdNode {
         // off the tokio runtime so kubelet-driven concurrency cannot starve
         // other csi workers.
         let target_path_owned: std::path::PathBuf = target_path.into();
+        // spawn-blocking-ok: closure resolves no home paths (umount + rmdir on an explicit target path)
         tokio::task::spawn_blocking(move || -> Result<(), Status> {
             unmount(&target_path_owned)?;
             if let Err(e) = std::fs::remove_dir(&target_path_owned) {
