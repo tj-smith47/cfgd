@@ -242,8 +242,9 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // under apply data.
     //
     // This test fills that gap by driving the same printer with the run
-    // skeleton `apply_plan` produces for a non-empty plan — the real
-    // `ApplyRun` header and preview, not a hand-written imitation of them —
+    // skeleton `apply_plan` produces for a non-empty plan under `--dry-run`
+    // — the real `ApplyRun` header and preview of a preview-only run, not a
+    // hand-written imitation of them —
     // and then emitting a buffered Doc carrying a real
     // `section("Next Steps", |s| s.bullet(...))` payload. The snapshot pins
     // the rendered output and the assertions below confirm the bridge
@@ -257,7 +258,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     // Streaming portion — the header rows and preview tree `apply_plan`
-    // renders for a one-action plan.
+    // renders for a one-action plan under `--dry-run`.
     let config_path = tmp.path().join("cfgd.yaml");
     let plan = Plan {
         phases: vec![Phase::from_actions(

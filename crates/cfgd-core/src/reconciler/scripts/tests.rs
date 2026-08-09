@@ -408,6 +408,45 @@ fn execute_script_return_value_preserves_raw_multiline_body() {
     );
 }
 
+// A caller that opens a pseudo-phase sizes its alignment column from
+// `hook_script_subject` BEFORE any script runs; `execute_script` composes the
+// status line's own copy as each one finishes. If the two ever stop agreeing,
+// every hook line in the group pads against a width measured off a different
+// string.
+#[test]
+fn hook_status_line_matches_the_precomputed_hook_subject() {
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let tmp = tempfile::tempdir().unwrap();
+    // A long body, so the condensing half of the derivation is exercised too.
+    let body = format!("exit 0 # {}", "x".repeat(120));
+    let entry = ScriptEntry::Simple(body.clone());
+
+    execute_script(
+        &entry,
+        tmp.path(),
+        tmp.path(),
+        &[],
+        std::time::Duration::from_secs(30),
+        &printer,
+        None,
+        None,
+        ScriptReport {
+            subject: super::ScriptSubject::Hook("onDrift"),
+            non_fatal: true,
+        },
+    )
+    .expect("`exit 0` must succeed");
+    drop(printer);
+
+    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let expected = crate::reconciler::hook_script_subject("onDrift", &body).to_string();
+    assert!(
+        out.contains(&expected),
+        "the rendered status must carry the same subject the width was derived from\n\
+         expected: {expected:?}\ngot:\n{out}"
+    );
+}
+
 // build_module_script_env: empty module env produces the same output as
 // build_script_env (no regressions for modules without spec.env).
 fn joined(dirs: &[&str]) -> String {
@@ -1934,7 +1973,7 @@ fn script_status_fail_after_window_emits_one_fail() {
     {
         let mut st = ScriptStatus::new(
             &printer,
-            "exit 1".to_string(),
+            "exit 1",
             ScriptReport {
                 subject: ScriptSubject::Hook("postApply"),
                 non_fatal: false,
@@ -1966,7 +2005,7 @@ fn script_status_status_after_open_window_emits_one_line() {
     {
         let mut st = ScriptStatus::new(
             &printer,
-            "exit 1".to_string(),
+            "exit 1",
             ScriptReport {
                 subject: ScriptSubject::Hook("postApply"),
                 non_fatal: false,

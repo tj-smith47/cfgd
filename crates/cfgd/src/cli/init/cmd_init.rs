@@ -521,13 +521,9 @@ pub(super) fn apply_plan(
     let total = plan.total_actions();
     if total == 0 {
         run.header(printer);
-        // `init` scaffolds nothing that filters the plan, so the report's
-        // filter-aware arms cannot fire — what it prints here is
-        // `MSG_NOTHING_TO_DO`, from the one place that owns it.
-        crate::cli::plan_ops::report_no_in_scope_actions(
-            printer,
-            &crate::cli::plan_ops::ScopeReport::capture(plan, false, None),
-        );
+        // `init` scaffolds no scoping flag, so the verdict takes the
+        // filter-less arm of the one helper that owns both spellings.
+        crate::cli::plan_ops::report_plan_verdict(printer, total, None);
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
@@ -535,7 +531,7 @@ pub(super) fn apply_plan(
         let run = run.preview_only();
         run.header(printer);
         run.preview(printer);
-        printer.status_simple(Role::Info, format!("{} action(s) planned", total));
+        crate::cli::plan_ops::report_plan_verdict(printer, total, None);
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 

@@ -231,6 +231,31 @@ pub fn module_script_subject(
     }
 }
 
+/// The display subject of a hook script that has no planned `Action` behind it
+/// — the daemon's `onDrift` hooks and the backup engine's `preBackup` /
+/// `postBackup` hooks, which run outside a plan.
+///
+/// One derivation for two readers that must agree byte-for-byte: the caller
+/// that opens the pseudo-phase derives its alignment column from this string
+/// BEFORE any script runs, and `ScriptStatus` composes the very same string
+/// onto the status line as each script finishes. Two copies of the format mis-
+/// pad every line in the group the moment either one moves.
+pub fn hook_script_subject(marker: &str, run: &str) -> DisplaySubject {
+    DisplaySubject {
+        marker: Some(marker.to_string()),
+        body: crate::output::condense_script_label(run),
+    }
+}
+
+/// The subject of a script with neither a planned action nor a hook marker:
+/// the condensed body alone.
+pub fn bare_script_subject(run: &str) -> DisplaySubject {
+    DisplaySubject {
+        marker: None,
+        body: crate::output::condense_script_label(run),
+    }
+}
+
 /// Condense the body, then append provenance: a long or multi-line script body
 /// must not be able to truncate away the source that delivered it.
 fn script_body_display(run: &str, origin: &str) -> String {

@@ -77,15 +77,15 @@ use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
 };
-use cfgd_core::reconciler::{self, PhaseFilter, PhaseName, ReconcileContext, Reconciler};
+// `MSG_NOTHING_TO_DO` is imported rather than restated: the run skeleton owns
+// the wording, so the CLI's verdict and the daemon's cannot drift apart.
+use cfgd_core::reconciler::{
+    self, MSG_NOTHING_TO_DO, PhaseFilter, PhaseName, ReconcileContext, Reconciler,
+};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
-
-/// The run skeleton owns the wording, so the CLI's assertions and the daemon's
-/// verdict cannot drift apart.
-use cfgd_core::reconciler::MSG_NOTHING_TO_DO;
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)

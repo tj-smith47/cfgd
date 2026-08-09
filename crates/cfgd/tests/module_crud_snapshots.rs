@@ -3,6 +3,10 @@
 //! Cases:
 //!   - `module_create/happy.{txt,json}` — non-interactive create with packages
 //!     emits the summary section + post-create hints.
+//!   - `module_create/with_apply.txt` — `--apply --yes` over a module with no
+//!     packages or files: pins the run skeleton the apply branch adopted (the
+//!     `Apply` header naming the one module owner, then the shared
+//!     nothing-to-do verdict) and the absence of any `Applying …` heading.
 //!   - `module_create/already_exists.txt` — error-path Doc.
 //!   - `module_update/happy.{txt,json}` — local update adds a package.
 //!   - `module_update/no_changes.txt` — empty args reports "No changes specified".
@@ -112,6 +116,51 @@ fn module_create_happy_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_create/happy.txt",
+        &stripped,
+    );
+}
+
+#[test]
+#[serial]
+fn module_create_with_apply_human() {
+    // `--apply` renders the same run skeleton `cfgd apply` does. The module
+    // declares no packages and no files on purpose: the plan is empty, so the
+    // capture pins the header + verdict without the apply reaching a package
+    // manager on the host running the suite.
+    let (config_dir, state_dir) = module_test_config_setup();
+    let _home = cfgd_core::with_test_home_guard(config_dir.path());
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let args = cfgd::cli::ModuleCreateArgs {
+        name: "apply-mod".to_string(),
+        description: Some("apply-fixture".to_string()),
+        depends: vec![],
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        private: false,
+        post_apply: vec![],
+        sets: vec![],
+        apply: true,
+        yes: true,
+    };
+    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
+    assert!(
+        !stripped.contains("Applying"),
+        "the run header replaced the old 'Applying Module' heading: {stripped}"
+    );
+    assert!(
+        stripped.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "an empty plan closes on the shared verdict: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "module_create/with_apply.txt",
         &stripped,
     );
 }

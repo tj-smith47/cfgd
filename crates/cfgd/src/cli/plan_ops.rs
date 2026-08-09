@@ -430,6 +430,28 @@ pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &Scop
     }
 }
 
+/// The one line that closes a preview: the planned count, or — when the plan
+/// holds no in-scope work — the verdict [`report_no_in_scope_actions`] chooses.
+///
+/// `scope` is `None` for the surfaces that expose no scoping flag at all
+/// (`cfgd init --apply`, `cfgd module create --apply`), where the only verdict
+/// reachable is `MSG_NOTHING_TO_DO`; taking it directly there says that, where
+/// a `ScopeReport` built solely to land on the same arm would not.
+pub(in crate::cli) fn report_plan_verdict(
+    printer: &Printer,
+    total_actions: usize,
+    scope: Option<&ScopeReport>,
+) {
+    if total_actions > 0 {
+        printer.status_simple(Role::Info, format!("{total_actions} action(s) planned"));
+        return;
+    }
+    match scope {
+        Some(scope) => report_no_in_scope_actions(printer, scope),
+        None => printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO),
+    }
+}
+
 /// Bundles `display_plan_preview`'s non-core arguments (everything but the
 /// plan/printer/state it acts on) so the call stays under clippy's
 /// too-many-arguments budget as fields accrue.
@@ -491,9 +513,9 @@ pub(in crate::cli) fn display_plan_preview(
     run.preview(printer);
 
     // Schedule-less backups are not reconciler actions (they always run, no
-    // diff against desired state), so they never appear in `display_plan_table`
-    // above — surface them separately so a preview doesn't silently omit work
-    // a real (non-dry-run) apply would do.
+    // diff against desired state), so the preview tree above never holds one —
+    // surface them separately so a preview doesn't silently omit work a real
+    // (non-dry-run) apply would do.
     if !pending_backups.is_empty() {
         let section = printer.section("Backups (run on apply)");
         for name in pending_backups {
@@ -545,14 +567,7 @@ pub(in crate::cli) fn display_plan_preview(
         }
     }
 
-    if plan_output.total_actions == 0 {
-        report_no_in_scope_actions(printer, scope);
-    } else {
-        printer.status_simple(
-            Role::Info,
-            format!("{} action(s) planned", plan_output.total_actions),
-        );
-    }
+    report_plan_verdict(printer, plan_output.total_actions, Some(scope));
 }
 
 // --- Plan filtering for --skip and --only ---

@@ -248,7 +248,7 @@ pub fn cmd_module_create(
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
-        let config_path = config_dir.join("cfgd.yaml");
+        let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
         let cfg = config::load_config(&config_path)?;
         let mut registry = super::build_registry_with_config(Some(&cfg));
         registry.set_system_config_dir(&config_dir);
@@ -295,12 +295,9 @@ pub fn cmd_module_create(
 
         if plan.total_actions() == 0 {
             run.header(printer);
-            // No filter exists on this path, so this reports `MSG_NOTHING_TO_DO`
-            // — from the one place that owns the wording.
-            crate::cli::plan_ops::report_no_in_scope_actions(
-                printer,
-                &crate::cli::plan_ops::ScopeReport::capture(&plan, false, None),
-            );
+            // `module create` exposes no scoping flag, so the verdict takes the
+            // filter-less arm of the one helper that owns both spellings.
+            crate::cli::plan_ops::report_plan_verdict(printer, 0, None);
         } else {
             // Same requirement as `cfgd init --apply-module`: the apply records
             // module state from this slice, and regenerates the env files from

@@ -440,21 +440,21 @@ pub(crate) fn handle_reconcile(
         plan.phases.retain(|p| !p.is_empty());
     }
 
-    // Filter out pending decision items from the plan when auto-applying
-    let effective_total = if pending_exclusions.is_empty() {
-        plan.total_actions()
-    } else {
-        let mut count = 0usize;
-        for phase in &plan.phases {
-            for action in phase.actions() {
+    // A resource whose source change is still awaiting a decision is not the
+    // daemon's to touch. Prune it out of the plan itself rather than only
+    // discounting it: the tick's action count, the drift rows it records and
+    // the actions an auto-apply executes then describe one set, and the header
+    // cannot name a number the run disagrees with.
+    if !pending_exclusions.is_empty() {
+        for phase in &mut plan.phases {
+            phase.retain_actions(|action| {
                 let (_rtype, rid) = action_resource_info(action);
-                if !pending_exclusions.contains(&rid) {
-                    count += 1;
-                }
-            }
+                !pending_exclusions.contains(&rid)
+            });
         }
-        count
-    };
+        plan.phases.retain(|p| !p.is_empty());
+    }
+    let effective_total = plan.total_actions();
 
     let timestamp = crate::utc_now_iso8601();
 
@@ -499,10 +499,6 @@ pub(crate) fn handle_reconcile(
         for phase in &plan.phases {
             for action in phase.actions() {
                 let (rtype, rid) = action_resource_info(action);
-                // Skip pending decision items when recording drift
-                if pending_exclusions.contains(&rid) {
-                    continue;
-                }
                 if let Err(e) =
                     store.record_drift(&rtype, &rid, None, Some("drift detected"), "local")
                 {
@@ -547,11 +543,11 @@ pub(crate) fn handle_reconcile(
                     .flat_map(|module| module.on_drift_scripts.iter()),
             )
             .map(|entry| {
-                format!(
-                    "{}: {}",
+                crate::reconciler::hook_script_subject(
                     crate::reconciler::ScriptPhase::OnDrift.display_name(),
-                    crate::output::condense_script_label(entry.run_str())
+                    entry.run_str(),
                 )
+                .to_string()
             })
             .collect();
 

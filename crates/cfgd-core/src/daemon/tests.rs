@@ -6434,9 +6434,12 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     );
 }
 
-// The `onDrift` hooks are driven with `touch`, a Unix command; the tree they
-// render under is portable, but this fixture is not.
-#[cfg(unix)]
+// Every hook body here is a no-op valid in BOTH shells `ScriptShell::Auto`
+// dispatches to — `sh -c` on Unix and `cmd.exe /C` on Windows — so the test
+// runs everywhere the daemon does. What it asserts (heading order, owner
+// depth, the derived alignment column) is produced by `pseudo_phase` /
+// `align_width_of` / `Printer::section`, none of which has an OS-conditional
+// arm; the shell was the only host-bound part of the fixture.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_header() {
     // A tick that detected drift and chose not to act still reports what
@@ -6448,8 +6451,10 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    let profile_marker = tmp.path().join("profile-on-drift.marker");
-    let module_marker = tmp.path().join("module-on-drift.marker");
+    // Two bodies of different length, so the shared alignment column below is
+    // a real assertion rather than a tautology.
+    let profile_hook = "cd .";
+    let module_hook = "exit 0";
 
     let config_path = tmp.path().join("cfgd.yaml");
     std::fs::write(
@@ -6462,8 +6467,7 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
     std::fs::write(
         profiles_dir.join("default.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - nvim\n  scripts:\n    onDrift:\n      - \"touch '{}'\"\n",
-            profile_marker.display()
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - nvim\n  scripts:\n    onDrift:\n      - \"{profile_hook}\"\n"
         ),
     )
     .unwrap();
@@ -6474,8 +6478,7 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
     std::fs::write(
         mod_dir.join("module.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"true\"\n    onDrift:\n      - \"touch '{}'\"\n",
-            module_marker.display()
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"exit 0\"\n    onDrift:\n      - \"{module_hook}\"\n"
         ),
     )
     .unwrap();
@@ -6497,11 +6500,6 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
     .await
     .unwrap();
 
-    assert!(
-        profile_marker.exists() && module_marker.exists(),
-        "both onDrift hooks must have run"
-    );
-
     let out = crate::output::strip_ansi(&buf.lock().unwrap());
     let hooks_at = out
         .find(crate::reconciler::HOOKS_PHASE_LABEL)
@@ -6519,11 +6517,12 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
     );
 
     // One status per script, at owner depth, carrying the `onDrift` marker.
+    // A `Role::Ok` glyph is the evidence the script ran and exited zero.
     let hook_lines: Vec<&str> = out.lines().filter(|l| l.contains("onDrift:")).collect();
     assert_eq!(hook_lines.len(), 2, "one status per hook, got:\n{out}");
-    for line in &hook_lines {
+    for (line, body) in hook_lines.iter().zip([profile_hook, module_hook]) {
         assert!(
-            line.starts_with("    \u{2713} onDrift: touch "),
+            line.starts_with(&format!("    \u{2713} onDrift: {body}")),
             "hook status must render Ok at owner depth under its group: {line:?}"
         );
     }

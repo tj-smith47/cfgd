@@ -627,6 +627,7 @@ impl PseudoPhase<'_> {
     /// every group in this pseudo-phase shares; the caller derives it with
     /// [`align_width_of`] before the first item runs, because a live stream
     /// cannot buffer to find it.
+    #[must_use = "the group closes when the SectionGuard is dropped; bind it"]
     pub fn owner(&self, owner: &Owner, width: usize) -> SectionGuard<'_> {
         let label = OwnerLabel::new(owner.kind.as_str(), &owner.name);
         let group = self.section.section_owner(&label);
@@ -643,6 +644,7 @@ impl PseudoPhase<'_> {
 /// `onDrift` arms open a `Drift Hooks` phase around a tick that constructs no
 /// `ApplyRun` at all, and naming a type to reach a function that takes no
 /// `self` is exactly the kind of false coupling that gets copied.
+#[must_use = "the pseudo-phase closes when the PseudoPhase is dropped; bind it"]
 pub fn pseudo_phase<'p>(printer: &'p Printer, label: &str) -> PseudoPhase<'p> {
     PseudoPhase {
         section: printer.section(label),

@@ -267,15 +267,17 @@ enum ScriptState<'p> {
 }
 
 impl<'p> ScriptStatus<'p> {
-    /// `fallback` is the condensed body, used by every subject a planned action
-    /// does not supply.
-    fn new(printer: &'p Printer, fallback: String, report: ScriptReport<'_>) -> Self {
-        let (marker, subject) = match report.subject {
-            ScriptSubject::Bare => (None, fallback),
-            ScriptSubject::Hook(marker) => (Some(marker.to_string()), fallback),
+    /// `run` is the raw script body; every subject a planned action does not
+    /// supply is derived from it by `format.rs`, which is also where a caller
+    /// that must size an alignment column before the script runs derives the
+    /// same string.
+    fn new(printer: &'p Printer, run: &str, report: ScriptReport<'_>) -> Self {
+        let DisplaySubject { marker, body } = match report.subject {
+            ScriptSubject::Bare => super::format::bare_script_subject(run),
+            ScriptSubject::Hook(hook) => super::format::hook_script_subject(hook, run),
             // Verbatim, both halves: the renderer composes them as
             // `<marker> <subject>`, which is `DisplaySubject`'s own `Display`.
-            ScriptSubject::Planned(subject) => (subject.marker.clone(), subject.body.clone()),
+            ScriptSubject::Planned(subject) => subject.clone(),
         };
         Self {
             failure_role: if report.non_fatal {
@@ -284,7 +286,10 @@ impl<'p> ScriptStatus<'p> {
                 Role::Fail
             },
             marker: marker.map(|m| format!("{m}:")),
-            state: ScriptState::Pending { printer, subject },
+            state: ScriptState::Pending {
+                printer,
+                subject: body,
+            },
         }
     }
 
@@ -418,7 +423,7 @@ pub(crate) fn execute_script_with_tty(
     abort: Option<&crate::AbortFlag>,
     report: ScriptReport<'_>,
 ) -> Result<(String, bool, Option<String>)> {
-    let mut st = ScriptStatus::new(printer, condense_script_label(entry.run_str()), report);
+    let mut st = ScriptStatus::new(printer, entry.run_str(), report);
     let started = std::time::Instant::now();
     let out = execute_script_inner(
         &mut st,
