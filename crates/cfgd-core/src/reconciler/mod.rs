@@ -85,6 +85,17 @@ pub struct Reconciler<'a> {
     /// directory — including from an apply that only meant to exercise
     /// something else.
     home: PathBuf,
+    /// Whether the env surface is withheld for this run.
+    ///
+    /// The env surface is generated as a unit — one file naming every declared
+    /// variable, the rc source lines that load it, the live-session mirror — so
+    /// a caller withholding any part of it withholds all of it, and says so
+    /// once, here. Apply consults this for the post-phase regeneration, which
+    /// rebuilds that surface from the DECLARED set rather than from the plan;
+    /// without the flag a caller that pruned every env action out of its plan
+    /// still gets the surface written behind its back the moment a secret
+    /// resolves an env var or a package manager is bootstrapped mid-run.
+    withhold_env_surface: bool,
 }
 
 impl<'a> Reconciler<'a> {
@@ -93,7 +104,20 @@ impl<'a> Reconciler<'a> {
             registry,
             state,
             home: resolved_home(),
+            withhold_env_surface: false,
         }
+    }
+
+    /// Withhold the env surface from the post-phase regeneration when `yes`.
+    ///
+    /// For a caller that pruned the env actions out of its own plan and needs
+    /// apply to honour that decision for the surface apply would otherwise
+    /// rebuild from the declared set. Withholding is all-or-nothing by
+    /// construction: there is no per-variable action to suppress.
+    #[must_use]
+    pub fn withholding_env_surface(mut self, yes: bool) -> Self {
+        self.withhold_env_surface = yes;
+        self
     }
 
     /// A reconciler whose env surfaces resolve against `home` instead of the
@@ -108,6 +132,7 @@ impl<'a> Reconciler<'a> {
             registry,
             state,
             home: home.into(),
+            withhold_env_surface: false,
         }
     }
 }

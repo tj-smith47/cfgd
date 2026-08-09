@@ -1,6 +1,6 @@
 use super::*;
 use crate::PathDisplayExt;
-use crate::{expand_tilde, to_posix_string};
+use crate::to_posix_string;
 
 // --- File Watcher ---
 
@@ -361,12 +361,16 @@ pub(crate) fn handle_reconcile(
                 }
             }
 
-            PendingExclusions::from_decision_paths(all_excluded)
+            PendingExclusions::from_decision_paths(all_excluded, |p| hooks.expand_tilde(p))
         } else {
             PendingExclusions::default()
         };
 
-    let reconciler = crate::reconciler::Reconciler::new(&registry, &store);
+    // The env arm withholds the surface as a unit, and apply rebuilds that
+    // surface after the phases run from the declared set rather than from the
+    // plan — so the pruning below is only half the guarantee without this.
+    let reconciler = crate::reconciler::Reconciler::new(&registry, &store)
+        .withholding_env_surface(pending_exclusions.withholds_env_surface());
 
     let available_managers = registry.available_package_managers();
     // The daemon is a full, unscoped reconcile, so it prunes: feed the real
@@ -448,13 +452,14 @@ pub(crate) fn handle_reconcile(
     if !pending_exclusions.is_empty() {
         let before = plan.total_actions();
         for phase in &mut plan.phases {
-            phase.retain_actions_and_packages(
+            phase.retain_actions_and_batches(
                 |action| !pending_exclusions.withholds_action(action),
                 |manager, package| !pending_exclusions.withholds_package(manager, package),
+                |target| !pending_exclusions.withholds_file(target),
             );
         }
         plan.phases.retain(|p| !p.is_empty());
-        let withheld = before - plan.total_actions();
+        let withheld = before.saturating_sub(plan.total_actions());
         if withheld > 0 {
             tracing::info!(
                 actions = withheld,
@@ -1181,14 +1186,26 @@ pub(crate) fn process_source_decisions(
 ///
 /// | decision path | what it withholds |
 /// |---|---|
-/// | `files.<target>` | a `File` action on that target. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
+/// | `files.<target>` | a `File` action on that target, and the same target inside a module's `DeployFiles` batch — profile files and module files are separate surfaces that can name one path, and withholding only the profile one would still write it. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
 /// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. A `Bootstrap` or `Skip` names no package and is never withheld — a bootstrap installs the package MANAGER, which every still-decided package in the batch needs |
 /// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine |
 /// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>:<key>` id an individual drift carries |
 ///
-/// `Secret`, `Script` and `Module` actions are never withheld: those four
-/// prefixes are the only paths [`extract_source_resources`] mints, so no
-/// pending row can name one.
+/// No pending row can withhold a `Secret` or `Script` action as a whole, and a
+/// `Module` action is withheld only by the batch arms above — the packages a
+/// module installs and the files it deploys leave its batches one entry at a
+/// time, while the module action itself (and every `RunScript` or `Skip`)
+/// stays. Those four prefixes are the only paths [`extract_source_resources`]
+/// mints, so nothing else is reachable from a decision.
+///
+/// Two consequences a reader of the daemon's tick should expect. A withheld
+/// resource leaves the plan entirely, so it is absent from the drift surface
+/// too: `cfgd status` shows the decision awaiting review, not a drift row for
+/// the resource behind it. And an id derived from a batch moves when a decision
+/// toggles — the surviving half of a batch renders `cargo:ripgrep` while it is
+/// withheld and `cargo:bat,ripgrep` once it is accepted — so drift rows and
+/// journal entries for a partially-withheld batch are keyed to the shape the
+/// tick applied, not to a stable per-resource id.
 #[derive(Debug, Default)]
 pub(crate) struct PendingExclusions {
     files: HashSet<String>,
@@ -1199,7 +1216,15 @@ pub(crate) struct PendingExclusions {
 
 impl PendingExclusions {
     /// Translate pending decision paths into the action vocabulary.
-    pub(crate) fn from_decision_paths<I: IntoIterator<Item = String>>(paths: I) -> Self {
+    ///
+    /// `expand` is the caller's `~` expansion — the daemon passes the same
+    /// injectable one its planning hooks use, so a test that redirects home
+    /// redirects this too.
+    pub(crate) fn from_decision_paths<I, E>(paths: I, expand: E) -> Self
+    where
+        I: IntoIterator<Item = String>,
+        E: Fn(&Path) -> PathBuf,
+    {
         let mut out = Self::default();
         for path in paths {
             let unmatched = |detail: &str| {
@@ -1213,8 +1238,7 @@ impl PendingExclusions {
                     unmatched("names no file");
                     continue;
                 }
-                out.files
-                    .insert(to_posix_string(expand_tilde(Path::new(target))));
+                out.files.insert(to_posix_string(expand(Path::new(target))));
             } else if let Some(rest) = path.strip_prefix("packages.") {
                 match rest.split_once('.') {
                     Some((manager, package)) if !manager.is_empty() && !package.is_empty() => {
@@ -1251,15 +1275,16 @@ impl PendingExclusions {
             && self.system.is_empty()
     }
 
-    /// Whether the whole action is withheld. A package batch never is — it is
-    /// withheld one package at a time, through [`Self::withholds_package`].
+    /// Whether the whole action is withheld. A batching action never is — its
+    /// entries leave one at a time, through [`Self::withholds_package`] and
+    /// [`Self::withholds_file`], and the action goes only when they empty it.
     pub(crate) fn withholds_action(&self, action: &crate::reconciler::Action) -> bool {
         use crate::reconciler::{Action, SystemAction};
         match action {
             // Read through `action_resource_info` so the file id this compares
             // against is the same derivation the drift row and the journal use.
             Action::File(_) => self.files.contains(&action_resource_info(action).1),
-            Action::Env(_) => !self.env.is_empty(),
+            Action::Env(_) => self.withholds_env_surface(),
             // Matched on the typed field rather than on the rendered
             // `<configurator>:<key>` id: splitting an id back apart at the match
             // site would be a second grammar living outside this type.
@@ -1269,6 +1294,24 @@ impl PendingExclusions {
             }
             _ => false,
         }
+    }
+
+    /// Whether the env surface is withheld.
+    ///
+    /// The one predicate behind both halves of the guarantee: the `Env` arm of
+    /// [`Self::withholds_action`], which prunes the planned env actions, and
+    /// `Reconciler::withholding_env_surface`, which stops apply rebuilding that
+    /// same surface from the declared set after the phases run. A second match
+    /// site would be a second answer.
+    pub(crate) fn withholds_env_surface(&self) -> bool {
+        !self.env.is_empty()
+    }
+
+    /// Whether one file inside a module's deploy batch is withheld. Compared on
+    /// the same expanded, `/`-folded spelling the `files.` arm stored, which is
+    /// what a `ResolvedFile` target already carries.
+    pub(crate) fn withholds_file(&self, target: &Path) -> bool {
+        self.files.contains(&to_posix_string(target))
     }
 
     /// Whether one package inside a batch is withheld.

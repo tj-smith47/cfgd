@@ -838,7 +838,15 @@ impl<'a> super::Reconciler<'a> {
         // surfaces the Env phase owns. The bootstrap record is durable either
         // way, so the next unfiltered apply still converges the file.
         let path_dirs_changed = phase_filter.is_none() && path_dirs_now != path_dirs_at_plan;
-        if !secret_env_collector.is_empty() || path_dirs_changed {
+        // The regeneration reads the DECLARED env, not the plan, so a caller
+        // that pruned the env actions out of its plan would still see the
+        // surface written here. `withhold_env_surface` is that caller saying
+        // the surface is not this run's to touch; the inputs that would have
+        // triggered the regeneration are durable, so the run that stops
+        // withholding still converges it.
+        if self.withhold_env_surface {
+            tracing::info!("env surface withheld: skipping post-phase regeneration");
+        } else if !secret_env_collector.is_empty() || path_dirs_changed {
             let (env_actions, _) = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,

@@ -466,7 +466,7 @@ fn process_source_decisions_first_run_records_decisions() {
 
     // The decision path is not the plan's vocabulary: translated, it withholds
     // `bat` from a cargo batch and leaves every unrelated package alone.
-    let exclusions = PendingExclusions::from_decision_paths(excluded);
+    let exclusions = PendingExclusions::from_decision_paths(excluded, crate::expand_tilde);
     assert!(exclusions.withholds_package("cargo", "bat"));
     assert!(!exclusions.withholds_package("cargo", "ripgrep"));
     assert!(!exclusions.withholds_package("npm", "bat"));
@@ -500,9 +500,10 @@ fn install_of(manager: &str, packages: &[&str]) -> crate::reconciler::Action {
 /// The exact prune `handle_reconcile` runs, so a unit test and the daemon
 /// cannot drift apart on how the exclusions are applied.
 fn prune_with(phase: &mut crate::reconciler::Phase, exclusions: &PendingExclusions) {
-    phase.retain_actions_and_packages(
+    phase.retain_actions_and_batches(
         |action| !exclusions.withholds_action(action),
         |manager, package| !exclusions.withholds_package(manager, package),
+        |target| !exclusions.withholds_file(target),
     );
 }
 
@@ -523,7 +524,10 @@ fn installed_batches(phase: &crate::reconciler::Phase) -> Vec<(String, Vec<Strin
 
 #[test]
 fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
-    let exclusions = PendingExclusions::from_decision_paths(["packages.cargo.bat".to_string()]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
 
     let mut shrunk = packages_phase_of(vec![install_of("cargo", &["bat", "ripgrep"])]);
     prune_with(&mut shrunk, &exclusions);
@@ -545,7 +549,10 @@ fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
 fn pending_package_decision_leaves_the_bootstrap_of_its_manager_alone() {
     // A bootstrap installs the package MANAGER — the prerequisite of every
     // still-decided package in the batch — so it names no decidable package.
-    let exclusions = PendingExclusions::from_decision_paths(["packages.cargo.bat".to_string()]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
     let mut phase = packages_phase_of(vec![
         crate::reconciler::Action::Package(crate::providers::PackageAction::Bootstrap {
             manager: "cargo".into(),
@@ -579,7 +586,10 @@ fn pending_package_decision_withholds_from_a_module_batch_too() {
         only_if: None,
         unless: None,
     };
-    let exclusions = PendingExclusions::from_decision_paths(["packages.cargo.bat".to_string()]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
     let mut phase = packages_phase_of(vec![Action::Module(ModuleAction {
         module_name: "cli-tools".into(),
         kind: ModuleActionKind::InstallPackages {
@@ -610,7 +620,10 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
     // and an undecided resource is work it will not do.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind};
 
-    let exclusions = PendingExclusions::from_decision_paths(["packages.cargo.bat".to_string()]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
     let mut phase = packages_phase_of(vec![Action::Module(ModuleAction {
         module_name: "cli-tools".into(),
         kind: ModuleActionKind::InstallPackages {
@@ -655,14 +668,19 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
 fn pending_brew_decision_reaches_a_cask_installed_by_brew_cask() {
     // `extract_source_resources` mints a cask as `packages.brew.<name>`, but the
     // planner installs it through the `brew-cask` manager.
-    let exclusions = PendingExclusions::from_decision_paths(["packages.brew.firefox".to_string()]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        ["packages.brew.firefox".to_string()],
+        crate::expand_tilde,
+    );
     assert!(exclusions.withholds_package("brew-cask", "firefox"));
     assert!(exclusions.withholds_package("brew", "firefox"));
     assert!(!exclusions.withholds_package("brew-cask", "ripgrep"));
     // The fold is one-directional: a decision naming the cask manager outright
     // must not reach a formula of the same name.
-    let cask_only =
-        PendingExclusions::from_decision_paths(["packages.brew-cask.slack".to_string()]);
+    let cask_only = PendingExclusions::from_decision_paths(
+        ["packages.brew-cask.slack".to_string()],
+        crate::expand_tilde,
+    );
     assert!(cask_only.withholds_package("brew-cask", "slack"));
     assert!(!cask_only.withholds_package("brew", "slack"));
 }
@@ -673,10 +691,10 @@ fn pending_file_decision_matches_the_expanded_action_target() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions = PendingExclusions::from_decision_paths([
-        "files.~/.zshrc".to_string(),
-        "files./etc/hosts".to_string(),
-    ]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        ["files.~/.zshrc".to_string(), "files./etc/hosts".to_string()],
+        crate::expand_tilde,
+    );
 
     let file_action = |target: PathBuf| {
         crate::reconciler::Action::File(crate::providers::FileAction::Create {
@@ -694,13 +712,106 @@ fn pending_file_decision_matches_the_expanded_action_target() {
 }
 
 #[test]
+fn pending_file_decision_reaches_a_module_deployed_target_too() {
+    // Profile files and module files are separate surfaces that can name one
+    // path, so withholding only the profile action still writes the file.
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+
+    let exclusions =
+        PendingExclusions::from_decision_paths(["files.~/.zshrc".to_string()], crate::expand_tilde);
+
+    let resolved_file = |target: PathBuf| crate::modules::ResolvedFile {
+        source: PathBuf::from("/src/file"),
+        target,
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+        module_name: "shell".to_string(),
+        kind: crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![
+                resolved_file(home.path().join(".zshrc")),
+                resolved_file(home.path().join(".bashrc")),
+            ],
+        },
+        origin: Some("acme".to_string()),
+    });
+
+    let mut phase = crate::reconciler::Phase::from_actions(
+        crate::reconciler::PhaseName::Modules,
+        &crate::reconciler::Owner::profile("default"),
+        vec![deploy],
+    );
+    prune_with(&mut phase, &exclusions);
+
+    let targets: Vec<PathBuf> = phase
+        .actions()
+        .filter_map(|action| match action {
+            crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+                kind: crate::reconciler::ModuleActionKind::DeployFiles { files },
+                ..
+            }) => Some(files.iter().map(|f| f.target.clone()).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        targets,
+        vec![home.path().join(".bashrc")],
+        "the undecided target leaves the module's deploy batch; its siblings still deploy"
+    );
+}
+
+#[test]
+fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+
+    let exclusions =
+        PendingExclusions::from_decision_paths(["files.~/.zshrc".to_string()], crate::expand_tilde);
+    let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+        module_name: "shell".to_string(),
+        kind: crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![crate::modules::ResolvedFile {
+                source: PathBuf::from("/src/file"),
+                target: home.path().join(".zshrc"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+        },
+        origin: Some("acme".to_string()),
+    });
+
+    let mut phase = crate::reconciler::Phase::from_actions(
+        crate::reconciler::PhaseName::Modules,
+        &crate::reconciler::Owner::profile("default"),
+        vec![deploy],
+    );
+    prune_with(&mut phase, &exclusions);
+
+    assert_eq!(
+        phase.action_count(),
+        0,
+        "a deploy batch the decision emptied takes its action with it"
+    );
+}
+
+#[test]
 fn pending_env_decision_withholds_the_whole_env_surface() {
     // One `WriteEnvFile` renders every declared variable into one file, so
     // there is no per-variable action to withhold — the surface is withheld as
     // the unit it is generated as.
     use crate::reconciler::{Action, EnvAction};
 
-    let exclusions = PendingExclusions::from_decision_paths(["env.EDITOR".to_string()]);
+    let exclusions =
+        PendingExclusions::from_decision_paths(["env.EDITOR".to_string()], crate::expand_tilde);
     assert!(
         exclusions.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
@@ -719,7 +830,10 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         }))
     );
     // No env decision, no env withholding.
-    let unrelated = PendingExclusions::from_decision_paths(["packages.cargo.bat".to_string()]);
+    let unrelated = PendingExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
     assert!(
         !unrelated.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
@@ -734,7 +848,8 @@ fn pending_system_decision_withholds_every_action_for_its_configurator() {
     // level above the `<configurator>:<key>` id a drift carries.
     use crate::reconciler::{Action, SystemAction};
 
-    let exclusions = PendingExclusions::from_decision_paths(["system.sysctl".to_string()]);
+    let exclusions =
+        PendingExclusions::from_decision_paths(["system.sysctl".to_string()], crate::expand_tilde);
     assert!(
         exclusions.withholds_action(&Action::System(SystemAction::SetValue {
             configurator: "sysctl".into(),
@@ -767,15 +882,18 @@ fn pending_system_decision_withholds_every_action_for_its_configurator() {
 fn pending_decision_in_no_known_vocabulary_withholds_nothing() {
     // A malformed or unknown decision path cannot be translated, so it must
     // withhold nothing rather than withhold everything (or panic).
-    let exclusions = PendingExclusions::from_decision_paths([
-        "packages.cargo".to_string(),
-        "packages..bat".to_string(),
-        "files.".to_string(),
-        "env.".to_string(),
-        "system.".to_string(),
-        "secrets.op://vault/item".to_string(),
-        String::new(),
-    ]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        [
+            "packages.cargo".to_string(),
+            "packages..bat".to_string(),
+            "files.".to_string(),
+            "env.".to_string(),
+            "system.".to_string(),
+            "secrets.op://vault/item".to_string(),
+            String::new(),
+        ],
+        crate::expand_tilde,
+    );
     assert!(exclusions.is_empty());
     assert!(!exclusions.withholds_package("cargo", "bat"));
 
@@ -790,12 +908,15 @@ fn pending_decisions_never_withhold_a_secret_script_or_module_action() {
     // pending row can name one of these.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind, ScriptAction, ScriptPhase};
 
-    let exclusions = PendingExclusions::from_decision_paths([
-        "packages.cargo.bat".to_string(),
-        "files./etc/hosts".to_string(),
-        "env.EDITOR".to_string(),
-        "system.sysctl".to_string(),
-    ]);
+    let exclusions = PendingExclusions::from_decision_paths(
+        [
+            "packages.cargo.bat".to_string(),
+            "files./etc/hosts".to_string(),
+            "env.EDITOR".to_string(),
+            "system.sysctl".to_string(),
+        ],
+        crate::expand_tilde,
+    );
     assert!(!exclusions.withholds_action(&Action::Secret(
         crate::providers::SecretAction::Decrypt {
             source: PathBuf::from("/etc/secret.enc.yaml"),
@@ -7233,6 +7354,148 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
             .any(|e| e.resource_id.contains("bat") || e.resource_id.contains("withheld.txt")),
         "no withheld resource may reach the journal: {:?}",
         journal.iter().map(|e| &e.resource_id).collect::<Vec<_>>()
+    );
+}
+
+/// Every file under `root`, with its content, for a leak assertion that no
+/// single known surface path can miss.
+fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(path),
+                Ok(ft) if ft.is_file() => {
+                    if let Ok(body) = std::fs::read_to_string(&path) {
+                        out.push((path, body));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn auto_apply_tick_does_not_regenerate_a_withheld_env_surface() {
+    // The env arm withholds the whole surface — but apply REGENERATES that
+    // surface after the phases run, from the full declared set rather than from
+    // the pruned plan, whenever a secret resolved env vars (or a manager was
+    // bootstrapped this tick). The undecided variable must not reach the machine
+    // through that back door.
+    let tmp = tempfile::tempdir().unwrap();
+    // The home is a SEPARATE root from the config, so "nothing under the home
+    // names the variable" cannot be satisfied by the declaring profile itself.
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+    let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        seed.upsert_pending_decision(
+            "acme",
+            "env.TEAM_TOKEN",
+            "recommended",
+            "install",
+            "recommended env.TEAM_TOKEN (from acme)",
+        )
+        .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n      policy:\n        newRecommended: Accept\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    // `secrets[].envs` with an available provider fills `secret_env_collector`,
+    // which is what triggers the regeneration on EVERY apply.
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        // `envScope: Login` keeps the surface to files: the live-session arm is
+        // not redirectable by a test home, so a test that does not mean to reach
+        // the operator's session pins the scope instead.
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Login\n  env:\n    - name: TEAM_TOKEN\n      value: from-acme\n  secrets:\n    - source: \"vault://kv/token\"\n      envs:\n        - SECRET_TOKEN\n",
+    )
+    .unwrap();
+
+    struct SecretEnvHooks;
+    impl DaemonHooks for SecretEnvHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.secret_providers
+                .push(Box::new(crate::test_helpers::MockSecretProvider::new(
+                    "vault",
+                )));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &SecretEnvHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let leaked: Vec<PathBuf> = files_under(home.path())
+        .into_iter()
+        .filter(|(_, body)| body.contains("TEAM_TOKEN"))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "a variable awaiting a source decision must not reach the machine through the \
+         post-phase env regeneration; it landed in: {leaked:?}"
     );
 }
 

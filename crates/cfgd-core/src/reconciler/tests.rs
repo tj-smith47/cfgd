@@ -16436,7 +16436,7 @@ fn retain_actions_drops_the_groups_it_empties() {
 }
 
 #[test]
-fn retain_actions_and_packages_shrinks_a_batch_before_dropping_it() {
+fn retain_actions_and_batches_shrinks_a_batch_before_dropping_it() {
     // A filter that names ONE package must not take the whole batch with it:
     // the action survives carrying the packages that passed, and is dropped
     // only when nothing is left to install.
@@ -16451,9 +16451,10 @@ fn retain_actions_and_packages_shrinks_a_batch_before_dropping_it() {
         ],
     );
 
-    phase.retain_actions_and_packages(
+    phase.retain_actions_and_batches(
         |_| true,
         |manager, package| !(manager == "brew" && matches!(package, "fd" | "exa" | "neovim")),
+        |_| true,
     );
 
     assert_eq!(

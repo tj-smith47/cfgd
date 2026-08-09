@@ -385,10 +385,10 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
     }
 }
 
-/// Whether a package-batching action survives its batch being filtered: dropped
-/// only when the filter is what emptied it. An action that arrived empty is left
+/// Whether a batching action survives its batch being filtered: dropped only
+/// when the filter is what emptied it. An action that arrived empty is left
 /// exactly as any other filter found it, so
-/// [`Phase::retain_actions`] — which retains every package — stays a pure
+/// [`Phase::retain_actions`] — which retains every batch entry — stays a pure
 /// action-level filter.
 fn batch_survives(batched: usize, kept: usize) -> bool {
     batched == 0 || kept > 0
@@ -401,7 +401,7 @@ fn batch_survives(batched: usize, kept: usize) -> bool {
 /// rather than merely discouraged: no caller can write a struct literal, insert
 /// a group, or re-sort the vec. The mutators below only ever shrink an existing
 /// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`],
-/// [`Phase::retain_actions_and_packages`]) or hand out an owner's action list
+/// [`Phase::retain_actions_and_batches`]) or hand out an owner's action list
 /// ([`Phase::groups_mut`]).
 #[derive(Debug, Serialize)]
 pub struct Phase {
@@ -454,25 +454,35 @@ impl Phase {
     /// Keep only the actions passing `keep`, dropping any group left empty —
     /// the filter path (`--skip` / `--only` / `--no-scripts`).
     pub fn retain_actions(&mut self, keep: impl FnMut(&Action) -> bool) {
-        self.retain_actions_and_packages(keep, |_, _| true);
+        self.retain_actions_and_batches(keep, |_, _| true, |_| true);
     }
 
-    /// [`Phase::retain_actions`] plus per-package retention inside the two
-    /// actions that BATCH packages: `PackageAction::Install`/`Uninstall` and
-    /// `ModuleActionKind::InstallPackages`. `keep_package` is called with
-    /// `(manager, package)` for each entry of a surviving batch, and an action
-    /// whose batch empties is dropped like any other filtered action.
+    /// [`Phase::retain_actions`] plus per-entry retention inside the three
+    /// actions that BATCH their work: `PackageAction::Install`/`Uninstall` and
+    /// `ModuleActionKind::InstallPackages` (asked through `keep_package`, with
+    /// `(manager, package)`), and `ModuleActionKind::DeployFiles` (asked through
+    /// `keep_file`, with the deployed target). An action whose batch empties is
+    /// dropped like any other filtered action.
     ///
     /// The narrow mutable capability the daemon's pending-decision prune needs:
-    /// one undecided package must leave a batch its siblings still travel in.
-    /// Shrinking a batch is the ONLY in-place edit it can make — no `&mut
-    /// Action` is handed out, so the fields the persisted derivations read
+    /// one undecided package — or one undecided file a module happens to
+    /// deploy — must leave a batch its siblings still travel in. Shrinking a
+    /// batch is the ONLY in-place edit it can make — no `&mut Action` is handed
+    /// out, so the fields the persisted derivations read
     /// (`format_action_description`, journal `resource_id`) stay unreachable
     /// from a filter, and the [`Owner::sort_key`] group order still cannot move.
-    pub fn retain_actions_and_packages(
+    ///
+    /// A shrunk batch does change what those derivations RENDER for the action
+    /// that survives: `cargo:bat,ripgrep` becomes `cargo:ripgrep`, and
+    /// `module:m:files:2` becomes `module:m:files:1`. The id is a function of
+    /// the batch, so a caller whose filter varies between runs (the daemon's,
+    /// as decisions are made) records drift rows and journal entries under ids
+    /// that move with it.
+    pub fn retain_actions_and_batches(
         &mut self,
         mut keep_action: impl FnMut(&Action) -> bool,
         mut keep_package: impl FnMut(&str, &str) -> bool,
+        mut keep_file: impl FnMut(&std::path::Path) -> bool,
     ) {
         for group in &mut self.groups {
             group.actions.retain_mut(|action| {
@@ -499,6 +509,14 @@ impl Phase {
                         let batched = resolved.len();
                         resolved.retain(|pkg| keep_package(&pkg.manager, &pkg.resolved_name));
                         batch_survives(batched, resolved.len())
+                    }
+                    Action::Module(ModuleAction {
+                        kind: ModuleActionKind::DeployFiles { files },
+                        ..
+                    }) => {
+                        let batched = files.len();
+                        files.retain(|file| keep_file(&file.target));
+                        batch_survives(batched, files.len())
                     }
                     _ => true,
                 }
