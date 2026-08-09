@@ -1960,6 +1960,14 @@ fn script_failure_role_follows_non_fatal() {
 
     assert!(rendered[0].starts_with('\u{2717}'), "got: {}", rendered[0]);
     assert!(rendered[1].starts_with('\u{26A0}'), "got: {}", rendered[1]);
+    // Asserted before the placeholdering below, which would otherwise let a
+    // renderer that stopped emitting a duration pass unnoticed.
+    for line in &rendered {
+        assert!(
+            line.ends_with("s)"),
+            "each failure carries a duration: {line}"
+        );
+    }
     assert_eq!(
         without_duration(rendered[0].trim_start_matches('\u{2717}')),
         without_duration(rendered[1].trim_start_matches('\u{26A0}')),
