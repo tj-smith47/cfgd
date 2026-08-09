@@ -50,8 +50,8 @@ pub use verify::{VerifyResult, verify};
 
 pub(crate) use env::all_recorded_path_dirs;
 pub(crate) use scripts::{
-    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, build_script_env,
-    effective_continue_on_error, execute_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env,
+    build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
 
 // Re-export sibling submodule items at the parent level so the externalized

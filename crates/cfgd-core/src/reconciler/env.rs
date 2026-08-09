@@ -1,10 +1,9 @@
 use std::collections::HashSet;
 
-use crate::PathDisplayExt;
 use crate::config::{EnvScope, MergedProfile};
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
-use crate::output::{Printer, Role};
+use crate::output::Printer;
 use crate::providers::PackageManager;
 use crate::state::StateStore;
 
@@ -127,10 +126,7 @@ impl<'a> super::Reconciler<'a> {
     /// A failed record does not fail the apply — the manager is installed either
     /// way — but it does leave the PATH entry unwritten, so it is logged.
     pub(super) fn record_bootstrap_path_dirs(&self, pm: &dyn PackageManager, printer: &Printer) {
-        let cx = crate::providers::PackageContext {
-            printer,
-            state: self.state,
-        };
+        let cx = crate::providers::PackageContext::new(printer, self.state);
         // The directories land in shell files that a Git-Bash and a PowerShell
         // session on the same Windows host both read, and in a state row those
         // reads are compared against.
@@ -347,7 +343,6 @@ impl<'a> super::Reconciler<'a> {
                 }
                 crate::ensure_parent_dir(path)?;
                 crate::atomic_write_resolved_str(path, content)?;
-                printer.status_simple(Role::Ok, format!("Wrote {}", path.posix()));
                 // Resource-id key, not display: `to_posix_string` folds on every
                 // host (unlike `posix()`, a no-op on unix), so this matches the
                 // id `format_action_description` derives for the same path.
@@ -366,10 +361,6 @@ impl<'a> super::Reconciler<'a> {
                 super::env_files::guard_rc_write(rc_path, &existing)?;
                 crate::ensure_parent_dir(rc_path)?;
                 crate::atomic_write_resolved_str(rc_path, &content)?;
-                printer.status_simple(
-                    Role::Ok,
-                    format!("Injected source line into {}", rc_path.posix()),
-                );
                 Ok(format!("env:inject:{}", crate::to_posix_string(rc_path)))
             }
             EnvAction::RefreshLiveSession { vars } => {
@@ -380,11 +371,10 @@ impl<'a> super::Reconciler<'a> {
                         super::apply::ENV_SKIPPED_SUFFIX
                     ));
                 }
-                printer.status_simple(
-                    Role::Ok,
-                    format!("Refreshed {changed} live session variable(s)"),
-                );
-                // The count belongs in the status line above, never in the id:
+                // The changed count is not the id: the same surface reached
+                // twice in one apply (Env phase, then the late regeneration)
+                // would otherwise return two different ids and be recorded as
+                // two separate results.
                 // the same surface reached twice in one apply (Env phase, then
                 // the late regeneration) would otherwise return two different
                 // ids and be recorded as two separate results.

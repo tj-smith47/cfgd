@@ -1015,7 +1015,7 @@ pub fn test_package_context<'a>(
     printer: &'a crate::output::Printer,
     state: &'a crate::state::StateStore,
 ) -> crate::providers::PackageContext<'a> {
-    crate::providers::PackageContext { printer, state }
+    crate::providers::PackageContext::new(printer, state)
 }
 
 // ---------------------------------------------------------------------------

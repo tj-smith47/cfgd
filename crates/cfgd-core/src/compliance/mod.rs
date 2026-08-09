@@ -111,7 +111,7 @@ pub fn collect_snapshot(
         arch: platform.arch.as_str().to_owned(),
     };
 
-    let cx = PackageContext { printer, state };
+    let cx = PackageContext::new(printer, state);
 
     let mut checks = Vec::new();
 

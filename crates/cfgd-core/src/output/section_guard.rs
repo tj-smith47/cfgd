@@ -122,6 +122,30 @@ impl<'p> SectionGuard<'p> {
             .with_subject_style(self.renderer.theme.primary.clone())
     }
 
+    /// A line belonging to the status directly above it rather than to this
+    /// section — a package manager's post-install note under the install that
+    /// produced it. One level deeper than this section's own statuses, so it
+    /// reads as attached to that line instead of as another action in the
+    /// group. Never padded to the live column: it carries no trailing field,
+    /// which is the same test the buffered path applies.
+    pub fn attached_status(&self, role: Role, subject: impl Into<String>) -> &Self {
+        let subject = subject.into();
+        self.renderer.render_status(
+            self.sink.as_ref(),
+            self.depth + 1,
+            &StatusFields {
+                role,
+                subject: &subject,
+                detail: None,
+                duration: None,
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        self
+    }
+
     /// Mark this section live: its statuses render as they complete rather
     /// than at close, right-padded to `width` so the trailing muted column
     /// still aligns. `width` is computed from the plan before the run, because

@@ -125,10 +125,7 @@ pub fn cmd_diff(
         // cfgd-installed set from state to bound prune the same way apply does.
         let state = open_state_store(cli.state_dir.as_deref())?;
         let cfgd_installed = cfgd_installed_packages(&state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext {
-            printer,
-            state: &state,
-        };
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
         let pkg_actions = packages::plan_packages(
             &resolved.merged,
             &resolved_modules,
@@ -231,10 +228,7 @@ fn cmd_diff_module(
     printer.kv_block([("Module".to_string(), mod_name.to_string())]);
 
     let state = open_state_store(cli.state_dir.as_deref())?;
-    let pkg_cx = cfgd_core::providers::PackageContext {
-        printer,
-        state: &state,
-    };
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
 
     let mut diff_payload = DiffOutput::default();
     let mut has_file_diff = false;
@@ -655,10 +649,7 @@ mod tests {
 
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let pkg = resolved_pkg("chocolatey", "Wget");
         assert!(
             package_missing_drift(&pkg, &mgr_map, &cx).is_none(),
@@ -682,10 +673,7 @@ mod tests {
 
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let pkg = resolved_pkg("chocolatey", "wget");
         let drift = package_missing_drift(&pkg, &mgr_map, &cx).expect("absent package must drift");
         assert_eq!(drift.shape, "missing");
@@ -698,10 +686,7 @@ mod tests {
             std::collections::HashMap::new();
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let pkg = resolved_pkg("script", "rustup");
         assert!(package_missing_drift(&pkg, &mgr_map, &cx).is_none());
     }

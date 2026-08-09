@@ -247,10 +247,7 @@ pub fn run_apply(
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext {
-            printer,
-            state: &state,
-        };
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
         let pkg = packages::plan_packages(
             &effective_resolved.merged,
             &[],
@@ -710,7 +707,7 @@ fn gc_stale_package_tracking(
             return;
         }
     };
-    let cx = cfgd_core::providers::PackageContext { printer, state };
+    let cx = cfgd_core::providers::PackageContext::new(printer, state);
     match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, &cx) {
         Ok(stale) => {
             for (mgr, id) in stale {
@@ -744,7 +741,7 @@ fn gc_orphaned_custom_packages(
     if orphans.is_empty() {
         return;
     }
-    let cx = cfgd_core::providers::PackageContext { printer, state };
+    let cx = cfgd_core::providers::PackageContext::new(printer, state);
     for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
         let rid = format!("{mgr}/{pkg}");
         if let Err(e) = state.remove_managed_resource("package", &rid) {

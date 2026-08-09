@@ -29,6 +29,7 @@ pub struct StatusBuilder<'p> {
     pub(crate) duration: Option<Duration>,
     pub(crate) target: Option<PathBuf>,
     pub(crate) label: Option<StatusLabel>,
+    pub(crate) marker: Option<StatusLabel>,
     pub(crate) subject_style: Option<ThemedStyle>,
     pub(crate) detail_style: Option<ThemedStyle>,
     /// Lifetime parameter binding to either Printer or SectionGuard.
@@ -55,6 +56,7 @@ impl<'p> StatusBuilder<'p> {
             duration: None,
             target: None,
             label: None,
+            marker: None,
             subject_style: None,
             detail_style: None,
             _phantom: std::marker::PhantomData,
@@ -113,6 +115,19 @@ impl<'p> StatusBuilder<'p> {
     /// The label always renders at end-of-subject — the API cannot embed
     /// styled segments mid-subject, which would break the outer role color
     /// via the inner SGR reset.
+    /// A leading styled marker naming the hook a script body belongs to
+    /// (`postApply`), rendered as `postApply: <body>`. The colon is the
+    /// caller's; the role is not — it is always `Role::Accent`, because which
+    /// slot a marker paints in is a theme mapping rather than a per-call-site
+    /// choice.
+    pub fn marker(mut self, text: impl Into<String>) -> Self {
+        self.marker = Some(StatusLabel {
+            role: Role::Accent,
+            text: text.into(),
+        });
+        self
+    }
+
     pub fn label(mut self, role: Role, text: impl Into<String>) -> Self {
         self.label = Some(StatusLabel {
             role,
@@ -128,7 +143,12 @@ impl Drop for StatusBuilder<'_> {
         // renderer-owned label SGR (foreign `\x1b[0m` in a captured error
         // would otherwise prematurely close the role styling at the inner
         // reset). The label SGR is appended after sanitation so it survives.
-        self.subject = finalize_subject(&self.renderer.theme, &self.subject, self.label.as_ref());
+        self.subject = finalize_subject(
+            &self.renderer.theme,
+            &self.subject,
+            self.marker.as_ref(),
+            self.label.as_ref(),
+        );
         let detail = self.detail.as_deref();
         let target = self.target.as_deref();
         self.renderer.render_status(

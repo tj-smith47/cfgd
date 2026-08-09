@@ -557,7 +557,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.arg("install").arg("-g").args(packages);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, "npm", &mut cmd, &label, "install")?;
+        run_pkg_cmd_live(cx.printer, cx.notes, "npm", &mut cmd, &label, "install")?;
         Ok(())
     }
 
@@ -570,7 +570,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.arg("uninstall").arg("-g").args(packages);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, "npm", &mut cmd, &label, "uninstall")?;
+        run_pkg_cmd_live(cx.printer, cx.notes, "npm", &mut cmd, &label, "uninstall")?;
         Ok(())
     }
 
@@ -579,7 +579,14 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.args(["update", "-g"]);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, "npm", &mut cmd, "npm update -g", "update")?;
+        run_pkg_cmd_live(
+            cx.printer,
+            cx.notes,
+            "npm",
+            &mut cmd,
+            "npm update -g",
+            "update",
+        )?;
         Ok(())
     }
 
@@ -1144,10 +1151,7 @@ mod tests {
             // prefix and spawn npm's prefix probe — does exactly what
             // planning is asserted not to.
             let printer = test_printer();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             NpmManager
                 .install(&["cfgd-fixture-check-pkg".to_string()], &cx)
                 .expect("install");
@@ -1171,10 +1175,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager
                 .install(&["typescript".into(), "eslint".into()], &cx)
                 .expect("Ok");
@@ -1196,10 +1197,7 @@ mod tests {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager.install(&[], &cx).expect("Ok");
             assert_eq!(s.invocation_count(), 0);
         }
@@ -1213,10 +1211,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager
                 .uninstall(&["typescript".into()], &cx)
                 .expect("Ok");
@@ -1234,10 +1229,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager.update(&cx).expect("Ok");
             let argv = s.argv_log();
             assert!(argv.contains("update -g"));
@@ -1295,10 +1287,7 @@ mod tests {
             let (_s, _prefix_dir) = NpmShim::with_writable_prefix(1, json, "peer dep issues");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let pkgs = NpmManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("typescript"));
@@ -1315,10 +1304,7 @@ mod tests {
             let (_s, _prefix_dir) = NpmShim::with_writable_prefix(0, json, "");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let pkgs = NpmManager
                 .installed_packages_with_versions(&cx)
                 .expect("Ok");
@@ -1341,10 +1327,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "{}", "");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             NpmManager.installed_packages(&cx).expect("Ok");
             let argv = s.argv_log();
             assert!(
@@ -1370,10 +1353,7 @@ mod tests {
             let global_prefix = tmp_home.path().join(".npm-global");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let dirs = cfgd_core::with_test_home(tmp_home.path(), || {
                 NpmManager.installed_packages(&cx).expect("Ok");
                 npm_path_dirs_for(false)
@@ -1428,10 +1408,7 @@ mod tests {
             let _home_guard = cfgd_core::with_test_home_guard(home.path());
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let err = NpmManager
                 .installed_packages(&cx)
                 .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
@@ -1464,10 +1441,7 @@ mod tests {
             let _home_guard = cfgd_core::with_test_home_guard(home.path());
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let err = NpmManager
                 .installed_packages_with_versions(&cx)
                 .expect_err("ENOENT spawn must surface as CommandFailed");
@@ -1489,10 +1463,7 @@ mod tests {
             let (_s, _prefix_dir) = NpmShim::with_writable_prefix(0, "this is not json", "");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let err = NpmManager
                 .installed_packages_with_versions(&cx)
                 .expect_err("invalid JSON must surface as ListFailed");
@@ -1632,14 +1603,8 @@ mod tests {
             // hit, which proves nothing about the resolver itself.
             let install_state = cfgd_core::test_helpers::test_state();
             let installed_state = cfgd_core::test_helpers::test_state();
-            let install_cx = PackageContext {
-                printer: &printer,
-                state: &install_state,
-            };
-            let installed_cx = PackageContext {
-                printer: &printer,
-                state: &installed_state,
-            };
+            let install_cx = PackageContext::new(&printer, &install_state);
+            let installed_cx = PackageContext::new(&printer, &installed_state);
 
             let (install_result, installed_result) = cfgd_core::with_test_home(home.path(), || {
                 with_test_elevated(false, || {

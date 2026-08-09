@@ -374,10 +374,7 @@ fn watch_package_manager_not_available() {
     let registry = ProviderRegistry::new();
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_watched_package_manager_checks("nonexistent-pm", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "watchPackage");
@@ -402,10 +399,7 @@ fn watch_package_manager_returns_installed() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_watched_package_manager_checks("mock", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 2);
     assert!(checks.iter().all(|c| c.category == "watchPackage"));
@@ -512,10 +506,7 @@ fn collect_package_checks_installed_package_compliant() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
@@ -545,10 +536,7 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(
@@ -573,10 +561,7 @@ fn collect_package_checks_missing_package_violation() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
@@ -602,10 +587,7 @@ fn collect_package_checks_empty_desired_skips_manager() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert!(checks.is_empty(), "no desired packages = no checks");
 }
@@ -627,10 +609,7 @@ fn collect_package_checks_manager_query_error_emits_warning_and_skips_packages()
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1, "single Warning per unqueryable manager");
     assert_eq!(checks[0].category, "package");
@@ -664,10 +643,7 @@ fn watch_package_manager_query_error_emits_warning() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_watched_package_manager_checks("snap", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "watchPackage");
@@ -703,10 +679,7 @@ fn collect_package_checks_multiple_managers() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 2);
     let pipx_check = checks
@@ -1401,10 +1374,7 @@ fn collect_package_checks_includes_module_only_package() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[m], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].name.as_deref(), Some("ripgrep"));
@@ -1435,10 +1405,7 @@ fn collect_package_checks_skips_unavailable_manager() {
     let registry = ProviderRegistry::new();
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[m], &registry, &cx).unwrap();
     assert!(
         checks.is_empty(),

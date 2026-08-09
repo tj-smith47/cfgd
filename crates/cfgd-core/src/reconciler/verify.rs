@@ -43,7 +43,7 @@ pub fn verify(
     modules: &[ResolvedModule],
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
-    let cx = crate::providers::PackageContext { printer, state };
+    let cx = crate::providers::PackageContext::new(printer, state);
 
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the

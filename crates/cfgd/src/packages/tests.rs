@@ -2292,8 +2292,6 @@ fn apply_packages_unknown_manager_skipped() {
     apply_packages(&actions, &[], &cx).unwrap();
 }
 
-// --- PostInstallNote and print_caveats ---
-
 // --- SimpleManager installed_packages_with_versions default ---
 
 #[test]
@@ -2826,8 +2824,6 @@ fn apply_packages_mixed_actions() {
 
 // --- extract_caveats comprehensive ---
 
-// --- print_caveats with multiple notes ---
-
 // --- Brewfile parsing edge cases ---
 
 #[test]
@@ -3283,8 +3279,6 @@ fn mock_manager_installed_packages_empty() {
 // =========================================================================
 // Additional coverage — output verification, error paths
 // =========================================================================
-
-// --- print_caveats output verification ---
 
 // --- ScriptedManager error variants ---
 

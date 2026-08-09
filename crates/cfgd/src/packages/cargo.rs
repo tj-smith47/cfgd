@@ -76,6 +76,7 @@ impl PackageManager for CargoManager {
             let label = format!("cargo install {}", pkg);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "cargo",
                 cargo_cmd().args(["install", pkg]),
                 &label,
@@ -94,6 +95,7 @@ impl PackageManager for CargoManager {
             let label = format!("cargo uninstall {}", pkg);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "cargo",
                 cargo_cmd().args(["uninstall", pkg]),
                 &label,

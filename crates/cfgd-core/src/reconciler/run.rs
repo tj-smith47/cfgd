@@ -268,8 +268,35 @@ impl<'a> ApplyRun<'a> {
         if let Some(profile) = self.ctx.profile {
             rows.push(("Profile".to_string(), profile.to_string()));
         }
-        if !self.ctx.modules.is_empty() {
-            rows.push(("Modules".to_string(), self.ctx.modules.join(", ")));
+        // A platform-gated module contributed no work, so it leaves the name
+        // list and returns as an annotation on it. That annotation IS the
+        // render of `PhaseName::Modules`, which prints no block of its own.
+        let skips = platform_skips(self.plan);
+        let names: Vec<&str> = self
+            .ctx
+            .modules
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !skips.iter().any(|(skipped, _)| skipped == name))
+            .collect();
+        let annotation = skips
+            .iter()
+            .map(|(name, reason)| format!("{name} skipped: {reason}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let modules_row = match (names.is_empty(), annotation.is_empty()) {
+            (_, true) => names.join(", "),
+            // Every module gated off: the parentheses would enclose the whole
+            // value, so the annotation stands alone as the row.
+            (true, false) => printer.muted(&annotation),
+            (false, false) => format!(
+                "{} {}",
+                names.join(", "),
+                printer.muted(&format!("({annotation})"))
+            ),
+        };
+        if !modules_row.is_empty() {
+            rows.push(("Modules".to_string(), modules_row));
         }
         if let Some(trigger) = self.ctx.trigger {
             rows.push(("Trigger".to_string(), trigger.to_string()));
@@ -490,6 +517,30 @@ type ScopedGroup<'p> = (&'p OwnerGroup, Vec<(usize, &'p Action)>);
 /// One phase's renderable block: the phase, and every group in it holding
 /// in-scope work.
 type ScopedPhase<'p> = (&'p Phase, Vec<ScopedGroup<'p>>);
+
+/// The platform-gated module skips a plan carries, as `(module, reason)` in
+/// plan order.
+///
+/// The reason is the action's own field rather than a re-derivation from the
+/// module, so the header row and the `-o json` payload carry the same string.
+fn platform_skips(plan: Option<&Plan>) -> Vec<(&str, &str)> {
+    let Some(plan) = plan else {
+        return Vec::new();
+    };
+    plan.phases
+        .iter()
+        .filter(|phase| phase.name == PhaseName::Modules)
+        .flat_map(|phase| phase.owned_actions())
+        .filter_map(|(_, action)| match action {
+            Action::Module(crate::reconciler::ModuleAction {
+                module_name,
+                kind: crate::reconciler::ModuleActionKind::Skip { reason },
+                ..
+            }) => Some((module_name.as_str(), reason.as_str())),
+            _ => None,
+        })
+        .collect()
+}
 
 /// The phases and groups that hold in-scope work, in plan order.
 ///

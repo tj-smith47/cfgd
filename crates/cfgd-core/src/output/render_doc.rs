@@ -51,7 +51,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             // renderer-owned label SGR; matches `StatusBuilder::Drop`'s
             // boundary handling so both Doc and streaming paths stay
             // byte-identical.
-            let subject_owned = finalize_subject(&renderer.theme, subject, label.as_ref());
+            let subject_owned = finalize_subject(&renderer.theme, subject, None, label.as_ref());
             renderer.render_status(
                 sink,
                 depth,

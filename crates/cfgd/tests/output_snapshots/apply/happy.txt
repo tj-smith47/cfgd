@@ -4,4 +4,8 @@ Apply
   Phases   Files
   Actions  1 planned
 
+Phase: Files
+  profile:tiny
+    ✓ create <TARGET>
+
 ✓ Apply complete — 1 action(s) succeeded (XXs)

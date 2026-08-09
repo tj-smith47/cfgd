@@ -293,10 +293,7 @@ mod tests {
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let drift = live_drift_results(
             dir.path(),
             &resolved,
@@ -323,10 +320,7 @@ mod tests {
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let drift = live_drift_results(
             dir.path(),
             &resolved,
@@ -512,10 +506,7 @@ mod tests {
         let modules = vec![module_with_file("accmod", mod_source, mod_target)];
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let drift = live_drift_results(
             dir.path(),
             &resolved,
@@ -592,10 +583,7 @@ mod tests {
         let modules = vec![module_with_package("dev", "brew", "ripgrep")];
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let drift = live_drift_results(
             dir.path(),
             &resolved,
@@ -643,10 +631,7 @@ mod tests {
 
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let drift = live_drift_results(
             dir.path(),
             &resolved,
@@ -682,10 +667,7 @@ mod tests {
         let modules = vec![module_with_file("accmod", mod_source, mod_target)];
         let (printer, _cap) = Printer::for_test_doc();
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext {
-            printer: &printer,
-            state: &state,
-        };
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
         let drift = live_drift_results(
             dir.path(),
             &resolved,

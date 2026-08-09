@@ -159,6 +159,7 @@ fn execute_script_workdir_override_absolute() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("script with workdir override must run");
     assert!(
@@ -203,6 +204,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             &printer,
             None,
             None,
+            ScriptReport::default(),
         )
         .expect("workdir ~ must run");
         assert!(home.path().join("from_tilde").exists());
@@ -233,6 +235,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             &printer,
             None,
             None,
+            ScriptReport::default(),
         )
         .expect("workdir $CFGD_MODULE_DIR must run");
         assert!(module_dir.path().join("from_var").exists());
@@ -279,6 +282,7 @@ fn execute_script_rejects_missing_working_dir() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("missing working_dir must error");
 
@@ -320,6 +324,7 @@ fn execute_script_rejects_non_directory_working_dir() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("non-directory working_dir must error");
 
@@ -355,6 +360,7 @@ fn execute_script_runs_with_valid_working_dir() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("valid working_dir + `true` must succeed");
 
@@ -386,6 +392,7 @@ fn execute_script_return_value_preserves_raw_multiline_body() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("multi-line inline script must succeed");
 
@@ -592,6 +599,7 @@ fn shell_bash_runs_inline_with_bash() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("bash inline script must succeed");
 
@@ -634,6 +642,7 @@ fn shell_field_rejected_on_file_scripts() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("shell field on file script must be rejected");
 
@@ -794,6 +803,7 @@ fn shell_auto_on_file_scripts_allowed() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_ok(), "Auto shell on file scripts must be allowed");
 }
@@ -824,6 +834,7 @@ fn execute_script_uses_shell_override_for_inline_command() {
         &printer,
         Some(ScriptShell::Bash),
         None,
+        ScriptReport::default(),
     )
     .expect("inline script with bash override must succeed");
 
@@ -860,6 +871,7 @@ fn execute_script_override_ignored_on_file_shebang() {
         &printer,
         Some(ScriptShell::Bash),
         None,
+        ScriptReport::default(),
     )
     .expect("override on file-shebang script must not error");
 
@@ -905,6 +917,7 @@ fn execute_script_entry_shell_on_file_script_still_errors_with_override() {
         &printer,
         Some(ScriptShell::Bash),
         None,
+        ScriptReport::default(),
     )
     .expect_err("entry-level shell on a file script must still be rejected");
 
@@ -958,6 +971,7 @@ fn run_guarded(entry: &ScriptEntry, working_dir: &std::path::Path) -> (bool, boo
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("guarded script must not error");
     let ran = working_dir.join("ran.marker").exists();
@@ -1148,6 +1162,7 @@ fn execute_script_guard_timeout_returns_err() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
 
     match result {
@@ -1220,6 +1235,7 @@ fn interactive_script_without_tty_skips_with_warn() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("interactive skip must not error");
     printer.flush();
@@ -1256,6 +1272,7 @@ fn guard_skip_emits_skipped_status_line() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("skip must not error");
     printer.flush();
@@ -1298,6 +1315,7 @@ fn execute_script_absolute_run_path_runs_as_file() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("absolute executable run path must run directly");
     assert!(changed, "a zero-exit file script reports changed=true");
@@ -1327,6 +1345,7 @@ fn execute_script_nonzero_exit_errors_with_exit_code() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("a non-zero exit must surface as Err");
 
@@ -1384,6 +1403,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("a missing interpreter must surface as Err, not hang");
 
@@ -1567,6 +1587,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("creates guard must skip cleanly, not error");
 
@@ -1584,5 +1605,369 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
     assert!(
         !rendered.contains("echo two") && !rendered.contains("echo three"),
         "only the first line of a multi-line inline script may reach a status subject: {rendered:?}"
+    );
+}
+
+// --- one status line per `execute_script`, whatever the exit ---
+
+/// The four glyphs a settled status can carry. `Running`'s `◐` is the live
+/// window's own label, not an outcome, so it is deliberately absent.
+const SETTLED_GLYPHS: [char; 4] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}'];
+
+fn settled_lines(out: &str) -> Vec<String> {
+    out.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(SETTLED_GLYPHS))
+        .map(str::to_string)
+        .collect()
+}
+
+fn script(run: &str) -> ScriptEntry {
+    ScriptEntry::Full {
+        run: run.into(),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
+        workdir: None,
+    }
+}
+
+fn with_guard(mut entry: ScriptEntry, f: impl FnOnce(&mut ScriptEntry)) -> ScriptEntry {
+    f(&mut entry);
+    entry
+}
+
+/// A `chmod +x` file whose shebang names an interpreter that does not exist:
+/// the pre-window spawn seam, which fails identically on every host and needs
+/// no absent binary of its own.
+#[cfg(unix)]
+fn bad_shebang_script(dir: &std::path::Path) -> ScriptEntry {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("bad-shebang.sh");
+    std::fs::write(&path, "#!/nonexistent/interp\ntrue\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Absolute, because `drive` runs every case from a tempdir of its own and a
+    // relative name that resolves to nothing lands in the inline-command
+    // branch instead — a case that passes for the wrong reason.
+    script(&path.display().to_string())
+}
+
+/// Run one entry through the shipped wrapper and return the settled lines it
+/// emitted, with `stdin_is_tty` supplied so the interactive arm is reachable.
+fn drive(entry: &ScriptEntry, stdin_is_tty: bool, timeout_ms: u64) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let _ = super::execute_script_with_tty(
+        stdin_is_tty,
+        entry,
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_millis(timeout_ms),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    );
+    drop(printer);
+    settled_lines(&crate::output::strip_ansi(&cap.human()))
+}
+
+#[cfg(unix)]
+#[test]
+fn every_script_exit_emits_one_status() {
+    let spawn_dir = tempfile::tempdir().unwrap();
+    let existing = tempfile::tempdir().unwrap();
+    let creates_path = existing.path().join("already-there");
+    std::fs::write(&creates_path, "x").unwrap();
+
+    let cases: Vec<(&str, ScriptEntry, bool, u64, char)> = vec![
+        (
+            "creates path exists",
+            with_guard(script("true"), |e| {
+                if let ScriptEntry::Full { creates, .. } = e {
+                    *creates = Some(creates_path.display().to_string());
+                }
+            }),
+            false,
+            5_000,
+            '\u{2014}',
+        ),
+        (
+            "onlyIf fails",
+            with_guard(script("true"), |e| {
+                if let ScriptEntry::Full { only_if, .. } = e {
+                    *only_if = Some("exit 1".to_string());
+                }
+            }),
+            false,
+            5_000,
+            '\u{2014}',
+        ),
+        (
+            "unless holds",
+            with_guard(script("true"), |e| {
+                if let ScriptEntry::Full { unless, .. } = e {
+                    *unless = Some("true".to_string());
+                }
+            }),
+            false,
+            5_000,
+            '\u{2014}',
+        ),
+        (
+            "interactive without a tty",
+            with_guard(script("true"), |e| {
+                if let ScriptEntry::Full { interactive, .. } = e {
+                    *interactive = true;
+                }
+            }),
+            false,
+            5_000,
+            '\u{26A0}',
+        ),
+        (
+            "interactive success",
+            with_guard(script("true"), |e| {
+                if let ScriptEntry::Full { interactive, .. } = e {
+                    *interactive = true;
+                }
+            }),
+            true,
+            5_000,
+            '\u{2713}',
+        ),
+        (
+            "interactive failure",
+            with_guard(script("exit 3"), |e| {
+                if let ScriptEntry::Full { interactive, .. } = e {
+                    *interactive = true;
+                }
+            }),
+            true,
+            5_000,
+            '\u{2717}',
+        ),
+        ("windowed success", script("true"), false, 5_000, '\u{2713}'),
+        (
+            "windowed failure",
+            script("exit 1"),
+            false,
+            5_000,
+            '\u{2717}',
+        ),
+        (
+            "missing interpreter",
+            bad_shebang_script(spawn_dir.path()),
+            false,
+            5_000,
+            '\u{2717}',
+        ),
+        (
+            // The guard body outlives the timeout, so `run_guard_command`
+            // returns a real error before any window is opened. No absent
+            // binary is needed and nothing spawned can hang the suite.
+            "guard command times out",
+            with_guard(script("true"), |e| {
+                if let ScriptEntry::Full { only_if, .. } = e {
+                    *only_if = Some("sleep 5".to_string());
+                }
+            }),
+            false,
+            50,
+            '\u{2717}',
+        ),
+    ];
+
+    for (label, entry, tty, timeout_ms, glyph) in cases {
+        let lines = drive(&entry, tty, timeout_ms);
+        assert_eq!(
+            lines.len(),
+            1,
+            "{label}: expected one status, got {lines:?}"
+        );
+        assert!(
+            lines[0].starts_with(glyph),
+            "{label}: expected role glyph {glyph}, got {}",
+            lines[0]
+        );
+    }
+
+    // The interactive-success row asserts more than its glyph: a silent `Ok`
+    // rendered as a `Fail` is exactly what the outcome-branching tail exists
+    // to prevent, so it must carry a duration and no ` — ` detail.
+    let interactive_ok = drive(
+        &with_guard(script("true"), |e| {
+            if let ScriptEntry::Full { interactive, .. } = e {
+                *interactive = true;
+            }
+        }),
+        true,
+        5_000,
+    );
+    assert!(
+        !interactive_ok[0].contains(" \u{2014} "),
+        "an attended success carries no error detail: {}",
+        interactive_ok[0]
+    );
+    assert!(
+        interactive_ok[0].ends_with("s)"),
+        "an attended success carries its elapsed duration: {}",
+        interactive_ok[0]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_interpreter_emits_one_status_without_opening_a_window() {
+    // A file `run:` whose shebang names an interpreter that does not exist:
+    // `resolved.exists()` and the exec bit both pass, so the file branch is
+    // taken and `execve` answers ENOENT for the INTERPRETER — above
+    // `output_window_at`, which is the ordering this test pins.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script_path = dir.path().join("bad-shebang.sh");
+    std::fs::write(&script_path, "#!/nonexistent/interp\ntrue\n").unwrap();
+    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let result = execute_script(
+        &script("bad-shebang.sh"),
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    );
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(result.is_err(), "a missing interpreter must not succeed");
+    let lines = settled_lines(&out);
+    assert_eq!(lines.len(), 1, "exactly one status line: {out}");
+    assert!(lines[0].starts_with('\u{2717}'), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains(" \u{2014} "),
+        "the collapsed spawn error is the detail: {}",
+        lines[0]
+    );
+    assert!(
+        !out.contains('\u{25D0}'),
+        "no window may open before the spawn fails: {out}"
+    );
+    assert!(
+        !out.contains('\u{2299}'),
+        "a dropped window's Info line is the two-line regression: {out}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn script_failure_role_follows_non_fatal() {
+    let mut rendered = Vec::new();
+    for non_fatal in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        let _ = execute_script(
+            &script("exit 1"),
+            dir.path(),
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+            None,
+            ScriptReport {
+                marker: None,
+                non_fatal,
+            },
+        );
+        drop(printer);
+        let mut lines = settled_lines(&crate::output::strip_ansi(&cap.human()));
+        assert_eq!(lines.len(), 1, "one line per invocation: {lines:?}");
+        rendered.push(lines.remove(0));
+    }
+
+    assert!(rendered[0].starts_with('\u{2717}'), "got: {}", rendered[0]);
+    assert!(rendered[1].starts_with('\u{26A0}'), "got: {}", rendered[1]);
+    assert_eq!(
+        rendered[0].trim_start_matches('\u{2717}'),
+        rendered[1].trim_start_matches('\u{26A0}'),
+        "only the role differs between a fatal and a non-fatal failure"
+    );
+}
+
+#[test]
+fn script_status_fail_after_window_emits_one_fail() {
+    // The post-window `?` — `child.try_wait()`, a `waitpid` failure no test can
+    // provoke portably — driven on the type that makes a second line
+    // impossible.
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    {
+        let mut st = ScriptStatus::new(
+            &printer,
+            "exit 1".to_string(),
+            ScriptReport {
+                marker: Some("postApply"),
+                non_fatal: false,
+            },
+        );
+        st.open_window("Running script: exit 1");
+        st.finish_fail("waitpid failed", None);
+    }
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    let lines = settled_lines(&out);
+
+    assert_eq!(lines.len(), 1, "exactly one settled line: {out}");
+    assert!(lines[0].starts_with('\u{2717}'), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains("postApply: exit 1"),
+        "the marked subject, never the spinner's label: {}",
+        lines[0]
+    );
+    assert!(
+        !out.contains('\u{2299}'),
+        "the window was finished, not dropped: {out}"
+    );
+}
+
+#[test]
+fn script_status_status_after_open_window_emits_one_line() {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    {
+        let mut st = ScriptStatus::new(
+            &printer,
+            "exit 1".to_string(),
+            ScriptReport {
+                marker: Some("postApply"),
+                non_fatal: false,
+            },
+        );
+        st.open_window("Running script: exit 1");
+        st.status(crate::output::Role::Skipped, Some("creates path exists"));
+    }
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    let lines = settled_lines(&out);
+
+    assert_eq!(lines.len(), 1, "exactly one settled line: {out}");
+    assert!(lines[0].starts_with('\u{2014}'), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains("postApply: exit 1"),
+        "the marked subject: {}",
+        lines[0]
+    );
+    assert!(
+        !out.contains('\u{2299}'),
+        "no Status(Info) from the window's Drop: {out}"
     );
 }

@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::errors::Result;
-use crate::output::{Printer, Role};
-use crate::providers::{PackageAction, PackageContext, PackageManager};
+use crate::output::Printer;
+use crate::providers::{NoteSink, PackageAction, PackageContext, PackageManager};
 
 /// Compute stale package-tracking rows to garbage-collect: cfgd-tracked packages
 /// whose identity is no longer reported by their manager's `installed_packages`.
@@ -48,11 +48,9 @@ impl<'a> super::Reconciler<'a> {
         &self,
         action: &PackageAction,
         printer: &Printer,
+        notes: &NoteSink,
     ) -> Result<String> {
-        let cx = PackageContext {
-            printer,
-            state: self.state,
-        };
+        let cx = PackageContext::with_notes(printer, self.state, notes);
         match action {
             PackageAction::Bootstrap { manager, .. } => {
                 // Find in ALL managers (not just available — it isn't available yet)
@@ -134,12 +132,7 @@ impl<'a> super::Reconciler<'a> {
                 }
                 .into())
             }
-            PackageAction::Skip {
-                manager, reason, ..
-            } => {
-                printer.status_simple(Role::Warn, format!("{}: {}", manager, reason));
-                Ok(format!("package:{}:skip", manager))
-            }
+            PackageAction::Skip { manager, .. } => Ok(format!("package:{}:skip", manager)),
         }
     }
 }

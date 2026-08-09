@@ -106,6 +106,7 @@ impl PackageManager for NixManager {
                 let label = format!("nix profile install nixpkgs#{}", pkg);
                 run_pkg_cmd_live(
                     cx.printer,
+                    cx.notes,
                     "nix",
                     nix_cmd().args(["profile", "install", &format!("nixpkgs#{}", pkg)]),
                     &label,
@@ -115,6 +116,7 @@ impl PackageManager for NixManager {
                 let label = format!("nix-env -iA nixpkgs.{}", pkg);
                 run_pkg_cmd_live(
                     cx.printer,
+                    cx.notes,
                     "nix",
                     nix_env_cmd().args(["-iA", &format!("nixpkgs.{}", pkg)]),
                     &label,
@@ -141,6 +143,7 @@ impl PackageManager for NixManager {
                 let label = format!("nix profile remove {}", pkg);
                 run_pkg_cmd_live(
                     cx.printer,
+                    cx.notes,
                     "nix",
                     nix_cmd().args(["profile", "remove", pkg]),
                     &label,
@@ -150,6 +153,7 @@ impl PackageManager for NixManager {
                 let label = format!("nix-env -e {}", pkg);
                 run_pkg_cmd_live(
                     cx.printer,
+                    cx.notes,
                     "nix",
                     nix_env_cmd().args(["-e", pkg]),
                     &label,

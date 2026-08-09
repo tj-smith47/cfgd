@@ -300,6 +300,16 @@ impl Printer {
         super::renderer::DepthInheritGuard::acquire(&self.renderer)
     }
 
+    /// `theme.muted` applied to `text` — the one way a caller composes a
+    /// subordinate fragment into a value the renderer receives as a single
+    /// string (a kv row whose tail qualifies its head, and which therefore has
+    /// no field of its own to carry a style). A colour-disabled stream answers
+    /// the text unchanged, because `ThemedStyle` decides that and not the
+    /// caller. Never reach for `console` to do this at a call site.
+    pub fn muted(&self, text: &str) -> String {
+        self.renderer.theme.muted.apply_to(text).to_string()
+    }
+
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) {

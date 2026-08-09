@@ -207,6 +207,16 @@ impl super::Printer {
     ///
     /// Every surface that displays a child process's muted output goes through
     /// this — there is no second tail implementation to drift from it.
+    /// Open a bounded output window at the ambient depth — the innermost open
+    /// section while a `DepthInheritGuard` is held, column 0 otherwise. The
+    /// same relationship [`Printer::run`] has to `run_command`: a caller
+    /// inside a section gets its window indented under the line it belongs to
+    /// without naming a depth it would have to keep in sync.
+    #[must_use]
+    pub fn output_window(&self, label: impl Into<String>) -> OutputWindow<'_> {
+        self.output_window_at(self.renderer.inherit_depth(), label)
+    }
+
     #[must_use]
     pub fn output_window_at(&self, depth: usize, label: impl Into<String>) -> OutputWindow<'_> {
         let label = label.into();
@@ -228,12 +238,6 @@ impl super::Printer {
             _phantom: PhantomData,
         };
         OutputWindow::new(spinner, label)
-    }
-
-    /// Top-level [`Printer::output_window_at`].
-    #[must_use]
-    pub fn output_window(&self, label: impl Into<String>) -> OutputWindow<'_> {
-        self.output_window_at(0, label)
     }
 }
 

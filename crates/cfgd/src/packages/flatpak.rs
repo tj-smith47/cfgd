@@ -70,6 +70,7 @@ impl PackageManager for FlatpakManager {
             let label = format!("flatpak install -y {}", pkg);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "flatpak",
                 flatpak_cmd().args(["install", "-y", pkg]),
                 &label,
@@ -84,6 +85,7 @@ impl PackageManager for FlatpakManager {
             let label = format!("flatpak uninstall -y {}", pkg);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "flatpak",
                 flatpak_cmd().args(["uninstall", "-y", pkg]),
                 &label,
@@ -96,6 +98,7 @@ impl PackageManager for FlatpakManager {
     fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "flatpak",
             flatpak_cmd().args(["update", "-y"]),
             "flatpak update -y",

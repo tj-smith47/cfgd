@@ -258,7 +258,7 @@ fn collect_doctor_output(
     let doctor_state = open_state_store(cli.state_dir.as_deref()).ok();
     let doctor_cx = doctor_state
         .as_ref()
-        .map(|state| cfgd_core::providers::PackageContext { printer, state });
+        .map(|state| cfgd_core::providers::PackageContext::new(printer, state));
 
     let module_checks: Vec<DoctorModuleCheck> = module_list
         .iter()

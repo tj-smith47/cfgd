@@ -344,6 +344,17 @@ impl Owner {
     pub fn sort_key(&self) -> (u8, &str) {
         (self.kind.rank(), self.name.as_str())
     }
+
+    /// Put a loose owner list in display order and drop repeats.
+    ///
+    /// The only way to order owners outside [`Phase::from_actions`]: display
+    /// surfaces that name owners without holding a phase (the bootstrap
+    /// attribution) read the same sequence as the tree they sit next to,
+    /// because they read it from the same comparator.
+    pub fn order(owners: &mut Vec<Owner>) {
+        owners.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+        owners.dedup();
+    }
 }
 
 /// One owner's slice of a phase. Never empty — an owner with no actions in a

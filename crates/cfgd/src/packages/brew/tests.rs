@@ -1090,7 +1090,9 @@ mod bridge {
     #[test]
     #[serial]
     fn snapshot_brew_install_with_warnings() {
-        // Shim emits brew-style caveats so extract_caveats + print_caveats fire.
+        // Shim emits brew-style caveats so extract_caveats fires. They travel
+        // back through the context's NoteSink instead of printing here — the
+        // reconciler renders them attached to the action's own status line.
         // Caveat body must be a single line — renderer forbids embedded newlines.
         let caveat_stdout = "==> Installing git\n\
             ==> Caveats\n\
@@ -1101,10 +1103,23 @@ mod bridge {
 
         let (printer, cap) = Printer::for_test_doc();
         let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let notes = cfgd_core::providers::NoteSink::default();
+        let cx = cfgd_core::providers::PackageContext::with_notes(&printer, &state, &notes);
         BrewManager
             .install(&["git".to_string()], &cx)
             .expect("install ok with caveats");
+
+        let collected = notes.take();
+        assert_eq!(
+            collected.len(),
+            1,
+            "the caveat must reach the sink, not the terminal: {collected:?}"
+        );
+        assert_eq!(collected[0].manager, "brew");
+        assert_eq!(
+            collected[0].message,
+            "Run xcode-select --install to complete setup."
+        );
 
         let summary = BrewInstallSummary {
             packages_installed: 1,

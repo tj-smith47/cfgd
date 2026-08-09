@@ -16,8 +16,8 @@ use crate::config::{BackupSpec, ScriptEntry, render_backup_name_pattern};
 use crate::errors::{BackupError, Result};
 use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{
-    ReconcileContext, ScriptEnvContext, ScriptPhase, build_script_env, effective_continue_on_error,
-    execute_script, script_default_workdir,
+    ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, build_script_env,
+    effective_continue_on_error, execute_script, script_default_workdir,
 };
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
@@ -418,6 +418,10 @@ fn run_hooks(
             printer,
             None,
             unit.abort,
+            ScriptReport {
+                marker: Some(phase.display_name()),
+                non_fatal: effective_continue_on_error(entry, &phase),
+            },
         );
         if let Err(e) = outcome {
             let failure = BackupError::HookFailed {

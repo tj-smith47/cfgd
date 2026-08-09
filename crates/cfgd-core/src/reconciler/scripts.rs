@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
-use crate::output::{Printer, Role, condense_script_label};
+use crate::output::{OutputWindow, Printer, Role, collapse_to_subject_line, condense_script_label};
 
 use super::types::{ReconcileContext, ScriptPhase};
 
@@ -197,6 +197,137 @@ fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path
     crate::expand_tilde(std::path::Path::new(&expanded))
 }
 
+/// How one [`execute_script`] invocation reports its single status line.
+///
+/// One parameter carrying both facts rather than two: every call site that
+/// names the hook also knows whether its failure stops the run, and a second
+/// bare parameter is what lets the two drift apart at one arm.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ScriptReport<'a> {
+    /// The hook the body belongs to (`postApply`), rendered as a styled
+    /// `postApply: ` prefix on the status subject. `None` for a script no hook
+    /// phase names.
+    pub marker: Option<&'a str>,
+    /// The caller has already decided a failure here will not stop the run, so
+    /// the one line renders `Role::Warn` rather than `Role::Fail`.
+    pub non_fatal: bool,
+}
+
+/// The script's single status line, and the window it may collapse into.
+///
+/// The invocation-wide failure role plus a state machine — NOT a struct with an
+/// `Option<OutputWindow>` and a `bool`: the window and the "already reported"
+/// flag are the same fact, so representing them separately is what lets a
+/// `Drop`-emitted `Info` slip out behind an emitted status.
+struct ScriptStatus<'p> {
+    /// The role a FAILURE renders as for this invocation. Held here, not passed
+    /// per call, so every failure exit — a guard's `?`, the windowed failure,
+    /// the post-window `?`, the wrapper's own `Err` arm — resolves it from one
+    /// field. A per-call-site role parameter is the shape that lets one arm
+    /// disagree.
+    failure_role: Role,
+    marker: Option<String>,
+    state: ScriptState<'p>,
+}
+
+enum ScriptState<'p> {
+    /// Nothing emitted, no window. Every guard arm reports from here.
+    Pending {
+        printer: &'p Printer,
+        subject: String,
+    },
+    /// The window is open. It is INSIDE the state, so the only way to reach it
+    /// is a method that also moves the state to `Reported`.
+    Windowed {
+        window: OutputWindow<'p>,
+        subject: String,
+    },
+    /// The one status has been emitted. Terminal; nothing else can emit.
+    Reported,
+}
+
+impl<'p> ScriptStatus<'p> {
+    fn new(printer: &'p Printer, subject: String, report: ScriptReport<'_>) -> Self {
+        Self {
+            failure_role: if report.non_fatal {
+                Role::Warn
+            } else {
+                Role::Fail
+            },
+            marker: report.marker.map(|m| format!("{m}:")),
+            state: ScriptState::Pending { printer, subject },
+        }
+    }
+
+    /// Every emission in one place. `Pending` emits a plain status; `Windowed`
+    /// FINISHES the window with this role, never drops it; `Reported` is a
+    /// no-op. All three become `Reported`, so the window is moved out rather
+    /// than left for `Drop`.
+    fn settle(&mut self, role: Role, detail: Option<&str>, duration: Option<std::time::Duration>) {
+        let marker = self.marker.clone();
+        let apply = |mut builder: crate::output::StatusBuilder<'_>| {
+            if let Some(m) = marker {
+                builder = builder.marker(m);
+            }
+            if let Some(d) = detail {
+                builder = builder.detail(d);
+            }
+            if let Some(d) = duration {
+                builder = builder.duration(d);
+            }
+            drop(builder);
+        };
+        match std::mem::replace(&mut self.state, ScriptState::Reported) {
+            ScriptState::Pending { printer, subject } => apply(printer.status(role, subject)),
+            ScriptState::Windowed { window, subject } => apply(window.finish_with(role, subject)),
+            ScriptState::Reported => {
+                debug_assert!(false, "a script emitted a second status line");
+            }
+        }
+    }
+
+    /// Pre-window arms (guards, no-TTY skip, interactive). Calling it after
+    /// `open_window` is not a defect: it routes through `settle`, which finishes
+    /// the open window as that role. There is no state in which a status has
+    /// been emitted AND a window is still open.
+    fn status(&mut self, role: Role, detail: Option<&str>) {
+        self.settle(role, detail, None);
+    }
+
+    /// `Pending` -> `Windowed`, at the inherited depth.
+    fn open_window(&mut self, label: &str) {
+        let taken = std::mem::replace(&mut self.state, ScriptState::Reported);
+        self.state = match taken {
+            ScriptState::Pending { printer, subject } => ScriptState::Windowed {
+                window: printer.output_window(label),
+                subject,
+            },
+            other => other,
+        };
+    }
+
+    /// Feed the window; a no-op in `Pending` and `Reported`.
+    fn push_line(&mut self, raw: &str) {
+        if let ScriptState::Windowed { window, .. } = &mut self.state {
+            window.push_line(raw);
+        }
+    }
+
+    fn finish_ok(&mut self, duration: std::time::Duration) {
+        self.settle(Role::Ok, None, Some(duration));
+    }
+
+    /// The one failure emitter. Reads `failure_role` rather than taking one, so
+    /// `continueOnError` cannot render `Fail` on one exit and `Warn` on another.
+    fn finish_fail(&mut self, detail: &str, duration: Option<std::time::Duration>) {
+        self.settle(self.failure_role, Some(detail), duration);
+    }
+
+    fn reported(&self) -> bool {
+        matches!(self.state, ScriptState::Reported)
+    }
+}
+
 /// Unified script executor for all hook types at both profile and module level.
 ///
 /// `shell_override` forces every inline command to run under the supplied
@@ -205,6 +336,13 @@ fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path
 /// override (the shebang owns the interpreter choice) and emit a debug log.
 ///
 /// Returns (description, changed, captured_output). All scripts set changed=true.
+///
+/// Emits EXACTLY ONE status line per call, whatever the exit path, because the
+/// line is the wrapper's rather than each arm's: `execute_script_inner` reports
+/// the outcomes it recognises through [`ScriptStatus`], and the tail below
+/// covers every arm that returns without reporting — branching on the inner
+/// OUTCOME, never on whether anything printed, so an inner `Ok` that reported
+/// nothing renders as the success it is.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_script(
     entry: &ScriptEntry,
@@ -215,11 +353,78 @@ pub(crate) fn execute_script(
     printer: &Printer,
     shell_override: Option<ScriptShell>,
     abort: Option<&crate::AbortFlag>,
+    report: ScriptReport<'_>,
+) -> Result<(String, bool, Option<String>)> {
+    // Single-line, width-bounded stand-in for the body in every status subject
+    // / error message below — the body itself may be a multi-line inline
+    // script, which a status subject must never carry.
+    // The one environment read the inner body must not make for itself:
+    // passing it in is what lets a test drive the interactive arm.
+    execute_script_with_tty(
+        std::io::stdin().is_terminal(),
+        entry,
+        script_dir,
+        working_dir,
+        env_vars,
+        default_timeout,
+        printer,
+        shell_override,
+        abort,
+        report,
+    )
+}
+
+/// [`execute_script`] with the TTY read supplied rather than made. The shipped
+/// path passes the real answer; a test passes `true` to reach the interactive
+/// arm on a host whose stdin is a pipe.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_script_with_tty(
+    stdin_is_tty: bool,
+    entry: &ScriptEntry,
+    script_dir: &std::path::Path,
+    working_dir: &std::path::Path,
+    env_vars: &[(String, String)],
+    default_timeout: std::time::Duration,
+    printer: &Printer,
+    shell_override: Option<ScriptShell>,
+    abort: Option<&crate::AbortFlag>,
+    report: ScriptReport<'_>,
+) -> Result<(String, bool, Option<String>)> {
+    let mut st = ScriptStatus::new(printer, condense_script_label(entry.run_str()), report);
+    let started = std::time::Instant::now();
+    let out = execute_script_inner(
+        &mut st,
+        stdin_is_tty,
+        entry,
+        script_dir,
+        working_dir,
+        env_vars,
+        default_timeout,
+        shell_override,
+        abort,
+    );
+    if !st.reported() {
+        match &out {
+            Ok(_) => st.finish_ok(started.elapsed()),
+            Err(e) => st.finish_fail(&collapse_to_subject_line(e), None),
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_script_inner(
+    st: &mut ScriptStatus<'_>,
+    stdin_is_tty: bool,
+    entry: &ScriptEntry,
+    script_dir: &std::path::Path,
+    working_dir: &std::path::Path,
+    env_vars: &[(String, String)],
+    default_timeout: std::time::Duration,
+    shell_override: Option<ScriptShell>,
+    abort: Option<&crate::AbortFlag>,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
-    // Single-line, width-bounded stand-in for `run_str` in every status
-    // subject / error message below — `run_str` itself may be a multi-line
-    // inline script body, which a status subject must never carry.
     let run_label = condense_script_label(run_str);
 
     // Hold the PATH read-lock across interpreter resolution + spawn: a
@@ -276,12 +481,12 @@ pub(crate) fn execute_script(
         if let Some(path) = creates {
             let resolved_creates = resolve_creates_path(path, working_dir);
             if resolved_creates.exists() {
-                printer.status_simple(
+                st.status(
                     Role::Skipped,
-                    format!(
-                        "{run_label} — creates path already exists: {}",
+                    Some(&format!(
+                        "creates path already exists: {}",
                         resolved_creates.posix()
-                    ),
+                    )),
                 );
                 return Ok((resource_desc, false, None));
             }
@@ -291,9 +496,9 @@ pub(crate) fn execute_script(
             let success =
                 run_guard_command(cmd, guard_shell, working_dir, env_vars, default_timeout)?;
             if !success {
-                printer.status_simple(
+                st.status(
                     Role::Skipped,
-                    format!("{run_label} — onlyIf condition not met: {cmd}"),
+                    Some(&format!("onlyIf condition not met: {cmd}")),
                 );
                 return Ok((resource_desc, false, None));
             }
@@ -303,9 +508,9 @@ pub(crate) fn execute_script(
             let success =
                 run_guard_command(cmd, guard_shell, working_dir, env_vars, default_timeout)?;
             if success {
-                printer.status_simple(
+                st.status(
                     Role::Skipped,
-                    format!("{run_label} — unless condition already holds: {cmd}"),
+                    Some(&format!("unless condition already holds: {cmd}")),
                 );
                 return Ok((resource_desc, false, None));
             }
@@ -410,7 +615,7 @@ pub(crate) fn execute_script(
             ..
         }
     );
-    match interactive_disposition(interactive, std::io::stdin().is_terminal()) {
+    match interactive_disposition(interactive, stdin_is_tty) {
         InteractiveDisposition::Run => {
             // Attach to the controlling terminal so the script can prompt the user
             // (e.g. `read`). No spinner and no capture — the user drives the pace,
@@ -433,9 +638,9 @@ pub(crate) fn execute_script(
         InteractiveDisposition::SkipNoTty => {
             // No TTY (CI, piped stdin, or any daemon-run phase): skip rather than
             // hang on instant EOF. changed=false records this as a clean no-op.
-            printer.status_simple(
+            st.status(
                 Role::Warn,
-                format!("{run_label} — interactive script skipped: no TTY available"),
+                Some("interactive script skipped: no TTY available"),
             );
             return Ok((resource_desc, false, None));
         }
@@ -471,7 +676,7 @@ pub(crate) fn execute_script(
     // moment the script exits. The window sanitizes each line itself — a child
     // like `nvim --headless` emits screen-reset and cursor-move sequences that
     // would otherwise execute against the real terminal.
-    let mut window = printer.output_window_at(0, &label);
+    st.open_window(&label);
 
     // Channel for live display + Arc buffers for final capture.
     // Reader threads feed both so we get live scrolling output AND full capture.
@@ -498,7 +703,7 @@ pub(crate) fn execute_script(
     loop {
         // Drain pending output and stream it, one line at a time, in order.
         while let Ok(line) = rx.try_recv() {
-            window.push_line(&line);
+            st.push_line(&line);
         }
 
         match child.try_wait()? {
@@ -520,12 +725,7 @@ pub(crate) fn execute_script(
 
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
-                    drop(
-                        window
-                            .finish_fail(&run_label)
-                            .detail(format!("exit {exit_code}"))
-                            .duration(start.elapsed()),
-                    );
+                    st.finish_fail(&format!("exit {exit_code}"), Some(start.elapsed()));
                     let base = format!("script '{}' failed (exit {})", run_label, exit_code);
                     let message = match captured.as_deref().filter(|s| !s.is_empty()) {
                         Some(c) => format!("{base}\n{c}"),
@@ -534,7 +734,7 @@ pub(crate) fn execute_script(
                     return Err(CfgdError::Config(ConfigError::Invalid { message }));
                 }
 
-                drop(window.finish_ok(&run_label).duration(start.elapsed()));
+                st.finish_ok(start.elapsed());
                 return Ok((resource_desc, true, captured));
             }
             None => {
@@ -559,12 +759,7 @@ pub(crate) fn execute_script(
                     && let Some(a) = abort
                     && a.aborted().is_some()
                 {
-                    drop(
-                        window
-                            .finish_fail(&run_label)
-                            .detail("interrupted")
-                            .duration(elapsed),
-                    );
+                    st.finish_fail("interrupted", Some(elapsed));
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
@@ -573,11 +768,9 @@ pub(crate) fn execute_script(
                     }));
                 }
                 if let Some((reason, duration)) = kill_reason {
-                    drop(
-                        window
-                            .finish_fail(&run_label)
-                            .detail(format!("{reason} after {}s", duration.as_secs()))
-                            .duration(elapsed),
+                    st.finish_fail(
+                        &format!("{reason} after {}s", duration.as_secs()),
+                        Some(elapsed),
                     );
                     kill_script_child(&mut child, true);
                     // Join reader threads so we capture partial output

@@ -89,6 +89,10 @@ impl PackageManager for ScoopManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         run_pkg_cmd_live(
             printer,
+            // `bootstrap` takes only a printer, so there is no action context
+            // to attach a note to; the installer's own output already streamed
+            // through the window above.
+            cfgd_core::providers::NoteSink::discarded(),
             "scoop",
             Command::new("powershell").args([
                 "-NoProfile",
@@ -136,6 +140,7 @@ impl PackageManager for ScoopManager {
         for pkg in packages {
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "scoop",
                 scoop_cmd().args(["install", pkg]),
                 &format!("Installing {}", pkg),
@@ -149,6 +154,7 @@ impl PackageManager for ScoopManager {
         for pkg in packages {
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "scoop",
                 scoop_cmd().args(["uninstall", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -161,6 +167,7 @@ impl PackageManager for ScoopManager {
     fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "scoop",
             scoop_cmd().args(["update", "*"]),
             "Upgrading all scoop packages",

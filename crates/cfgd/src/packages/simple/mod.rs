@@ -145,6 +145,7 @@ impl PackageManager for SimpleManager {
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             self.mgr_name,
             cmd_with_seam(prog).args(args).args(packages),
             &label,
@@ -162,6 +163,7 @@ impl PackageManager for SimpleManager {
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             self.mgr_name,
             cmd_with_seam(prog).args(args).args(packages),
             &label,
@@ -189,6 +191,7 @@ impl PackageManager for SimpleManager {
         } else {
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 self.mgr_name,
                 cmd_with_seam(prog).args(args),
                 &label,

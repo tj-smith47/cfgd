@@ -1,5 +1,5 @@
-//! Source-shaped fences: two invariants of `renderer/` that no runtime
-//! assertion can hold, because both are about code that must not exist.
+//! Source-shaped fences: invariants that no runtime assertion can hold,
+//! because each is about code that must not exist.
 
 use std::path::{Path, PathBuf};
 
@@ -164,4 +164,36 @@ fn emit_collectors_take_no_sink() {
         "the extracted regions are truncated — the collector bodies are missing"
     );
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
+}
+
+/// `PackageContext` gained a `notes` field, and a struct literal is how a call
+/// site opts out of the sink without saying so — it compiles, collects nothing,
+/// and the manager's post-install notes vanish. The constructors
+/// (`PackageContext::new` / `::with_notes`) are the only supported spelling, so
+/// the literal must not reappear outside the constructors themselves.
+#[test]
+fn package_context_is_only_built_through_its_constructors() {
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        if path.ends_with(Path::new("providers/mod.rs"))
+            || path.ends_with(Path::new("output/tests/fences.rs"))
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (i, line) in body.lines().enumerate() {
+            if line.contains("PackageContext {") {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "build a PackageContext with ::new(printer, state) or \
+         ::with_notes(printer, state, notes); a literal silently drops \
+         post-install notes:\n{}",
+        offenders.join("\n")
+    );
 }

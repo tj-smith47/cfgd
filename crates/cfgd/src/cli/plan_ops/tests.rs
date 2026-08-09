@@ -1897,3 +1897,52 @@ fn no_stranded_warning_when_every_manager_is_available() {
         "a bootstrap dropped for a manager that is already installed strands nothing: {out}"
     );
 }
+
+#[test]
+fn platform_skip_survives_in_the_plan_payload() {
+    // The human tree renders a platform-gated skip as a header annotation and
+    // opens no `Phase: Modules` block. That is a DISPLAY decision: the machine
+    // payload keeps the phase, the action and its reason verbatim, because a
+    // consumer diffing plans across hosts is exactly who needs to see that a
+    // module was gated out on this one.
+    let skip = Action::Module(ModuleAction {
+        module_name: "wsl-tools".to_string(),
+        kind: ModuleActionKind::Skip {
+            reason: "platform not matched (requires: windows)".to_string(),
+        },
+        origin: None,
+    });
+    let plan = make_plan(vec![
+        (PhaseName::Modules, vec![skip]),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
+
+    assert_eq!(output.total_actions, 2, "the skip is a counted action");
+    let modules = output
+        .phases
+        .iter()
+        .find(|p| p.phase == "Modules")
+        .expect("the Modules phase survives in the payload");
+    assert_eq!(modules.actions.len(), 1);
+    assert_eq!(modules.actions[0].action_type, "skip");
+    assert_eq!(
+        modules.actions[0].description, "skip: platform not matched (requires: windows)",
+        "the reason is the action's own string, byte-for-byte"
+    );
+
+    let modules_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Modules)
+        .expect("the Modules phase");
+    assert_eq!(
+        modules_phase
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect::<Vec<_>>(),
+        vec!["module:wsl-tools".to_string()],
+        "the skip keeps its module owner group"
+    );
+}

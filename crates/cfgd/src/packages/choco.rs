@@ -74,6 +74,10 @@ impl PackageManager for ChocolateyManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         run_pkg_cmd_live(
             printer,
+            // `bootstrap` takes only a printer, so there is no action context
+            // to attach a note to; the installer's own output already streamed
+            // through the window above.
+            cfgd_core::providers::NoteSink::discarded(),
             "chocolatey",
             Command::new("powershell").args([
                 "-NoProfile",
@@ -128,6 +132,7 @@ impl PackageManager for ChocolateyManager {
         args.extend(pkg_refs);
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "chocolatey",
             Command::new("choco").args(&args),
             "Installing chocolatey packages",
@@ -146,6 +151,7 @@ impl PackageManager for ChocolateyManager {
         args.extend(pkg_refs);
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "chocolatey",
             Command::new("choco").args(&args),
             "Uninstalling chocolatey packages",
@@ -157,6 +163,7 @@ impl PackageManager for ChocolateyManager {
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "chocolatey",
             Command::new("choco").args(["upgrade", "all", "-y"]),
             "Upgrading all chocolatey packages",

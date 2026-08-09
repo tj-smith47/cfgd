@@ -50,6 +50,95 @@ pub struct PackageInfo {
 pub struct PackageContext<'a> {
     pub printer: &'a Printer,
     pub state: &'a dyn PackageStateStore,
+    pub notes: &'a NoteSink,
+}
+
+impl<'a> PackageContext<'a> {
+    /// A context that collects no post-install notes — every read path, and
+    /// every fixture. Notes pushed through it are discarded rather than
+    /// retained, because nothing will drain them.
+    pub fn new(printer: &'a Printer, state: &'a dyn PackageStateStore) -> Self {
+        Self {
+            printer,
+            state,
+            notes: NoteSink::discarded(),
+        }
+    }
+
+    /// A context whose notes travel back to the caller — the reconciler's
+    /// install paths, where the drained notes render under the action's status.
+    pub fn with_notes(
+        printer: &'a Printer,
+        state: &'a dyn PackageStateStore,
+        notes: &'a NoteSink,
+    ) -> Self {
+        Self {
+            printer,
+            state,
+            notes,
+        }
+    }
+}
+
+/// An important message a package manager emitted while one action ran — a brew
+/// caveat, an npm warning. Part of the provider contract rather than of any one
+/// manager, because the reconciler is what renders it: the note is attached to
+/// the action that produced it instead of being printed from inside the manager,
+/// where it would land above the action's own status line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostInstallNote {
+    pub manager: String,
+    pub message: String,
+}
+
+/// Collector for the notes a manager produced during one action.
+///
+/// Interior mutability because every `PackageManager` method takes
+/// `&PackageContext`.
+pub struct NoteSink {
+    notes: std::sync::Mutex<Vec<PostInstallNote>>,
+    /// A sink nobody drains discards instead of growing. [`NoteSink::discarded`]
+    /// hands out one `&'static` sink to every non-collecting context, so
+    /// retaining pushes in it would be an unbounded leak with no reader — and
+    /// storing nothing is also what keeps it from being the process-global
+    /// mutable state [`PackageContext`]'s own contract rules out.
+    collecting: bool,
+}
+
+impl Default for NoteSink {
+    fn default() -> Self {
+        Self {
+            notes: std::sync::Mutex::new(Vec::new()),
+            collecting: true,
+        }
+    }
+}
+
+impl NoteSink {
+    /// The shared sink for a context that collects nothing. Every push into it
+    /// is dropped, so it holds no state and needs no drain.
+    pub fn discarded() -> &'static NoteSink {
+        static DISCARDED: std::sync::OnceLock<NoteSink> = std::sync::OnceLock::new();
+        DISCARDED.get_or_init(|| NoteSink {
+            notes: std::sync::Mutex::new(Vec::new()),
+            collecting: false,
+        })
+    }
+
+    pub fn push(&self, note: PostInstallNote) {
+        if !self.collecting {
+            return;
+        }
+        self.notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(note);
+    }
+
+    /// Drain — called by the reconciler once per action, after its status.
+    pub fn take(&self) -> Vec<PostInstallNote> {
+        std::mem::take(&mut *self.notes.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 pub trait PackageManager: Send + Sync {
@@ -591,7 +680,7 @@ mod tests {
     use crate::state::StateStore;
 
     fn test_cx<'a>(printer: &'a Printer, state: &'a StateStore) -> PackageContext<'a> {
-        PackageContext { printer, state }
+        PackageContext::new(printer, state)
     }
 
     #[test]

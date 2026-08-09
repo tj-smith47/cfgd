@@ -104,6 +104,7 @@ impl PackageManager for BrewTapManager {
             let label = format!("brew tap {}", tap);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "brew-tap",
                 brew_cmd().args(["tap", tap]),
                 &label,
@@ -122,6 +123,7 @@ impl PackageManager for BrewTapManager {
             let label = format!("brew untap {}", tap);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "brew-tap",
                 brew_cmd().args(["untap", tap]),
                 &label,
@@ -175,7 +177,7 @@ impl PackageManager for BrewCaskManager {
         casks: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx.printer, "brew-cask", casks, |pkgs| {
+        install_batch_then_per_package(cx.printer, cx.notes, "brew-cask", casks, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").arg("--cask").args(pkgs);
             cmd
@@ -194,6 +196,7 @@ impl PackageManager for BrewCaskManager {
         let label = format!("brew uninstall --cask {}", casks.join(" "));
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "brew-cask",
             brew_cmd().arg("uninstall").arg("--cask").args(casks),
             &label,
@@ -334,7 +337,7 @@ impl PackageManager for BrewManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx.printer, "brew", packages, |pkgs| {
+        install_batch_then_per_package(cx.printer, cx.notes, "brew", packages, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").args(pkgs);
             cmd
@@ -353,6 +356,7 @@ impl PackageManager for BrewManager {
         let label = format!("brew uninstall {}", packages.join(" "));
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "brew",
             brew_cmd().arg("uninstall").args(packages),
             &label,
@@ -364,6 +368,7 @@ impl PackageManager for BrewManager {
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "brew",
             brew_cmd().arg("update"),
             "brew update",

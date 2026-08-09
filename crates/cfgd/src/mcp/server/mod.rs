@@ -244,10 +244,7 @@ impl McpServer {
                     );
                 }
 
-                let pkg_cx = cfgd_core::providers::PackageContext {
-                    printer: &self.printer,
-                    state: &self.state,
-                };
+                let pkg_cx = cfgd_core::providers::PackageContext::new(&self.printer, &self.state);
                 let result = crate::ai::tools::dispatch_tool_call(
                     dispatch_name,
                     &arguments,

@@ -2,7 +2,10 @@ use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::Result;
 use crate::output::Printer;
 
-use super::scripts::{ScriptEnvContext, build_script_env, execute_script, script_default_workdir};
+use super::scripts::{
+    ScriptEnvContext, ScriptReport, build_script_env, effective_continue_on_error, execute_script,
+    script_default_workdir,
+};
 use super::types::{ReconcileContext, ScriptAction};
 
 impl<'a> super::Reconciler<'a> {
@@ -45,6 +48,10 @@ impl<'a> super::Reconciler<'a> {
                     printer,
                     shell_override,
                     Some(abort),
+                    ScriptReport {
+                        marker: Some(phase.display_name()),
+                        non_fatal: effective_continue_on_error(entry, phase),
+                    },
                 )?;
 
                 let phase_name = phase.display_name();

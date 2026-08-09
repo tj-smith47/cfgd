@@ -1,9 +1,7 @@
 use secrecy::ExposeSecret;
 
-use crate::PathDisplayExt;
 use crate::errors::Result;
 use crate::expand_tilde;
-use crate::output::{Printer, Role};
 use crate::providers::SecretAction;
 
 impl<'a> super::Reconciler<'a> {
@@ -11,7 +9,6 @@ impl<'a> super::Reconciler<'a> {
         &self,
         action: &SecretAction,
         config_dir: &std::path::Path,
-        printer: &Printer,
         secret_env_collector: &mut Vec<(String, String)>,
     ) -> Result<String> {
         match action {
@@ -34,11 +31,6 @@ impl<'a> super::Reconciler<'a> {
 
                 let target_path = expand_tilde(target);
                 crate::atomic_write(&target_path, decrypted.expose_secret().as_bytes())?;
-
-                printer.status_simple(
-                    Role::Info,
-                    format!("Decrypted {} → {}", source.posix(), target_path.posix()),
-                );
 
                 // Resource-id key, not display: `to_posix_string` folds on every
                 // host (unlike `posix()`, a no-op on unix) so a Windows-written
@@ -68,16 +60,6 @@ impl<'a> super::Reconciler<'a> {
 
                 let target_path = expand_tilde(target);
                 crate::atomic_write(&target_path, value.expose_secret().as_bytes())?;
-
-                printer.status_simple(
-                    Role::Info,
-                    format!(
-                        "Resolved {}://{} → {}",
-                        provider,
-                        reference,
-                        target_path.posix()
-                    ),
-                );
 
                 Ok(format!(
                     "secret:resolve:{}:{}",
@@ -111,16 +93,6 @@ impl<'a> super::Reconciler<'a> {
                     secret_env_collector.push((env_name.clone(), plaintext.clone()));
                 }
 
-                printer.status_simple(
-                    Role::Info,
-                    format!(
-                        "Resolved {}://{} → env [{}]",
-                        provider,
-                        reference,
-                        envs.join(", ")
-                    ),
-                );
-
                 Ok(format!(
                     "secret:resolve-env:{}:{}:[{}]",
                     provider,
@@ -128,10 +100,7 @@ impl<'a> super::Reconciler<'a> {
                     envs.join(",")
                 ))
             }
-            SecretAction::Skip { source, reason, .. } => {
-                printer.status_simple(Role::Warn, format!("secret {}: {}", source, reason));
-                Ok(format!("secret:skip:{}", source))
-            }
+            SecretAction::Skip { source, .. } => Ok(format!("secret:skip:{}", source)),
         }
     }
 }

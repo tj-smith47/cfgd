@@ -73,6 +73,7 @@ impl PackageManager for SnapManager {
             let label = format!("snap install {}", pkg);
             let result = run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "snap",
                 sudo_cmd_with_seam("snap").arg("install").arg(pkg),
                 &label,
@@ -84,6 +85,7 @@ impl PackageManager for SnapManager {
                     let label = format!("snap install --classic {}", pkg);
                     run_pkg_cmd_live(
                         cx.printer,
+                        cx.notes,
                         "snap",
                         sudo_cmd_with_seam("snap").args(["install", "--classic", pkg]),
                         &label,
@@ -108,6 +110,7 @@ impl PackageManager for SnapManager {
         let label = format!("snap remove {}", packages.join(" "));
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "snap",
             sudo_cmd_with_seam("snap").arg("remove").args(packages),
             &label,
@@ -119,6 +122,7 @@ impl PackageManager for SnapManager {
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "snap",
             sudo_cmd_with_seam("snap").arg("refresh"),
             "snap refresh",

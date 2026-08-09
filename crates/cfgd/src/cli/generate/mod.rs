@@ -175,10 +175,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         packages::all_package_managers();
     let home = dirs_from_env();
     let gen_state = open_state_store(cli.state_dir.as_deref())?;
-    let pkg_cx = cfgd_core::providers::PackageContext {
-        printer,
-        state: &gen_state,
-    };
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &gen_state);
 
     // 9. Conversation loop
     const MAX_TURNS: usize = 100;

@@ -3,10 +3,10 @@ use crate::config::{ResolvedProfile, ScriptEntry, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::output::{Printer, Role};
+use crate::output::Printer;
 
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, execute_script,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env, execute_script,
     script_default_workdir,
 };
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
@@ -24,6 +24,7 @@ impl<'a> super::Reconciler<'a> {
         module_actions: &[ResolvedModule],
         shell_override: Option<ScriptShell>,
         abort: &crate::AbortFlag,
+        notes: &crate::providers::NoteSink,
     ) -> Result<(String, bool)> {
         // Find the resolved module to obtain its dir and declared env vars.
         let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
@@ -98,6 +99,7 @@ impl<'a> super::Reconciler<'a> {
                                     printer,
                                     shell_override,
                                     Some(abort),
+                                    ScriptReport::default(),
                                 )
                                 .map_err(|_| {
                                     crate::errors::CfgdError::Config(ConfigError::Invalid {
@@ -129,10 +131,9 @@ impl<'a> super::Reconciler<'a> {
                                 self.record_bootstrap_path_dirs(pm.as_ref(), printer);
                             }
 
-                            let cx = crate::providers::PackageContext {
-                                printer,
-                                state: self.state,
-                            };
+                            let cx = crate::providers::PackageContext::with_notes(
+                                printer, self.state, notes,
+                            );
 
                             // Update package index before installing
                             if pm.is_available() {
@@ -287,15 +288,6 @@ impl<'a> super::Reconciler<'a> {
                     )?;
                 }
 
-                printer.status_simple(
-                    Role::Ok,
-                    format!(
-                        "Module {}: deployed {} file(s)",
-                        action.module_name,
-                        files.len()
-                    ),
-                );
-
                 Ok((
                     format!("module:{}:files:{}", action.module_name, files.len()),
                     true,
@@ -334,15 +326,15 @@ impl<'a> super::Reconciler<'a> {
                     printer,
                     shell_override,
                     Some(abort),
+                    ScriptReport {
+                        marker: Some(script_phase.display_name()),
+                        non_fatal: false,
+                    },
                 )?;
 
                 Ok((format!("module:{}:script", action.module_name), changed))
             }
-            ModuleActionKind::Skip { reason } => {
-                printer.status_simple(
-                    Role::Warn,
-                    format!("Module {}: skipped — {}", action.module_name, reason),
-                );
+            ModuleActionKind::Skip { reason: _ } => {
                 // A planned skip did nothing this run, so it must not count as
                 // changed and must not fire the module's onChange hooks.
                 Ok((format!("module:{}:skip", action.module_name), false))

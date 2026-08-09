@@ -1,4 +1,4 @@
-use cfgd_core::output::{CommandOutput, Printer, Verbosity};
+use cfgd_core::output::{CommandOutput, Printer};
 
 use super::*;
 
@@ -244,24 +244,6 @@ fn post_install_note_fields() {
 }
 
 #[test]
-fn print_caveats_empty_is_noop() {
-    let printer = cfgd_core::test_helpers::test_printer();
-    // Should not panic
-    print_caveats(&printer, &[]);
-}
-
-#[test]
-fn print_caveats_non_empty() {
-    let printer = cfgd_core::test_helpers::test_printer();
-    let notes = vec![PostInstallNote {
-        manager: "brew".to_string(),
-        message: "Add to PATH".to_string(),
-    }];
-    // Should not panic
-    print_caveats(&printer, &notes);
-}
-
-#[test]
 fn extract_caveats_brew_empty_caveat_section() {
     // Caveats section immediately followed by another section with no content
     let output = test_cmd_output("==> Caveats\n==> Summary\nDone.", "");
@@ -309,27 +291,6 @@ fn extract_caveats_pip_in_stderr() {
 }
 
 #[test]
-fn print_caveats_multiple_notes() {
-    let printer = cfgd_core::test_helpers::test_printer();
-    let notes = vec![
-        PostInstallNote {
-            manager: "brew".to_string(),
-            message: "First note".to_string(),
-        },
-        PostInstallNote {
-            manager: "npm".to_string(),
-            message: "Second note".to_string(),
-        },
-        PostInstallNote {
-            manager: "pip".to_string(),
-            message: "Third note".to_string(),
-        },
-    ];
-    // Should not panic
-    print_caveats(&printer, &notes);
-}
-
-#[test]
 fn strip_sudo_for_exec_single_element_sudo() {
     let cmd: &[&str] = &["sudo"];
     let result = strip_sudo_for_exec(cmd);
@@ -347,46 +308,6 @@ fn strip_sudo_for_exec_non_sudo_first() {
     let result = strip_sudo_for_exec(cmd);
     // "sudo" is not the first element, so unchanged
     assert_eq!(result, &["apt-get", "install", "sudo"]);
-}
-
-#[test]
-fn print_caveats_outputs_subheader_and_warnings() {
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let notes = vec![
-        PostInstallNote {
-            manager: "brew".to_string(),
-            message: "Add /opt/homebrew/bin to PATH".to_string(),
-        },
-        PostInstallNote {
-            manager: "npm".to_string(),
-            message: "npm warn deprecated request@2.88.2".to_string(),
-        },
-    ];
-    print_caveats(&printer, &notes);
-    let output = buf.lock().unwrap();
-    assert!(
-        output.contains("Post-install notes"),
-        "missing subheader, got: {}",
-        *output
-    );
-    assert!(
-        output.contains("[brew] Add /opt/homebrew/bin to PATH"),
-        "missing brew caveat, got: {}",
-        *output
-    );
-    assert!(
-        output.contains("[npm] npm warn deprecated request@2.88.2"),
-        "missing npm caveat, got: {}",
-        *output
-    );
-}
-
-#[test]
-fn print_caveats_empty_produces_no_output() {
-    let (printer, buf) = Printer::for_test();
-    print_caveats(&printer, &[]);
-    let output = buf.lock().unwrap();
-    assert!(output.is_empty(), "expected no output, got: {}", *output);
 }
 
 #[test]
@@ -763,7 +684,7 @@ fn brew_path_returns_option() {
 
 // ---------------------------------------------------------------------------
 // Pure-helper coverage for tool_seam_var, resolve_tool_with_fallbacks,
-// path_with_brew, brew_path_dirs, print_caveats, sudo_cmd_with_seam,
+// path_with_brew, brew_path_dirs, sudo_cmd_with_seam,
 // linux_system_manager_available, any_system_manager_available.
 // ---------------------------------------------------------------------------
 
@@ -876,49 +797,6 @@ fn brew_path_dirs_linux_uses_linuxbrew_paths() {
 }
 
 #[test]
-fn print_caveats_no_op_when_notes_empty() {
-    let (printer, output) = Printer::for_test();
-    print_caveats(&printer, &[]);
-    let captured = output.lock().unwrap().clone();
-    assert!(
-        captured.is_empty(),
-        "print_caveats should emit nothing for empty notes, got: {captured}"
-    );
-}
-
-#[test]
-fn print_caveats_emits_subheader_then_warning_per_note() {
-    let (printer, output) = Printer::for_test_at(Verbosity::Normal);
-    let notes = vec![
-        PostInstallNote {
-            manager: "brew".to_string(),
-            message: "run /usr/local/opt/foo/postinstall.sh".to_string(),
-        },
-        PostInstallNote {
-            manager: "npm".to_string(),
-            message: "deprecated package warning".to_string(),
-        },
-    ];
-    print_caveats(&printer, &notes);
-
-    let captured = output.lock().unwrap().clone();
-    // Subheader
-    assert!(
-        captured.contains("Post-install notes"),
-        "expected subheader, got: {captured}"
-    );
-    // Each note appears as a warning prefixed with [manager]
-    assert!(
-        captured.contains("[brew]") && captured.contains("postinstall.sh"),
-        "expected brew note, got: {captured}"
-    );
-    assert!(
-        captured.contains("[npm]") && captured.contains("deprecated"),
-        "expected npm note, got: {captured}"
-    );
-}
-
-#[test]
 #[serial_test::serial]
 fn sudo_cmd_with_seam_uses_seam_path_when_set() {
     let dir = tempfile::tempdir().unwrap();
@@ -986,13 +864,21 @@ fn any_system_manager_available_returns_bool_without_panic() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_success_returns_command_output() {
+    let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_BIN", 0, "hello from shim\n", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_BIN").unwrap());
     cmd.args(["arg1"]);
-    let out = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "running test", "install")
-        .expect("run_pkg_cmd_live should succeed with exit 0");
+    let out = run_pkg_cmd_live(
+        &printer,
+        &notes,
+        "test-mgr",
+        &mut cmd,
+        "running test",
+        "install",
+    )
+    .expect("run_pkg_cmd_live should succeed with exit 0");
     assert!(out.status.success(), "exit status should be success");
 }
 
@@ -1000,13 +886,21 @@ fn run_pkg_cmd_live_success_returns_command_output() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
+    let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_FAIL_BIN", 1, "", "install broke\n");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_FAIL_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "running test", "install")
-        .err()
-        .expect("expected Err from exit-1 shim");
+    let err = run_pkg_cmd_live(
+        &printer,
+        &notes,
+        "test-mgr",
+        &mut cmd,
+        "running test",
+        "install",
+    )
+    .err()
+    .expect("expected Err from exit-1 shim");
     assert!(
         matches!(&err, PackageError::InstallFailed { manager, message }
             if manager == "test-mgr" && message.contains("install broke")),
@@ -1019,6 +913,7 @@ fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
+    let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_UNINST_BIN",
         2,
@@ -1027,9 +922,16 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UNINST_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "removing test", "uninstall")
-        .err()
-        .expect("expected Err from exit-2 shim");
+    let err = run_pkg_cmd_live(
+        &printer,
+        &notes,
+        "test-mgr",
+        &mut cmd,
+        "removing test",
+        "uninstall",
+    )
+    .err()
+    .expect("expected Err from exit-2 shim");
     assert!(
         matches!(&err, PackageError::UninstallFailed { manager, .. }
             if manager == "test-mgr"),
@@ -1042,12 +944,20 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
+    let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_NOOUT_BIN", 42, "", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_NOOUT_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "test label", "install")
-        .err()
-        .expect("expected Err from exit-42 shim");
+    let err = run_pkg_cmd_live(
+        &printer,
+        &notes,
+        "test-mgr",
+        &mut cmd,
+        "test label",
+        "install",
+    )
+    .err()
+    .expect("expected Err from exit-42 shim");
     assert!(
         matches!(&err, PackageError::InstallFailed { message, .. }
             if message.contains("42")),
@@ -1060,6 +970,7 @@ fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
+    let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_CAVEAT_BIN",
         0,
@@ -1070,20 +981,25 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_CAVEAT_BIN").unwrap());
     run_pkg_cmd_live(
         &printer,
+        &notes,
         "brew",
         &mut cmd,
         "installing brew package",
         "install",
     )
     .expect("should succeed");
+    let drained = notes.take();
+    assert_eq!(drained.len(), 1, "expected one caveat, got: {drained:?}");
+    assert_eq!(drained[0].manager, "brew");
+    assert!(
+        drained[0].message.contains("Add to PATH"),
+        "expected caveat message, got: {:?}",
+        drained[0].message
+    );
     let captured = buf.lock().unwrap().clone();
     assert!(
-        captured.contains("Post-install notes"),
-        "expected caveats header in output, got: {captured}"
-    );
-    assert!(
-        captured.contains("Add to PATH"),
-        "expected caveat message in output, got: {captured}"
+        !captured.contains("Post-install notes"),
+        "the note travels back to the reconciler; nothing prints here: {captured}"
     );
 }
 
@@ -1213,11 +1129,12 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_unknown_error_kind_maps_to_install_failed() {
+    let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPDATE_BIN", 1, "", "update broke\n");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UPDATE_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "updating", "update")
+    let err = run_pkg_cmd_live(&printer, &notes, "test-mgr", &mut cmd, "updating", "update")
         .err()
         .expect("expected Err from exit-1 shim");
     assert!(
@@ -1418,11 +1335,19 @@ fn windows_pkg_argv_unresolved_falls_back_to_bare_name() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
+    let notes = NoteSink::default();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-test-path-xyz");
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "spawn test", "install")
-        .err()
-        .expect("expected Err when binary does not exist");
+    let err = run_pkg_cmd_live(
+        &printer,
+        &notes,
+        "test-mgr",
+        &mut cmd,
+        "spawn test",
+        "install",
+    )
+    .err()
+    .expect("expected Err when binary does not exist");
     assert!(
         matches!(&err, PackageError::CommandFailed { manager, .. }
             if manager == "test-mgr"),

@@ -114,6 +114,7 @@ impl PackageManager for PipxManager {
             let label = format!("pipx install {}", pkg);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "pipx",
                 pipx_cmd().args(["install", pkg]),
                 &label,
@@ -132,6 +133,7 @@ impl PackageManager for PipxManager {
             let label = format!("pipx uninstall {}", pkg);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "pipx",
                 pipx_cmd().args(["uninstall", pkg]),
                 &label,
@@ -144,6 +146,7 @@ impl PackageManager for PipxManager {
     fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "pipx",
             pipx_cmd().args(["upgrade-all"]),
             "pipx upgrade-all",

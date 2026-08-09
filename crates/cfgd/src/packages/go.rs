@@ -94,6 +94,7 @@ impl PackageManager for GoInstallManager {
             let label = format!("go install {}", install_path);
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "go",
                 go_cmd().args(["install", &install_path]),
                 &label,

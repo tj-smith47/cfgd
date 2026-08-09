@@ -342,10 +342,7 @@ pub(crate) fn handle_reconcile(
         .into_iter()
         .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
         .collect();
-    let pkg_cx = crate::providers::PackageContext {
-        printer,
-        state: &store,
-    };
+    let pkg_cx = crate::providers::PackageContext::new(printer, &store);
     let pkg_actions = match hooks.plan_packages(
         &resolved.merged,
         &available_managers,
@@ -513,6 +510,10 @@ pub(crate) fn handle_reconcile(
                     printer,
                     None,
                     None,
+                    crate::reconciler::ScriptReport {
+                        marker: Some(crate::reconciler::ScriptPhase::OnDrift.display_name()),
+                        non_fatal: true,
+                    },
                 ) {
                     Ok((desc, _, _)) => {
                         tracing::info!(script = %desc, "onDrift script completed");
@@ -561,6 +562,10 @@ pub(crate) fn handle_reconcile(
                     printer,
                     None,
                     None,
+                    crate::reconciler::ScriptReport {
+                        marker: Some(crate::reconciler::ScriptPhase::OnDrift.display_name()),
+                        non_fatal: true,
+                    },
                 ) {
                     Ok((desc, _, _)) => {
                         tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");

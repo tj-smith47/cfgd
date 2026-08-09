@@ -281,10 +281,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             // fresh machine only ever installs, never uninstalls. Profile-scoped:
             // module packages are added separately by `reconciler.plan` as
             // `Action::Module`, so this planner stays profile-only.
-            let pkg_cx = cfgd_core::providers::PackageContext {
-                printer,
-                state: &store,
-            };
+            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let pkg_actions = super::packages::plan_packages(
                 &resolved.merged,
                 &[],

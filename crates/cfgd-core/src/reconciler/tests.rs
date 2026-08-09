@@ -4165,6 +4165,7 @@ fn execute_script_inline_command() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(desc.contains("echo hello"));
@@ -4186,6 +4187,7 @@ fn execute_script_failure_returns_error() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -4220,6 +4222,7 @@ fn execute_script_with_timeout_override() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert_eq!(output, Some("fast".to_string()));
@@ -4241,6 +4244,7 @@ fn execute_script_injects_env_vars() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert_eq!(output, Some("test_value".to_string()));
@@ -4267,6 +4271,7 @@ fn execute_script_runs_executable_file() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert_eq!(output, Some("from_file".to_string()));
@@ -4293,6 +4298,7 @@ fn execute_script_rejects_non_executable_file() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -4329,6 +4335,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -7114,7 +7121,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
         MockSecretProvider::new("vault").with_resolve_result("env-secret-value"),
     ));
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer();
+
     let tmp = tempfile::tempdir().unwrap();
 
     let mut collector: Vec<(String, String)> = Vec::new();
@@ -7126,7 +7133,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
     };
 
     let desc = reconciler
-        .apply_secret_action(&action, tmp.path(), &printer, &mut collector)
+        .apply_secret_action(&action, tmp.path(), &mut collector)
         .expect("resolve-env should succeed");
 
     assert!(desc.contains("resolve-env"), "desc: {}", desc);
@@ -7156,7 +7163,7 @@ fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
         MockSecretProvider::new("vault").with_resolve_result("resolved"),
     ));
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer();
+
     let tmp = tempfile::tempdir().unwrap();
 
     let source = tmp.path().join("token.enc");
@@ -7190,7 +7197,7 @@ fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
         ),
     ] {
         let desc = reconciler
-            .apply_secret_action(&action, tmp.path(), &printer, &mut collector)
+            .apply_secret_action(&action, tmp.path(), &mut collector)
             .expect("secret action should succeed");
         assert!(
             !desc.contains('\\'),
@@ -7673,28 +7680,52 @@ fn apply_system_skip_logs_warning() {
     );
 }
 
-#[test]
-fn apply_system_action_unknown_key_renders_warn() {
-    // An unknown system key (no configurator registered) is a likely typo and
-    // must surface as a real warning (⚠), not a neutral skip line.
+/// Drive a one-action `System` plan through the full apply and return the
+/// stripped human transcript, so a skip's role is asserted where it renders.
+fn system_skip_transcript(action: SystemAction) -> String {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let profile = MergedProfile::default();
-
-    let action = SystemAction::Skip {
-        configurator: "gti".to_string(),
-        reason: "no configurator registered for 'gti'".to_string(),
-        origin: "local".to_string(),
-        unknown: true,
+    let resolved = make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(action)],
+        )],
+        warnings: vec![],
     };
 
     let (printer, cap) = crate::output::Printer::for_test_doc();
     reconciler
-        .apply_system_action(&action, &profile, &[], &printer)
-        .unwrap();
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("a system skip applies cleanly");
+    crate::output::strip_ansi(&cap.human())
+}
 
-    let out = crate::output::strip_ansi(&cap.human());
+#[test]
+fn apply_system_action_unknown_key_renders_warn() {
+    // An unknown system key (no configurator registered) is a likely typo and
+    // must surface as a real warning (⚠) on its own action line in the tree,
+    // not a neutral skip.
+    let out = system_skip_transcript(SystemAction::Skip {
+        configurator: "gti".to_string(),
+        reason: "no configurator registered for 'gti'".to_string(),
+        origin: "local".to_string(),
+        unknown: true,
+    });
+
     assert!(
         out.contains('\u{26A0}'),
         "unknown key must warn (⚠), got: {out}"
@@ -7713,24 +7744,13 @@ fn apply_system_action_unknown_key_renders_warn() {
 fn apply_system_action_unavailable_renders_non_warn() {
     // A registered-but-unavailable configurator is expected; it must render
     // neutrally (Skipped, — glyph), never as a warning.
-    let state = test_state();
-    let registry = ProviderRegistry::new();
-    let reconciler = Reconciler::new(&registry, &state);
-    let profile = MergedProfile::default();
-
-    let action = SystemAction::Skip {
+    let out = system_skip_transcript(SystemAction::Skip {
         configurator: "systemdUnits".to_string(),
         reason: "'systemdUnits' is not available on this host".to_string(),
         origin: "local".to_string(),
         unknown: false,
-    };
+    });
 
-    let (printer, cap) = crate::output::Printer::for_test_doc();
-    reconciler
-        .apply_system_action(&action, &profile, &[], &printer)
-        .unwrap();
-
-    let out = crate::output::strip_ansi(&cap.human());
     assert!(
         !out.contains('\u{26A0}'),
         "an expected platform skip must not warn (⚠), got: {out}"
@@ -11802,6 +11822,7 @@ fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
             &modules,
             None,
             &crate::AbortFlag::new(),
+            &crate::providers::NoteSink::default(),
         )
         .expect("module action must succeed");
     assert!(
@@ -14898,6 +14919,7 @@ fn execute_script_working_dir_is_a_file_errors() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     let err = result.unwrap_err().to_string();
     assert!(
@@ -14924,6 +14946,7 @@ fn execute_script_working_dir_missing_errors() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     let err = result.unwrap_err().to_string();
     assert!(
@@ -15040,6 +15063,7 @@ fn execute_script_creates_guard_skips_when_path_exists() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(!changed, "creates guard must mark the run as a no-op");
@@ -15069,6 +15093,7 @@ fn execute_script_unless_guard_skips_when_condition_holds() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(!changed, "unless-holds must skip the body");
@@ -15096,6 +15121,7 @@ fn execute_script_only_if_guard_skips_when_condition_unmet() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(!changed, "onlyIf-unmet must skip the body");
@@ -16504,4 +16530,738 @@ fn to_hash_string_is_stable_across_group_permutation() {
         permuted.to_hash_string(),
         "the hash identifies the SET of planned actions, not the walk order"
     );
+}
+
+// --- T5: the execution tree ---
+
+/// A `Reconciler` behind the `RunExecutor` seam, so a test can assert the FULL
+/// transcript of a run — header, tree and rollup — rather than the tree alone.
+struct ReconcilerExecutor<'a> {
+    reconciler: &'a Reconciler<'a>,
+    resolved: &'a crate::config::ResolvedProfile,
+    modules: &'a [ResolvedModule],
+}
+
+impl crate::reconciler::RunExecutor for ReconcilerExecutor<'_> {
+    fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult> {
+        self.reconciler.apply(
+            plan,
+            self.resolved,
+            Path::new("."),
+            printer,
+            None,
+            self.modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+    }
+}
+
+fn apply_transcript(
+    reconciler: &Reconciler<'_>,
+    plan: &Plan,
+    resolved: &crate::config::ResolvedProfile,
+    modules: &[ResolvedModule],
+) -> (ApplyResult, String) {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let result = reconciler
+        .apply(
+            plan,
+            resolved,
+            Path::new("."),
+            &printer,
+            None,
+            modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+    (result, out)
+}
+
+/// Every non-empty line of a transcript, trimmed — the shape assertions below
+/// are about ORDER, and a trailing-space diff is not what they are pinning.
+fn transcript_lines(out: &str) -> Vec<String> {
+    out.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn resolved_for(profile: &str, brew_formulae: &[&str]) -> crate::config::ResolvedProfile {
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].profile_name = profile.to_string();
+    resolved.merged.packages.brew = Some(crate::config::BrewSpec {
+        formulae: brew_formulae.iter().map(|f| (*f).to_string()).collect(),
+        ..Default::default()
+    });
+    resolved
+}
+
+#[test]
+fn bootstrap_renders_in_cfgd_managers_group() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["ripgrep"]),
+        bootstrap_action("brew"),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+    let lines = transcript_lines(&out);
+
+    assert!(
+        out.contains("Phase: Packages"),
+        "the phase opens a block: {out}"
+    );
+    let managers = lines
+        .iter()
+        .position(|l| l.trim() == "cfgd:managers")
+        .unwrap_or_else(|| panic!("no cfgd:managers heading in: {out}"));
+    let profile = lines
+        .iter()
+        .position(|l| l.trim() == "profile:work")
+        .expect("profile group");
+    let module = lines
+        .iter()
+        .position(|l| l.trim() == "module:nvim")
+        .expect("module group");
+    assert!(
+        profile < managers && managers < module,
+        "cfgd:managers renders second, between profile and modules: {out}"
+    );
+}
+
+#[test]
+fn bootstrap_detail_names_every_declaring_owner() {
+    // The claimed-away shape: the SAME package under both the profile and the
+    // module, which is the only fixture that catches a derivation built on
+    // `effective_desired_packages` (whose claim rule drops the profile row).
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![bootstrap_action("brew")]);
+    let resolved = resolved_for("work", &["neovim"]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+
+    assert!(
+        out.contains("for profile:work, module:nvim"),
+        "the attribution names every declarer, profile-first: {out}"
+    );
+
+    // A failed bootstrap gives the detail slot to the error instead: one slot
+    // cannot carry both, and the error is what the reader must act on.
+    let empty_registry = ProviderRegistry::new();
+    let failing = Reconciler::new(&empty_registry, &state);
+    let (_, failed_out) = apply_transcript(&failing, &plan, &resolved, &modules);
+    assert!(
+        failed_out.contains("not found in registry"),
+        "the collapsed error takes the slot: {failed_out}"
+    );
+    assert!(
+        !failed_out.contains("for profile:work"),
+        "the attribution must not survive beside an error: {failed_out}"
+    );
+}
+
+#[test]
+fn bootstrap_group_is_display_only() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let action = bootstrap_action("brew");
+    assert_eq!(
+        crate::reconciler::format_action_description(&action),
+        "package:brew:bootstrap",
+        "the resource id reads no owner"
+    );
+
+    let plan = packages_phase(vec![action]);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let (result, _) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert_eq!(result.action_results.len(), 1);
+    assert_eq!(
+        result.action_results[0].description,
+        "package:brew:bootstrap"
+    );
+    assert_eq!(result.action_results[0].phase, "packages");
+    assert_eq!(result.planned_total, 1);
+}
+
+#[test]
+#[serial_test::serial]
+fn metadata_detail_is_muted_and_error_detail_is_not() {
+    let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
+
+    /// Whether the detail beginning at `needle` is preceded by styling — the
+    /// separator-to-text window carries an escape only when a detail style was
+    /// supplied.
+    fn detail_is_styled(raw: &str, needle: &str) -> bool {
+        let idx = raw
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle} in {raw}"));
+        let head = &raw[..idx];
+        let sep = head
+            .rfind(" \u{2014} ")
+            .unwrap_or_else(|| panic!("no detail separator before {needle} in {raw}"));
+        head[sep..].contains('\u{1b}')
+    }
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // `RefreshLiveSession` with no vars returns the skipped suffix, which is
+    // the tree's `unchanged` metadata detail.
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Env,
+                &Owner::cfgd("env"),
+                vec![Action::Env(EnvAction::RefreshLiveSession { vars: vec![] })],
+            ),
+            packages_phase(vec![install_action("nosuch", &["x"])])
+                .phases
+                .remove(0),
+        ],
+        warnings: vec![],
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    let raw = cap.human();
+
+    assert!(
+        detail_is_styled(&raw, "unchanged"),
+        "a metadata detail is muted"
+    );
+    assert!(
+        !detail_is_styled(&raw, "package error"),
+        "an error detail is never muted"
+    );
+}
+
+#[test]
+fn packages_tree_renders_profile_first_while_modules_execute_first() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["ripgrep"]),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+    let lines = transcript_lines(&out);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:neovim", "install:brew:ripgrep"],
+        "Rule P dispatches module-owned work first"
+    );
+    let profile = lines
+        .iter()
+        .position(|l| l.trim() == "profile:work")
+        .expect("profile group");
+    let module = lines
+        .iter()
+        .position(|l| l.trim() == "module:nvim")
+        .expect("module group");
+    assert!(
+        profile < module,
+        "the deferred tree reads in Owner::sort_key order: {out}"
+    );
+}
+
+#[test]
+fn platform_skip_renders_as_header_annotation_not_a_phase() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["ripgrep"]);
+
+    let skip = || {
+        Action::Module(ModuleAction {
+            module_name: "wsl-tools".to_string(),
+            kind: ModuleActionKind::Skip {
+                reason: "platform not matched (requires: windows)".to_string(),
+            },
+            origin: None,
+        })
+    };
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Modules, &Owner::profile("work"), vec![skip()]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![install_action("brew", &["ripgrep"])],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let module_names = vec!["nvim".to_string(), "wsl-tools".to_string()];
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &resolved,
+        modules: &[],
+    };
+    crate::reconciler::ApplyRun::new(
+        crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Apply,
+            config_path: None,
+            profile: Some("work"),
+            modules: &module_names,
+            trigger: None,
+        },
+        &plan,
+    )
+    .execute(&printer, crate::reconciler::Confirm::Skip, &mut exec)
+    .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(
+        !out.contains("Phase: Modules"),
+        "no Modules block, ever: {out}"
+    );
+    assert!(
+        out.contains(
+            "Modules   nvim (wsl-tools skipped: platform not matched (requires: windows))"
+        ) || out.contains(
+            "Modules  nvim (wsl-tools skipped: platform not matched (requires: windows))"
+        ),
+        "the row carries the skip's own reason string: {out}"
+    );
+    assert!(
+        out.contains("Phases   Packages") || out.contains("Phases  Packages"),
+        "Modules is not listed among the phases: {out}"
+    );
+    assert!(!out.contains("Phases   Modules"), "got: {out}");
+    assert!(
+        out.contains("2 planned"),
+        "a skip is an in-scope action and is counted: {out}"
+    );
+    assert!(
+        out.contains("2 action(s) succeeded"),
+        "the rollup reconciles against the planned count: {out}"
+    );
+
+    // A run whose ONLY in-scope work is a platform-gated skip renders header +
+    // annotation + rollup and NOTHING else — asserted as the complete
+    // transcript, because "no heading" is what a stray warning line satisfies.
+    let skip_only = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("work"),
+            vec![skip()],
+        )],
+        warnings: vec![],
+    };
+    let only_names = vec!["wsl-tools".to_string()];
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &resolved,
+        modules: &[],
+    };
+    crate::reconciler::ApplyRun::new(
+        crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Apply,
+            config_path: None,
+            profile: Some("work"),
+            modules: &only_names,
+            trigger: None,
+        },
+        &skip_only,
+    )
+    .execute(&printer, crate::reconciler::Confirm::Skip, &mut exec)
+    .expect("apply");
+    let lines: Vec<String> = crate::output::strip_ansi(&cap.human())
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            // Only the rollup carries a wall-clock suffix, and it is always the
+            // LAST parenthesis on the line — a skip reason has parentheses of
+            // its own that must survive.
+            match l.rfind(" (") {
+                Some(i) if l.ends_with("s)") && l.starts_with('\u{2713}') => l[..i].to_string(),
+                _ => l.to_string(),
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        lines,
+        vec![
+            "Apply".to_string(),
+            "Profile  work".to_string(),
+            "Modules  wsl-tools skipped: platform not matched (requires: windows)".to_string(),
+            "Actions  1 planned".to_string(),
+            "\u{2713} Apply complete \u{2014} 1 action(s) succeeded".to_string(),
+        ],
+        "header + annotation + rollup and nothing else"
+    );
+}
+
+#[test]
+fn every_action_emits_exactly_one_line() {
+    // One action from each arm whose bespoke status line the tree replaced: if
+    // any of the eleven comes back, this run emits more lines than actions.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let tmp = tempfile::tempdir().unwrap();
+    let modules = vec![make_resolved_module("nvim")];
+
+    let actions = vec![
+        Action::Module(ModuleAction {
+            module_name: "nvim".to_string(),
+            kind: ModuleActionKind::DeployFiles { files: vec![] },
+            origin: None,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".to_string(),
+            kind: ModuleActionKind::Skip {
+                reason: "encryption mode Always incompatible".to_string(),
+            },
+            origin: None,
+        }),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: tmp.path().join(".cfgd.env"),
+            content: "export A=1\n".to_string(),
+        }),
+        Action::Env(EnvAction::RefreshLiveSession { vars: vec![] }),
+        Action::Package(PackageAction::Skip {
+            manager: "apt".to_string(),
+            reason: "not available on this host".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::Secret(SecretAction::Skip {
+            source: "creds.enc".to_string(),
+            reason: "sops not installed".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "sysctl".to_string(),
+            reason: "not available on this host".to_string(),
+            origin: "local".to_string(),
+            unknown: false,
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "gti".to_string(),
+            reason: "no configurator registered".to_string(),
+            origin: "local".to_string(),
+            unknown: true,
+        }),
+    ];
+    let planned = actions.len();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            actions,
+        )],
+        warnings: vec![],
+    };
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+
+    assert_eq!(result.action_results.len(), planned);
+    let statuses = transcript_lines(&out)
+        .iter()
+        .filter(|l| {
+            let l = l.trim_start();
+            l.starts_with('\u{2713}')
+                || l.starts_with('\u{2717}')
+                || l.starts_with('\u{26A0}')
+                || l.starts_with('\u{2014}')
+        })
+        .count();
+    assert_eq!(statuses, planned, "one line per action, no more: {out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_script_phase_emits_one_line_per_script_not_two() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let entry = |run: &str| crate::config::ScriptEntry::Simple(run.to_string());
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("test"),
+            vec![
+                Action::Script(ScriptAction::Run {
+                    entry: entry("true"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+                Action::Script(ScriptAction::Run {
+                    entry: entry("echo two"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+            ],
+        )],
+        warnings: vec![],
+    };
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert_eq!(result.action_results.len(), 2);
+    let settled = transcript_lines(&out)
+        .iter()
+        .filter(|l| {
+            let l = l.trim_start();
+            l.starts_with('\u{2713}') || l.starts_with('\u{2717}')
+        })
+        .count();
+    assert_eq!(settled, 2, "n scripts emit n status lines, not 2n: {out}");
+}
+
+#[test]
+fn failure_renders_inside_its_owner_group() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(FailingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            vec![module_install_action("nvim", "brew", "neovim")],
+        )],
+        warnings: vec![],
+    };
+    let (_, out) = apply_transcript(
+        &reconciler,
+        &plan,
+        &resolved,
+        &[module_for("nvim", "brew", "neovim")],
+    );
+    let lines = transcript_lines(&out);
+
+    let group = lines
+        .iter()
+        .position(|l| l.trim() == "module:nvim")
+        .expect("owner group");
+    let failure = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('\u{2717}'))
+        .expect("failure line");
+    assert!(
+        group < failure,
+        "the failure lands inside its owner group: {out}"
+    );
+    assert!(
+        !out.contains("Failed:"),
+        "the [i/total] failure prefix is gone: {out}"
+    );
+    assert!(!out.contains("[1/1]"), "no positional prefix: {out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn streaming_phase_lines_appear_as_work_completes() {
+    // A file phase streams: the first action's line is on the wire before the
+    // second action runs. Driven by a script that reads the capture mid-run
+    // is not available, so the ordering is asserted structurally — the second
+    // action's own window output must appear AFTER the first action's status.
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let entry = |run: &str| crate::config::ScriptEntry::Simple(run.to_string());
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("work"),
+            vec![
+                Action::Script(ScriptAction::Run {
+                    entry: entry("echo first-body"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+                Action::Script(ScriptAction::Run {
+                    entry: entry("echo second-body"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+            ],
+        )],
+        warnings: vec![],
+    };
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    let first_status = out
+        .find("\u{2713} postApply: echo first-body")
+        .expect("first status");
+    let second_body = out.find("second-body").expect("second body");
+    assert!(
+        first_status < second_body,
+        "a live section emits as work completes, not at close: {out}"
+    );
+}
+
+#[test]
+fn action_notes_render_under_the_status_they_belong_to() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(NotePushingManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["neovim"]);
+
+    let plan = packages_phase(vec![install_action("brew", &["neovim"])]);
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+    let lines = transcript_lines(&out);
+
+    let status = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('\u{2713}'))
+        .expect("the action's status");
+    assert_eq!(
+        lines[status + 1].trim(),
+        "\u{26A0} [brew] add /opt/brew/bin to PATH",
+        "one warn line per note, in order, under the status: {out}"
+    );
+    assert_eq!(
+        lines[status + 2].trim(),
+        "\u{26A0} [brew] restart your shell",
+        "in order: {out}"
+    );
+    assert!(
+        !out.contains("Post-install notes"),
+        "the sub-header is gone with print_caveats: {out}"
+    );
+}
+
+#[test]
+fn an_empty_note_drain_emits_nothing() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["neovim"]);
+
+    let plan = packages_phase(vec![install_action("brew", &["neovim"])]);
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert!(!out.contains('\u{26A0}'), "no note, no line: {out}");
+}
+
+/// A manager that pushes two post-install notes from `install`, the way a real
+/// one does from its captured output.
+struct NotePushingManager {
+    name: String,
+}
+
+impl NotePushingManager {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
+impl PackageManager for NotePushingManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        for message in ["add /opt/brew/bin to PATH", "restart your shell"] {
+            cx.notes.push(crate::providers::PostInstallNote {
+                manager: self.name.clone(),
+                message: message.to_string(),
+            });
+        }
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }

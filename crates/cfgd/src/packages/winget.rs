@@ -124,6 +124,7 @@ impl PackageManager for WingetManager {
         for pkg in packages {
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "winget",
                 Command::new("winget").args([
                     "install",
@@ -143,6 +144,7 @@ impl PackageManager for WingetManager {
         for pkg in packages {
             run_pkg_cmd_live(
                 cx.printer,
+                cx.notes,
                 "winget",
                 Command::new("winget").args(["uninstall", "--id", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -155,6 +157,7 @@ impl PackageManager for WingetManager {
     fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx.printer,
+            cx.notes,
             "winget",
             Command::new("winget").args([
                 "upgrade",

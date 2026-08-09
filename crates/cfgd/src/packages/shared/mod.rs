@@ -10,6 +10,7 @@ use std::process::{Command, Output};
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{CommandOutput, Printer, Role};
+use cfgd_core::providers::{NoteSink, PostInstallNote};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
@@ -127,12 +128,6 @@ where
     build_pkg_command(name, resolver())
 }
 
-/// Important post-install messages extracted from package manager output.
-pub(super) struct PostInstallNote {
-    pub(super) manager: String,
-    pub(super) message: String,
-}
-
 /// Extract caveats/warnings from package manager output.
 pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<PostInstallNote> {
     let combined = format!("{}\n{}", output.stdout, output.stderr);
@@ -208,17 +203,6 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
         }
     }
     notes
-}
-
-/// Print collected post-install notes to the user.
-pub(super) fn print_caveats(printer: &Printer, notes: &[PostInstallNote]) {
-    if notes.is_empty() {
-        return;
-    }
-    printer.status_simple(Role::Info, "Post-install notes");
-    for note in notes {
-        printer.status_simple(Role::Warn, format!("[{}] {}", note.manager, note.message));
-    }
 }
 
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
@@ -314,6 +298,7 @@ pub(super) fn run_pkg_query(
 /// the appropriate variant based on `error_kind`.
 pub(super) fn run_pkg_cmd_live(
     printer: &Printer,
+    notes: &NoteSink,
     manager: &str,
     cmd: &mut Command,
     label: &str,
@@ -355,10 +340,14 @@ pub(super) fn run_pkg_cmd_live(
             },
         });
     }
-    // Extract and print any post-install caveats
+    // Post-install caveats travel back to the reconciler instead of printing
+    // here: `run_pkg_cmd_live` returns before the action's own status line is
+    // emitted, so anything printed from inside it lands above the line it
+    // belongs to.
     if error_kind == "install" {
-        let notes = extract_caveats(manager, &output);
-        print_caveats(printer, &notes);
+        for note in extract_caveats(manager, &output) {
+            notes.push(note);
+        }
     }
     Ok(output)
 }
@@ -376,6 +365,7 @@ pub(super) fn run_pkg_cmd_live(
 /// verbatim.
 pub(super) fn install_batch_then_per_package<F>(
     printer: &Printer,
+    notes: &NoteSink,
     manager: &str,
     packages: &[String],
     build_cmd: F,
@@ -389,7 +379,7 @@ where
 
     let batch_label = format!("{} install {}", manager, packages.join(" "));
     let mut batch = build_cmd(packages);
-    match run_pkg_cmd_live(printer, manager, &mut batch, &batch_label, "install") {
+    match run_pkg_cmd_live(printer, notes, manager, &mut batch, &batch_label, "install") {
         Ok(_) => return Ok(()),
         Err(e) => {
             if packages.len() == 1 {
@@ -406,7 +396,7 @@ where
     for pkg in packages {
         let label = format!("{} install {}", manager, pkg);
         let mut cmd = build_cmd(std::slice::from_ref(pkg));
-        if run_pkg_cmd_live(printer, manager, &mut cmd, &label, "install").is_err() {
+        if run_pkg_cmd_live(printer, notes, manager, &mut cmd, &label, "install").is_err() {
             failed.push(pkg.clone());
         }
     }
