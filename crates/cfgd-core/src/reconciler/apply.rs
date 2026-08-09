@@ -16,34 +16,52 @@ use super::scripts::{
     effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
-    Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, PhaseName, Plan,
-    ReconcileContext, ScriptAction, ScriptPhase,
+    Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, Owner, OwnerKind,
+    PhaseFilter, PhaseName, Plan, ReconcileContext, ScriptAction, ScriptPhase,
 };
+
+/// Identity of one planned action, for correlating the plan-order walk with the
+/// dispatch-order walk over the same `OwnerGroup::actions` storage.
+///
+/// Value equality is wrong here: two groups can plan byte-identical actions
+/// (the same package declared by two modules), and those are distinct rows in
+/// the journal.
+fn action_key(action: &Action) -> usize {
+    action as *const Action as usize
+}
 
 fn hash_sorted_parts(mut parts: Vec<String>) -> String {
     parts.sort();
     crate::sha256_hex(parts.join("|").as_bytes())
 }
 
-/// Whether `action` (residing in `phase_name`) should execute under `filter`.
+/// Whether `action` (owned by `owner`, residing in `phase_name`) should execute
+/// under `filter`.
+///
+/// `--phase modules` is an OWNER filter: module work applies in the phase whose
+/// kind it is, so every module-owned action matches it wherever it landed.
 ///
 /// `--phase post-scripts` / `--phase pre-scripts` are intentionally inclusive
-/// across plan phases: module-level lifecycle scripts are emitted into
-/// `PhaseName::Modules` as `Action::Module(RunScript { phase: PostApply | ... })`,
-/// not into `PhaseName::PostScripts`. A naive `phase.name == filter` test
-/// therefore drops every per-module post/pre script and makes
+/// across plan phases: a module lifecycle script is
+/// `Action::Module(RunScript { phase: PostApply | ... })`, which a naive
+/// `phase.name == filter` test would drop, making
 /// `cfgd apply --module nvim --phase post-scripts` a no-op even when failed
 /// module scripts need re-attempting. Other filters keep strict
 /// phase-equality semantics.
 pub fn action_matches_phase_filter(
     phase_name: &PhaseName,
+    owner: &Owner,
     action: &Action,
-    filter: &PhaseName,
+    filter: &PhaseFilter,
 ) -> bool {
-    if phase_name == filter {
+    let filter_phase = match filter {
+        PhaseFilter::ModuleOwners => return owner.kind == OwnerKind::Module,
+        PhaseFilter::Phase(name) => name,
+    };
+    if phase_name == filter_phase {
         return true;
     }
-    match filter {
+    match filter_phase {
         PhaseName::PostScripts => is_post_apply_script(action),
         PhaseName::PreScripts => is_pre_apply_script(action),
         _ => false,
@@ -217,7 +235,7 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         config_dir: &std::path::Path,
         printer: &Printer,
-        phase_filter: Option<&PhaseName>,
+        phase_filter: Option<&PhaseFilter>,
         module_actions: &[ResolvedModule],
         context: ReconcileContext,
         skip_scripts: bool,
@@ -244,16 +262,18 @@ impl<'a> super::Reconciler<'a> {
             .iter()
             .map(|phase| match phase_filter {
                 Some(filter) => phase
-                    .actions
-                    .iter()
-                    .filter(|a| action_matches_phase_filter(&phase.name, a, filter))
+                    .owned_actions()
+                    .filter(|(owner, a)| action_matches_phase_filter(&phase.name, owner, a, filter))
                     .count(),
-                None => phase.actions.len(),
+                None => phase.action_count(),
             })
             .sum();
 
         let mut results = Vec::new();
-        let mut action_index: usize = 0;
+        // Running base of the plan-position counter: `action_index` is dense
+        // from 0 across the whole run, over the actions that survive
+        // `phase_filter`.
+        let mut plan_index_base: usize = 0;
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
         // The PATH directories the Env phase's planned content was built from.
         // Compared against the post-run set below to detect a manager this run
@@ -266,25 +286,46 @@ impl<'a> super::Reconciler<'a> {
         let mut aborted_code: Option<u8> = None;
 
         'phases: for phase in &plan.phases {
-            // Pre-filter to the actions in this phase that survive `phase_filter`.
-            // Restricting the indexed loop below to the surviving subset keeps
-            // the `[i/total]` status headers honest about what actually runs.
-            let filtered: Vec<&Action> = if let Some(filter) = phase_filter {
-                phase
-                    .actions
-                    .iter()
-                    .filter(|a| action_matches_phase_filter(&phase.name, a, filter))
-                    .collect()
-            } else {
-                phase.actions.iter().collect()
-            };
+            // Plan positions of the actions in this phase that survive
+            // `phase_filter`, in `Phase::actions()` order. `action_index` is
+            // documented as "where this action sits in the plan", and Rule P
+            // dispatches `Packages` out of plan order, so the value is read from
+            // this map rather than counted at dispatch. Address identity is the
+            // key because both walks borrow the same `OwnerGroup::actions`
+            // storage, so a reference from either one names the same slot.
+            let mut plan_positions: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            for (owner, action) in phase.owned_actions() {
+                if let Some(filter) = phase_filter
+                    && !action_matches_phase_filter(&phase.name, owner, action, filter)
+                {
+                    continue;
+                }
+                let next = plan_positions.len();
+                plan_positions.insert(action_key(action), next);
+            }
 
-            if filtered.is_empty() {
+            if plan_positions.is_empty() {
                 continue;
             }
 
-            let total = filtered.len();
-            for (action_idx, action) in filtered.iter().copied().enumerate() {
+            let total = plan_positions.len();
+            // Rule P's three-tier partition (`0 → B → 1`), which is plain plan
+            // order outside `Packages`. Membership in `plan_positions` is the
+            // `phase_filter` test: the map was built from the same predicate
+            // over the same actions, so an item missing from it is exactly one
+            // the filter excluded.
+            let dispatch: Vec<(&Action, usize)> = phase
+                .dispatch_order()
+                .filter_map(|(_, action)| {
+                    plan_positions
+                        .get(&action_key(action))
+                        .map(|pos| (action, *pos))
+                })
+                .collect();
+
+            for (action_idx, (action, plan_index)) in dispatch.into_iter().enumerate() {
+                let action_index = plan_index_base + plan_index;
                 // Cooperative cancellation: a signal flips the abort flag, and
                 // the loop stops before beginning the next atomic action.
                 if let Some(code) = abort.aborted() {
@@ -438,7 +479,6 @@ impl<'a> super::Reconciler<'a> {
                     error: error.clone(),
                     changed,
                 });
-                action_index += 1;
 
                 // If a signal arrived while the action was running, the execute_script
                 // poll loop already killed the child and returned an error. Treat this
@@ -468,6 +508,8 @@ impl<'a> super::Reconciler<'a> {
                     }));
                 }
             }
+
+            plan_index_base += total;
         }
 
         // Cooperative abort: a signal stopped us between actions. Skip the

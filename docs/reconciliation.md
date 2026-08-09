@@ -6,23 +6,49 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 
 Apply runs in a fixed phase order:
 
-1. **Pre-Scripts** — profile-level `preApply` or `preReconcile` hooks (context-dependent)
-2. **Env** — write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`; inject shell rc source lines
-3. **Modules** — resolve module dependencies, install module packages, deploy module files, run module-level hooks
-4. **Packages** — install/uninstall across all package managers (profile-level packages)
-5. **System** — shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
-6. **Files** — copy, template, set permissions (profile-level files)
+1. **Modules** — modules that do not apply to this host (platform gate, unmet dependency), reported before any work starts
+2. **Pre-Scripts** — `preApply` or `preReconcile` hooks (context-dependent)
+3. **Env** — write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`; inject shell rc source lines
+4. **Packages** — install/uninstall across all package managers
+5. **Files** — copy, template, set permissions
+6. **System** — shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
 7. **Secrets** — decrypt SOPS files, resolve external provider references
-8. **Post-Scripts** — profile-level `postApply` or `postReconcile` hooks, `onChange` hooks
+8. **Post-Scripts** — `postApply` or `postReconcile` hooks, `onChange` hooks
 
-Each phase can be applied independently with `cfgd apply --phase <name>`. A phase-scoped
-apply only touches the surfaces that phase owns: bootstrapping a package manager under
-`--phase modules` records its PATH entries but leaves `~/.cfgd.env` and your shell rc files
-alone. The record is durable, so the next full `cfgd apply` folds those entries in.
+**A module's work applies in the phase whose kind it is.** A module's packages are in
+`Packages` beside the profile's, its files in `Files`, its lifecycle scripts in
+`Pre-Scripts`/`Post-Scripts`. The `Modules` phase holds only the modules that were skipped,
+so `cfgd apply --phase files` deploys module-sourced files, and `--phase packages` installs
+module-declared packages.
 
-A full apply needs no second run for that: the Env phase runs before Modules and Packages,
-so cfgd regenerates `~/.cfgd.env` once at the end of the apply that bootstrapped the manager,
-and the file is correct when that run finishes.
+**Files precedes System** so a file is on disk before anything that consumes it: a unit file
+deployed through `files:` exists before `systemctl enable` names it.
+
+Within a phase, work is grouped by **owner** — the thing that declared it — and each group
+is labelled `kind:name`:
+
+| Owner | Means |
+|---|---|
+| `profile:<name>` | declared by the active profile |
+| `module:<name>` | declared by that module |
+| `cfgd:managers` | a package-manager bootstrap cfgd runs on its own initiative |
+| `cfgd:env` / `cfgd:session` | the generated env file / the live-session refresh |
+
+Groups read profile-first, then `cfgd:`, then modules by name. **Execution order in
+`Packages` is deliberately not that order**: module-owned package work runs first, then
+package-manager bootstraps, then profile-owned package work — so a module's dependency is
+present before a module's own hooks need it, and a manager is installed before the profile
+package that needs it. Everywhere else, execution follows the displayed order.
+
+Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
+selects every module-owned action in every phase. A phase-scoped apply only touches the
+surfaces that phase owns: bootstrapping a package manager under `--phase packages` records
+its PATH entries but leaves `~/.cfgd.env` and your shell rc files alone. The record is
+durable, so the next full `cfgd apply` folds those entries in.
+
+A full apply needs no second run for that: the Env phase runs before Packages, so cfgd
+regenerates `~/.cfgd.env` once at the end of the apply that bootstrapped the manager, and
+the file is correct when that run finishes.
 
 ## Apply vs Reconcile Context
 
@@ -42,23 +68,21 @@ Use `cfgd plan --context reconcile` to preview what the daemon would run.
 `cfgd plan` (or `cfgd apply --dry-run`) shows the full plan before any changes. Use `-o json` for structured output in CI pipelines.
 
 ```
-Modules:
-  nvim (depends: node, python)
-    + neovim — snap install nvim (0.10.2, min: 0.9)
-    + ripgrep — apt install ripgrep
-    → deploy: ~/.config/nvim/ (12 files)
-    → postApply: nvim --headless "+Lazy! sync" +qa
+Phase: Packages
+  - brew install extra-tool
+  - apt: 3 packages up to date
+  - [nvim] snap install nvim (0.10.2); apt install ripgrep
+  - bootstrap pipx (via pip)
 
-Packages:
-  + brew install extra-tool
-  = apt: 3 packages up to date
+Phase: Files
+  - update ~/.gitconfig
+  - [nvim] deploy: ~/.config/nvim/ (12 files)
 
-Files:
-  ~ ~/.gitconfig (modified)
-  = 4 files up to date
+Phase: System
+  - macosDefaults com.apple.dock.autohide: false → true
 
-System:
-  ~ macosDefaults: com.apple.dock.autohide: false → true
+Phase: Post-Scripts
+  - [nvim] postApply: nvim --headless "+Lazy! sync" +qa
 
 Backups (run on apply)
   mydata
@@ -67,11 +91,23 @@ Backups (run on apply)
 ## Filtering
 
 ```sh
-cfgd apply --phase packages           # single phase
-cfgd apply --module nvim              # single module + deps
-cfgd apply --only packages.brew       # dot-notation filter
-cfgd apply --skip system.sysctl       # skip specific items
+cfgd apply --phase packages              # single phase
+cfgd apply --phase modules               # every module-owned action, in every phase
+cfgd apply --module nvim                 # single module + deps
+cfgd apply --only packages.brew          # dot-notation filter (the brew manager)
+cfgd apply --only packages.module:nvim   # a module's package work
+cfgd apply --skip module:nvim            # one module, every phase
+cfgd apply --skip cfgd:managers          # every package-manager bootstrap
+cfgd apply --skip system.sysctl          # skip specific items
 ```
+
+The owner segment (`module:nvim`) is what keeps a module named `brew` distinct from the
+`brew` package manager: `--only packages.brew` selects the manager, `--only
+packages.module:brew` selects the module. The pre-routing spellings `modules` and
+`modules.<name>` still work and print a deprecation naming their replacement.
+
+Skipping a bootstrap leaves the installs that needed it in the plan; cfgd warns when that
+happens and prints the `--skip packages.<manager>` flags that would drop them too.
 
 ## Failure Handling
 

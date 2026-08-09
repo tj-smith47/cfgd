@@ -2177,17 +2177,17 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     };
 
     let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::Package(
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Packages,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
                     packages: vec!["test-pkg".to_string()],
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
@@ -2253,11 +2253,11 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // will short-circuit gracefully — we care about the post-prompt branches
     // executing, not the final outcome.
     let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::PreScripts,
-            scope: None,
-            actions: vec![],
-        }],
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::PreScripts,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![],
+        )],
         warnings: Vec::new(),
     };
 
@@ -2335,17 +2335,17 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     // A manager no registry can supply: the action is recorded as failed and
     // skipped, so the apply is a real run that touches nothing on this host.
     let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::Package(
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Packages,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "no-such-package-manager".to_string(),
                     packages: vec!["test-pkg".to_string()],
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
@@ -2403,17 +2403,17 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     // A FileAction::Skip is enough — the prompt-declined arm short-circuits
     // before apply runs so the action's body is never executed.
     let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Files,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::File(
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Files,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::File(
                 cfgd_core::providers::FileAction::Skip {
                     target: dir.path().join("noop"),
                     reason: "synthetic prompt-declined coverage".to_string(),
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
@@ -2463,17 +2463,17 @@ fn apply_plan_dry_run_skips_apply() {
 
     // Create a plan with at least one action so dry_run actually has something to skip
     let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::Package(
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Packages,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
                     packages: vec!["test-pkg".to_string()],
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 

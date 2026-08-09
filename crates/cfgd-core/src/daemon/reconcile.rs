@@ -397,16 +397,15 @@ pub(crate) fn handle_reconcile(
     // unrelated profile state.
     if let Some(name) = module_filter {
         for phase in &mut plan.phases {
-            phase.actions.retain(|a| match a {
-                crate::reconciler::Action::Module(ma) => ma.module_name == name,
-                _ => false,
+            phase.groups.retain(|g| {
+                g.owner.kind == crate::reconciler::OwnerKind::Module && g.owner.name == name
             });
         }
-        // Every non-module phase, and every module phase for a different
-        // module, is emptied by the retain above — drop them so drift
-        // recording and `reconciler.apply` below only ever see the filtered
-        // module's own work.
-        plan.phases.retain(|p| !p.actions.is_empty());
+        // Every group owned by anything else, and every module group for a
+        // different module, is dropped by the retain above — drop the emptied
+        // phases too so drift recording and `reconciler.apply` below only ever
+        // see the filtered module's own work.
+        plan.phases.retain(|p| !p.is_empty());
     }
 
     // Filter out pending decision items from the plan when auto-applying
@@ -415,7 +414,7 @@ pub(crate) fn handle_reconcile(
     } else {
         let mut count = 0usize;
         for phase in &plan.phases {
-            for action in &phase.actions {
+            for action in phase.actions() {
                 let (_rtype, rid) = action_resource_info(action);
                 if !pending_exclusions.contains(&rid) {
                     count += 1;
@@ -466,7 +465,7 @@ pub(crate) fn handle_reconcile(
         // diverging resource (UPSERT — no duplicate rows across ticks)...
         let mut current_drift: Vec<(String, String)> = Vec::new();
         for phase in &plan.phases {
-            for action in &phase.actions {
+            for action in phase.actions() {
                 let (rtype, rid) = action_resource_info(action);
                 // Skip pending decision items when recording drift
                 if pending_exclusions.contains(&rid) {
@@ -769,7 +768,7 @@ pub(crate) fn handle_reconcile(
 /// not count as drift.
 pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str) -> bool {
     use crate::reconciler::{Action, ModuleActionKind};
-    plan.phases.iter().flat_map(|p| &p.actions).any(|a| {
+    plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
         matches!(
             a,
             Action::Module(ma)

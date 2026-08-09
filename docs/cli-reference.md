@@ -99,8 +99,12 @@ cfgd apply                          # apply with confirmation
 cfgd apply --dry-run                # preview without applying
 cfgd apply --yes                    # skip confirmation
 cfgd apply --phase packages         # single phase
+cfgd apply --phase modules          # every module-owned action, in every phase
 cfgd apply --module nvim            # single module + deps (no profile required)
-cfgd apply --only packages.brew     # dot-notation filter
+cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
+cfgd apply --only packages.module:nvim  # a module's package work
+cfgd apply --skip module:nvim       # one module, every phase
+cfgd apply --skip cfgd:managers     # every package-manager bootstrap
 cfgd apply --skip system.sysctl     # skip specific items
 cfgd apply --skip-scripts           # apply without running any hooks
 ```
@@ -141,41 +145,47 @@ just like source-delivered files and packages: the human plan line ends with
 ` <- <source>`, and each action in the `-o json`/`-o yaml` payload carries an
 `origin` field (omitted for consumer-local modules).
 
-Modules get the same per-section breakdown a profile does: one heading per
-`<module> / <section>`, in the order the work runs, rather than a single
-`Modules` bucket. Sections are `Pre-Scripts`, `Packages`, `Files`,
-`Post-Scripts`, and `Skipped`.
-
-A module-scoped heading already names its module, so the bullets under it drop
-the `[<module>]` tag they carry in the payload. `dev-tools` below is delivered
-by the source `team`; `localmod` is consumer-local and carries no origin.
+A module's work is planned into the phase whose kind it is, beside the
+profile's: packages in `Packages`, files in `Files`, lifecycle scripts in
+`Pre-Scripts`/`Post-Scripts`. The `Modules` phase holds only the modules that
+were skipped. `dev-tools` below is delivered by the source `team`; `localmod`
+is consumer-local and carries no origin.
 
 ```sh
 $ cfgd plan
-Phase: dev-tools / Packages
-  - brew install ripgrep, fd <- team
-Phase: localmod / Packages
+Phase: Packages
   - brew install jq
-Phase: localmod / Post-Scripts
-  - postApply: jq --version
+  - [dev-tools] brew install ripgrep, fd <- team
+Phase: Post-Scripts
+  - [localmod] postApply: jq --version
 ```
 
-`--phase modules` still selects every one of these — the section split is a
-display and payload refinement, not a new filter key.
+`--phase modules` selects every module-owned action wherever it was planned, so
+it stays the way to preview "just the modules".
+
+Dot-notation paths give the owner its own segment, so a module named `brew` and
+the `brew` package manager never collide:
+
+| Pattern | Selects |
+|---|---|
+| `packages.brew` | the brew package manager's work |
+| `packages.module:nvim` | the `nvim` module's package work |
+| `module:nvim` | everything the `nvim` module declares, in every phase |
+| `profile:work` | everything the `work` profile declares |
+| `cfgd:managers` | every package-manager bootstrap |
+
+`modules` and `modules.<name>` still work and print a deprecation naming their
+replacement. Skipping a bootstrap leaves the installs that needed it in the
+plan; cfgd warns and prints the `--skip packages.<manager>` flags that would
+drop those too.
 
 ```jsonc
 // cfgd plan -o json  →  phases[]
 {
-  "phase": "Modules",           // unchanged; the filter identity
-  "module": "dev-tools",        // module-scoped phases only
-  "section": "packages",        // module-scoped phases only
+  "phase": "Packages",          // the filter identity; module work routes here too
   "actions": [
     { "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
   ]
-}
-{
-  "phase": "Environment",       // non-module phases carry no module/section keys
-  "actions": [ /* … */ ]
 }
 ```
 

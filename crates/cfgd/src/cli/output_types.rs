@@ -193,14 +193,6 @@ pub struct PlanOutput {
 #[serde(rename_all = "camelCase")]
 pub struct PlanPhaseOutput {
     pub phase: String,
-    /// Module name, for a phase split out of the Modules phase; omitted for
-    /// every other phase.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<String>,
-    /// Section within the module (`"packages"`, `"files"`, ...), for a phase
-    /// split out of the Modules phase; omitted for every other phase.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
     pub actions: Vec<PlanActionOutput>,
 }
 
@@ -979,8 +971,6 @@ mod tests {
             context: "default".to_string(),
             phases: vec![PlanPhaseOutput {
                 phase: "pre".to_string(),
-                module: None,
-                section: None,
                 actions: vec![PlanActionOutput {
                     description: "install pkg".to_string(),
                     action_type: "package".to_string(),
@@ -1040,8 +1030,6 @@ mod tests {
     fn plan_phase_output_emits_phase_name_and_actions_array() {
         let v = PlanPhaseOutput {
             phase: "main".to_string(),
-            module: None,
-            section: None,
             actions: vec![PlanActionOutput {
                 description: "render file".to_string(),
                 action_type: "file".to_string(),

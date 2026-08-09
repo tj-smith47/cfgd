@@ -1684,10 +1684,10 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = crate::test_helpers::make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: ["nvim", "zsh"]
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &crate::reconciler::Owner::profile("test"),
+            ["nvim", "zsh"]
                 .into_iter()
                 .map(|name| {
                     Action::Module(ModuleAction {
@@ -1699,7 +1699,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
                     })
                 })
                 .collect(),
-        }],
+        )],
         warnings: vec![],
     };
     let printer = crate::test_helpers::test_printer();
@@ -1709,7 +1709,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&crate::reconciler::PhaseFilter::Phase(PhaseName::Modules)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -2727,4 +2727,37 @@ fn journal_entry_is_file_work_covers_module_file_deploys() {
     // (`env:session:refresh` parses to id "refresh"). Session-manager state
     // has no backup, so it stays in the unrecoverable report.
     assert!(!entry("env", "env", "refresh").is_file_work());
+}
+
+#[test]
+fn is_file_work_classifies_by_resource_identity_not_phase() {
+    let entry = |phase: &str, action_type: &str, resource_id: &str| JournalEntry {
+        id: 1,
+        apply_id: 1,
+        action_index: 0,
+        phase: phase.to_string(),
+        action_type: action_type.to_string(),
+        resource_id: resource_id.to_string(),
+        pre_state: None,
+        post_state: None,
+        status: "success".to_string(),
+        error: None,
+        started_at: String::new(),
+        completed_at: None,
+        script_output: None,
+    };
+
+    // A module's encryption/strategy skip is planned into the `files` phase and
+    // writes nothing. Under a phase term it would be reported as restorable
+    // file work and rollback would claim to have undone a write that never
+    // happened.
+    assert!(!entry("files", "module", "nvim:skip").is_file_work());
+    assert!(!entry("files", "package", "brew:install:fd").is_file_work());
+    assert!(!entry("files", "script", "post:setup.sh").is_file_work());
+
+    // The identity terms answer the same in the re-routed phase as they did in
+    // `modules`, which is the whole point of keying on identity.
+    assert!(entry("files", "module", "nvim:files:3").is_file_work());
+    assert!(entry("packages", "file", "~/.gitconfig").is_file_work());
+    assert!(entry("post-scripts", "unknown", "file:~/.vimrc").is_file_work());
 }

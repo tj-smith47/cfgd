@@ -69,11 +69,11 @@ fn parse_duration_with_whitespace() {
 
 fn module_drift_plan(action: crate::reconciler::Action) -> crate::reconciler::Plan {
     crate::reconciler::Plan {
-        phases: vec![crate::reconciler::Phase {
-            name: crate::reconciler::PhaseName::Modules,
-            scope: None,
-            actions: vec![action],
-        }],
+        phases: vec![crate::reconciler::Phase::from_actions(
+            crate::reconciler::PhaseName::Modules,
+            &crate::reconciler::Owner::profile("test"),
+            vec![action],
+        )],
         warnings: Vec::new(),
     }
 }

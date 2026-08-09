@@ -77,7 +77,7 @@ pub fn cmd_plan(
     registry.set_system_config_dir(&config_dir);
 
     // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
-    let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
+    let phase_filter: Option<PhaseFilter> = args.phase.map(apply_phase_to_filter);
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
@@ -174,7 +174,7 @@ pub fn cmd_plan(
     let scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(&mut plan, &args.skip, &args.only);
+    filter_plan(&mut plan, &args.skip, &args.only, printer, &registry);
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {

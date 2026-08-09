@@ -244,7 +244,7 @@ A package declared in more than one scope — the profile and a module, or two m
 
 - **Same manager + same name across scopes** → installed once; the duplicates are dropped.
 - **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
-- **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. The Modules phase runs before the Packages phase, so a module's own `postApply` script can rely on the package already being present.
+- **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. Module-owned package work is dispatched ahead of profile-owned work inside the Packages phase, so a module's own `postApply` script can rely on the package already being present.
 - **`prefer: [script]` entries are never deduped.** A custom install script is not package-manager-idempotent — two same-named scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
 - Dedup is **silent**: no warning is emitted for a dropped duplicate.
 
@@ -502,31 +502,27 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ## Plan Output Format
 
-`cfgd plan` shows module actions grouped by module, with dependencies, resolved managers, and file deployments:
+`cfgd plan` shows module actions in the phase whose kind they are, with resolved managers and file deployments:
 
 ```
-Modules:
-  nvim (depends: node, python)
-    ✓ node — resolved: apt install nodejs (18.19.0)
-    ✓ python — resolved: apt install python3 (3.10.12), pipx install pynvim
-    + neovim — snap install nvim (0.10.2, prefer: [brew, snap, apt], minVersion: 0.9)
-    + ripgrep — apt install ripgrep (14.1.0)
-    + fd — apt install fd-find (8.7.0, alias: fd→fd-find)
-    + neovim — npm install -g neovim (companion)
-    + pynvim — pipx install pynvim (companion)
-    → deploy: ~/.config/nvim/ (from module files, 12 files)
-    → postApply: nvim --headless "+Lazy! sync" +qa
-    → postApply: nvim --headless -c "MasonInstallAll" -c "qa"
+Phase: Packages
+  - apt: 3 packages up to date
+  - brew install extra-tool
+  - [nvim] snap install nvim (0.10.2); apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd→fd-find)
+  - [nvim] npm install neovim; pipx install pynvim
 
-Packages: (profile-level)
-  = apt: 3 packages up to date
-  + brew install extra-tool
+Phase: Files
+  - 5 files up to date
+  - [nvim] deploy: ~/.config/nvim/ (12 files)
 
-Files: (profile-level)
-  = 5 files up to date
+Phase: Post-Scripts
+  - [nvim] postApply: nvim --headless "+Lazy! sync" +qa
+  - [nvim] postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 ```
 
-Module actions appear before profile-level packages and files. Dependencies are shown with `✓` (already satisfied) or `+` (will be installed). The `→` prefix marks file deployments and postApply scripts.
+A module's work sits in the phase whose kind it is, beside the profile's, and each
+bullet is tagged `[<module>]`. Module-owned package work is dispatched before
+profile-owned work in the Packages phase, whatever order the two read in.
 
 ## Lockfile
 

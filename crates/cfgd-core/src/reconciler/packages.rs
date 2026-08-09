@@ -58,7 +58,16 @@ impl<'a> super::Reconciler<'a> {
                 // Find in ALL managers (not just available — it isn't available yet)
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
-                        pm.bootstrap(printer)?;
+                        // A module's implicit bootstrap dispatches ahead of this
+                        // planned one, so by the time it runs the manager is
+                        // often already installed. Re-running the installer is
+                        // not idempotent for every manager and is minutes of
+                        // work for some; the action still completes, because
+                        // what it promises is an available manager, not an
+                        // installation.
+                        if !pm.is_available() {
+                            pm.bootstrap(printer)?;
+                        }
                         // Profile-level packages reach bootstrap through here
                         // rather than through the Modules phase, so this site
                         // owes the same record — without it a profile that names

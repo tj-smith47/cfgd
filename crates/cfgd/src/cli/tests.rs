@@ -9570,15 +9570,15 @@ fn build_plan_output_empty_plan() {
 #[test]
 fn build_plan_output_with_actions() {
     let plan = reconciler::Plan {
-        phases: vec![reconciler::Phase {
-            name: reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![reconciler::Action::Package(PackageAction::Install {
+        phases: vec![reconciler::Phase::from_actions(
+            reconciler::PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![reconciler::Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec!["something".into()],
     };
     let output = super::build_plan_output(&plan, "reconcile", None, &[]);
@@ -9592,19 +9592,19 @@ fn build_plan_output_with_actions() {
 fn build_plan_output_with_phase_filter() {
     let plan = reconciler::Plan {
         phases: vec![
-            reconciler::Phase {
-                name: reconciler::PhaseName::Packages,
-                scope: None,
-                actions: vec![reconciler::Action::Package(PackageAction::Install {
+            reconciler::Phase::from_actions(
+                reconciler::PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
                     origin: "local".into(),
                 })],
-            },
-            reconciler::Phase {
-                name: reconciler::PhaseName::Files,
-                scope: None,
-                actions: vec![reconciler::Action::File(FileAction::Create {
+            ),
+            reconciler::Phase::from_actions(
+                reconciler::PhaseName::Files,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::File(FileAction::Create {
                     source: "/a".into(),
                     target: "/b".into(),
                     origin: "local".into(),
@@ -9612,12 +9612,17 @@ fn build_plan_output_with_phase_filter() {
                     source_hash: None,
                     patch: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
     // Filter to only Files phase
-    let output = super::build_plan_output(&plan, "apply", Some(&reconciler::PhaseName::Files), &[]);
+    let output = super::build_plan_output(
+        &plan,
+        "apply",
+        Some(&PhaseFilter::Phase(reconciler::PhaseName::Files)),
+        &[],
+    );
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
@@ -9631,33 +9636,33 @@ fn strip_scripts_removes_script_phases() {
 
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::PreScripts,
-                scope: None,
-                actions: vec![reconciler::Action::Script(ScriptAction::Run {
+            Phase::from_actions(
+                PhaseName::PreScripts,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo pre".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PreApply,
                     origin: "local".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![reconciler::Action::Package(PackageAction::Install {
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
                     origin: "local".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::PostScripts,
-                scope: None,
-                actions: vec![reconciler::Action::Script(ScriptAction::Run {
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo post".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PostApply,
                     origin: "local".into(),
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -9671,34 +9676,26 @@ fn strip_scripts_removes_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    use cfgd_core::reconciler::{
-        ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase, PhaseName, Plan,
-    };
+    use cfgd_core::reconciler::{ModuleAction, ModuleActionKind, Phase, PhaseName, Plan};
 
-    // Realistic post-split shape: one Phase per (module, section) run, never
-    // one combined "Modules" phase holding install + run_script + deploy_files
-    // together — `split_module_phases` can never produce that shape.
+    // Realistic post-routing shape: a module's install, script and file work
+    // are planned into three different kind-phases, never one combined
+    // "Modules" bucket.
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Modules,
-                scope: Some(ModuleScope {
-                    module: "m".into(),
-                    section: ModuleSection::Packages,
-                }),
-                actions: vec![reconciler::Action::Module(ModuleAction {
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::InstallPackages { resolved: vec![] },
                     origin: None,
                 })],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: Some(ModuleScope {
-                    module: "m".into(),
-                    section: ModuleSection::PostScripts,
-                }),
-                actions: vec![reconciler::Action::Module(ModuleAction {
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::RunScript {
                         script: cfgd_core::config::ScriptEntry::Simple("echo hello".into()),
@@ -9706,19 +9703,16 @@ fn strip_scripts_removes_module_run_script_actions() {
                     },
                     origin: None,
                 })],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: Some(ModuleScope {
-                    module: "m".into(),
-                    section: ModuleSection::Files,
-                }),
-                actions: vec![reconciler::Action::Module(ModuleAction {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::DeployFiles { files: vec![] },
                     origin: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -9733,13 +9727,7 @@ fn strip_scripts_removes_module_run_script_actions() {
         "only the Packages and Files phases should remain: {:?}",
         plan.phases
     );
-    assert!(plan.phases.iter().all(|p| !matches!(
-        &p.scope,
-        Some(ModuleScope {
-            section: ModuleSection::PostScripts,
-            ..
-        })
-    )));
+    assert!(plan.phases.iter().all(|p| p.name != PhaseName::PostScripts));
 }
 
 // --- filter_plan edge cases ---
@@ -9749,10 +9737,10 @@ fn filter_plan_skip_file_by_target() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &reconciler::Owner::profile("test"),
+            vec![
                 Action::File(FileAction::Create {
                     source: "/tmp/a".into(),
                     target: "/etc/foo".into(),
@@ -9770,12 +9758,18 @@ fn filter_plan_skip_file_by_target() {
                     patch: None,
                 }),
             ],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["files:/etc/foo".into()], &[]);
-    assert_eq!(plan.phases[0].actions.len(), 1);
+    super::filter_plan(
+        &mut plan,
+        &["files:/etc/foo".into()],
+        &[],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(plan.phases[0].action_count(), 1);
 }
 
 #[test]
@@ -9783,20 +9777,26 @@ fn filter_plan_empty_skip_and_only_noop() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &[]);
-    assert_eq!(plan.phases[0].actions.len(), 1);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(plan.phases[0].action_count(), 1);
 }
 
 #[test]
@@ -9804,21 +9804,27 @@ fn filter_plan_skip_uninstall_packages() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "brew".into(),
                 packages: vec!["old-tool".into(), "keep-me".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["packages.brew.old-tool".into()], &[]);
+    super::filter_plan(
+        &mut plan,
+        &["packages.brew.old-tool".into()],
+        &[],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
-    match &plan.phases[0].actions[0] {
+    match plan.phases[0].actions().next().expect("one action") {
         reconciler::Action::Package(PackageAction::Uninstall { packages, .. }) => {
             assert_eq!(packages, &["keep-me".to_string()]);
         }
@@ -9831,21 +9837,27 @@ fn filter_plan_only_with_uninstall() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "apt".into(),
                 packages: vec!["vim".into(), "nano".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &["packages.apt.vim".into()]);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &["packages.apt.vim".into()],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
-    match &plan.phases[0].actions[0] {
+    match plan.phases[0].actions().next().expect("one action") {
         reconciler::Action::Package(PackageAction::Uninstall { packages, .. }) => {
             assert_eq!(packages, &["vim".to_string()]);
         }
@@ -12254,10 +12266,9 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: false,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            modules_have_work: false,
             module_miss: None,
         };
-        report_no_in_scope_actions(&printer, &scope, None);
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12267,17 +12278,16 @@ fn report_no_in_scope_actions_classifies_outcomes() {
     }
 
     // Filter active AND the unfiltered plan had pending work → honest warning,
-    // never "up to date"; the files→modules hint fires for --phase files.
+    // never "up to date", and the generic hint names the phases that held work.
     {
         let (printer, buf) = test_printer_capture();
         let scope = ScopeReport {
             filter_active: true,
             unfiltered_total: 3,
-            phases_with_work: vec!["nvim / Files".to_string()],
-            modules_have_work: true,
+            phases_with_work: vec!["Files".to_string()],
             module_miss: None,
         };
-        report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12289,8 +12299,8 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             "expected warning, got:\n{out}"
         );
         assert!(
-            out.contains("module-sourced files apply in the 'modules' phase"),
-            "expected files→modules hint, got:\n{out}"
+            out.contains("actions exist in phase(s): Files"),
+            "expected the phases-with-work hint, got:\n{out}"
         );
     }
 
@@ -12301,10 +12311,9 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            modules_have_work: false,
             module_miss: None,
         };
-        report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12320,10 +12329,9 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            modules_have_work: false,
             module_miss: Some("nvm".to_string()),
         };
-        report_no_in_scope_actions(&printer, &scope, None);
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12338,11 +12346,10 @@ fn report_no_in_scope_actions_classifies_outcomes() {
 }
 
 #[test]
-fn apply_phase_files_warns_when_files_are_module_sourced() {
-    // Bug guard: `cfgd apply --phase files` for a config whose files come from a
-    // module (Modules phase) used to print "everything is up to date" while
-    // deploying nothing — a silent no-op. It must instead warn that the active
-    // filter excluded pending work, and must not deploy the module's files.
+fn apply_phase_files_deploys_module_sourced_files() {
+    // Phase-major routing: a module's file work is planned into `Files`, so the
+    // phase filter a user reaches for selects it. Before the re-route the same
+    // invocation deployed nothing and had to warn about work it had excluded.
     let (config_dir, state_dir) = setup_test_env();
     let target = config_dir.path().join("deployed-by-module.txt");
 
@@ -12405,16 +12412,16 @@ spec:
         "--phase files with module-sourced files must NOT claim up-to-date, got:\n{output}"
     );
     assert!(
-        output.contains("No actions in scope"),
-        "expected the filter-excluded-all warning, got:\n{output}"
+        !output.contains("No actions in scope"),
+        "module file work is in scope for --phase files, got:\n{output}"
     );
     assert!(
-        output.contains("module-sourced files apply in the 'modules' phase"),
-        "expected the files→modules hint, got:\n{output}"
+        target.exists(),
+        "--phase files must deploy module-sourced files. output:\n{output}"
     );
-    assert!(
-        !target.exists(),
-        "--phase files must not deploy module files; target unexpectedly created. output:\n{output}"
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "hello from module\n"
     );
 }
 
@@ -14568,10 +14575,10 @@ fn filter_plan_skip_removes_matching_packages() {
     use cfgd_core::reconciler::{Action, Phase, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![
                 Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["ripgrep".into(), "fd".into(), "bat".into()],
@@ -14583,14 +14590,20 @@ fn filter_plan_skip_removes_matching_packages() {
                     origin: "profile".into(),
                 }),
             ],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["packages.brew.fd".to_string()], &[]);
+    super::filter_plan(
+        &mut plan,
+        &["packages.brew.fd".to_string()],
+        &[],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
     // brew install should remain but without fd
-    let brew_action = &plan.phases[0].actions[0];
+    let brew_action = plan.phases[0].actions().next().expect("one action");
     match brew_action {
         Action::Package(PackageAction::Install { packages, .. }) => {
             assert!(
@@ -14607,7 +14620,7 @@ fn filter_plan_skip_removes_matching_packages() {
     }
     // cargo should be untouched
     assert_eq!(
-        plan.phases[0].actions.len(),
+        plan.phases[0].action_count(),
         2,
         "cargo action should remain"
     );
@@ -14619,19 +14632,19 @@ fn filter_plan_only_keeps_matching_phase() {
 
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
                     origin: "profile".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Create {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &reconciler::Owner::profile("test"),
+                vec![Action::File(FileAction::Create {
                     source: PathBuf::from("/src"),
                     target: PathBuf::from("/dst"),
                     origin: "profile".into(),
@@ -14639,16 +14652,22 @@ fn filter_plan_only_keeps_matching_phase() {
                     source_hash: None,
                     patch: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &["packages".to_string()]);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &["packages".to_string()],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
     // Packages phase should keep its action
     assert_eq!(
-        plan.phases[0].actions.len(),
+        plan.phases[0].action_count(),
         1,
         "packages phase should retain action"
     );
@@ -14668,21 +14687,27 @@ fn filter_plan_skip_uninstall_packages_env() {
     use cfgd_core::reconciler::{Action, Phase, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "npm".into(),
                 packages: vec!["left-pad".into(), "is-odd".into()],
                 origin: "profile".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["packages.npm.left-pad".to_string()], &[]);
+    super::filter_plan(
+        &mut plan,
+        &["packages.npm.left-pad".to_string()],
+        &[],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
-    match &plan.phases[0].actions[0] {
+    match plan.phases[0].actions().next().expect("one action") {
         Action::Package(PackageAction::Uninstall { packages, .. }) => {
             assert_eq!(packages, &vec!["is-odd".to_string()]);
         }
@@ -14695,22 +14720,28 @@ fn filter_plan_empty_filters_is_noop() {
     use cfgd_core::reconciler::{Action, Phase, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "apt".into(),
                 packages: vec!["vim".into()],
                 origin: "profile".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &[]);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
     assert_eq!(
-        plan.phases[0].actions.len(),
+        plan.phases[0].action_count(),
         1,
         "empty filters should not change anything"
     );
@@ -14726,25 +14757,25 @@ fn strip_scripts_from_plan_removes_script_phases() {
 
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::PreScripts,
-                scope: None,
-                actions: vec![],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            Phase::from_actions(
+                PhaseName::PreScripts,
+                &reconciler::Owner::profile("test"),
+                vec![],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
                     origin: "profile".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::PostScripts,
-                scope: None,
-                actions: vec![],
-            },
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &reconciler::Owner::profile("test"),
+                vec![],
+            ),
         ],
         warnings: vec![],
     };
@@ -14799,8 +14830,11 @@ fn action_path_module() {
         kind: reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
         origin: None,
     });
-    let path = super::action_path(&PhaseName::Modules, &action);
-    assert_eq!(path, "modules.dev-tools");
+    let path = super::action_path(&PhaseName::Packages, &action);
+    assert_eq!(
+        path, "packages.module:dev-tools",
+        "the owner gets its own segment so a module named `brew` cannot collide with the manager"
+    );
 }
 
 #[test]
@@ -19166,20 +19200,40 @@ fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
 }
 
 #[test]
-fn apply_phase_to_phase_name_maps_every_variant_to_matching_reconciler_phase() {
-    use cfgd_core::reconciler::PhaseName;
+fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
     let cases = [
-        (super::ApplyPhase::PreScripts, PhaseName::PreScripts),
-        (super::ApplyPhase::Env, PhaseName::Env),
-        (super::ApplyPhase::Modules, PhaseName::Modules),
-        (super::ApplyPhase::Packages, PhaseName::Packages),
-        (super::ApplyPhase::System, PhaseName::System),
-        (super::ApplyPhase::Files, PhaseName::Files),
-        (super::ApplyPhase::Secrets, PhaseName::Secrets),
-        (super::ApplyPhase::PostScripts, PhaseName::PostScripts),
+        (
+            super::ApplyPhase::PreScripts,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        (super::ApplyPhase::Env, PhaseFilter::Phase(PhaseName::Env)),
+        // The one variant that is NOT a plan phase: module work applies in the
+        // phase whose kind it is.
+        (super::ApplyPhase::Modules, PhaseFilter::ModuleOwners),
+        (
+            super::ApplyPhase::Packages,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        (
+            super::ApplyPhase::System,
+            PhaseFilter::Phase(PhaseName::System),
+        ),
+        (
+            super::ApplyPhase::Files,
+            PhaseFilter::Phase(PhaseName::Files),
+        ),
+        (
+            super::ApplyPhase::Secrets,
+            PhaseFilter::Phase(PhaseName::Secrets),
+        ),
+        (
+            super::ApplyPhase::PostScripts,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
     ];
     for (input, expected) in cases {
-        assert_eq!(super::apply_phase_to_phase_name(input), expected);
+        assert_eq!(super::apply_phase_to_filter(input), expected);
     }
 }
 

@@ -13,6 +13,11 @@ use crate::test_helpers::{
     make_resolved_module, test_package_context, test_printer, test_state,
 };
 
+/// Plan item strings for a whole phase, in the plan's own order.
+fn plan_items(phase: &Phase) -> Vec<String> {
+    phase.actions().map(format_plan_item).collect()
+}
+
 #[test]
 fn empty_plan_has_no_phases() {
     let state = test_state();
@@ -120,7 +125,7 @@ fn plan_includes_script_actions() {
         .iter()
         .find(|p| p.name == PhaseName::PreScripts)
         .unwrap();
-    assert_eq!(pre_phase.actions.len(), 1);
+    assert_eq!(pre_phase.action_count(), 1);
 
     // Post-scripts phase should have the post_reconcile script
     let post_phase = plan
@@ -128,7 +133,7 @@ fn plan_includes_script_actions() {
         .iter()
         .find(|p| p.name == PhaseName::PostScripts)
         .unwrap();
-    assert_eq!(post_phase.actions.len(), 1);
+    assert_eq!(post_phase.action_count(), 1);
 }
 
 #[test]
@@ -328,10 +333,10 @@ fn aborted_planned_total_counts_only_filtered_actions() {
     // `--phase files` filter keeps only the 2 file actions in scope.
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![
                     Action::File(FileAction::Create {
                         source: src_a,
                         target: dir.path().join("a.txt"),
@@ -349,16 +354,16 @@ fn aborted_planned_total_counts_only_filtered_actions() {
                         patch: None,
                     }),
                 ],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".to_string(),
                     packages: vec!["ripgrep".to_string()],
                     origin: "local".to_string(),
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -374,7 +379,7 @@ fn aborted_planned_total_counts_only_filtered_actions() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             true,
@@ -412,10 +417,10 @@ fn phase_name_roundtrip() {
 
 #[test]
 fn format_plan_items_for_display() {
-    let phase = Phase {
-        name: PhaseName::Packages,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![
             Action::Package(PackageAction::Install {
                 manager: "brew".to_string(),
                 packages: vec!["ripgrep".to_string(), "fd".to_string()],
@@ -427,9 +432,9 @@ fn format_plan_items_for_display() {
                 origin: "local".to_string(),
             }),
         ],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 2); // Skip items are now shown
     assert!(items[0].contains("ripgrep"));
     assert!(items[1].contains("skip apt: not available"));
@@ -470,15 +475,15 @@ fn verify_returns_results() {
 #[test]
 fn plan_hash_string() {
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "brew".to_string(),
                 packages: vec!["ripgrep".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
     let hash = plan.to_hash_string();
@@ -524,7 +529,7 @@ fn apply_result_counts() {
 use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
 
 #[test]
-fn plan_includes_module_phase() {
+fn plan_routes_module_packages_into_the_packages_phase() {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -544,19 +549,18 @@ fn plan_includes_module_phase() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::Packages)
         .unwrap();
 
-    // Module phase should have at least 1 action (InstallPackages)
-    assert!(!module_phase.actions.is_empty());
+    assert!(!module_phase.is_empty());
 
     // Check that actions are ModuleAction
-    for action in &module_phase.actions {
+    for action in module_phase.actions() {
         match action {
             Action::Module(ma) => {
                 assert_eq!(ma.module_name, "nvim");
             }
-            _ => panic!("expected Module action in Modules phase"),
+            _ => panic!("expected Module action in the Packages phase"),
         }
     }
 }
@@ -608,11 +612,15 @@ fn plan_module_with_files() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::Files)
         .unwrap();
-    assert_eq!(module_phase.actions.len(), 1);
+    assert_eq!(module_phase.action_count(), 1);
 
-    match &module_phase.actions[0] {
+    match module_phase
+        .actions()
+        .next()
+        .expect("phase holds an action")
+    {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::DeployFiles { files } => {
                 assert_eq!(files.len(), 1);
@@ -666,11 +674,11 @@ fn plan_module_with_scripts() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::PostScripts)
         .unwrap();
-    assert_eq!(module_phase.actions.len(), 2);
+    assert_eq!(module_phase.action_count(), 2);
 
-    for action in &module_phase.actions {
+    for action in module_phase.actions() {
         match action {
             Action::Module(ma) => match &ma.kind {
                 ModuleActionKind::RunScript { script, .. } => {
@@ -757,32 +765,28 @@ fn plan_multiple_modules_in_dependency_order() {
         )
         .unwrap();
 
-    // Each module's packages land in their own scoped phase — different
-    // modules never merge into one Packages run even though both are
-    // "packages" sections back to back.
-    let module_phases: Vec<&Phase> = plan
+    // Each module gets its own group inside the one Packages phase — two
+    // modules never merge into one group even when both declare only packages.
+    let packages = plan
         .phases
         .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
-    assert_eq!(module_phases.len(), 2);
-    let total_actions: usize = module_phases.iter().map(|p| p.actions.len()).sum();
-    assert_eq!(total_actions, 2);
+        .find(|p| p.name == PhaseName::Packages)
+        .expect("packages phase");
+    assert_eq!(packages.groups.len(), 2);
+    assert_eq!(packages.action_count(), 2);
 
-    // First phase should be for "node" (leaf dependency)
-    match &module_phases[0].actions[0] {
-        Action::Module(ma) => assert_eq!(ma.module_name, "node"),
-        _ => panic!("expected Module action"),
-    }
-    // Second for "nvim"
-    match &module_phases[1].actions[0] {
-        Action::Module(ma) => assert_eq!(ma.module_name, "nvim"),
-        _ => panic!("expected Module action"),
+    let owners: Vec<&Owner> = packages.groups.iter().map(|g| &g.owner).collect();
+    assert_eq!(owners, vec![&Owner::module("node"), &Owner::module("nvim")]);
+    for group in &packages.groups {
+        match group.actions.first().expect("group holds an action") {
+            Action::Module(ma) => assert_eq!(ma.module_name, group.owner.name),
+            other => panic!("expected Module action, got {other:?}"),
+        }
     }
 }
 
 #[test]
-fn plan_single_module_splits_into_per_section_phases() {
+fn plan_routes_module_work_to_the_phase_of_its_kind() {
     // packages + files + postApply script → three consecutive, correctly
     // ordered Modules phases, each scoped to its own section.
     let state = test_state();
@@ -836,48 +840,52 @@ fn plan_single_module_splits_into_per_section_phases() {
         )
         .unwrap();
 
-    let module_phases: Vec<&Phase> = plan
-        .phases
-        .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
-    assert_eq!(
-        module_phases.len(),
-        3,
-        "packages/files/post-scripts each split into their own phase: {module_phases:?}"
+    let owned = |name: PhaseName| -> Vec<(&Owner, &Action)> {
+        plan.phases
+            .iter()
+            .filter(|p| p.name == name)
+            .flat_map(|p| p.owned_actions())
+            .collect()
+    };
+
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Modules),
+        "a module with real work leaves the meta phase empty: {:?}",
+        plan.phases
     );
 
-    let scopes: Vec<(&str, ModuleSection)> = module_phases
-        .iter()
-        .map(|p| {
-            let scope = p.scope.as_ref().expect("module phase must carry a scope");
-            (scope.module.as_str(), scope.section.clone())
-        })
-        .collect();
-    assert_eq!(scopes[0], ("nvim", ModuleSection::Packages));
-    assert_eq!(scopes[1], ("nvim", ModuleSection::Files));
-    assert_eq!(scopes[2], ("nvim", ModuleSection::PostScripts));
-
-    match &module_phases[0].actions[0] {
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::InstallPackages { .. },
-            ..
-        }) => {}
-        other => panic!("expected InstallPackages in the Packages phase, got {other:?}"),
-    }
-    match &module_phases[1].actions[0] {
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::DeployFiles { .. },
-            ..
-        }) => {}
-        other => panic!("expected DeployFiles in the Files phase, got {other:?}"),
-    }
-    match &module_phases[2].actions[0] {
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::RunScript { .. },
-            ..
-        }) => {}
-        other => panic!("expected RunScript in the Post-Scripts phase, got {other:?}"),
+    for (phase, expect) in [
+        (PhaseName::Packages, "InstallPackages"),
+        (PhaseName::Files, "DeployFiles"),
+        (PhaseName::PostScripts, "RunScript"),
+    ] {
+        let actions = owned(phase.clone());
+        assert_eq!(actions.len(), 1, "one nvim action in {phase:?}");
+        let (owner, action) = actions[0];
+        assert_eq!(owner, &Owner::module("nvim"), "owned by the module");
+        let matches = matches!(
+            (action, expect),
+            (
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::InstallPackages { .. },
+                    ..
+                }),
+                "InstallPackages"
+            ) | (
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::DeployFiles { .. },
+                    ..
+                }),
+                "DeployFiles"
+            ) | (
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::RunScript { .. },
+                    ..
+                }),
+                "RunScript"
+            )
+        );
+        assert!(matches, "expected {expect} in {phase:?}, got {action:?}");
     }
 }
 
@@ -919,7 +927,7 @@ fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> Resolve
 }
 
 #[test]
-fn plan_two_modules_with_packages_never_merge_sections_across_modules() {
+fn plan_two_modules_with_packages_get_one_group_each() {
     // Two independent modules, each with only a packages action: consecutive-
     // run splitting must not merge them into one "packages" run just because
     // the section repeats back to back — every phase's scope must name the
@@ -944,50 +952,28 @@ fn plan_two_modules_with_packages_never_merge_sections_across_modules() {
         )
         .unwrap();
 
-    let module_phases: Vec<&Phase> = plan
+    let packages = plan
         .phases
         .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
+        .find(|p| p.name == PhaseName::Packages)
+        .expect("packages phase");
+    let owners: Vec<&Owner> = packages.groups.iter().map(|g| &g.owner).collect();
     assert_eq!(
-        module_phases.len(),
-        2,
-        "each module's packages land in their own scoped phase: {module_phases:?}"
+        owners,
+        vec![&Owner::module("alpha"), &Owner::module("beta")],
+        "one group per module, never merged: {:?}",
+        packages.groups
     );
-
-    let scope0 = module_phases[0].scope.as_ref().expect("scoped");
-    let scope1 = module_phases[1].scope.as_ref().expect("scoped");
-    assert_eq!(scope0.module, "alpha");
-    assert_eq!(scope0.section, ModuleSection::Packages);
-    assert_eq!(scope1.module, "beta");
-    assert_eq!(scope1.section, ModuleSection::Packages);
+    for group in &packages.groups {
+        assert_eq!(group.actions.len(), 1, "one install per module");
+    }
 }
 
 #[test]
-fn display_label_composes_module_and_section_or_falls_back_to_phase_name() {
-    let scoped = Phase {
-        name: PhaseName::Modules,
-        actions: vec![],
-        scope: Some(ModuleScope {
-            module: "nvim".to_string(),
-            section: ModuleSection::Packages,
-        }),
-    };
-    assert_eq!(scoped.display_label(), "nvim / Packages");
-
-    let unscoped = Phase {
-        name: PhaseName::Env,
-        actions: vec![],
-        scope: None,
-    };
-    assert_eq!(unscoped.display_label(), "Environment");
-}
-
-#[test]
-fn phase_modules_filter_selects_actions_from_every_split_phase() {
-    // `--phase modules` must keep matching every split phase, not just the
-    // first — action_matches_phase_filter compares `phase_name == filter`,
-    // and every split phase still carries `PhaseName::Modules`.
+fn phase_modules_filter_selects_module_work_from_every_kind_phase() {
+    // `--phase modules` is an OWNER filter after the kind routing: a module's
+    // packages, files and scripts sit in three different phases, so a filter
+    // that compared phase names would select at most one of them.
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -1008,36 +994,34 @@ fn phase_modules_filter_selects_actions_from_every_split_phase() {
         )
         .unwrap();
 
-    let module_phases: Vec<&Phase> = plan
-        .phases
-        .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
-    assert_eq!(module_phases.len(), 2, "sanity: two split phases expected");
-
     let mut matched_modules: Vec<&str> = Vec::new();
-    for phase_item in &module_phases {
-        for action in &phase_item.actions {
-            if action_matches_phase_filter(&phase_item.name, action, &PhaseName::Modules)
-                && let Action::Module(ma) = action
+    for phase_item in &plan.phases {
+        for (owner, action) in phase_item.owned_actions() {
+            if action_matches_phase_filter(
+                &phase_item.name,
+                owner,
+                action,
+                &PhaseFilter::ModuleOwners,
+            ) && let Action::Module(ma) = action
             {
                 matched_modules.push(ma.module_name.as_str());
             }
         }
     }
+    matched_modules.sort_unstable();
     assert_eq!(
         matched_modules,
         vec!["alpha", "beta"],
-        "the modules filter must select actions from every split phase, not just the first"
+        "`--phase modules` selects module work in every kind-phase it routed to"
     );
 }
 
 #[test]
 fn format_module_plan_items_packages() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "nvim".to_string(),
             kind: ModuleActionKind::InstallPackages {
                 resolved: vec![
@@ -1065,9 +1049,9 @@ fn format_module_plan_items_packages() {
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     // Exact string: manager groups must render in first-appearance order of
     // the resolved list — this description is also the plan payload, and a
@@ -1080,10 +1064,10 @@ fn format_module_plan_items_packages() {
 
 #[test]
 fn format_module_plan_items_files() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "nvim".to_string(),
             kind: ModuleActionKind::DeployFiles {
                 files: vec![ResolvedFile {
@@ -1098,9 +1082,9 @@ fn format_module_plan_items_files() {
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("[nvim]"));
     assert!(items[0].contains("deploy"));
@@ -1109,19 +1093,19 @@ fn format_module_plan_items_files() {
 
 #[test]
 fn format_module_plan_items_skip() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "bad".to_string(),
             kind: ModuleActionKind::Skip {
                 reason: "dependency not met".to_string(),
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("[bad]"));
     assert!(items[0].contains("skip"));
@@ -1294,10 +1278,10 @@ fn phase_name_modules_roundtrip() {
 #[test]
 fn plan_hash_includes_module_actions() {
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "nvim".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -1313,7 +1297,7 @@ fn plan_hash_includes_module_actions() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -1701,11 +1685,15 @@ fn plan_module_with_script_packages() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::Packages)
         .unwrap();
-    assert_eq!(module_phase.actions.len(), 1);
+    assert_eq!(module_phase.action_count(), 1);
 
-    match &module_phase.actions[0] {
+    match module_phase
+        .actions()
+        .next()
+        .expect("phase holds an action")
+    {
         Action::Module(ma) => {
             assert_eq!(ma.module_name, "rustup");
             match &ma.kind {
@@ -1723,10 +1711,10 @@ fn plan_module_with_script_packages() {
 
 #[test]
 fn format_module_plan_script_packages() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "rustup".to_string(),
             kind: ModuleActionKind::InstallPackages {
                 resolved: vec![ResolvedPackage {
@@ -1742,9 +1730,9 @@ fn format_module_plan_script_packages() {
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("[rustup]"));
     assert!(items[0].contains("script"));
@@ -3644,7 +3632,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Env),
+            Some(&PhaseFilter::Phase(PhaseName::Env)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -3694,7 +3682,7 @@ fn apply_with_phase_filter_runs_only_packages() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -3748,7 +3736,7 @@ fn apply_file_create_action_writes_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -4048,8 +4036,8 @@ fn plan_scripts_with_apply_context_uses_pre_post_apply() {
         .iter()
         .find(|p| p.name == PhaseName::PreScripts)
         .unwrap();
-    assert_eq!(pre_phase.actions.len(), 1);
-    match &pre_phase.actions[0] {
+    assert_eq!(pre_phase.action_count(), 1);
+    match pre_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, phase, .. }) => {
             assert_eq!(entry.run_str(), "scripts/pre.sh");
             assert_eq!(*phase, ScriptPhase::PreApply);
@@ -4062,8 +4050,8 @@ fn plan_scripts_with_apply_context_uses_pre_post_apply() {
         .iter()
         .find(|p| p.name == PhaseName::PostScripts)
         .unwrap();
-    assert_eq!(post_phase.actions.len(), 1);
-    match &post_phase.actions[0] {
+    assert_eq!(post_phase.action_count(), 1);
+    match post_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, phase, .. }) => {
             assert_eq!(entry.run_str(), "scripts/post.sh");
             assert_eq!(*phase, ScriptPhase::PostApply);
@@ -4107,8 +4095,8 @@ fn plan_scripts_carries_full_entry() {
         .iter()
         .find(|p| p.name == PhaseName::PreScripts)
         .unwrap();
-    assert_eq!(pre_phase.actions.len(), 1);
-    match &pre_phase.actions[0] {
+    assert_eq!(pre_phase.action_count(), 1);
+    match pre_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, .. }) => match entry {
             ScriptEntry::Full {
                 run,
@@ -5311,10 +5299,10 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "testmod".to_string(),
                 kind: ModuleActionKind::RunScript {
                     script: guarded,
@@ -5322,7 +5310,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -5333,7 +5321,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -5411,10 +5399,10 @@ fn apply_guard_permitted_module_script_fires_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "testmod".to_string(),
                 kind: ModuleActionKind::RunScript {
                     script: guarded,
@@ -5422,7 +5410,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -5433,7 +5421,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -5499,17 +5487,17 @@ fn apply_skipped_module_does_not_fire_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "skippedmod".to_string(),
                 kind: ModuleActionKind::Skip {
                     reason: "platform not matched".to_string(),
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -5520,7 +5508,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -5932,19 +5920,19 @@ fn plan_to_hash_string_empty_plan_is_empty() {
 fn plan_to_hash_string_multiple_phases() {
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["jq".into()],
                     origin: "local".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Create {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![Action::File(FileAction::Create {
                     source: PathBuf::from("/src"),
                     target: PathBuf::from("/dst"),
                     origin: "local".into(),
@@ -5952,7 +5940,7 @@ fn plan_to_hash_string_multiple_phases() {
                     source_hash: None,
                     patch: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -5965,10 +5953,10 @@ fn plan_to_hash_string_multiple_phases() {
 fn plan_total_actions_sums_across_phases() {
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
                     Action::Package(PackageAction::Install {
                         manager: "brew".into(),
                         packages: vec!["a".into()],
@@ -5980,16 +5968,16 @@ fn plan_total_actions_sums_across_phases() {
                         origin: "local".into(),
                     }),
                 ],
-            },
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Skip {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![Action::File(FileAction::Skip {
                     target: PathBuf::from("/x"),
                     reason: "n/a".into(),
                     origin: "local".into(),
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -6202,7 +6190,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     assert_eq!(actions.len(), 2); // pre-reconcile + post-reconcile
 
     // First action should be pre-reconcile
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::RunScript { script, phase } => {
                 assert_eq!(script.run_str(), "pre-reconcile.sh");
@@ -6214,7 +6202,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     }
 
     // Second action should be post-reconcile
-    match &actions[1] {
+    match &actions[1].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::RunScript { script, phase } => {
                 assert_eq!(script.run_str(), "post-reconcile.sh");
@@ -6228,10 +6216,10 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
 
 #[test]
 fn format_plan_items_all_action_types() {
-    let phase = Phase {
-        name: PhaseName::System,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::System,
+        &Owner::profile("test"),
+        vec![
             Action::System(SystemAction::SetValue {
                 configurator: "sysctl".into(),
                 key: "net.ipv4.ip_forward".into(),
@@ -6246,8 +6234,8 @@ fn format_plan_items_all_action_types() {
                 unknown: false,
             }),
         ],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 2);
     assert!(items[0].contains("set sysctl.net.ipv4.ip_forward"));
     assert!(items[0].contains("0 \u{2192} 1"));
@@ -6256,10 +6244,10 @@ fn format_plan_items_all_action_types() {
 
 #[test]
 fn format_plan_items_secret_actions() {
-    let phase = Phase {
-        name: PhaseName::Secrets,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::Secrets,
+        &Owner::profile("test"),
+        vec![
             Action::Secret(SecretAction::Decrypt {
                 source: PathBuf::from("secret.enc"),
                 target: PathBuf::from("/out/secret"),
@@ -6284,8 +6272,8 @@ fn format_plan_items_secret_actions() {
                 origin: "local".into(),
             }),
         ],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 4);
     assert!(items[0].contains("decrypt"));
     assert!(items[0].contains("<- corp"));
@@ -6297,10 +6285,10 @@ fn format_plan_items_secret_actions() {
 
 #[test]
 fn format_plan_items_env_actions() {
-    let phase = Phase {
-        name: PhaseName::Env,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::Env,
+        &Owner::profile("test"),
+        vec![
             Action::Env(EnvAction::WriteEnvFile {
                 path: PathBuf::from("/home/user/.cfgd.env"),
                 content: "content".into(),
@@ -6310,8 +6298,8 @@ fn format_plan_items_env_actions() {
                 line: ". ~/.cfgd.env".into(),
             }),
         ],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 2);
     assert!(items[0].contains("write"));
     assert!(items[0].contains(".cfgd.env"));
@@ -6321,16 +6309,16 @@ fn format_plan_items_env_actions() {
 
 #[test]
 fn format_plan_items_script_action_with_provenance() {
-    let phase = Phase {
-        name: PhaseName::PreScripts,
-        scope: None,
-        actions: vec![Action::Script(ScriptAction::Run {
+    let phase = Phase::from_actions(
+        PhaseName::PreScripts,
+        &Owner::profile("test"),
+        vec![Action::Script(ScriptAction::Run {
             entry: ScriptEntry::Simple("setup.sh".into()),
             phase: ScriptPhase::PreApply,
             origin: "corp-source".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("run preApply script: setup.sh"));
     assert!(items[0].contains("<- corp-source"));
@@ -6344,16 +6332,16 @@ fn format_plan_items_script_action_with_provenance() {
 #[test]
 fn format_plan_items_script_action_preserves_raw_multiline_body() {
     let raw_body = "echo line-one\necho line-two\necho line-three";
-    let phase = Phase {
-        name: PhaseName::PreScripts,
-        scope: None,
-        actions: vec![Action::Script(ScriptAction::Run {
+    let phase = Phase::from_actions(
+        PhaseName::PreScripts,
+        &Owner::profile("test"),
+        vec![Action::Script(ScriptAction::Run {
             entry: ScriptEntry::Simple(raw_body.into()),
             phase: ScriptPhase::PreApply,
             origin: "test".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(
         items[0].contains(raw_body),
@@ -6690,15 +6678,15 @@ fn apply_package_bootstrap_makes_manager_available() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Bootstrap {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Bootstrap {
                 manager: "snap".to_string(),
                 method: "auto".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6709,7 +6697,7 @@ fn apply_package_bootstrap_makes_manager_available() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6739,15 +6727,15 @@ fn apply_package_bootstrap_unknown_manager_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Bootstrap {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Bootstrap {
                 manager: "nonexistent".to_string(),
                 method: "auto".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6758,7 +6746,7 @@ fn apply_package_bootstrap_unknown_manager_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6781,15 +6769,15 @@ fn apply_package_install_unknown_manager_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "nonexistent".to_string(),
                 packages: vec!["foo".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6800,7 +6788,7 @@ fn apply_package_install_unknown_manager_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6821,15 +6809,15 @@ fn apply_package_uninstall_unknown_manager_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "nonexistent".to_string(),
                 packages: vec!["foo".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6840,7 +6828,7 @@ fn apply_package_uninstall_unknown_manager_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6894,16 +6882,16 @@ fn apply_secret_decrypt_writes_decrypted_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Decrypt {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Decrypt {
                 source: source.clone(),
                 target: target.clone(),
                 backend: "test-sops".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6914,7 +6902,7 @@ fn apply_secret_decrypt_writes_decrypted_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6984,16 +6972,16 @@ fn apply_secret_decrypt_no_backend_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Decrypt {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Decrypt {
                 source: source.clone(),
                 target: target.clone(),
                 backend: "sops".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7004,7 +6992,7 @@ fn apply_secret_decrypt_no_backend_errors() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7032,16 +7020,16 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Resolve {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Resolve {
                 provider: "vault".to_string(),
                 reference: "secret/data/app#key".to_string(),
                 target: target.clone(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7052,7 +7040,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7085,16 +7073,16 @@ fn apply_secret_resolve_unknown_provider_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Resolve {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Resolve {
                 provider: "vault".to_string(),
                 reference: "secret/data/app#key".to_string(),
                 target: target.clone(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7105,7 +7093,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7226,16 +7214,16 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::ResolveEnv {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::ResolveEnv {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 envs: vec!["GH_TOKEN".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7246,7 +7234,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7267,15 +7255,15 @@ fn apply_secret_skip_succeeds() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Skip {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Skip {
                 source: "vault://test".to_string(),
                 reason: "not available".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7286,7 +7274,7 @@ fn apply_secret_skip_succeeds() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7317,14 +7305,14 @@ fn apply_file_delete_action_removes_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::Delete {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::Delete {
                 target: target.clone(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7335,7 +7323,7 @@ fn apply_file_delete_action_removes_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7366,15 +7354,15 @@ fn apply_file_set_permissions_action() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::SetPermissions {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::SetPermissions {
                 target: target.clone(),
                 mode: 0o755,
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7385,7 +7373,7 @@ fn apply_file_set_permissions_action() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7416,15 +7404,15 @@ fn apply_file_skip_action_succeeds() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::Skip {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::Skip {
                 target: PathBuf::from("/nonexistent"),
                 reason: "unchanged".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7435,7 +7423,7 @@ fn apply_file_skip_action_succeeds() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7465,10 +7453,10 @@ fn apply_file_update_action_overwrites_target() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::Update {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::Update {
                 source: source.clone(),
                 target: target.clone(),
                 diff: "diff output".to_string(),
@@ -7477,7 +7465,7 @@ fn apply_file_update_action_overwrites_target() {
                 source_hash: None,
                 patch: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7488,7 +7476,7 @@ fn apply_file_update_action_overwrites_target() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7532,17 +7520,17 @@ fn apply_system_set_value_calls_configurator() {
     );
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::System,
-            scope: None,
-            actions: vec![Action::System(SystemAction::SetValue {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::SetValue {
                 configurator: "sysctl".to_string(),
                 key: "net.ipv4.ip_forward".to_string(),
                 desired: "1".to_string(),
                 current: "0".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7553,7 +7541,7 @@ fn apply_system_set_value_calls_configurator() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::System),
+            Some(&PhaseFilter::Phase(PhaseName::System)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7603,17 +7591,17 @@ fn apply_system_set_value_applies_module_contributed_system() {
     );
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::System,
-            scope: None,
-            actions: vec![Action::System(SystemAction::SetValue {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::SetValue {
                 configurator: "sysctl".to_string(),
                 key: "net.ipv4.ip_forward".to_string(),
                 desired: "1".to_string(),
                 current: "0".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7624,7 +7612,7 @@ fn apply_system_set_value_applies_module_contributed_system() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::System),
+            Some(&PhaseFilter::Phase(PhaseName::System)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -7652,16 +7640,16 @@ fn apply_system_skip_logs_warning() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::System,
-            scope: None,
-            actions: vec![Action::System(SystemAction::Skip {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::Skip {
                 configurator: "customThing".to_string(),
                 reason: "no configurator registered".to_string(),
                 origin: "local".to_string(),
                 unknown: true,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7672,7 +7660,7 @@ fn apply_system_skip_logs_warning() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::System),
+            Some(&PhaseFilter::Phase(PhaseName::System)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7927,10 +7915,10 @@ fn apply_module_install_packages_calls_manager() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "nvim".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -7946,7 +7934,7 @@ fn apply_module_install_packages_calls_manager() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7957,7 +7945,7 @@ fn apply_module_install_packages_calls_manager() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8026,10 +8014,10 @@ fn apply_module_deploy_files_creates_target() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -8044,7 +8032,7 @@ fn apply_module_deploy_files_creates_target() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8055,7 +8043,7 @@ fn apply_module_deploy_files_creates_target() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8125,18 +8113,15 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles { files: vec![file] },
                 origin: None,
             })],
-            scope: Some(ModuleScope {
-                module: "mymod".to_string(),
-                section: ModuleSection::Files,
-            }),
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8147,7 +8132,7 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8212,18 +8197,15 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles { files: vec![file] },
                 origin: None,
             })],
-            scope: Some(ModuleScope {
-                module: "mymod".to_string(),
-                section: ModuleSection::Files,
-            }),
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8234,7 +8216,7 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
             &resolved,
             module_dir,
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8337,10 +8319,10 @@ fn apply_module_deploy_files_symlink_strategy() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "linkmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -8355,7 +8337,7 @@ fn apply_module_deploy_files_symlink_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8366,7 +8348,7 @@ fn apply_module_deploy_files_symlink_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8391,17 +8373,17 @@ fn apply_module_skip_reports_skipped() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "broken".to_string(),
                 kind: ModuleActionKind::Skip {
                     reason: "dependency not met".to_string(),
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8412,7 +8394,7 @@ fn apply_module_skip_reports_skipped() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -8474,10 +8456,10 @@ fn apply_module_install_packages_bootstraps_when_needed() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "tools".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -8493,7 +8475,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8504,7 +8486,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8630,7 +8612,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     // Should produce a Skip action because encryption=Always + symlink is incompatible
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::Skip { reason } => {
                 assert!(
@@ -8682,7 +8664,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
 
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     assert_eq!(actions.len(), 1, "expected exactly one action: {actions:?}");
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => {
             assert_eq!(ma.module_name, "macstuff");
             match &ma.kind {
@@ -8745,7 +8727,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     // Should produce DeployFiles (encryption=Always + copy is OK, and file has sops marker)
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::DeployFiles { files } => {
                 assert_eq!(files.len(), 1);
@@ -8802,7 +8784,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
 
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::Skip { reason } => {
                 assert!(reason.contains("encryption check failed"), "got: {reason}");
@@ -8874,7 +8856,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
     // single Skip is the only module action emitted.
     let kinds: Vec<&ModuleActionKind> = actions
         .iter()
-        .filter_map(|a| match a {
+        .filter_map(|(_, a)| match a {
             Action::Module(ma) => Some(&ma.kind),
             _ => None,
         })
@@ -8938,7 +8920,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     // Should skip because file requires encryption but isn't encrypted
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::Skip { reason } => {
                 assert!(
@@ -9038,10 +9020,10 @@ fn apply_module_run_script_executes_in_module_dir() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "testmod".to_string(),
                 kind: ModuleActionKind::RunScript {
                     script: ScriptEntry::Simple(format!("touch {}", marker.display())),
@@ -9049,7 +9031,7 @@ fn apply_module_run_script_executes_in_module_dir() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -9060,7 +9042,7 @@ fn apply_module_run_script_executes_in_module_dir() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -9815,10 +9797,10 @@ fn apply_module_deploy_files_hardlink_strategy() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "hardmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -9833,7 +9815,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -9871,7 +9853,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -9916,10 +9898,10 @@ fn apply_module_deploy_files_copy_strategy() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "copymod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -9934,7 +9916,7 @@ fn apply_module_deploy_files_copy_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -9972,7 +9954,7 @@ fn apply_module_deploy_files_copy_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10027,17 +10009,17 @@ fn apply_module_deploy_files_applies_permissions() {
     };
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "permmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![file.clone()],
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10067,7 +10049,7 @@ fn apply_module_deploy_files_applies_permissions() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10105,10 +10087,10 @@ fn apply_module_deploy_files_directory_copy_strategy() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "dirmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -10123,7 +10105,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10161,7 +10143,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10201,10 +10183,10 @@ fn apply_module_deploy_files_overwrites_existing_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "overmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -10219,7 +10201,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10249,7 +10231,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10285,10 +10267,10 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "changemod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -10303,7 +10285,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -11099,16 +11081,16 @@ mod bridge {
 
 #[test]
 fn format_plan_items_file_skip() {
-    let phase = Phase {
-        name: PhaseName::Files,
-        scope: None,
-        actions: vec![Action::File(FileAction::Skip {
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::File(FileAction::Skip {
             target: PathBuf::from("/home/user/.config/skipped"),
             reason: "unchanged".into(),
             origin: "corp".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("skip"), "got: {}", items[0]);
     assert!(items[0].contains("unchanged"), "got: {}", items[0]);
@@ -11117,16 +11099,16 @@ fn format_plan_items_file_skip() {
 
 #[test]
 fn format_plan_items_file_set_permissions() {
-    let phase = Phase {
-        name: PhaseName::Files,
-        scope: None,
-        actions: vec![Action::File(FileAction::SetPermissions {
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::File(FileAction::SetPermissions {
             target: PathBuf::from("/home/user/.ssh/id_rsa"),
             mode: 0o600,
             origin: "local".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("chmod"), "got: {}", items[0]);
     assert!(items[0].contains("0o600"), "got: {}", items[0]);
@@ -11135,16 +11117,16 @@ fn format_plan_items_file_set_permissions() {
 
 #[test]
 fn format_plan_items_package_bootstrap() {
-    let phase = Phase {
-        name: PhaseName::Packages,
-        scope: None,
-        actions: vec![Action::Package(PackageAction::Bootstrap {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![Action::Package(PackageAction::Bootstrap {
             manager: "brew".into(),
             method: "curl | bash".into(),
             origin: "corp".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("bootstrap brew"), "got: {}", items[0]);
     assert!(items[0].contains("curl | bash"), "got: {}", items[0]);
@@ -11153,16 +11135,16 @@ fn format_plan_items_package_bootstrap() {
 
 #[test]
 fn format_plan_items_package_uninstall() {
-    let phase = Phase {
-        name: PhaseName::Packages,
-        scope: None,
-        actions: vec![Action::Package(PackageAction::Uninstall {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![Action::Package(PackageAction::Uninstall {
             manager: "apt".into(),
             packages: vec!["vim".into(), "nano".into()],
             origin: "local".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("uninstall"), "got: {}", items[0]);
     assert!(items[0].contains("vim"), "got: {}", items[0]);
@@ -11171,10 +11153,10 @@ fn format_plan_items_package_uninstall() {
 
 #[test]
 fn format_module_action_item_run_script() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "nvim".into(),
             kind: ModuleActionKind::RunScript {
                 script: ScriptEntry::Simple("make install".into()),
@@ -11182,8 +11164,8 @@ fn format_module_action_item_run_script() {
             },
             origin: None,
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
     assert!(items[0].contains("postApply"), "got: {}", items[0]);
@@ -11194,10 +11176,10 @@ fn format_module_action_item_run_script() {
 fn format_module_action_item_source_delivered_shows_origin_suffix() {
     // A source-delivered module (origin = Some) gets the same ` <- <source>`
     // provenance suffix as source-delivered files/packages.
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction::with_origin(
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction::with_origin(
             "nvim",
             ModuleActionKind::DeployFiles {
                 files: vec![ResolvedFile {
@@ -11212,8 +11194,8 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
             },
             Some("acme".to_string()),
         ))],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
     assert!(items[0].ends_with(" <- acme"), "got: {}", items[0]);
@@ -11223,10 +11205,10 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
 fn format_module_action_item_local_has_no_origin_suffix() {
     // A consumer-local module (origin = None) renders with no provenance suffix,
     // exactly as before — regression guard for local modules.
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction::local(
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction::local(
             "nvim",
             ModuleActionKind::DeployFiles {
                 files: vec![ResolvedFile {
@@ -11240,8 +11222,8 @@ fn format_module_action_item_local_has_no_origin_suffix() {
                 }],
             },
         ))],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(!items[0].contains(" <- "), "got: {}", items[0]);
 }
@@ -11259,16 +11241,16 @@ fn format_module_action_item_deploy_many_files_truncates() {
             patch: None,
         })
         .collect();
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "big".into(),
             kind: ModuleActionKind::DeployFiles { files },
             origin: None,
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("5 files"), "got: {}", items[0]);
 }
@@ -11934,8 +11916,7 @@ fn planned_env_file_content(plan: &Plan) -> Option<String> {
     plan.phases
         .iter()
         .find(|p| p.name == PhaseName::Env)?
-        .actions
-        .iter()
+        .actions()
         .find_map(|a| match a {
             Action::Env(EnvAction::WriteEnvFile { path, content })
                 if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) =>
@@ -12026,11 +12007,10 @@ fn plan_env_injects_source_line_for_bootstrap_only_profile() {
         .expect("env phase");
     assert!(
         env_phase
-            .actions
-            .iter()
+            .actions()
             .any(|a| matches!(a, Action::Env(EnvAction::InjectSourceLine { .. }))),
         "a written env file no shell sources is inert: {:?}",
-        env_phase.actions
+        env_phase.actions().collect::<Vec<_>>()
     );
 }
 
@@ -12186,12 +12166,12 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    let planned_total: usize = plan.phases.iter().map(|p| p.actions.len()).sum();
+    let planned_total: usize = plan.phases.iter().map(|p| p.action_count()).sum();
     assert!(
         !plan
             .phases
             .iter()
-            .flat_map(|p| &p.actions)
+            .flat_map(|p| p.actions())
             .any(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. }))),
         "no live-session refresh may be planned before this test applies"
     );
@@ -12248,8 +12228,7 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
         plan.phases
             .iter()
             .flat_map(|p| p
-                .actions
-                .iter()
+                .actions()
                 .map(crate::reconciler::format_action_description))
             .collect::<Vec<_>>(),
         result
@@ -12302,7 +12281,7 @@ fn plan_env_all_scope_appends_a_live_session_refresh_after_the_file_surfaces() {
     let env_actions: Vec<&Action> = plan
         .phases
         .iter()
-        .flat_map(|p| &p.actions)
+        .flat_map(|p| p.actions())
         .filter(|a| matches!(a, Action::Env(_)))
         .collect();
     let refresh_at = env_actions
@@ -12369,7 +12348,7 @@ fn apply_phase_modules_bootstraps_without_touching_any_env_surface() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12474,10 +12453,10 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "ghost".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -12493,7 +12472,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12504,7 +12483,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12556,10 +12535,10 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "scripted".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![
@@ -12587,7 +12566,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12598,7 +12577,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12641,10 +12620,10 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "bad-script".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -12660,7 +12639,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12671,7 +12650,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12722,10 +12701,10 @@ fn run_guarded_script_install(
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "guarded".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -12741,7 +12720,7 @@ fn run_guarded_script_install(
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12752,7 +12731,7 @@ fn run_guarded_script_install(
             &resolved,
             dir,
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12909,10 +12888,10 @@ fn apply_module_on_change_script_runs_when_module_changed() {
     // Plan includes a file action that affects this module → records a
     // `module:mymod:files:1` change entry → the module-level on_change runs.
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -12927,7 +12906,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12938,7 +12917,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -12997,7 +12976,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -13047,10 +13026,10 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "skipmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13065,7 +13044,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13077,7 +13056,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             true,
@@ -13137,11 +13116,11 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
         origin: "local".to_string(),
     });
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![secret_action],
-        }],
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![secret_action],
+        )],
         warnings: Vec::new(),
     };
 
@@ -13266,7 +13245,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
     // Order in actions reflects the sorted manager order: apt (0), brew (1), unknown (2).
     let install_managers: Vec<String> = actions
         .iter()
-        .filter_map(|a| match a {
+        .filter_map(|(_, a)| match a {
             Action::Module(ma) => match &ma.kind {
                 ModuleActionKind::InstallPackages { resolved } => {
                     resolved.first().map(|p| p.manager.clone())
@@ -13333,10 +13312,10 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "gitmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13351,7 +13330,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13362,7 +13341,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             true,
@@ -13425,10 +13404,10 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "failmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13443,7 +13422,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13454,7 +13433,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -13516,10 +13495,10 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "abortmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13534,7 +13513,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13545,7 +13524,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -13724,79 +13703,138 @@ fn action_matches_phase_filter_table() {
         origin: "local".to_string(),
     });
 
-    // Strict phase-equality cases.
-    assert!(action_matches_phase_filter(
-        &PhaseName::PostScripts,
-        &post_script_action,
-        &PhaseName::PostScripts,
-    ));
-    assert!(action_matches_phase_filter(
-        &PhaseName::PreScripts,
-        &pre_script_action,
-        &PhaseName::PreScripts,
-    ));
-    assert!(action_matches_phase_filter(
-        &PhaseName::Packages,
-        &pkg_install,
-        &PhaseName::Packages,
-    ));
+    let module_owner = Owner::module("m");
+    let profile_owner = Owner::profile("work");
+    let cases: Vec<(&str, bool, &PhaseName, &Owner, &Action, PhaseFilter)> = vec![
+        // Strict phase-equality cases.
+        (
+            "post script under its own phase",
+            true,
+            &PhaseName::PostScripts,
+            &profile_owner,
+            &post_script_action,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "pre script under its own phase",
+            true,
+            &PhaseName::PreScripts,
+            &profile_owner,
+            &pre_script_action,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        (
+            "package install under Packages",
+            true,
+            &PhaseName::Packages,
+            &profile_owner,
+            &pkg_install,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        // Module lifecycle scripts are swept in by their script-phase filter
+        // wherever they landed.
+        (
+            "module post script under PostScripts",
+            true,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "module pre script under PreScripts",
+            true,
+            &PhaseName::PreScripts,
+            &module_owner,
+            &module_pre_script,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        // Non-script module actions are NOT swept in by script filters.
+        (
+            "module install under PostScripts",
+            false,
+            &PhaseName::Packages,
+            &module_owner,
+            &module_install,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "module install under PreScripts",
+            false,
+            &PhaseName::Packages,
+            &module_owner,
+            &module_install,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        // Cross-phase mismatch.
+        (
+            "module pre script under PostScripts",
+            false,
+            &PhaseName::PreScripts,
+            &module_owner,
+            &module_pre_script,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "module post script under PreScripts",
+            false,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        // Unrelated filter only matches phase-equal actions.
+        (
+            "module post script under Packages",
+            false,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        (
+            "package install under a foreign phase filter",
+            false,
+            &PhaseName::Files,
+            &profile_owner,
+            &pkg_install,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        // `--phase modules` is an owner filter: it reaches module work in every
+        // phase its kind routed to, and never reaches profile work.
+        (
+            "module install under ModuleOwners",
+            true,
+            &PhaseName::Packages,
+            &module_owner,
+            &module_install,
+            PhaseFilter::ModuleOwners,
+        ),
+        (
+            "module post script under ModuleOwners",
+            true,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::ModuleOwners,
+        ),
+        (
+            "profile package under ModuleOwners",
+            false,
+            &PhaseName::Packages,
+            &profile_owner,
+            &pkg_install,
+            PhaseFilter::ModuleOwners,
+        ),
+    ];
 
-    // Module-level script under PostScripts filter — the bug fix.
-    assert!(action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_post_script,
-        &PhaseName::PostScripts,
-    ));
-    assert!(action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_pre_script,
-        &PhaseName::PreScripts,
-    ));
-
-    // Non-script module actions are NOT swept in by script filters.
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_install,
-        &PhaseName::PostScripts,
-    ));
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_install,
-        &PhaseName::PreScripts,
-    ));
-
-    // Cross-phase mismatch (PreApply script under PostScripts filter, etc.).
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_pre_script,
-        &PhaseName::PostScripts,
-    ));
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_post_script,
-        &PhaseName::PreScripts,
-    ));
-
-    // Unrelated filter (Packages) only matches phase-equal actions.
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_post_script,
-        &PhaseName::Packages,
-    ));
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Files,
-        &pkg_install,
-        &PhaseName::Packages,
-    ));
-
-    // Profile-level scripts still match their script-phase filter when they
-    // happen to live in PhaseName::Modules (defensive — never happens in
-    // practice but the helper is action-shape-based, not phase-name-based).
-    assert!(action_matches_phase_filter(
-        &PhaseName::Modules,
-        &post_script_action,
-        &PhaseName::PostScripts,
-    ));
+    for (label, expected, phase_name, owner, action, filter) in cases {
+        assert_eq!(
+            action_matches_phase_filter(phase_name, owner, action, &filter),
+            expected,
+            "{label}"
+        );
+    }
 }
 
 #[test]
@@ -13830,10 +13868,10 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
 
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Modules,
-                scope: None,
-                actions: vec![
+            Phase::from_actions(
+                PhaseName::Modules,
+                &Owner::profile("test"),
+                vec![
                     Action::Module(ModuleAction {
                         module_name: "nvim".to_string(),
                         kind: ModuleActionKind::InstallPackages { resolved: vec![] },
@@ -13848,12 +13886,8 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
                         origin: None,
                     }),
                 ],
-            },
-            Phase {
-                name: PhaseName::PostScripts,
-                scope: None,
-                actions: vec![],
-            },
+            ),
+            Phase::from_actions(PhaseName::PostScripts, &Owner::profile("test"), vec![]),
         ],
         warnings: vec![],
     };
@@ -13865,7 +13899,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::PostScripts),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -13931,15 +13965,11 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
 
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::PreScripts,
-                scope: None,
-                actions: vec![],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: None,
-                actions: vec![
+            Phase::from_actions(PhaseName::PreScripts, &Owner::profile("test"), vec![]),
+            Phase::from_actions(
+                PhaseName::Modules,
+                &Owner::profile("test"),
+                vec![
                     Action::Module(ModuleAction {
                         module_name: "nvim".to_string(),
                         kind: ModuleActionKind::RunScript {
@@ -13954,7 +13984,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
                         origin: None,
                     }),
                 ],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -13966,7 +13996,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::PreScripts),
+            Some(&PhaseFilter::Phase(PhaseName::PreScripts)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -14028,10 +14058,10 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
     };
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![
                 Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
                     kind: ModuleActionKind::RunScript {
@@ -14053,7 +14083,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
                     origin: None,
                 }),
             ],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -14064,7 +14094,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -14117,38 +14147,38 @@ fn apply_post_scripts_filter_skips_other_phases() {
 
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Skip {
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![Action::File(FileAction::Skip {
                     target: PathBuf::from("/tmp/should_not_run"),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
                 })],
-            },
-            Phase {
-                name: PhaseName::System,
-                scope: None,
-                actions: vec![Action::System(SystemAction::Skip {
+            ),
+            Phase::from_actions(
+                PhaseName::System,
+                &Owner::profile("test"),
+                vec![Action::System(SystemAction::Skip {
                     configurator: "shell".to_string(),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
                     unknown: false,
                 })],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Skip {
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Skip {
                     manager: "apt".to_string(),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: None,
-                actions: vec![Action::Module(ModuleAction {
+            ),
+            Phase::from_actions(
+                PhaseName::Modules,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
                     kind: ModuleActionKind::RunScript {
                         script: ScriptEntry::Simple(format!("touch {}", marker.display())),
@@ -14156,7 +14186,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
                     },
                     origin: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -14168,7 +14198,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::PostScripts),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -14651,12 +14681,15 @@ fn dedup_rp(name: &str, manager: &str) -> ResolvedPackage {
     }
 }
 
-fn install_packages_action(module: &str, resolved: Vec<ResolvedPackage>) -> Action {
-    Action::Module(ModuleAction {
-        module_name: module.to_string(),
-        kind: ModuleActionKind::InstallPackages { resolved },
-        origin: None,
-    })
+fn install_packages_action(module: &str, resolved: Vec<ResolvedPackage>) -> (PhaseName, Action) {
+    (
+        PhaseName::Packages,
+        Action::Module(ModuleAction {
+            module_name: module.to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved },
+            origin: None,
+        }),
+    )
 }
 
 fn resolved_names_of(action: &Action) -> Vec<String> {
@@ -14691,7 +14724,10 @@ fn dedup_profile_loses_to_module_same_manager_name() {
         "profile Install emptied by dedup must be dropped, got {filtered:?}"
     );
     // module keeps gh
-    assert_eq!(resolved_names_of(&module_phase[0]), vec!["gh".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[0].1),
+        vec!["gh".to_string()]
+    );
 }
 
 #[test]
@@ -14732,11 +14768,14 @@ fn dedup_earlier_module_wins_over_later() {
         1,
         "later duplicate action must be dropped"
     );
-    match &module_phase[0] {
+    match &module_phase[0].1 {
         Action::Module(ModuleAction { module_name, .. }) => assert_eq!(module_name, "a"),
         other => panic!("expected Module action, got {other:?}"),
     }
-    assert_eq!(resolved_names_of(&module_phase[0]), vec!["fd".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[0].1),
+        vec!["fd".to_string()]
+    );
 }
 
 #[test]
@@ -14753,11 +14792,11 @@ fn dedup_script_manager_never_dropped() {
     );
     assert_eq!(module_phase.len(), 2, "both script installs must survive");
     assert_eq!(
-        resolved_names_of(&module_phase[0]),
+        resolved_names_of(&module_phase[0].1),
         vec!["setup".to_string()]
     );
     assert_eq!(
-        resolved_names_of(&module_phase[1]),
+        resolved_names_of(&module_phase[1].1),
         vec!["setup".to_string()]
     );
 }
@@ -14771,9 +14810,15 @@ fn dedup_mixed_kept_and_dropped_in_one_action() {
     Reconciler::dedup_module_packages(&mut module_phase);
 
     assert_eq!(module_phase.len(), 2);
-    assert_eq!(resolved_names_of(&module_phase[0]), vec!["fd".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[0].1),
+        vec!["fd".to_string()]
+    );
     // module b's fd dropped, bat retained
-    assert_eq!(resolved_names_of(&module_phase[1]), vec!["bat".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[1].1),
+        vec!["bat".to_string()]
+    );
 }
 
 #[test]
@@ -15272,14 +15317,14 @@ fn apply_env_inject_stores_a_file_backup_for_the_rc() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Env,
-            scope: None,
-            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+        phases: vec![Phase::from_actions(
+            PhaseName::Env,
+            &Owner::profile("test"),
+            vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
                 line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -15327,14 +15372,14 @@ fn apply_env_records_one_managed_resource_across_a_converged_second_run() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Env,
-            scope: None,
-            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+        phases: vec![Phase::from_actions(
+            PhaseName::Env,
+            &Owner::profile("test"),
+            vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
                 line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -15509,14 +15554,14 @@ fn apply_env_inject_backs_up_and_rolls_back_through_a_symlinked_rc() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Env,
-            scope: None,
-            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+        phases: vec![Phase::from_actions(
+            PhaseName::Env,
+            &Owner::profile("test"),
+            vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
                 line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
     let printer = test_printer();
@@ -15648,5 +15693,705 @@ fn apply_env_inject_writes_through_a_symlinked_rc() {
     assert_eq!(
         repo_body,
         "export FOO=bar\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n"
+    );
+}
+
+// --- owner groups, Rule P dispatch, and the journal index ---
+
+/// A package manager that appends every bootstrap and install to a log shared
+/// with its siblings, so a test can assert the ORDER the reconciler reached
+/// them in rather than merely that each ran.
+struct DispatchLogManager {
+    name: String,
+    log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    available: std::sync::Mutex<bool>,
+    installed: std::sync::Mutex<HashSet<String>>,
+}
+
+impl DispatchLogManager {
+    fn new(
+        name: &str,
+        log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        available: bool,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            log: std::sync::Arc::clone(log),
+            available: std::sync::Mutex::new(available),
+            installed: std::sync::Mutex::new(HashSet::new()),
+        }
+    }
+
+    fn record(&self, event: String) {
+        self.log.lock().unwrap().push(event);
+    }
+}
+
+impl PackageManager for DispatchLogManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        *self.available.lock().unwrap()
+    }
+    fn can_bootstrap(&self) -> bool {
+        true
+    }
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        self.record(format!("bootstrap:{}", self.name));
+        *self.available.lock().unwrap() = true;
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(self.installed.lock().unwrap().clone())
+    }
+    fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        self.record(format!("install:{}:{}", self.name, packages.join(",")));
+        let mut installed = self.installed.lock().unwrap();
+        for p in packages {
+            installed.insert(p.clone());
+        }
+        Ok(())
+    }
+    fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        let mut installed = self.installed.lock().unwrap();
+        for p in packages {
+            installed.remove(p);
+        }
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+fn new_dispatch_log() -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
+fn dispatch_log(log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+    log.lock().unwrap().clone()
+}
+
+fn install_action(manager: &str, packages: &[&str]) -> Action {
+    Action::Package(PackageAction::Install {
+        manager: manager.to_string(),
+        packages: packages.iter().map(|p| (*p).to_string()).collect(),
+        origin: "local".to_string(),
+    })
+}
+
+fn bootstrap_action(manager: &str) -> Action {
+    Action::Package(PackageAction::Bootstrap {
+        manager: manager.to_string(),
+        method: "auto".to_string(),
+        origin: "local".to_string(),
+    })
+}
+
+fn owner_resolved_package(manager: &str, package: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        canonical_name: package.to_string(),
+        resolved_name: package.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    }
+}
+
+fn module_install_action(module: &str, manager: &str, package: &str) -> Action {
+    Action::Module(ModuleAction {
+        module_name: module.to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![owner_resolved_package(manager, package)],
+        },
+        origin: None,
+    })
+}
+
+fn module_for(name: &str, manager: &str, package: &str) -> ResolvedModule {
+    let mut module = make_resolved_module(name);
+    module.packages = vec![owner_resolved_package(manager, package)];
+    module
+}
+
+fn owner_tokens(phase: &Phase) -> Vec<String> {
+    phase.groups.iter().map(|g| g.owner.token()).collect()
+}
+
+fn packages_phase(actions: Vec<Action>) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: vec![],
+    }
+}
+
+fn run_apply(
+    reconciler: &Reconciler<'_>,
+    plan: &Plan,
+    modules: &[ResolvedModule],
+    filter: Option<&PhaseFilter>,
+) -> ApplyResult {
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    reconciler
+        .apply(
+            plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            filter,
+            modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply")
+}
+
+#[test]
+fn interleaved_owner_actions_collapse_into_one_group_each() {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("work"),
+        vec![
+            module_install_action("nvim", "brew", "neovim"),
+            install_action("brew", &["ripgrep"]),
+            module_install_action("zsh", "brew", "zsh"),
+            module_install_action("nvim", "brew", "tree-sitter"),
+            install_action("brew", &["fd"]),
+        ],
+    );
+
+    assert_eq!(
+        owner_tokens(&phase),
+        vec!["profile:work", "module:nvim", "module:zsh"],
+        "one group per owner, in sort_key order, however the actions interleave"
+    );
+    let nvim = &phase.groups[1].actions;
+    assert_eq!(nvim.len(), 2);
+    assert!(
+        format_plan_item(&nvim[0]).contains("neovim"),
+        "first-appearance order survives inside a group: {:?}",
+        plan_items(&phase)
+    );
+    assert!(format_plan_item(&nvim[1]).contains("tree-sitter"));
+    assert_eq!(phase.action_count(), 5, "grouping loses no action");
+}
+
+#[test]
+fn owner_order_is_profile_first_in_every_phase() {
+    let profile = Owner::profile("work");
+    let phases = vec![
+        Phase::from_actions(
+            PhaseName::Packages,
+            &profile,
+            vec![
+                module_install_action("nvim", "brew", "neovim"),
+                install_action("brew", &["ripgrep"]),
+            ],
+        ),
+        Phase::from_actions(
+            PhaseName::Files,
+            &profile,
+            vec![
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::DeployFiles { files: vec![] },
+                    origin: None,
+                }),
+                Action::File(FileAction::Skip {
+                    target: PathBuf::from("/home/u/.gitconfig"),
+                    reason: "in sync".to_string(),
+                    origin: "local".to_string(),
+                }),
+            ],
+        ),
+        Phase::from_actions(
+            PhaseName::System,
+            &profile,
+            vec![
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::Skip {
+                        reason: "platform".to_string(),
+                    },
+                    origin: None,
+                }),
+                Action::System(SystemAction::SetValue {
+                    configurator: "sysctl".to_string(),
+                    key: "net.ipv4.ip_forward".to_string(),
+                    desired: "1".to_string(),
+                    current: "0".to_string(),
+                    origin: "local".to_string(),
+                }),
+            ],
+        ),
+    ];
+
+    for phase in &phases {
+        assert_eq!(
+            owner_tokens(phase),
+            vec!["profile:work", "module:nvim"],
+            "{} must read profile-first like every other phase",
+            phase.name.as_str()
+        );
+    }
+}
+
+#[test]
+fn bootstrap_group_is_built_at_rank_one() {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("work"),
+        vec![
+            install_action("brew", &["ripgrep"]),
+            bootstrap_action("brew"),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    assert_eq!(
+        owner_tokens(&phase),
+        vec!["profile:work", "cfgd:managers", "module:nvim"],
+        "a bootstrap is cfgd's, not the profile's whose planner emitted it"
+    );
+    assert_eq!(phase.groups[1].actions.len(), 1);
+}
+
+#[test]
+fn no_bootstrap_builds_no_managers_group() {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("work"),
+        vec![
+            install_action("brew", &["ripgrep"]),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    assert_eq!(owner_tokens(&phase), vec!["profile:work", "module:nvim"]);
+    assert!(
+        !phase.groups.iter().any(|g| g.owner.kind == OwnerKind::Cfgd),
+        "an owner with no actions in a phase produces no group"
+    );
+}
+
+#[test]
+fn bootstrap_dispatches_before_the_install_it_enables() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["ripgrep"]),
+        bootstrap_action("brew"),
+    ]);
+    assert_eq!(
+        owner_tokens(&plan.phases[0]),
+        vec!["profile:work", "cfgd:managers"],
+        "the display order this test exists to contradict"
+    );
+
+    let result = run_apply(&reconciler, &plan, &[], None);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["bootstrap:brew", "install:brew:ripgrep"]
+    );
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        result.action_results.iter().all(|r| r.error.is_none()),
+        "no action may fail for want of the manager the run itself installs: {:?}",
+        result.action_results
+    );
+}
+
+#[test]
+fn module_package_work_dispatches_before_the_bootstrap_tier() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("pipx", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        bootstrap_action("pipx"),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let result = run_apply(&reconciler, &plan, &modules, None);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:neovim", "bootstrap:pipx"],
+        "module-owned package work completes before the bootstrap tier begins"
+    );
+    assert_eq!(result.status, ApplyStatus::Success);
+}
+
+#[test]
+fn module_package_work_dispatches_before_profile_package_work() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let result = run_apply(&reconciler, &plan, &modules, None);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:neovim", "install:brew:fd"],
+        "a module's package work is a barrier ahead of the profile's, whatever the display order"
+    );
+    assert_eq!(result.status, ApplyStatus::Success);
+}
+
+#[test]
+fn brew_bootstrap_precedes_pipx_bootstrap() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("pipx", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![bootstrap_action("brew"), bootstrap_action("pipx")]);
+    assert_eq!(
+        owner_tokens(&plan.phases[0]),
+        vec!["cfgd:managers"],
+        "both bootstraps share one group, so plan order is the only order there is"
+    );
+
+    let result = run_apply(&reconciler, &plan, &[], None);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["bootstrap:brew", "bootstrap:pipx"],
+        "planned bootstraps run serially among themselves, in plan order"
+    );
+    assert_eq!(result.status, ApplyStatus::Success);
+}
+
+#[test]
+fn planned_bootstrap_is_skipped_when_its_manager_is_already_available() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        bootstrap_action("brew"),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let result = run_apply(&reconciler, &plan, &modules, None);
+
+    let events = dispatch_log(&log);
+    assert_eq!(
+        events.iter().filter(|e| *e == "bootstrap:brew").count(),
+        1,
+        "the module's implicit bootstrap already installed brew: {events:?}"
+    );
+    assert_eq!(events[0], "bootstrap:brew");
+
+    // The action still completes: what it promises is an available manager,
+    // not an installation.
+    let bootstrap = result
+        .action_results
+        .iter()
+        .find(|r| r.description == "package:brew:bootstrap")
+        .expect("the planned bootstrap reports a result of its own");
+    assert!(bootstrap.success);
+    assert!(bootstrap.changed, "applied, not skipped");
+    assert_eq!(result.planned_total, 2);
+    assert_eq!(
+        state.journal_entries(result.apply_id).unwrap().len(),
+        2,
+        "one journal row per planned action, bootstrap included"
+    );
+}
+
+#[test]
+fn action_index_is_the_plan_position_not_the_dispatch_counter() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let build_plan = || Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![
+                    install_action("brew", &["fd"]),
+                    bootstrap_action("brew"),
+                    module_install_action("nvim", "brew", "neovim"),
+                ],
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("work"),
+                vec![Action::File(FileAction::Skip {
+                    target: PathBuf::from("/home/u/.gitconfig"),
+                    reason: "in sync".to_string(),
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let plan = build_plan();
+    let result = run_apply(&reconciler, &plan, &modules, None);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // `journal_entries` orders by `action_index`, so this vec IS the recorded
+    // plan order.
+    let entries = state.journal_entries(result.apply_id).unwrap();
+    assert_eq!(
+        entries.iter().map(|e| e.action_index).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3],
+        "the column stays dense across the run"
+    );
+    let by_plan: Vec<&str> = entries.iter().map(|e| e.resource_id.as_str()).collect();
+    assert_eq!(
+        by_plan,
+        vec![
+            "brew:install:fd",
+            "brew:bootstrap",
+            "nvim:packages:neovim",
+            "/home/u/.gitconfig",
+        ],
+        "indices follow the flattened group order, not the tiers"
+    );
+
+    // Row ids ascend in insertion order, which is dispatch order — and it is a
+    // different order, which is what makes the derivation change observable.
+    let mut by_dispatch: Vec<(i64, &str)> = entries
+        .iter()
+        .map(|e| (e.id, e.resource_id.as_str()))
+        .collect();
+    by_dispatch.sort_by_key(|(id, _)| *id);
+    assert_eq!(
+        by_dispatch.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![
+            "nvim:packages:neovim",
+            "brew:bootstrap",
+            "brew:install:fd",
+            "/home/u/.gitconfig",
+        ]
+    );
+
+    // A `--phase`-filtered run indexes only the actions that survive the
+    // filter, dense from zero — exactly what the pre-change dispatch counter
+    // produced.
+    let filtered_plan = build_plan();
+    let filtered = run_apply(
+        &reconciler,
+        &filtered_plan,
+        &modules,
+        Some(&PhaseFilter::Phase(PhaseName::Files)),
+    );
+    let filtered_entries = state.journal_entries(filtered.apply_id).unwrap();
+    assert_eq!(
+        filtered_entries
+            .iter()
+            .map(|e| (e.action_index, e.resource_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "/home/u/.gitconfig")]
+    );
+}
+
+/// Position of a phase in the plan, panicking when the plan does not hold it —
+/// an ordering assertion on a missing phase would otherwise pass vacuously.
+fn phase_index(plan: &Plan, name: PhaseName) -> usize {
+    plan.phases
+        .iter()
+        .position(|p| p.name == name)
+        .unwrap_or_else(|| panic!("plan holds no {} phase", name.as_str()))
+}
+
+#[test]
+fn profile_files_precede_system_phase() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.system_configurators.push(Box::new(
+        MockSystemConfigurator::new("systemdUnits").with_drift(vec![
+            crate::providers::SystemDrift {
+                key: "cfgd-agent.service".to_string(),
+                expected: "enabled".to_string(),
+                actual: "disabled".to_string(),
+            },
+        ]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.system.insert(
+        "systemdUnits".to_string(),
+        serde_yaml::from_str("{cfgd-agent.service: enabled}").unwrap(),
+    );
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            vec![FileAction::Create {
+                source: PathBuf::from("/src/cfgd-agent.service"),
+                target: PathBuf::from("/etc/systemd/system/cfgd-agent.service"),
+                origin: "local".to_string(),
+                strategy: crate::config::FileStrategy::default(),
+                source_hash: None,
+                patch: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        phase_index(&plan, PhaseName::Files) < phase_index(&plan, PhaseName::System),
+        "a unit file must be on disk before the configurator that enables it runs: {:?}",
+        plan.phases
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn deployed_unit_file_precedes_systemd_enable() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.system_configurators.push(Box::new(
+        MockSystemConfigurator::new("systemdUnits").with_drift(vec![
+            crate::providers::SystemDrift {
+                key: "cfgd-agent.service".to_string(),
+                expected: "enabled".to_string(),
+                actual: "disabled".to_string(),
+            },
+        ]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.system.insert(
+        "systemdUnits".to_string(),
+        serde_yaml::from_str("{cfgd-agent.service: enabled}").unwrap(),
+    );
+
+    let mut module = make_resolved_module("agent");
+    module.packages = vec![];
+    module.files = vec![ResolvedFile {
+        source: PathBuf::from("/tmp/cfgd-agent.service"),
+        target: PathBuf::from("/etc/systemd/system/cfgd-agent.service"),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let files = phase_index(&plan, PhaseName::Files);
+    assert!(
+        files < phase_index(&plan, PhaseName::System),
+        "a module-deployed unit file must precede the systemdUnits action for the same unit: {:?}",
+        plan.phases
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    let deploy = plan.phases[files]
+        .actions()
+        .next()
+        .expect("the Files phase holds the module deploy");
+    assert!(format_plan_item(deploy).contains("cfgd-agent.service"));
+}
+
+#[test]
+fn to_hash_string_is_stable_across_group_permutation() {
+    let profile = Owner::profile("work");
+    let actions = || {
+        vec![
+            install_action("brew", &["ripgrep"]),
+            module_install_action("nvim", "brew", "neovim"),
+            bootstrap_action("brew"),
+        ]
+    };
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &profile,
+            actions(),
+        )],
+        warnings: vec![],
+    };
+
+    let mut reversed = Phase::from_actions(PhaseName::Packages, &profile, actions());
+    reversed.groups.reverse();
+    let permuted = Plan {
+        phases: vec![reversed],
+        warnings: vec![],
+    };
+
+    assert_eq!(
+        plan.to_hash_string(),
+        permuted.to_hash_string(),
+        "the hash identifies the SET of planned actions, not the walk order"
     );
 }

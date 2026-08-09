@@ -3,8 +3,7 @@ use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
 use super::types::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, ModuleScope, Phase, ScriptAction,
-    SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction, SystemAction,
 };
 
 /// Resource id of the live-session env refresh. The planner and
@@ -153,230 +152,202 @@ pub fn condense_action_desc_for_display(action: &Action, desc: &str) -> String {
     }
 }
 
-/// Condense `desc` as [`condense_action_desc_for_display`] does, then drop the
-/// `[module]` prefix when the enclosing phase heading already names that
-/// module.
-///
-/// `format_module_action` stamps every module action with `[module]` because
-/// the actions used to share one undifferentiated `Modules` heading and the
-/// bullet was the only place the module could appear. Under a
-/// `<module> / <section>` heading it repeats what the reader just read.
-///
-/// A script's `postApply:`/`preReconcile:` prefix survives — one section covers
-/// both the apply and the reconcile hook, so that word is not redundant.
-///
-/// Display only, like the helper it wraps: the raw `desc` is the
-/// `managed_resources` id, the journal `resource_id`, `ActionResult.description`
-/// and the `-o json` payload, all of which stay byte-identical to the plan's.
-pub fn display_action_desc_in_phase(
-    action: &Action,
-    desc: &str,
-    scope: Option<&ModuleScope>,
-) -> String {
-    let condensed = condense_action_desc_for_display(action, desc);
-    let Some(scope) = scope else {
-        return condensed;
-    };
-    condensed
-        .strip_prefix(&format!("[{}] ", scope.module))
-        .map_or(condensed.clone(), ToString::to_string)
+/// Format one plan item for display.
+pub fn format_plan_item(action: &Action) -> String {
+    match action {
+        Action::File(fa) => match fa {
+            FileAction::Create { target, origin, .. } => {
+                format!("create {}{}", target.posix(), provenance_suffix(origin))
+            }
+            FileAction::Update { target, origin, .. } => {
+                format!("update {}{}", target.posix(), provenance_suffix(origin))
+            }
+            FileAction::Delete { target, origin, .. } => {
+                format!("delete {}{}", target.posix(), provenance_suffix(origin))
+            }
+            FileAction::SetPermissions {
+                target,
+                mode,
+                origin,
+                ..
+            } => format!(
+                "chmod {:#o} {}{}",
+                mode,
+                target.posix(),
+                provenance_suffix(origin)
+            ),
+            FileAction::Skip {
+                target,
+                reason,
+                origin,
+                ..
+            } => format!(
+                "skip {}: {}{}",
+                target.posix(),
+                reason,
+                provenance_suffix(origin)
+            ),
+        },
+        Action::Package(pa) => match pa {
+            PackageAction::Bootstrap {
+                manager,
+                method,
+                origin,
+                ..
+            } => format!(
+                "bootstrap {} via {}{}",
+                manager,
+                method,
+                provenance_suffix(origin)
+            ),
+            PackageAction::Install {
+                manager,
+                packages,
+                origin,
+                ..
+            } => format!(
+                "install via {}: {}{}",
+                manager,
+                packages.join(", "),
+                provenance_suffix(origin)
+            ),
+            PackageAction::Uninstall {
+                manager,
+                packages,
+                origin,
+                ..
+            } => format!(
+                "uninstall via {}: {}{}",
+                manager,
+                packages.join(", "),
+                provenance_suffix(origin)
+            ),
+            PackageAction::Skip {
+                manager,
+                reason,
+                origin,
+                ..
+            } => format!("skip {}: {}{}", manager, reason, provenance_suffix(origin)),
+        },
+        Action::Secret(sa) => match sa {
+            SecretAction::Decrypt {
+                source,
+                target,
+                backend,
+                origin,
+                ..
+            } => format!(
+                "decrypt {} → {} (via {}){}",
+                source.posix(),
+                target.posix(),
+                backend,
+                provenance_suffix(origin)
+            ),
+            SecretAction::Resolve {
+                provider,
+                reference,
+                target,
+                origin,
+                ..
+            } => format!(
+                "resolve {}://{} → {}{}",
+                provider,
+                reference,
+                target.posix(),
+                provenance_suffix(origin)
+            ),
+            SecretAction::ResolveEnv {
+                provider,
+                reference,
+                envs,
+                origin,
+                ..
+            } => format!(
+                "resolve {}://{} → env [{}]{}",
+                provider,
+                reference,
+                envs.join(", "),
+                provenance_suffix(origin)
+            ),
+            SecretAction::Skip {
+                source,
+                reason,
+                origin,
+                ..
+            } => format!("skip {}: {}{}", source, reason, provenance_suffix(origin)),
+        },
+        Action::System(sa) => match sa {
+            SystemAction::SetValue {
+                configurator,
+                key,
+                desired,
+                current,
+                origin,
+                ..
+            } => format!(
+                "set {}.{}: {} → {}{}",
+                configurator,
+                key,
+                current,
+                desired,
+                provenance_suffix(origin)
+            ),
+            SystemAction::Skip {
+                configurator,
+                reason,
+                unknown,
+                ..
+            } => {
+                if *unknown {
+                    format!(
+                        "unknown system key '{}' — no such configurator (ignored)",
+                        configurator
+                    )
+                } else {
+                    format!("skip {}: {}", configurator, reason)
+                }
+            }
+        },
+        Action::Script(sa) => match sa {
+            ScriptAction::Run {
+                entry,
+                phase,
+                origin,
+                ..
+            } => {
+                // Raw body: this same `Vec<String>` feeds both
+                // `display_plan_table`/`cli/apply.rs`'s dry-run preview
+                // (human bullets) AND `build_plan_output`'s
+                // `PlanActionOutput.description` (the `-o json` plan
+                // payload). Condensing here would truncate the JSON
+                // payload too — display sites condense for themselves via
+                // `condense_action_desc_for_display`.
+                format!(
+                    "run {} script: {}{}",
+                    phase.display_name(),
+                    entry.run_str(),
+                    provenance_suffix(origin)
+                )
+            }
+        },
+        Action::Module(ma) => format_module_action_item(ma),
+        Action::Env(ea) => match ea {
+            EnvAction::WriteEnvFile { path, .. } => {
+                format!("write {}", path.posix())
+            }
+            EnvAction::InjectSourceLine { rc_path, .. } => {
+                format!("inject source line into {}", rc_path.posix())
+            }
+            EnvAction::RefreshLiveSession { vars } => {
+                format!("refresh live session ({} var(s))", vars.len())
+            }
+        },
+    }
 }
 
-/// Format plan phase items for display.
-pub fn format_plan_items(phase: &Phase) -> Vec<String> {
-    phase
-        .actions
-        .iter()
-        .map(|action| match action {
-            Action::File(fa) => match fa {
-                FileAction::Create { target, origin, .. } => {
-                    format!("create {}{}", target.posix(), provenance_suffix(origin))
-                }
-                FileAction::Update { target, origin, .. } => {
-                    format!("update {}{}", target.posix(), provenance_suffix(origin))
-                }
-                FileAction::Delete { target, origin, .. } => {
-                    format!("delete {}{}", target.posix(), provenance_suffix(origin))
-                }
-                FileAction::SetPermissions {
-                    target,
-                    mode,
-                    origin,
-                    ..
-                } => format!(
-                    "chmod {:#o} {}{}",
-                    mode,
-                    target.posix(),
-                    provenance_suffix(origin)
-                ),
-                FileAction::Skip {
-                    target,
-                    reason,
-                    origin,
-                    ..
-                } => format!(
-                    "skip {}: {}{}",
-                    target.posix(),
-                    reason,
-                    provenance_suffix(origin)
-                ),
-            },
-            Action::Package(pa) => match pa {
-                PackageAction::Bootstrap {
-                    manager,
-                    method,
-                    origin,
-                    ..
-                } => format!(
-                    "bootstrap {} via {}{}",
-                    manager,
-                    method,
-                    provenance_suffix(origin)
-                ),
-                PackageAction::Install {
-                    manager,
-                    packages,
-                    origin,
-                    ..
-                } => format!(
-                    "install via {}: {}{}",
-                    manager,
-                    packages.join(", "),
-                    provenance_suffix(origin)
-                ),
-                PackageAction::Uninstall {
-                    manager,
-                    packages,
-                    origin,
-                    ..
-                } => format!(
-                    "uninstall via {}: {}{}",
-                    manager,
-                    packages.join(", "),
-                    provenance_suffix(origin)
-                ),
-                PackageAction::Skip {
-                    manager,
-                    reason,
-                    origin,
-                    ..
-                } => format!("skip {}: {}{}", manager, reason, provenance_suffix(origin)),
-            },
-            Action::Secret(sa) => match sa {
-                SecretAction::Decrypt {
-                    source,
-                    target,
-                    backend,
-                    origin,
-                    ..
-                } => format!(
-                    "decrypt {} → {} (via {}){}",
-                    source.posix(),
-                    target.posix(),
-                    backend,
-                    provenance_suffix(origin)
-                ),
-                SecretAction::Resolve {
-                    provider,
-                    reference,
-                    target,
-                    origin,
-                    ..
-                } => format!(
-                    "resolve {}://{} → {}{}",
-                    provider,
-                    reference,
-                    target.posix(),
-                    provenance_suffix(origin)
-                ),
-                SecretAction::ResolveEnv {
-                    provider,
-                    reference,
-                    envs,
-                    origin,
-                    ..
-                } => format!(
-                    "resolve {}://{} → env [{}]{}",
-                    provider,
-                    reference,
-                    envs.join(", "),
-                    provenance_suffix(origin)
-                ),
-                SecretAction::Skip {
-                    source,
-                    reason,
-                    origin,
-                    ..
-                } => format!("skip {}: {}{}", source, reason, provenance_suffix(origin)),
-            },
-            Action::System(sa) => match sa {
-                SystemAction::SetValue {
-                    configurator,
-                    key,
-                    desired,
-                    current,
-                    origin,
-                    ..
-                } => format!(
-                    "set {}.{}: {} → {}{}",
-                    configurator,
-                    key,
-                    current,
-                    desired,
-                    provenance_suffix(origin)
-                ),
-                SystemAction::Skip {
-                    configurator,
-                    reason,
-                    unknown,
-                    ..
-                } => {
-                    if *unknown {
-                        format!(
-                            "unknown system key '{}' — no such configurator (ignored)",
-                            configurator
-                        )
-                    } else {
-                        format!("skip {}: {}", configurator, reason)
-                    }
-                }
-            },
-            Action::Script(sa) => match sa {
-                ScriptAction::Run {
-                    entry,
-                    phase,
-                    origin,
-                    ..
-                } => {
-                    // Raw body: this same `Vec<String>` feeds both
-                    // `display_plan_table`/`cli/apply.rs`'s dry-run preview
-                    // (human bullets) AND `build_plan_output`'s
-                    // `PlanActionOutput.description` (the `-o json` plan
-                    // payload). Condensing here would truncate the JSON
-                    // payload too — display sites condense for themselves via
-                    // `condense_action_desc_for_display`.
-                    format!(
-                        "run {} script: {}{}",
-                        phase.display_name(),
-                        entry.run_str(),
-                        provenance_suffix(origin)
-                    )
-                }
-            },
-            Action::Module(ma) => format_module_action_item(ma),
-            Action::Env(ea) => match ea {
-                EnvAction::WriteEnvFile { path, .. } => {
-                    format!("write {}", path.posix())
-                }
-                EnvAction::InjectSourceLine { rc_path, .. } => {
-                    format!("inject source line into {}", rc_path.posix())
-                }
-                EnvAction::RefreshLiveSession { vars } => {
-                    format!("refresh live session ({} var(s))", vars.len())
-                }
-            },
-        })
-        .collect()
+/// Format one owner group's plan items for display, one per action in order.
+pub fn format_plan_items(group: &OwnerGroup) -> Vec<String> {
+    group.actions.iter().map(format_plan_item).collect()
 }
 
 /// Format a module action for plan display.

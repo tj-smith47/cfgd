@@ -305,39 +305,47 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
     }
 }
 
+/// Whether `action`, owned by `owner` inside `phase`, survives `phase_filter`.
+///
+/// Filtering per action rather than per phase is what keeps a preview's scope
+/// equal to the run's: `--phase modules` selects module-owned work wherever its
+/// kind routed it, and `--phase post-scripts` reaches module lifecycle scripts.
+fn in_phase_scope(
+    phase: &reconciler::Phase,
+    owner: &reconciler::Owner,
+    action: &reconciler::Action,
+    phase_filter: Option<&PhaseFilter>,
+) -> bool {
+    match phase_filter {
+        Some(pf) => reconciler::action_matches_phase_filter(&phase.name, owner, action, pf),
+        None => true,
+    }
+}
+
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
-    phase_filter: Option<&PhaseName>,
+    phase_filter: Option<&PhaseFilter>,
     pending_backups: &[String],
 ) -> PlanOutput {
     let mut phases = Vec::new();
     for phase_item in &plan.phases {
-        if let Some(pf) = phase_filter
-            && &phase_item.name != pf
-        {
-            continue;
-        }
-        let items = reconciler::format_plan_items(phase_item);
         let actions: Vec<PlanActionOutput> = phase_item
-            .actions
-            .iter()
-            .zip(items.iter())
-            .map(|(action, desc)| PlanActionOutput {
-                description: desc.clone(),
+            .owned_actions()
+            .filter(|(owner, action)| in_phase_scope(phase_item, owner, action, phase_filter))
+            .map(|(_, action)| PlanActionOutput {
+                description: reconciler::format_plan_item(action),
                 action_type: action_type_str(action).to_string(),
                 targets: action_targets(action),
                 origin: action_origin(action),
             })
             .collect();
+        if actions.is_empty() {
+            continue;
+        }
         phases.push(PlanPhaseOutput {
             phase: phase_item.name.display_name().to_string(),
-            module: phase_item.scope.as_ref().map(|s| s.module.clone()),
-            section: phase_item
-                .scope
-                .as_ref()
-                .map(|s| s.section.as_str().to_string()),
             actions,
         });
     }
@@ -351,6 +359,46 @@ pub(in crate::cli) fn build_plan_output(
     }
 }
 
+/// The manager every `PackageAction` names.
+///
+/// One or-pattern over all four variants rather than three arms and a
+/// fallthrough, so a fifth variant fails to compile here instead of silently
+/// escaping `--skip-scripts`.
+fn package_manager_name(a: &PackageAction) -> &str {
+    match a {
+        PackageAction::Bootstrap { manager, .. }
+        | PackageAction::Install { manager, .. }
+        | PackageAction::Uninstall { manager, .. }
+        | PackageAction::Skip { manager, .. } => manager,
+    }
+}
+
+/// Anything `--skip-scripts` must remove, whichever phase it landed in.
+///
+/// Classifying by action shape rather than by phase is what keeps the gate
+/// correct: a module's `manager: script` package plans as package work and
+/// applies in the `Packages` phase, so a phase test would run a script the user
+/// asked to skip.
+fn is_script_work(a: &reconciler::Action) -> bool {
+    match a {
+        reconciler::Action::Module(reconciler::ModuleAction {
+            kind: reconciler::ModuleActionKind::RunScript { .. },
+            ..
+        }) => true,
+        // `any`, not `first`: one manager per action is a `plan_modules`
+        // invariant rather than a property of this type, and passing over a
+        // script entry because it is not first would run a script
+        // `--skip-scripts` excluded.
+        reconciler::Action::Module(reconciler::ModuleAction {
+            kind: reconciler::ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => resolved.iter().any(|p| p.manager == "script"),
+        reconciler::Action::Package(pa) => package_manager_name(pa) == "script",
+        reconciler::Action::Script(_) => true,
+        _ => false,
+    }
+}
+
 /// Strip all script-related actions from a plan.
 /// Removes PreScripts/PostScripts phases, module-level RunScript actions,
 /// and script-based package installs (manager: "script").
@@ -358,67 +406,55 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     plan.phases
         .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
     for phase in &mut plan.phases {
-        if phase.name == PhaseName::Modules {
-            phase.actions.retain(|a| match a {
-                reconciler::Action::Module(reconciler::ModuleAction {
-                    kind: reconciler::ModuleActionKind::RunScript { .. },
-                    ..
-                }) => false,
-                reconciler::Action::Module(reconciler::ModuleAction {
-                    kind: reconciler::ModuleActionKind::InstallPackages { resolved },
-                    ..
-                }) => resolved.first().is_none_or(|p| p.manager != "script"),
-                _ => true,
-            });
+        for group in &mut phase.groups {
+            group.actions.retain(|a| !is_script_work(a));
         }
+        phase.groups.retain(|g| !g.actions.is_empty());
     }
-    // Each (module, section) run is its own Phase since the module-plan split, so
-    // a section made entirely of the filtered-out kind (e.g. a module's
-    // Post-Scripts section holding only RunScript actions) survives the retain
-    // above with zero actions. Drop it here, the same way `Reconciler::plan`
-    // drops an action-less phase at construction, so it never reaches display
-    // or `-o json`.
-    plan.phases.retain(|p| !p.actions.is_empty());
+    // A group made entirely of the filtered-out kind survives the retain above
+    // with zero actions, and a phase can lose every group. Drop both here, the
+    // same way `Reconciler::plan` drops an action-less phase at construction, so
+    // neither reaches display or `-o json`.
+    plan.phases.retain(|p| !p.is_empty());
 }
 
 pub(in crate::cli) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
-    phase_filter: Option<&PhaseName>,
+    phase_filter: Option<&PhaseFilter>,
 ) {
     // `Reconciler::plan`, `strip_scripts_from_plan`, and `filter_plan` all drop
     // any phase left with zero actions, so anything reaching here has work; a
     // wholly empty plan yields no phases at all and gets one line below.
     let mut printed_any = false;
     for phase_item in &plan.phases {
-        if let Some(pf) = phase_filter
-            && &phase_item.name != pf
-        {
+        let in_scope: Vec<&reconciler::Action> = phase_item
+            .owned_actions()
+            .filter(|(owner, action)| in_phase_scope(phase_item, owner, action, phase_filter))
+            .map(|(_, action)| action)
+            .collect();
+        if in_scope.is_empty() {
             continue;
         }
-        let items = reconciler::format_plan_items(phase_item);
         printed_any = true;
-        let phase = printer.section(format!("Phase: {}", phase_item.display_label()));
-        if items.is_empty() {
-            phase.empty_state("(nothing to do)");
-        } else {
-            // `format_plan_items` yields one item per action in order, so the
-            // zip stays aligned. An unknown system key (likely a typo) surfaces
-            // as a real warning instead of a neutral bullet so it isn't missed.
-            for (item, action) in items.iter().zip(&phase_item.actions) {
-                if let reconciler::Action::System(reconciler::SystemAction::Skip {
-                    unknown: true,
-                    ..
-                }) = action
-                {
-                    phase.status_simple(Role::Warn, item);
-                } else {
-                    phase.bullet(reconciler::display_action_desc_in_phase(
-                        action,
-                        item,
-                        phase_item.scope.as_ref(),
-                    ));
-                }
+        let phase = printer.section(format!("Phase: {}", phase_item.name.display_name()));
+        // An unknown system key (likely a typo) surfaces as a real warning
+        // instead of a neutral bullet so it isn't missed.
+        for action in in_scope {
+            // Display-only condensation: the raw body still reaches the
+            // `-o json` payload through `build_plan_output`.
+            let item = reconciler::condense_action_desc_for_display(
+                action,
+                &reconciler::format_plan_item(action),
+            );
+            if let reconciler::Action::System(reconciler::SystemAction::Skip {
+                unknown: true,
+                ..
+            }) = action
+            {
+                phase.status_simple(Role::Warn, item);
+            } else {
+                phase.bullet(item);
             }
         }
     }
@@ -439,14 +475,8 @@ pub(in crate::cli) struct ScopeReport {
     pub filter_active: bool,
     /// Total actions the plan held before `--skip`/`--only` pruning.
     pub unfiltered_total: usize,
-    /// Display labels of the phases that held actions before pruning (module-
-    /// scoped phases render as `"{module} / {section}"`, e.g. "nvim / Files").
+    /// Display names of the phases that held actions before pruning.
     pub phases_with_work: Vec<String>,
-    /// Whether any `PhaseName::Modules` phase held actions before pruning,
-    /// independent of `phases_with_work`'s per-section split — the hint
-    /// below needs to detect "module work exists" without string-matching
-    /// against the "{module} / {section}" labels.
-    pub modules_have_work: bool,
     /// Set to the requested module name when `--module <name>` resolved to
     /// nothing (typo / not found / unreadable) rather than to real actions.
     pub module_miss: Option<String>,
@@ -464,13 +494,9 @@ impl ScopeReport {
             phases_with_work: plan
                 .phases
                 .iter()
-                .filter(|p| !p.actions.is_empty())
-                .map(|p| p.display_label())
+                .filter(|p| !p.is_empty())
+                .map(|p| p.name.display_name().to_string())
                 .collect(),
-            modules_have_work: plan
-                .phases
-                .iter()
-                .any(|p| p.name == PhaseName::Modules && !p.actions.is_empty()),
             module_miss,
         }
     }
@@ -482,11 +508,7 @@ impl ScopeReport {
 /// from one where a scoping flag excluded pending work (`Warn` — the system was
 /// *not* reconciled). Shared by both `apply` and `plan`/dry-run so the two
 /// surfaces never diverge.
-pub(in crate::cli) fn report_no_in_scope_actions(
-    printer: &Printer,
-    scope: &ScopeReport,
-    phase_filter: Option<&PhaseName>,
-) {
+pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &ScopeReport) {
     if let Some(name) = &scope.module_miss {
         printer.status_simple(
             Role::Warn,
@@ -513,14 +535,6 @@ pub(in crate::cli) fn report_no_in_scope_actions(
             scope.phases_with_work.join(", ")
         ));
     }
-    // The most common scoping mistake: `--phase files` against a config whose
-    // files come from modules (those deploy in the Modules phase to keep each
-    // module's files+packages+scripts atomic and dependency-ordered).
-    if phase_filter == Some(&PhaseName::Files) && scope.modules_have_work {
-        printer.hint(
-            "module-sourced files apply in the 'modules' phase — try `--phase modules` or `--module <name>`",
-        );
-    }
 }
 
 /// Bundles `display_plan_preview`'s non-core arguments (everything but the
@@ -529,7 +543,7 @@ pub(in crate::cli) fn report_no_in_scope_actions(
 #[derive(Clone, Copy)]
 pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub context: &'a str,
-    pub phase_filter: Option<&'a PhaseName>,
+    pub phase_filter: Option<&'a PhaseFilter>,
     pub dry_run_fm: Option<&'a CfgdFileManager>,
     pub scope: &'a ScopeReport,
     pub pending_backups: &'a [String],
@@ -595,7 +609,7 @@ pub(in crate::cli) fn display_plan_preview(
             if phase_item.name != PhaseName::Files {
                 continue;
             }
-            for action in &phase_item.actions {
+            for action in phase_item.actions() {
                 if let reconciler::Action::File(FileAction::Update {
                     source,
                     target,
@@ -638,7 +652,7 @@ pub(in crate::cli) fn display_plan_preview(
     }
 
     if plan_output.total_actions == 0 {
-        report_no_in_scope_actions(printer, scope, phase_filter);
+        report_no_in_scope_actions(printer, scope);
     } else {
         printer.status_simple(
             Role::Info,
@@ -686,11 +700,11 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
                 FileAction::SetPermissions { target, .. } => target,
                 FileAction::Skip { target, .. } => target,
             };
-            format!("{}:{}", prefix, target.display())
+            format!("{}:{}", prefix, cfgd_core::to_posix_string(target))
         }
         reconciler::Action::Secret(sa) => match sa {
             SecretAction::Decrypt { target, .. } => {
-                format!("{}:{}", prefix, target.display())
+                format!("{}:{}", prefix, cfgd_core::to_posix_string(target))
             }
             SecretAction::Resolve {
                 provider,
@@ -713,14 +727,21 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
             }
         },
         reconciler::Action::Module(ma) => {
-            format!("{}.{}", prefix, ma.module_name)
+            // The owner gets its own segment: without it a module named `brew`
+            // and the brew manager would share `packages.brew`.
+            format!(
+                "{}.{}:{}",
+                prefix,
+                reconciler::OwnerKind::Module.as_str(),
+                ma.module_name
+            )
         }
         reconciler::Action::Env(ea) => match ea {
             reconciler::EnvAction::WriteEnvFile { path, .. } => {
-                format!("{}:{}", prefix, path.display())
+                format!("{}:{}", prefix, cfgd_core::to_posix_string(path))
             }
             reconciler::EnvAction::InjectSourceLine { rc_path, .. } => {
-                format!("{}:{}", prefix, rc_path.display())
+                format!("{}:{}", prefix, cfgd_core::to_posix_string(rc_path))
             }
             reconciler::EnvAction::RefreshLiveSession { .. } => {
                 format!("{}:live-session", prefix)
@@ -743,6 +764,69 @@ pub(in crate::cli) fn pattern_matches(pattern: &str, action_path: &str) -> bool 
     }
     // "packages" should also match "packages:..." (colon-separated paths)
     false
+}
+
+/// Does `pattern` select this action? `owner` is the enclosing group's.
+///
+/// The three rules are ordered and total. Rule 1 cannot shadow rule 3 because
+/// every `action_path` begins with a `PhaseName::as_str()` and none of those is
+/// an `OwnerKind` token; rule 2 cannot shadow it either, because after the
+/// kind-phase routing the only paths starting with `modules.` are the
+/// platform-gated skips rule 2 selects anyway.
+pub(in crate::cli) fn pattern_matches_action(
+    pattern: &str,
+    owner: &reconciler::Owner,
+    action_path: &str,
+) -> bool {
+    if let Some((kind, _name)) = pattern.split_once(':')
+        && reconciler::OwnerKind::from_token(kind).is_some()
+    {
+        return owner.token() == pattern;
+    }
+    if pattern == LEGACY_MODULE_PATTERN {
+        return owner.kind == reconciler::OwnerKind::Module;
+    }
+    if let Some(name) = pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
+        return owner.kind == reconciler::OwnerKind::Module && owner.name == name;
+    }
+    pattern_matches(pattern, action_path)
+}
+
+/// The pre-routing spelling of "every module", kept working for one grammar
+/// generation and announced as deprecated when it is used.
+const LEGACY_MODULE_PATTERN: &str = "modules";
+const LEGACY_MODULE_PREFIX: &str = "modules.";
+
+fn is_legacy_module_pattern(pattern: &str) -> bool {
+    pattern == LEGACY_MODULE_PATTERN || pattern.starts_with(LEGACY_MODULE_PREFIX)
+}
+
+/// One-line deprecation for each distinct legacy `modules[.name]` pattern the
+/// run was given.
+///
+/// Per distinct pattern rather than once per run: a run passing two of them
+/// would otherwise be told about one and keep the other until it breaks.
+fn warn_legacy_module_patterns(printer: &Printer, skip: &[String], only: &[String]) {
+    let mut seen: Vec<&str> = Vec::new();
+    for (flag, pattern) in skip
+        .iter()
+        .map(|p| ("--skip", p))
+        .chain(only.iter().map(|p| ("--only", p)))
+    {
+        if !is_legacy_module_pattern(pattern) || seen.contains(&pattern.as_str()) {
+            continue;
+        }
+        seen.push(pattern);
+        let replacement = match pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
+            Some(name) => {
+                format!("Use `{flag} module:{name}` (all phases) or `{flag} files.module:{name}`.")
+            }
+            None => format!("Use `{flag} module:<name>` to select one module."),
+        };
+        printer.deprecation(format!(
+            "`{flag} {pattern}` is deprecated: module work now applies in the phase whose kind it is. {replacement}"
+        ));
+    }
 }
 
 /// Check if a file target is an unmanaged file — exists on disk but not tracked by cfgd.
@@ -807,70 +891,73 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     ];
 
     for phase in &mut plan.phases {
-        let mut i = 0;
-        while i < phase.actions.len() {
-            // Profile file actions
-            if let reconciler::Action::File(
-                FileAction::Create {
-                    target, strategy, ..
-                }
-                | FileAction::Update {
-                    target, strategy, ..
-                },
-            ) = &phase.actions[i]
-            {
-                let target = target.clone();
-                let strategy = *strategy;
-                if !adopts_in_place(strategy)
-                    && is_unmanaged_file(&target, config_dir, state)
-                    && !auto_yes
+        for group in &mut phase.groups {
+            let mut i = 0;
+            while i < group.actions.len() {
+                // Profile file actions
+                if let reconciler::Action::File(
+                    FileAction::Create {
+                        target, strategy, ..
+                    }
+                    | FileAction::Update {
+                        target, strategy, ..
+                    },
+                ) = &group.actions[i]
                 {
-                    let choice = prompt_backup_choice(&target, None, printer, &options)?;
-                    apply_backup_choice(choice, &target, &mut phase.actions[i], printer)?;
-                }
-            }
-
-            // Module file actions
-            if let reconciler::Action::Module(ref ma) = phase.actions[i]
-                && let reconciler::ModuleActionKind::DeployFiles { files } = &ma.kind
-            {
-                let needs_prompt = !auto_yes
-                    && files.iter().any(|f| {
-                        let t = cfgd_core::expand_tilde(&f.target);
-                        !f.strategy.is_some_and(adopts_in_place)
-                            && is_unmanaged_file(&t, config_dir, state)
-                    });
-                if needs_prompt {
-                    let module_name = ma.module_name.clone();
-                    if let reconciler::Action::Module(ref mut ma) = phase.actions[i]
-                        && let reconciler::ModuleActionKind::DeployFiles { ref mut files } = ma.kind
+                    let target = target.clone();
+                    let strategy = *strategy;
+                    if !adopts_in_place(strategy)
+                        && is_unmanaged_file(&target, config_dir, state)
+                        && !auto_yes
                     {
-                        let mut j = 0;
-                        while j < files.len() {
-                            let file_target = cfgd_core::expand_tilde(&files[j].target);
-                            if !files[j].strategy.is_some_and(adopts_in_place)
-                                && is_unmanaged_file(&file_target, config_dir, state)
-                            {
-                                let choice = prompt_backup_choice(
-                                    &file_target,
-                                    Some(&module_name),
-                                    printer,
-                                    &options,
-                                )?;
-                                if choice.starts_with("Backup") {
-                                    backup_file(&file_target, printer)?;
-                                } else if choice.starts_with("Skip") {
-                                    files.remove(j);
-                                    continue;
+                        let choice = prompt_backup_choice(&target, None, printer, &options)?;
+                        apply_backup_choice(choice, &target, &mut group.actions[i], printer)?;
+                    }
+                }
+
+                // Module file actions
+                if let reconciler::Action::Module(ref ma) = group.actions[i]
+                    && let reconciler::ModuleActionKind::DeployFiles { files } = &ma.kind
+                {
+                    let needs_prompt = !auto_yes
+                        && files.iter().any(|f| {
+                            let t = cfgd_core::expand_tilde(&f.target);
+                            !f.strategy.is_some_and(adopts_in_place)
+                                && is_unmanaged_file(&t, config_dir, state)
+                        });
+                    if needs_prompt {
+                        let module_name = ma.module_name.clone();
+                        if let reconciler::Action::Module(ref mut ma) = group.actions[i]
+                            && let reconciler::ModuleActionKind::DeployFiles { ref mut files } =
+                                ma.kind
+                        {
+                            let mut j = 0;
+                            while j < files.len() {
+                                let file_target = cfgd_core::expand_tilde(&files[j].target);
+                                if !files[j].strategy.is_some_and(adopts_in_place)
+                                    && is_unmanaged_file(&file_target, config_dir, state)
+                                {
+                                    let choice = prompt_backup_choice(
+                                        &file_target,
+                                        Some(&module_name),
+                                        printer,
+                                        &options,
+                                    )?;
+                                    if choice.starts_with("Backup") {
+                                        backup_file(&file_target, printer)?;
+                                    } else if choice.starts_with("Skip") {
+                                        files.remove(j);
+                                        continue;
+                                    }
                                 }
+                                j += 1;
                             }
-                            j += 1;
                         }
                     }
                 }
-            }
 
-            i += 1;
+                i += 1;
+            }
         }
     }
 
@@ -937,85 +1024,218 @@ pub(in crate::cli) fn apply_backup_choice(
 }
 
 /// Apply --skip and --only filters to a plan, modifying it in place.
-/// For package actions, individual packages can be filtered from install/uninstall lists.
-pub(in crate::cli) fn filter_plan(plan: &mut reconciler::Plan, skip: &[String], only: &[String]) {
+///
+/// Also emits the two diagnostics that only filtering can produce: the
+/// deprecation for a legacy `modules[.name]` pattern, and the stranded-install
+/// warning for a filter that removed a package manager's bootstrap without
+/// removing the installs that need it. Both live here so neither call site can
+/// forget one.
+pub(in crate::cli) fn filter_plan(
+    plan: &mut reconciler::Plan,
+    skip: &[String],
+    only: &[String],
+    printer: &Printer,
+    registry: &ProviderRegistry,
+) {
     if skip.is_empty() && only.is_empty() {
         return;
     }
+    warn_legacy_module_patterns(printer, skip, only);
 
+    let mut removals = BootstrapRemovals::default();
     for phase in &mut plan.phases {
-        let mut filtered_actions = Vec::new();
+        for group in &mut phase.groups {
+            let reconciler::OwnerGroup { owner, actions } = group;
+            let mut filtered_actions = Vec::new();
 
-        for action in std::mem::take(&mut phase.actions) {
-            // Package install/uninstall actions need per-package granularity
-            if let reconciler::Action::Package(ref pa) = action {
-                match pa {
-                    PackageAction::Install {
-                        manager,
-                        packages,
-                        origin,
-                    } => {
-                        let kept =
-                            filter_package_list(phase.name.as_str(), manager, packages, skip, only);
-                        if !kept.is_empty() {
-                            filtered_actions.push(reconciler::Action::Package(
-                                PackageAction::Install {
-                                    manager: manager.clone(),
-                                    packages: kept,
-                                    origin: origin.clone(),
-                                },
-                            ));
+            for action in std::mem::take(actions) {
+                // Package install/uninstall actions need per-package granularity
+                if let reconciler::Action::Package(ref pa) = action {
+                    match pa {
+                        PackageAction::Install {
+                            manager,
+                            packages,
+                            origin,
+                        } => {
+                            let kept = filter_package_list(
+                                phase.name.as_str(),
+                                owner,
+                                manager,
+                                packages,
+                                skip,
+                                only,
+                            );
+                            if !kept.is_empty() {
+                                filtered_actions.push(reconciler::Action::Package(
+                                    PackageAction::Install {
+                                        manager: manager.clone(),
+                                        packages: kept,
+                                        origin: origin.clone(),
+                                    },
+                                ));
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    PackageAction::Uninstall {
-                        manager,
-                        packages,
-                        origin,
-                    } => {
-                        let kept =
-                            filter_package_list(phase.name.as_str(), manager, packages, skip, only);
-                        if !kept.is_empty() {
-                            filtered_actions.push(reconciler::Action::Package(
-                                PackageAction::Uninstall {
-                                    manager: manager.clone(),
-                                    packages: kept,
-                                    origin: origin.clone(),
-                                },
-                            ));
+                        PackageAction::Uninstall {
+                            manager,
+                            packages,
+                            origin,
+                        } => {
+                            let kept = filter_package_list(
+                                phase.name.as_str(),
+                                owner,
+                                manager,
+                                packages,
+                                skip,
+                                only,
+                            );
+                            if !kept.is_empty() {
+                                filtered_actions.push(reconciler::Action::Package(
+                                    PackageAction::Uninstall {
+                                        manager: manager.clone(),
+                                        packages: kept,
+                                        origin: origin.clone(),
+                                    },
+                                ));
+                            }
+                            continue;
                         }
-                        continue;
+                        _ => {}
                     }
-                    _ => {}
+                }
+
+                // Non-package actions: action-level filtering
+                let path = action_path(&phase.name, &action);
+                let matched_skip = skip
+                    .iter()
+                    .find(|s| pattern_matches_action(s, owner, &path));
+                let passes_only = only.is_empty()
+                    || only.iter().any(|o| {
+                        pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
+                    });
+
+                if matched_skip.is_none() && passes_only {
+                    filtered_actions.push(action);
+                    continue;
+                }
+                if let reconciler::Action::Package(PackageAction::Bootstrap { manager, .. }) =
+                    &action
+                {
+                    removals.record(manager, matched_skip.map(String::as_str));
                 }
             }
 
-            // Non-package actions: action-level filtering
-            let path = action_path(&phase.name, &action);
-            let should_skip = skip.iter().any(|s| pattern_matches(s, &path));
-            let passes_only = only.is_empty()
-                || only
-                    .iter()
-                    .any(|o| pattern_matches(o, &path) || pattern_matches(&path, o));
-
-            if !should_skip && passes_only {
-                filtered_actions.push(action);
-            }
+            *actions = filtered_actions;
         }
-
-        phase.actions = filtered_actions;
+        phase.groups.retain(|g| !g.actions.is_empty());
     }
 
-    // A `--skip`/`--only` pattern can exclude every action in a (module,
-    // section) Phase without touching a sibling section of the same module, so
-    // the phase must be re-checked here rather than assumed empty-safe from
-    // `Reconciler::plan` alone.
-    plan.phases.retain(|p| !p.actions.is_empty());
+    // A `--skip`/`--only` pattern can empty a group without touching its
+    // siblings, and can empty a phase outright, so both must be re-checked here
+    // rather than assumed empty-safe from `Reconciler::plan` alone.
+    plan.phases.retain(|p| !p.is_empty());
+
+    warn_stranded_installs(plan, printer, registry, &removals);
+}
+
+/// The bootstraps a filter removed, and the `--skip` pattern that removed each.
+#[derive(Default)]
+struct BootstrapRemovals {
+    /// Manager families (`manager.split('-').next()`) whose bootstrap is gone.
+    families: Vec<String>,
+    /// Distinct `--skip` patterns responsible. Empty when `--only` did it, since
+    /// no single pattern is then to blame.
+    patterns: Vec<String>,
+    /// Bootstrap actions removed, counted rather than derived from `families`
+    /// because two managers can share a family.
+    count: usize,
+}
+
+impl BootstrapRemovals {
+    fn record(&mut self, manager: &str, pattern: Option<&str>) {
+        self.count += 1;
+        let family = manager_family(manager).to_string();
+        if !self.families.contains(&family) {
+            self.families.push(family);
+        }
+        if let Some(p) = pattern
+            && !self.patterns.iter().any(|seen| seen == p)
+        {
+            self.patterns.push(p.to_string());
+        }
+    }
+}
+
+/// The manager family a package manager belongs to.
+///
+/// A sub-manager (`brew-tap`, `brew-cask`) has no bootstrap of its own and
+/// answers `is_available()` with its parent's, so it is stranded by the parent's
+/// removal. This is the same key `plan_packages` uses to plan a sub-manager's
+/// install alongside its parent's bootstrap.
+fn manager_family(manager: &str) -> &str {
+    manager.split('-').next().unwrap_or(manager)
+}
+
+/// Warn when filtering removed a bootstrap but left installs that need the
+/// manager it would have provided.
+///
+/// The removed-bootstrap set is pre-filter minus post-filter, so the warning is
+/// pattern-agnostic: `--skip packages.brew` strands `packages.brew-tap` by
+/// exactly the mechanism `--skip cfgd:managers` strands `packages.brew`, and
+/// `pattern_matches`' segment boundary guarantees the user's own flag did not
+/// cover it.
+fn warn_stranded_installs(
+    plan: &reconciler::Plan,
+    printer: &Printer,
+    registry: &ProviderRegistry,
+    removals: &BootstrapRemovals,
+) {
+    if removals.count == 0 {
+        return;
+    }
+    let mut stranded: Vec<String> = Vec::new();
+    for action in plan.phases.iter().flat_map(|p| p.actions()) {
+        let reconciler::Action::Package(PackageAction::Install { manager, .. }) = action else {
+            continue;
+        };
+        if !removals
+            .families
+            .iter()
+            .any(|f| f == manager_family(manager))
+        {
+            continue;
+        }
+        let available = registry
+            .package_managers
+            .iter()
+            .any(|pm| pm.name() == manager && pm.is_available());
+        if !available && !stranded.iter().any(|m| m == manager) {
+            stranded.push(manager.clone());
+        }
+    }
+    if stranded.is_empty() {
+        return;
+    }
+    let culprit = match removals.patterns.as_slice() {
+        [one] => format!("`--skip {one}`"),
+        _ => "the active filter".to_string(),
+    };
+    let flags = stranded
+        .iter()
+        .map(|m| format!("--skip packages.{m}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    printer.deprecation(format!(
+        "{culprit} removes {} bootstrap(s); {} package action(s) still name a manager that is not installed. They will not apply. Use `{flags}` to drop that work too.",
+        removals.count,
+        stranded.len(),
+    ));
 }
 
 /// Filter individual packages from an install/uninstall list based on skip/only patterns.
 fn filter_package_list(
     phase: &str,
+    owner: &reconciler::Owner,
     manager: &str,
     packages: &[String],
     skip: &[String],
@@ -1026,17 +1246,19 @@ fn filter_package_list(
         .filter(|pkg| {
             let pkg_path = format!("{}.{}.{}", phase, manager, pkg);
 
-            // Check skip: pattern can target the specific package, manager, or phase
-            let pkg_skip = skip.iter().any(|s| pattern_matches(s, &pkg_path));
+            // Check skip: pattern can target the specific package, manager, phase or owner
+            let pkg_skip = skip
+                .iter()
+                .any(|s| pattern_matches_action(s, owner, &pkg_path));
 
             // Check only: the pattern must cover this package.
             // "packages" covers "packages.brew.ripgrep" (broad → specific)
             // "packages.brew.ripgrep" covers "packages.brew.ripgrep" (exact)
             // But "packages.brew.ripgrep" does NOT cover "packages.brew.fd"
             let pkg_only = only.is_empty()
-                || only
-                    .iter()
-                    .any(|o| pattern_matches(o, &pkg_path) || pattern_matches(&pkg_path, o));
+                || only.iter().any(|o| {
+                    pattern_matches_action(o, owner, &pkg_path) || pattern_matches(&pkg_path, o)
+                });
 
             !pkg_skip && pkg_only
         })

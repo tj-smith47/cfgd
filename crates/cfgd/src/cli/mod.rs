@@ -77,7 +77,7 @@ use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
 };
-use cfgd_core::reconciler::{self, PhaseName, ReconcileContext, Reconciler};
+use cfgd_core::reconciler::{self, PhaseFilter, PhaseName, ReconcileContext, Reconciler};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
@@ -1897,17 +1897,21 @@ impl ApplyPhase {
     }
 }
 
-/// Map a clap-validated ApplyPhase to the reconciler's PhaseName.
-fn apply_phase_to_phase_name(p: ApplyPhase) -> PhaseName {
+/// Map a clap-validated ApplyPhase to the reconciler's plan filter.
+///
+/// `--phase modules` is an owner filter rather than a phase name: module work
+/// applies in the phase whose kind it is, so selecting a plan phase called
+/// `modules` would reach only the platform-gated skips.
+fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
     match p {
-        ApplyPhase::PreScripts => PhaseName::PreScripts,
-        ApplyPhase::Env => PhaseName::Env,
-        ApplyPhase::Modules => PhaseName::Modules,
-        ApplyPhase::Packages => PhaseName::Packages,
-        ApplyPhase::System => PhaseName::System,
-        ApplyPhase::Files => PhaseName::Files,
-        ApplyPhase::Secrets => PhaseName::Secrets,
-        ApplyPhase::PostScripts => PhaseName::PostScripts,
+        ApplyPhase::Modules => PhaseFilter::ModuleOwners,
+        ApplyPhase::PreScripts => PhaseFilter::Phase(PhaseName::PreScripts),
+        ApplyPhase::Env => PhaseFilter::Phase(PhaseName::Env),
+        ApplyPhase::Packages => PhaseFilter::Phase(PhaseName::Packages),
+        ApplyPhase::System => PhaseFilter::Phase(PhaseName::System),
+        ApplyPhase::Files => PhaseFilter::Phase(PhaseName::Files),
+        ApplyPhase::Secrets => PhaseFilter::Phase(PhaseName::Secrets),
+        ApplyPhase::PostScripts => PhaseFilter::Phase(PhaseName::PostScripts),
     }
 }
 

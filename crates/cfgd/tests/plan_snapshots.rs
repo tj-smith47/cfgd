@@ -39,8 +39,6 @@ fn happy_plan_output() -> PlanOutput {
         context: "apply".to_string(),
         phases: vec![PlanPhaseOutput {
             phase: "Files".to_string(),
-            module: None,
-            section: None,
             actions: vec![PlanActionOutput {
                 description: "create /etc/hosts".to_string(),
                 action_type: "file.create".to_string(),

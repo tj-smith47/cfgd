@@ -6,8 +6,8 @@ use cfgd_core::providers::{FileAction, PackageAction, SecretAction};
 use cfgd_core::reconciler::ActionResult;
 use cfgd_core::reconciler::ApplyResult;
 use cfgd_core::reconciler::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase,
-    PhaseName, Plan, ScriptAction, ScriptPhase, SystemAction,
+    Action, EnvAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ScriptAction,
+    ScriptPhase, SystemAction,
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
@@ -208,28 +208,16 @@ fn make_plan(phases: Vec<(PhaseName, Vec<Action>)>) -> Plan {
     Plan {
         phases: phases
             .into_iter()
-            .map(|(name, actions)| Phase {
-                name,
-                actions,
-                scope: None,
-            })
+            .map(|(name, actions)| Phase::from_actions(name, &Owner::profile("test"), actions))
             .collect(),
         warnings: vec![],
     }
 }
 
-/// A single (module, section) Phase, the shape `Reconciler::split_module_phases`
-/// really produces — one Phase per consecutive module/section run, never one
-/// combined "Modules" phase holding every kind of module action together.
-fn scoped_phase(module: &str, section: ModuleSection, actions: Vec<Action>) -> Phase {
-    Phase {
-        name: PhaseName::Modules,
-        actions,
-        scope: Some(ModuleScope {
-            module: module.to_string(),
-            section,
-        }),
-    }
+/// A phase holding module-owned work, grouped exactly as `Reconciler::plan`
+/// would group it — one group per module, in `Owner::sort_key` order.
+fn module_phase(name: PhaseName, actions: Vec<Action>) -> Phase {
+    Phase::from_actions(name, &Owner::profile("test"), actions)
 }
 
 fn make_plan_from_phases(phases: Vec<Phase>) -> Plan {
@@ -440,8 +428,11 @@ fn action_path_script_run() {
 
 #[test]
 fn action_path_module() {
-    let path = action_path(&PhaseName::Modules, &module_install());
-    assert_eq!(path, "modules.dev-tools");
+    let path = action_path(&PhaseName::Packages, &module_install());
+    assert_eq!(
+        path, "packages.module:dev-tools",
+        "the owner gets its own segment so a module named `brew` cannot collide with the manager"
+    );
 }
 
 #[test]
@@ -488,8 +479,14 @@ fn filter_plan_noop_when_empty_filters() {
         PhaseName::Files,
         vec![file_create("/etc/foo"), file_update("/etc/bar")],
     )]);
-    filter_plan(&mut plan, &[], &[]);
-    assert_eq!(plan.phases[0].actions.len(), 2);
+    filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(plan.phases[0].action_count(), 2);
 }
 
 #[test]
@@ -504,7 +501,13 @@ fn filter_plan_skip_removes_matching_file_actions() {
             vec![pkg_install("brew", vec!["rg", "fd"])],
         ),
     ]);
-    filter_plan(&mut plan, &["files".to_string()], &[]);
+    filter_plan(
+        &mut plan,
+        &["files".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     // Every action in the Files phase was skipped, so the phase itself must
     // not survive with zero actions.
@@ -519,7 +522,7 @@ fn filter_plan_skip_removes_matching_file_actions() {
         .find(|p| p.name == PhaseName::Packages)
         .unwrap();
     assert_eq!(
-        pkg_phase.actions.len(),
+        pkg_phase.action_count(),
         1,
         "package actions should be untouched"
     );
@@ -534,7 +537,13 @@ fn filter_plan_only_keeps_matching_actions() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    filter_plan(&mut plan, &[], &["packages".to_string()]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["packages".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     // Every file action fell outside the --only scope, so the Files phase
     // itself must not survive with zero actions.
@@ -549,7 +558,7 @@ fn filter_plan_only_keeps_matching_actions() {
         .find(|p| p.name == PhaseName::Packages)
         .unwrap();
     assert_eq!(
-        pkg_phase.actions.len(),
+        pkg_phase.action_count(),
         1,
         "package actions inside --only scope should remain"
     );
@@ -561,11 +570,19 @@ fn filter_plan_skip_individual_packages() {
         PhaseName::Packages,
         vec![pkg_install("brew", vec!["rg", "fd", "bat"])],
     )]);
-    filter_plan(&mut plan, &["packages.brew.rg".to_string()], &[]);
+    filter_plan(
+        &mut plan,
+        &["packages.brew.rg".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     let phase = &plan.phases[0];
-    assert_eq!(phase.actions.len(), 1);
-    if let Action::Package(PackageAction::Install { packages, .. }) = &phase.actions[0] {
+    assert_eq!(phase.action_count(), 1);
+    if let Action::Package(PackageAction::Install { packages, .. }) =
+        phase.actions().next().expect("one action")
+    {
         assert!(
             !packages.contains(&"rg".to_string()),
             "rg should be skipped"
@@ -583,11 +600,19 @@ fn filter_plan_only_specific_packages() {
         PhaseName::Packages,
         vec![pkg_install("brew", vec!["rg", "fd", "bat"])],
     )]);
-    filter_plan(&mut plan, &[], &["packages.brew.rg".to_string()]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["packages.brew.rg".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     let phase = &plan.phases[0];
-    assert_eq!(phase.actions.len(), 1);
-    if let Action::Package(PackageAction::Install { packages, .. }) = &phase.actions[0] {
+    assert_eq!(phase.action_count(), 1);
+    if let Action::Package(PackageAction::Install { packages, .. }) =
+        phase.actions().next().expect("one action")
+    {
         assert_eq!(packages, &["rg"], "only rg should remain");
     } else {
         panic!("expected Install action");
@@ -603,15 +628,23 @@ fn filter_plan_skip_removes_entire_manager_with_all_packages_skipped() {
             pkg_install("cargo", vec!["bat"]),
         ],
     )]);
-    filter_plan(&mut plan, &["packages.brew".to_string()], &[]);
+    filter_plan(
+        &mut plan,
+        &["packages.brew".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     let phase = &plan.phases[0];
     assert_eq!(
-        phase.actions.len(),
+        phase.action_count(),
         1,
         "brew install should be fully removed"
     );
-    if let Action::Package(PackageAction::Install { manager, .. }) = &phase.actions[0] {
+    if let Action::Package(PackageAction::Install { manager, .. }) =
+        phase.actions().next().expect("one action")
+    {
         assert_eq!(manager, "cargo");
     } else {
         panic!("expected cargo Install action");
@@ -627,11 +660,19 @@ fn filter_plan_only_specific_manager_keeps_just_that_manager() {
             pkg_install("cargo", vec!["bat"]),
         ],
     )]);
-    filter_plan(&mut plan, &[], &["packages.brew".to_string()]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["packages.brew".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     let phase = &plan.phases[0];
-    assert_eq!(phase.actions.len(), 1, "only brew install should remain");
-    if let Action::Package(PackageAction::Install { manager, .. }) = &phase.actions[0] {
+    assert_eq!(phase.action_count(), 1, "only brew install should remain");
+    if let Action::Package(PackageAction::Install { manager, .. }) =
+        phase.actions().next().expect("one action")
+    {
         assert_eq!(manager, "brew");
     } else {
         panic!("expected brew Install action");
@@ -644,9 +685,17 @@ fn filter_plan_skip_uninstall_individual_packages() {
         PhaseName::Packages,
         vec![pkg_uninstall("brew", vec!["old-tool", "keep-me"])],
     )]);
-    filter_plan(&mut plan, &["packages.brew.old-tool".to_string()], &[]);
+    filter_plan(
+        &mut plan,
+        &["packages.brew.old-tool".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
-    if let Action::Package(PackageAction::Uninstall { packages, .. }) = &plan.phases[0].actions[0] {
+    if let Action::Package(PackageAction::Uninstall { packages, .. }) =
+        plan.phases[0].actions().next().expect("one action")
+    {
         assert_eq!(packages, &["keep-me".to_string()]);
     } else {
         panic!("expected Uninstall action");
@@ -673,34 +722,19 @@ fn strip_scripts_removes_pre_post_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    // Realistic post-split shape: one Phase per (module, section) run, never
-    // one combined "Modules" phase holding install + run_script + deploy_files
-    // together — `split_module_phases` can never produce that shape.
+    // Module work is routed by kind, so a module's install, script and file
+    // deploys sit in three different phases.
     let mut plan = make_plan_from_phases(vec![
-        scoped_phase("dev-tools", ModuleSection::Packages, vec![module_install()]),
-        scoped_phase(
-            "dev-tools",
-            ModuleSection::PostScripts,
-            vec![module_run_script()],
-        ),
-        scoped_phase(
-            "dotfiles",
-            ModuleSection::Files,
-            vec![module_deploy_files()],
-        ),
+        module_phase(PhaseName::Packages, vec![module_install()]),
+        module_phase(PhaseName::PostScripts, vec![module_run_script()]),
+        module_phase(PhaseName::Files, vec![module_deploy_files()]),
     ]);
     strip_scripts_from_plan(&mut plan);
 
     assert!(
-        plan.phases.iter().all(|p| !matches!(
-            &p.scope,
-            Some(ModuleScope {
-                section: ModuleSection::PostScripts,
-                ..
-            })
-        )),
-        "the dev-tools/Post-Scripts phase held only a RunScript action, so it \
-         must be dropped entirely, not left as an empty phase"
+        plan.phases.iter().all(|p| p.name != PhaseName::PostScripts),
+        "the Post-Scripts phase held only a RunScript action, so it must be \
+         dropped entirely, not left as an empty phase"
     );
     assert_eq!(
         plan.phases.len(),
@@ -709,7 +743,7 @@ fn strip_scripts_removes_module_run_script_actions() {
     );
     for phase in &plan.phases {
         assert!(
-            phase.actions.iter().all(|a| {
+            phase.actions().all(|a| {
                 !matches!(
                     a,
                     Action::Module(ModuleAction {
@@ -723,22 +757,14 @@ fn strip_scripts_removes_module_run_script_actions() {
     }
 }
 
-// Item 1 regression: before the module-plan split, `strip_scripts_from_plan`
-// only ever emptied an existing Modules phase's actions, never dropped it, so
-// the missing final `plan.phases.retain(...)` never showed up. Now every
-// module section is its own Phase, so a section made entirely of RunScript
-// actions (`nvim / Post-Scripts` on a plain `--skip-scripts` run) must vanish
-// completely instead of surviving with zero actions.
-//
-// Without the trailing `plan.phases.retain(|p| !p.actions.is_empty())` in
-// `strip_scripts_from_plan`, this phase's `actions` empties out (its only
-// action is a RunScript) but the `Phase` itself stays in `plan.phases`, so
-// `plan.phases.is_empty()` is false and this assertion fails.
+// Without the trailing `plan.phases.retain(|p| !p.is_empty())` in
+// `strip_scripts_from_plan`, a phase whose every action was a RunScript empties
+// out but the `Phase` itself stays in `plan.phases`, so `plan.phases.is_empty()`
+// is false and this assertion fails.
 #[test]
 fn strip_scripts_drops_a_phase_left_entirely_empty() {
-    let mut plan = make_plan_from_phases(vec![scoped_phase(
-        "nvim",
-        ModuleSection::PostScripts,
+    let mut plan = make_plan_from_phases(vec![module_phase(
+        PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
     strip_scripts_from_plan(&mut plan);
@@ -750,13 +776,11 @@ fn strip_scripts_drops_a_phase_left_entirely_empty() {
     );
 }
 
-// Item 1 regression, `filter_plan` side: a `--skip` pattern can exclude every
-// action in one (module, section) Phase without touching a sibling section of
-// the same module. Without the trailing
-// `plan.phases.retain(|p| !p.actions.is_empty())` in `filter_plan`, the
-// `nvim / Packages` phase's `actions` empties out but the `Phase` itself
-// stays in `plan.phases`, so `plan.phases.is_empty()` is false and this
-// assertion fails.
+// The `filter_plan` side: a `--skip` pattern can exclude every action in one
+// phase without touching the same module's work in another. Without the trailing
+// `plan.phases.retain(|p| !p.is_empty())` in `filter_plan`, the phase's groups
+// empty out but the `Phase` itself stays in `plan.phases`, so
+// `plan.phases.is_empty()` is false and this assertion fails.
 #[test]
 fn filter_plan_drops_a_phase_left_entirely_empty() {
     let module_pkg_install = Action::Module(ModuleAction {
@@ -764,12 +788,17 @@ fn filter_plan_drops_a_phase_left_entirely_empty() {
         kind: ModuleActionKind::InstallPackages { resolved: vec![] },
         origin: None,
     });
-    let mut plan = make_plan_from_phases(vec![scoped_phase(
-        "nvim",
-        ModuleSection::Packages,
+    let mut plan = make_plan_from_phases(vec![module_phase(
+        PhaseName::Packages,
         vec![module_pkg_install],
     )]);
-    filter_plan(&mut plan, &["modules.nvim".to_string()], &[]);
+    filter_plan(
+        &mut plan,
+        &["modules.nvim".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
 
     assert!(
         plan.phases.is_empty(),
@@ -816,7 +845,12 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", Some(&PhaseName::Files), &[]);
+    let output = build_plan_output(
+        &plan,
+        "ctx",
+        Some(&PhaseFilter::Phase(PhaseName::Files)),
+        &[],
+    );
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
@@ -824,36 +858,28 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
 }
 
 #[test]
-fn build_plan_output_scoped_phase_carries_module_and_kebab_section() {
-    let plan = make_plan_from_phases(vec![scoped_phase(
-        "nvim",
-        ModuleSection::PostScripts,
+fn build_plan_output_names_the_kind_phase_and_carries_no_module_key() {
+    let plan = make_plan_from_phases(vec![module_phase(
+        PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
 
     assert_eq!(output.phases.len(), 1);
-    assert_eq!(output.phases[0].phase, "Modules");
-    assert_eq!(output.phases[0].module.as_deref(), Some("nvim"));
-    assert_eq!(
-        output.phases[0].section.as_deref(),
-        Some("post-scripts"),
-        "section must serialize in kebab form, matching ModuleSection::as_str"
-    );
+    assert_eq!(output.phases[0].phase, "Post-Scripts");
 
     let json = serde_json::to_value(&output).unwrap();
     let phase = &json["phases"][0];
-    assert_eq!(phase["module"], serde_json::json!("nvim"));
-    assert_eq!(phase["section"], serde_json::json!("post-scripts"));
+    assert!(
+        phase.get("module").is_none() && phase.get("section").is_none(),
+        "a phase is no longer scoped to one module: {phase}"
+    );
 }
 
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
-
-    assert_eq!(output.phases[0].module, None);
-    assert_eq!(output.phases[0].section, None);
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -1155,7 +1181,7 @@ fn display_plan_table_phase_filter_omits_other_phases() {
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    display_plan_table(&plan, &printer, Some(&PhaseName::Files));
+    display_plan_table(&plan, &printer, Some(&PhaseFilter::Phase(PhaseName::Files)));
 
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -1653,57 +1679,371 @@ fn shell_env_reminder_absent_under_structured_output() {
     );
 }
 
+// --- script-package gate, owner grammar, and stranded installs ---
+
+fn resolved_package(manager: &str, name: &str) -> cfgd_core::modules::ResolvedPackage {
+    cfgd_core::modules::ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    }
+}
+
+fn module_batch(module: &str, resolved: Vec<cfgd_core::modules::ResolvedPackage>) -> Action {
+    Action::Module(ModuleAction {
+        module_name: module.to_string(),
+        kind: ModuleActionKind::InstallPackages { resolved },
+        origin: None,
+    })
+}
+
+fn module_named(module: &str) -> Action {
+    module_batch(module, vec![resolved_package("brew", "neovim")])
+}
+
+/// A package manager that is present on the host, for the arm of the
+/// stranded-install warning that must stay silent.
+struct AvailableManager(&'static str);
+
+impl cfgd_core::providers::PackageManager for AvailableManager {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+        Ok(std::collections::HashSet::new())
+    }
+    fn install(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn update(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// The plan the stranded-install warning is derived from: one bootstrap plus
+/// two installs that need the manager it would have provided, one of them
+/// through a sub-manager that has no bootstrap of its own.
+fn brew_bootstrap_plan() -> Plan {
+    make_plan(vec![(
+        PhaseName::Packages,
+        vec![
+            pkg_bootstrap(),
+            pkg_install("brew", vec!["ripgrep"]),
+            pkg_install("brew-tap", vec!["homebrew/cask"]),
+        ],
+    )])
+}
+
 #[test]
-fn scoped_phase_bullet_drops_the_module_name_its_heading_already_carries() {
-    let phase = scoped_phase(
-        "dev-tools",
-        ModuleSection::PostScripts,
-        vec![module_run_script()],
-    );
-    let items = reconciler::format_plan_items(&phase);
+fn mixed_manager_batch_with_trailing_script_is_stripped() {
+    // One action, one rendered line, and no shape in the plan model that could
+    // execute half of it — so a batch holding any script entry goes whole.
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch(
+            "nvim",
+            vec![
+                resolved_package("brew", "neovim"),
+                resolved_package("script", "tree-sitter"),
+            ],
+        )],
+    )]);
+    strip_scripts_from_plan(&mut plan);
+
     assert!(
-        items[0].starts_with("[dev-tools] "),
-        "fixture must carry the prefix under test; got: {:?}",
-        items[0]
+        plan.phases.is_empty(),
+        "the batch's script entry must strip the whole action: {:?}",
+        plan.phases
     );
-
-    let shown = reconciler::display_action_desc_in_phase(
-        &phase.actions[0],
-        &items[0],
-        phase.scope.as_ref(),
-    );
-    assert_eq!(shown, "postApply: install.sh");
 }
 
 #[test]
-fn unscoped_phase_bullet_keeps_the_module_name() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        actions: vec![module_install()],
-        scope: None,
-    };
-    let items = reconciler::format_plan_items(&phase);
-    let shown = reconciler::display_action_desc_in_phase(&phase.actions[0], &items[0], None);
-    assert_eq!(shown, items[0], "an unscoped heading names no module");
-    assert!(shown.starts_with("[dev-tools] "));
+fn skip_scripts_strips_module_and_profile_script_packages_alike() {
+    // The gate classifies by action shape, so re-routing a module's install
+    // into `Packages` beside the profile's cannot resurrect either.
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![
+            module_batch("nvim", vec![resolved_package("script", "tree-sitter")]),
+            pkg_install("script", vec!["custom-tool"]),
+            pkg_install("brew", vec!["ripgrep"]),
+        ],
+    )]);
+    strip_scripts_from_plan(&mut plan);
+
+    assert_eq!(
+        plan.phases.iter().map(Phase::action_count).sum::<usize>(),
+        1,
+        "only the brew install survives: {:?}",
+        plan.phases
+    );
 }
 
 #[test]
-fn a_bullet_for_a_different_module_keeps_its_own_prefix() {
-    // Splitting is by consecutive run, so a phase's scope and an action's
-    // module always agree today. Stripping by exact match rather than by
-    // "leading bracket group" keeps a future mismatch visible instead of
-    // silently erasing the one word that would explain it.
-    let phase = scoped_phase(
-        "other-module",
-        ModuleSection::Packages,
-        vec![module_install()],
+fn action_path_folds_a_windows_path_to_posix() {
+    let action = file_create(r"C:\Users\u\.gitconfig");
+    assert_eq!(
+        action_path(&PhaseName::Files, &action),
+        "files:C:/Users/u/.gitconfig",
+        "a pattern authored on one OS must select the same action on the other"
     );
-    let items = reconciler::format_plan_items(&phase);
-    let shown = reconciler::display_action_desc_in_phase(
-        &phase.actions[0],
-        &items[0],
-        phase.scope.as_ref(),
+}
+
+#[test]
+fn action_path_module_carries_its_owner_segment_in_every_phase() {
+    assert_eq!(
+        action_path(&PhaseName::Files, &module_deploy_files()),
+        "files.module:dotfiles"
     );
-    assert_eq!(shown, items[0]);
+    assert_eq!(
+        action_path(&PhaseName::PostScripts, &module_run_script()),
+        "post-scripts.module:dev-tools"
+    );
+}
+
+#[test]
+fn skip_owner_pattern_selects_one_module_across_every_phase() {
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Packages,
+            vec![module_named("nvim"), pkg_install("brew", vec!["ripgrep"])],
+        ),
+        (PhaseName::Files, vec![module_deploy_files()]),
+    ]);
+    filter_plan(
+        &mut plan,
+        &["module:nvim".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+
+    let owners: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .collect();
+    assert_eq!(
+        owners,
+        vec!["profile:test", "module:dotfiles"],
+        "only the named module is dropped, and it is dropped in every phase"
+    );
+}
+
+#[test]
+fn skip_owner_pattern_selects_the_profile() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_named("nvim"), pkg_install("brew", vec!["ripgrep"])],
+    )]);
+    filter_plan(
+        &mut plan,
+        &["profile:test".to_string()],
+        &[],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+
+    let owners: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .collect();
+    assert_eq!(owners, vec!["module:nvim"]);
+}
+
+#[test]
+fn legacy_modules_pattern_still_skips_and_says_so() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_named("nvim"), pkg_install("brew", vec!["ripgrep"])],
+    )]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["modules.nvim".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    let owners: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .collect();
+    assert_eq!(owners, vec!["profile:test"], "the pattern still works");
+    assert!(
+        out.contains("deprecated") && out.contains("module:nvim"),
+        "the run must name the replacement spelling, got: {out}"
+    );
+}
+
+#[test]
+fn only_packages_brew_does_not_match_a_module_named_brew() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_named("brew"), pkg_install("brew", vec!["ripgrep"])],
+    )]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["packages.brew".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+
+    let owners: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .collect();
+    assert_eq!(
+        owners,
+        vec!["profile:test"],
+        "the manager segment and the owner segment are different namespaces"
+    );
+}
+
+#[test]
+fn only_packages_module_brew_selects_the_module_not_the_manager() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_named("brew"), pkg_install("brew", vec!["ripgrep"])],
+    )]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["packages.module:brew".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+
+    let owners: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.groups.iter().map(|g| g.owner.token()))
+        .collect();
+    assert_eq!(owners, vec!["module:brew"]);
+}
+
+#[test]
+fn skip_cfgd_managers_warns_once_about_stranded_installs() {
+    let mut plan = brew_bootstrap_plan();
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["cfgd:managers".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    assert!(
+        !plan
+            .phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .any(|a| matches!(a, Action::Package(PackageAction::Bootstrap { .. }))),
+        "the bootstrap is gone, which is what strands the installs"
+    );
+    assert_eq!(
+        out.matches("bootstrap(s)").count(),
+        1,
+        "one warning per run, not one per stranded manager: {out}"
+    );
+    assert!(out.contains("--skip packages.brew"), "got: {out}");
+    assert!(out.contains("--skip packages.brew-tap"), "got: {out}");
+    assert!(
+        out.contains("`--skip cfgd:managers`"),
+        "the warning names the pattern responsible: {out}"
+    );
+}
+
+#[test]
+fn skip_packages_brew_strands_the_sub_manager_it_does_not_cover() {
+    // `pattern_matches`' segment boundary means `packages.brew` never covers
+    // `packages.brew-tap`, so the tap install survives its parent's removal.
+    let mut plan = brew_bootstrap_plan();
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["packages.brew".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    assert!(out.contains("--skip packages.brew-tap"), "got: {out}");
+    assert!(
+        !out.contains("--skip packages.brew "),
+        "brew's own install went with the pattern, so it is not stranded: {out}"
+    );
+}
+
+#[test]
+fn no_stranded_warning_when_every_manager_is_available() {
+    let mut plan = brew_bootstrap_plan();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(AvailableManager("brew")));
+    registry
+        .package_managers
+        .push(Box::new(AvailableManager("brew-tap")));
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["cfgd:managers".to_string()],
+        &[],
+        &printer,
+        &registry,
+    );
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    assert!(
+        !out.contains("bootstrap(s)"),
+        "a bootstrap dropped for a manager that is already installed strands nothing: {out}"
+    );
 }

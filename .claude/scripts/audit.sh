@@ -267,8 +267,15 @@ log_section "DRY — Duplicated Function Definitions"
 # question under one name, but dropping only the second site means a THIRD
 # definition still trips the gate. Adding a name to the awk list below instead
 # would blind the check to that name forever.
+# `Owner`'s constructors are named after the kind they mint, which is the whole
+# point of the closed vocabulary — the collisions are with unrelated
+# constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
+# Excusing the `Owner` site keeps each name's budget for a real duplicate.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
+    "profile crates/cfgd-core/src/reconciler/types.rs"
+    "module crates/cfgd-core/src/reconciler/types.rs"
+    "source crates/cfgd-core/src/reconciler/types.rs"
 )
 allowed_pairs_file=$(mktemp)
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -841,6 +848,28 @@ if [[ -f "$rel_wf" && -f "$pub_wf" ]]; then
     fi
 else
     log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
+fi
+
+# --- One owner comparator ---
+# `Owner::sort_key` is the single rule for which owner precedes which, and it is
+# applied exactly once — where a phase's groups are built. A second call site is
+# a second comparator: the plan preview, the `-o json` payload and the apply
+# transcript all read the same `Phase::groups`, so one of them ordering owners
+# for itself is how two surfaces come to disagree about who owns what.
+
+log_section "Owner ordering (one comparator)"
+
+owner_cmp_glob='!crates/cfgd-core/src/reconciler/types.rs'
+if oc=$(rg --type rust -n 'sort_key\(\)|groups\.sort' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob "$owner_cmp_glob" \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' \
+      2>/dev/null) && [ -n "$oc" ]; then
+  log_error "Second owner comparator (Owner::sort_key is applied only where Phase::from_actions builds the groups):"
+  echo "$oc"
+else
+  log_ok "Owner::sort_key applied at exactly one site"
 fi
 
 # --- Summary ---

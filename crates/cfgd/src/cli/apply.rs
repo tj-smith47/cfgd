@@ -160,7 +160,7 @@ pub fn run_apply(
     registry.set_system_config_dir(&config_dir);
 
     // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
-    let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
+    let phase_filter: Option<PhaseFilter> = args.phase.map(apply_phase_to_filter);
 
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
@@ -279,7 +279,7 @@ pub fn run_apply(
     let scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(&mut plan, skip, only);
+    filter_plan(&mut plan, skip, only, printer, &registry);
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {
@@ -339,9 +339,8 @@ pub fn run_apply(
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
         plan.phases.iter().any(|p| {
-            p.actions
-                .iter()
-                .any(|a| reconciler::action_matches_phase_filter(&p.name, a, pf))
+            p.owned_actions()
+                .any(|(owner, a)| reconciler::action_matches_phase_filter(&p.name, owner, a, pf))
         })
     } else {
         !plan.is_empty()
@@ -352,7 +351,7 @@ pub fn run_apply(
     // must not short-circuit here — that would silently starve backups of
     // the cadence "every apply" promises.
     if !has_actions && pending_backups.is_empty() {
-        report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
+        report_no_in_scope_actions(printer, &scope);
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }
@@ -372,29 +371,26 @@ pub fn run_apply(
         {
             let preview = printer.section("Plan preview");
             for phase_item in &plan.phases {
-                let items = reconciler::format_plan_items(phase_item);
-                let displayed: Vec<(&reconciler::Action, &String)> =
-                    if let Some(ref pf) = phase_filter {
-                        phase_item
-                            .actions
-                            .iter()
-                            .zip(items.iter())
-                            .filter(|(a, _)| {
-                                reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
-                            })
-                            .collect()
-                    } else {
-                        phase_item.actions.iter().zip(items.iter()).collect()
-                    };
+                let displayed: Vec<&reconciler::Action> = phase_item
+                    .owned_actions()
+                    .filter(|(owner, a)| match phase_filter {
+                        Some(ref pf) => {
+                            reconciler::action_matches_phase_filter(&phase_item.name, owner, a, pf)
+                        }
+                        None => true,
+                    })
+                    .map(|(_, a)| a)
+                    .collect();
                 if displayed.is_empty() {
                     continue;
                 }
-                let phase_sec = preview.section(phase_item.display_label());
-                for (action, item) in displayed {
-                    phase_sec.bullet(reconciler::display_action_desc_in_phase(
+                let phase_sec = preview.section(phase_item.name.display_name());
+                for action in displayed {
+                    // Display-only condensation: the raw body still reaches
+                    // the `-o json` payload through `build_plan_output`.
+                    phase_sec.bullet(reconciler::condense_action_desc_for_display(
                         action,
-                        item,
-                        phase_item.scope.as_ref(),
+                        &reconciler::format_plan_item(action),
                     ));
                 }
             }

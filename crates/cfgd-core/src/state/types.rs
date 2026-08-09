@@ -369,9 +369,13 @@ impl JournalEntry {
     /// the target path as the id and are captured via `action_target_path` —
     /// except the live-session refresh (`env:session:refresh`, id `"refresh"`),
     /// whose session-manager state has no backup to restore.
+    ///
+    /// Classification is by resource identity alone, never by the phase the row
+    /// was written under: a module's encryption/strategy skip journals in the
+    /// `files` phase without writing anything, so a phase term would report it
+    /// as restorable file work.
     pub fn is_file_work(&self) -> bool {
-        self.phase == "files"
-            || self.action_type == "file"
+        self.action_type == "file"
             || self.resource_id.starts_with("file:")
             || (self.action_type == "module" && self.resource_id.split(':').nth(1) == Some("files"))
             || (self.action_type == "env" && self.resource_id != "refresh")
