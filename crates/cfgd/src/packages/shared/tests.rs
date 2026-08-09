@@ -1131,6 +1131,71 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
     );
 }
 
+/// A caller-owned window prints nothing, so every diagnostic has to travel in
+/// the value the caller renders. The batch path used to discard the batch error
+/// AND each retry error, leaving the reconciler's one line reading
+/// `✗ brew install a, b — failed to install: a, b` with the cause erased.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_failed_caller_owned_batch_install_carries_every_cause() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_BATCH_FAIL_BIN",
+        1,
+        "",
+        "Error: no available formula with the name\n",
+    );
+    let bin = std::env::var("CFGD_BATCH_FAIL_BIN").expect("shim seam is set");
+
+    let notes = NoteSink::default();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let packages = vec!["nope-one".to_string(), "nope-two".to_string()];
+    let err = match install_batch_then_per_package(
+        &cx_for(&printer, &notes).caller_owns_status(),
+        "brew",
+        &packages,
+        |_| std::process::Command::new(&bin),
+    ) {
+        Err(e) => e,
+        Ok(()) => panic!("every shim invocation exits 1"),
+    };
+
+    let message = err.to_string();
+    for pkg in &packages {
+        assert!(
+            message.contains(pkg.as_str()),
+            "the error must name each package that failed: {message}"
+        );
+    }
+    assert!(
+        message.contains("no available formula with the name"),
+        "the underlying cause must survive into the caller's status line: {message}"
+    );
+    assert!(
+        !message.contains('\n'),
+        "a status subject may not carry an embedded newline: {message:?}"
+    );
+
+    let transcript = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&transcript).len(),
+        0,
+        "the caller still owns the one status line: {transcript}"
+    );
+    let retry_note = notes
+        .take()
+        .into_iter()
+        .find(|n| n.message.starts_with("batch install failed"))
+        .expect("the retry is announced as a note under the action's line");
+    assert!(
+        retry_note
+            .message
+            .contains("no available formula with the name"),
+        "the retry note must say why the batch failed: {}",
+        retry_note.message
+    );
+}
+
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]

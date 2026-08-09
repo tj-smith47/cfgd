@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{CommandOutput, Role};
+use cfgd_core::output::{CommandOutput, Role, collapse_to_subject_line};
 use cfgd_core::providers::{PackageContext, PostInstallNote};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
@@ -283,6 +283,52 @@ pub(super) fn run_pkg_query(
     })
 }
 
+/// Report the failure of a bootstrap step the chain is about to abandon.
+///
+/// A fallback chain tries methods until one works, so every step but the last
+/// has its exit status inspected and discarded — and the error the chain
+/// finally returns names only the method it stopped on. With the window
+/// collapsing silently under a caller-owned status, this is the one place the
+/// abandoned step's diagnostic survives.
+pub(super) fn report_abandoned_step(
+    cx: &PackageContext<'_>,
+    manager: &str,
+    method: &str,
+    output: &CommandOutput,
+) {
+    cx.report(
+        Role::Warn,
+        manager,
+        format!(
+            "{method} could not install {manager} ({}); trying the next method",
+            command_failure_reason(output)
+        ),
+    );
+}
+
+/// One line naming why a package command failed: its exit code, plus the stderr
+/// it produced when there is any.
+///
+/// The `CommandOutput` counterpart of `collapse_to_subject_line`, and the only
+/// place that shape is built. Two callers need it and neither may print a raw
+/// tail of its own: `run_pkg_cmd_live`, whose error IS the caller's status
+/// detail (a downstream branch also matches on its substring — snap's
+/// classic-confinement retry), and a fallback chain that inspects the exit
+/// status itself and reports the step it is about to abandon. Collapsed,
+/// because both destinations are a single status subject/detail and
+/// `Renderer::write_line` debug-asserts on an embedded newline. The exit code
+/// stays in the message so an operator can still tell "unknown failure" from a
+/// tool that exited non-zero saying nothing.
+pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
+    let code = output.status.code().unwrap_or(-1);
+    let stderr = collapse_to_subject_line(output.stderr.trim());
+    if stderr.is_empty() {
+        format!("exit code {code}")
+    } else {
+        format!("exit code {code}: {stderr}")
+    }
+}
+
 /// Run `cmd` through a live output window, letting the CONTEXT decide whether
 /// that window settles a status line of its own.
 ///
@@ -319,20 +365,7 @@ pub(super) fn run_pkg_cmd_live(
         source: e,
     })?;
     if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
-        // Surface stderr in the error message for parity with `run_pkg_cmd`
-        // (which already does this via `stderr_lossy_trimmed`). Without this,
-        // downstream branches that inspect `e.to_string()` for a substring
-        // (e.g., snap's classic-confinement retry) cannot read the upstream
-        // tool's actual diagnostic. The exit code stays in the message so
-        // operators can still distinguish "unknown failure" from a tool
-        // that exited cleanly without stderr output.
-        let stderr = output.stderr.trim();
-        let message = if stderr.is_empty() {
-            format!("exit code {}", code)
-        } else {
-            format!("exit code {}: {}", code, stderr)
-        };
+        let message = command_failure_reason(&output);
         return Err(match error_kind {
             "install" => PackageError::InstallFailed {
                 manager: manager.into(),
@@ -392,20 +425,30 @@ where
             if packages.len() == 1 {
                 return Err(e);
             }
+            // The batch failure is the reason the retry is happening AND the
+            // only place its diagnostic survives: a caller-owned window
+            // collapses without printing, and the error below names the
+            // packages that failed on their own, not why the batch did.
             cx.report(
                 Role::Warn,
                 manager,
-                "batch install failed; retrying each package individually",
+                format!(
+                    "batch install failed; retrying each package individually: {}",
+                    collapse_to_subject_line(&e)
+                ),
             );
         }
     }
 
+    // Each retry's cause travels into the returned error. Dropping it left the
+    // caller's one status line reading `failed to install: a, b` with nothing
+    // to act on, because the window that saw the stderr settled silently.
     let mut failed: Vec<String> = Vec::new();
     for pkg in packages {
         let label = format!("{} install {}", manager, pkg);
         let mut cmd = build_cmd(std::slice::from_ref(pkg));
-        if run_pkg_cmd_live(cx, manager, &mut cmd, &label, "install").is_err() {
-            failed.push(pkg.clone());
+        if let Err(e) = run_pkg_cmd_live(cx, manager, &mut cmd, &label, "install") {
+            failed.push(format!("{} ({})", pkg, collapse_to_subject_line(&e)));
         }
     }
 
@@ -414,7 +457,7 @@ where
     } else {
         Err(PackageError::InstallFailed {
             manager: manager.into(),
-            message: format!("failed to install: {}", failed.join(", ")),
+            message: format!("failed to install: {}", failed.join("; ")),
         })
     }
 }
@@ -584,6 +627,7 @@ pub(super) fn bootstrap_via_system_manager(
             if result.status.success() {
                 return Ok(());
             }
+            report_abandoned_step(cx, manager_name, cmd_name, &result);
         }
     }
     Err(PackageError::BootstrapFailed {
@@ -616,6 +660,7 @@ pub(super) fn bootstrap_via_brew_then_system(
         if result.status.success() {
             return Ok(true);
         }
+        report_abandoned_step(cx, manager_name, "brew", &result);
     }
 
     for cmd_name in ["apt-get", "dnf"] {
@@ -634,6 +679,7 @@ pub(super) fn bootstrap_via_brew_then_system(
             if result.status.success() {
                 return Ok(true);
             }
+            report_abandoned_step(cx, manager_name, cmd_name, &result);
         }
     }
 
@@ -664,7 +710,10 @@ pub(super) fn bootstrap_via_shell_script(
     if !result.status.success() {
         return Err(PackageError::BootstrapFailed {
             manager: manager_name.into(),
-            message: format!("{manager_name} install script failed"),
+            message: format!(
+                "{manager_name} install script failed: {}",
+                command_failure_reason(&result)
+            ),
         }
         .into());
     }

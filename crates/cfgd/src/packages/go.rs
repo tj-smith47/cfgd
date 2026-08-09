@@ -11,7 +11,7 @@ use cfgd_core::providers::PackageManager;
 
 use super::shared::{
     any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd, pkg_run,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
+    report_abandoned_step, resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
@@ -66,6 +66,7 @@ impl PackageManager for GoInstallManager {
             if result.status.success() {
                 return Ok(());
             }
+            report_abandoned_step(cx, "go", "brew", &result);
         }
 
         bootstrap_via_system_manager(cx, "golang", "go")

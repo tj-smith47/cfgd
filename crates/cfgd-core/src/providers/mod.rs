@@ -303,10 +303,14 @@ pub trait SystemConfigurator: Send + Sync {
 
     /// Apply desired state.
     ///
-    /// The CALLER owns the action's status line: the reconciler settles one
-    /// `system:<name>.<key>` line for this call from the plan. A shell-out here
-    /// therefore goes through [`Printer::run_silent`] — [`Printer::run`] settles
-    /// the window's own line too, rendering the same work twice.
+    /// The CALLER owns the action's SETTLED status line: the reconciler emits
+    /// one `system:<name>.<key>` line for this call, from the plan. A shell-out
+    /// here therefore goes through [`Printer::run_silent`] — [`Printer::run`]
+    /// settles the window's own line too, rendering the same action twice.
+    ///
+    /// Informational lines of a configurator's own are unaffected: a
+    /// per-key notice at the inherited depth is body text under that action,
+    /// not a competing claim on the action's outcome.
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()>;
 
     /// Provide the active config directory so a configurator can resolve

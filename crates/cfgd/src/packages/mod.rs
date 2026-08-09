@@ -319,7 +319,7 @@ pub fn apply_packages(
             PackageAction::Skip {
                 manager, reason, ..
             } => {
-                cx.report(Role::Warn, manager, format!("{}: {}", manager, reason));
+                cx.report(Role::Warn, manager, reason);
             }
         }
     }

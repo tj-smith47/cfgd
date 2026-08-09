@@ -10,8 +10,8 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, pkg_run, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver,
+    bootstrap_via_brew_then_system, brew_available, pkg_run, report_abandoned_step,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
@@ -516,6 +516,7 @@ impl PackageManager for NpmManager {
             if result.status.success() {
                 return Ok(());
             }
+            report_abandoned_step(cx, "npm", "nvm", &result);
         }
 
         Err(PackageError::BootstrapFailed {
@@ -543,7 +544,7 @@ impl PackageManager for NpmManager {
         if let Some(prefix) = decision.fallback_prefix() {
             ensure_npm_fallback_prefix(prefix)?;
             cx.report(
-                Role::Warn,
+                Role::Info,
                 "npm",
                 format!(
                     "npm has no writable global prefix; installing into {} — add {} to PATH",

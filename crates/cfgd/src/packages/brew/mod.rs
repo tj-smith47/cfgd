@@ -12,8 +12,8 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
-    brew_available, brew_cmd, brew_path_dirs, install_batch_then_per_package, pkg_run, run_pkg_cmd,
-    run_pkg_cmd_live,
+    brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
+    install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live,
 };
 
 pub struct BrewManager;
@@ -287,7 +287,10 @@ impl PackageManager for BrewManager {
             if !result.status.success() {
                 return Err(PackageError::BootstrapFailed {
                     manager: "brew".into(),
-                    message: "homebrew install script failed".into(),
+                    message: format!(
+                        "homebrew install script failed: {}",
+                        command_failure_reason(&result)
+                    ),
                 }
                 .into());
             }
@@ -309,7 +312,10 @@ impl PackageManager for BrewManager {
             if !result.status.success() {
                 return Err(PackageError::BootstrapFailed {
                     manager: "brew".into(),
-                    message: "homebrew install script failed".into(),
+                    message: format!(
+                        "homebrew install script failed: {}",
+                        command_failure_reason(&result)
+                    ),
                 }
                 .into());
             }
