@@ -183,8 +183,11 @@ fn rollup_lines_covers_every_apply_status() {
     );
 }
 
+/// A completed run names itself, so the header and the rollup cannot disagree
+/// about what ran. Only the `Success` arm is titled — `Partial` splits into two
+/// bare count lines, which is the shape every mock of a partial run shows.
 #[test]
-fn rollup_titles_every_line_with_the_run_name() {
+fn a_completed_rollup_names_the_run_it_finished() {
     for (title, expected) in [
         (RunTitle::Apply, "Apply complete"),
         (RunTitle::Reconcile, "Reconcile complete"),
@@ -198,12 +201,27 @@ fn rollup_titles_every_line_with_the_run_name() {
             aborted: None,
         };
         let lines = rollup_lines(&tally, title);
+        assert_eq!(lines.len(), 1, "{title:?} success rollup is one line");
         assert!(
             lines[0].1.starts_with(expected),
             "{title:?} rollup reads {:?}",
             lines[0].1
         );
     }
+
+    let partial = RunTally {
+        succeeded: 1,
+        failed: 1,
+        planned_total: 2,
+        status: ApplyStatus::Partial,
+        aborted: None,
+    };
+    let lines = rollup_lines(&partial, RunTitle::Apply);
+    assert_eq!(lines.len(), 2, "a partial rollup splits into two lines");
+    assert!(
+        lines.iter().all(|(_, line)| !line.contains("Apply")),
+        "a partial rollup carries bare counts, not a titled verdict: {lines:?}"
+    );
 }
 
 /// The abort sentence is the CLI's, verbatim and lowercase, and it is the only
@@ -426,11 +444,14 @@ fn reconciler_planned_total(plan: &Plan, filter: Option<&PhaseFilter>) -> usize 
         .sum()
 }
 
-/// One carrier per run: an executing run states the count in its header, a
-/// preview-only run does not (its verdict line owns it), and a run with no
-/// in-scope work states it nowhere.
+/// One carrier per run, judged at the header — the only carrier this crate
+/// renders. An executing run states the count in its header, a preview-only run
+/// does not (its caller's verdict line owns it), and a run with no in-scope work
+/// states it nowhere. That the other carrier appears exactly when this one does
+/// not is pinned end-to-end by `plan/happy.txt` (footer, no `Actions` row) and
+/// `apply/happy.txt` (`Actions` row, no footer).
 #[test]
-fn the_planned_count_appears_once_per_run() {
+fn the_header_carries_the_planned_count_only_for_an_executing_run() {
     let plan = plan_of(vec![phase(PhaseName::Files, vec![create("/tmp/one")])]);
     let render = |run: ApplyRun<'_>| {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -700,6 +721,28 @@ fn a_backups_run_with_no_units_does_nothing() {
         !out.contains("planned"),
         "no units, no Actions row: {out:?}"
     );
+}
+
+/// `execute` on a `backups()` run has no plan action to run, but it is not a
+/// run that did nothing — its disposition has to say which.
+#[test]
+fn execute_on_a_backups_run_reports_the_work_it_did() {
+    let store = crate::state::StateStore::open_in_memory().unwrap();
+    let units: Vec<crate::backup::BackupUnit<'_>> = Vec::new();
+    let run = ApplyRun::backups(ctx(RunTitle::Backup), &units, &store);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    let mut exec = StubExecutor::new(apply_result(9, 0, ApplyStatus::Success, 9));
+    let disposition = run.execute(&printer, Confirm::Skip, &mut exec).unwrap();
+    drop(printer);
+
+    assert!(
+        matches!(
+            disposition,
+            RunDisposition::BackupsApplied(ApplyStatus::Success)
+        ),
+        "a backups run that executed must not report NothingToDo"
+    );
+    assert_eq!(exec.calls, 0, "a backups run runs no plan action");
 }
 
 // --- pseudo-phase ---

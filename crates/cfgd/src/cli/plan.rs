@@ -39,22 +39,23 @@ pub fn cmd_plan(
 
     // Load config and profile — same pattern as cmd_apply. The header these
     // rows belong to is rendered once the plan is final, so the profile label
-    // is carried down rather than printed here.
+    // is carried down rather than printed here. A module-only run resolved no
+    // profile, so it carries none and the header omits the row.
     let (cfg, resolved, profile_label) = if let Some(mod_name) = module_filter {
         match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => (cfg, resolved, profile_name),
+            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name)),
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved =
                     empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                (cfg, resolved, "(module-only)".to_string())
+                (cfg, resolved, None)
             }
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        (cfg, resolved, profile_name)
+        (cfg, resolved, Some(profile_name))
     };
 
     let mut registry = build_registry_with_config(Some(&cfg));
@@ -177,7 +178,7 @@ pub fn cmd_plan(
         reconciler::RunContext {
             title: reconciler::RunTitle::Plan,
             config_path: Some(&cli.config),
-            profile: Some(&profile_label),
+            profile: profile_label.as_deref(),
             modules: &module_names,
             trigger: None,
         },

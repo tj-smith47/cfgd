@@ -505,6 +505,12 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 `cfgd plan` shows module actions in the phase whose kind they are, with resolved managers and file deployments:
 
 ```
+Plan
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  work
+  Modules  nvim
+  Phases   Packages, Files, Post-Scripts
+
 Phase: Packages
   profile:work
     - brew install extra-tool
@@ -524,6 +530,8 @@ Phase: Post-Scripts
   module:nvim
     - postApply: nvim --headless "+Lazy! sync" +qa
     - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
+
+⊙ 9 action(s) planned
 ```
 
 Each phase groups its actions by the owner that declared them — `profile:<name>`

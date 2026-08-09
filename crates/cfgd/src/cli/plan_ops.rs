@@ -359,21 +359,8 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 
 /// The phase → owner → action tree for a plan whose run header the caller has
 /// already rendered (or does not have one to render).
-///
-/// A thin view over the single tree renderer so a call site holding nothing but
-/// a plan does not have to assemble a run context it has no rows for.
 pub(in crate::cli) fn display_plan_table(plan: &reconciler::Plan, printer: &Printer) {
-    reconciler::ApplyRun::new(
-        reconciler::RunContext {
-            title: reconciler::RunTitle::Apply,
-            config_path: None,
-            profile: None,
-            modules: &[],
-            trigger: None,
-        },
-        plan,
-    )
-    .preview(printer);
+    reconciler::render_plan_tree(plan, None, printer);
 }
 
 /// Pre-filter snapshot of a plan's scope, captured *before* `--skip`/`--only`

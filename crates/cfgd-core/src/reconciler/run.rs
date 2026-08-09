@@ -79,6 +79,10 @@ pub enum RunDisposition {
     Previewed,
     Declined,
     Applied(ApplyResult),
+    /// A run built by [`ApplyRun::backups`] did its work. Nothing it ran was a
+    /// plan action, so there is no [`ApplyResult`] to carry — only the status
+    /// the `Backups` pseudo-phase rolled up.
+    BackupsApplied(ApplyStatus),
 }
 
 /// What [`ApplyRun::execute`] delegates the actual work to. One method, so the
@@ -252,7 +256,10 @@ impl<'a> ApplyRun<'a> {
     /// a plan it is the in-scope predicate over the plan and the filter, the
     /// same predicate `Reconciler::apply` uses for its own `planned_total`,
     /// which is what makes the two reconcilable afterwards, plus one per
-    /// pending backup unit. With no plan it is the pending backup units alone.
+    /// pending backup item. With no plan it is the pending backup items alone.
+    /// A backup item is one hook entry or one unit's snapshot; see
+    /// [`ApplyRun::pending_backup_count`] for what the engine can enumerate
+    /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
         let mut rows: Vec<(String, String)> = Vec::new();
         if let Some(path) = self.ctx.config_path {
@@ -267,7 +274,15 @@ impl<'a> ApplyRun<'a> {
         if let Some(trigger) = self.ctx.trigger {
             rows.push(("Trigger".to_string(), trigger.to_string()));
         }
-        let phases = self.rendered_phase_names();
+        // The `Phases` row names exactly the blocks the tree will print, so it
+        // is read off the tree rather than recomputed from the plan.
+        let phases: Vec<&str> = self
+            .plan
+            .map(|plan| in_scope_tree(plan, self.filter))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(phase, _)| phase.name.display_name())
+            .collect();
         if !phases.is_empty() {
             rows.push(("Phases".to_string(), phases.join(", ")));
         }
@@ -298,36 +313,10 @@ impl<'a> ApplyRun<'a> {
     /// No footer of its own — the count is the header's `Actions` row for an
     /// executing run and part of the caller's verdict line for a preview-only
     /// one, so a tree rendered above a confirmation prompt carries no count at
-    /// all. The ONE tree renderer.
+    /// all. The run's view over [`render_plan_tree`].
     pub fn preview(&self, printer: &Printer) {
-        let Some(plan) = self.plan else {
-            return;
-        };
-        for phase in &plan.phases {
-            let groups = self.in_scope_groups(phase);
-            if groups.is_empty() {
-                continue;
-            }
-            let phase_section = printer.section(format!("Phase: {}", phase.name.display_name()));
-            for (group, actions) in groups {
-                let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
-                let owner_section = phase_section.section_owner(&label);
-                let items = format_plan_items(group);
-                for (index, action) in actions {
-                    let item = condense_action_desc_for_display(action, &items[index]);
-                    // An unknown system key is almost always a typo, so it
-                    // keeps its warning role instead of reading as ordinary
-                    // planned work.
-                    if matches!(
-                        action,
-                        Action::System(SystemAction::Skip { unknown: true, .. })
-                    ) {
-                        owner_section.status_simple(Role::Warn, item);
-                    } else {
-                        owner_section.bullet(item);
-                    }
-                }
-            }
+        if let Some(plan) = self.plan {
+            render_plan_tree(plan, self.filter, printer);
         }
     }
 
@@ -345,10 +334,9 @@ impl<'a> ApplyRun<'a> {
             // A run built by `backups()` has no plan action to execute; its
             // whole body is the pseudo-phase.
             return match &self.backups {
-                Some(_) => {
-                    self.execute_backups_after_header(printer)?;
-                    Ok(RunDisposition::NothingToDo)
-                }
+                Some(_) => Ok(RunDisposition::BackupsApplied(
+                    self.execute_backups_after_header(printer)?,
+                )),
                 None => Ok(RunDisposition::NothingToDo),
             };
         };
@@ -449,43 +437,16 @@ impl<'a> ApplyRun<'a> {
         Ok(tally)
     }
 
-    /// The groups of `phase` that hold in-scope work, each paired with the
-    /// positions of its in-scope actions. `PhaseName::Modules` renders no
-    /// heading at all — the phase is not empty, it holds platform-gated skips,
-    /// and those are an annotation on the header's `Modules` row rather than a
-    /// tree block.
-    fn in_scope_groups<'p>(
-        &self,
-        phase: &'p Phase,
-    ) -> Vec<(&'p OwnerGroup, Vec<(usize, &'p Action)>)> {
-        if phase.name == PhaseName::Modules {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        for group in phase.groups() {
-            let actions: Vec<(usize, &Action)> = group
-                .actions
-                .iter()
-                .enumerate()
-                .filter(|(_, action)| self.in_scope(&phase.name, &group.owner, action))
-                .collect();
-            if !actions.is_empty() {
-                out.push((group, actions));
-            }
-        }
-        out
-    }
-
-    fn in_scope(&self, phase: &PhaseName, owner: &Owner, action: &Action) -> bool {
-        match self.filter {
-            Some(filter) => action_matches_phase_filter(phase, owner, action, filter),
-            None => true,
-        }
-    }
-
     /// The same in-scope predicate `Reconciler::apply` counts its own
     /// `planned_total` with, so the header's number and the rollup's are
     /// reconcilable rather than two independent guesses.
+    ///
+    /// Deliberately its own walk rather than a `len()` over [`in_scope_tree`]:
+    /// the tree drops `PhaseName::Modules` because that phase renders no block,
+    /// while `Reconciler::apply` counts its skips like any other action. Taking
+    /// the count off the tree would under-report every run holding a
+    /// platform-gated module skip, and the rollup would then always report a
+    /// shortfall that did not happen.
     fn in_scope_action_count(&self) -> usize {
         let Some(plan) = self.plan else {
             return 0;
@@ -504,6 +465,14 @@ impl<'a> ApplyRun<'a> {
             .sum()
     }
 
+    /// The `Backups` pseudo-phase's item count: one per hook entry plus one
+    /// snapshot per unit.
+    ///
+    /// The value is one per unit, which is the snapshot each unit is certain to
+    /// attempt. A unit's hook entries are known only from the record the engine
+    /// returns after the unit runs, so they are not addable to a number the
+    /// header prints before it; counting a hook here would name work the run
+    /// might never reach.
     fn pending_backup_count(&self) -> usize {
         self.backups.as_ref().map_or(0, |p| p.units.len())
     }
@@ -511,17 +480,76 @@ impl<'a> ApplyRun<'a> {
     fn planned_count(&self) -> usize {
         self.in_scope_action_count() + self.pending_backup_count()
     }
+}
 
-    /// The phases the tree will actually render, in plan order.
-    fn rendered_phase_names(&self) -> Vec<&str> {
-        let Some(plan) = self.plan else {
-            return Vec::new();
-        };
-        plan.phases
-            .iter()
-            .filter(|phase| !self.in_scope_groups(phase).is_empty())
-            .map(|phase| phase.name.display_name())
-            .collect()
+/// One owner group's in-scope actions, each paired with its position in the
+/// group — the index is what pairs an action back to its `format_plan_items`
+/// line, which is rendered per group rather than per action.
+type ScopedGroup<'p> = (&'p OwnerGroup, Vec<(usize, &'p Action)>);
+
+/// One phase's renderable block: the phase, and every group in it holding
+/// in-scope work.
+type ScopedPhase<'p> = (&'p Phase, Vec<ScopedGroup<'p>>);
+
+/// The phases and groups that hold in-scope work, in plan order.
+///
+/// `PhaseName::Modules` yields nothing: the phase is not empty, it holds
+/// platform-gated skips, and those are an annotation on the header's `Modules`
+/// row rather than a tree block.
+fn in_scope_tree<'p>(plan: &'p Plan, filter: Option<&PhaseFilter>) -> Vec<ScopedPhase<'p>> {
+    let mut tree = Vec::new();
+    for phase in &plan.phases {
+        if phase.name == PhaseName::Modules {
+            continue;
+        }
+        let mut groups = Vec::new();
+        for group in phase.groups() {
+            let actions: Vec<(usize, &Action)> = group
+                .actions
+                .iter()
+                .enumerate()
+                .filter(|(_, action)| match filter {
+                    Some(f) => action_matches_phase_filter(&phase.name, &group.owner, action, f),
+                    None => true,
+                })
+                .collect();
+            if !actions.is_empty() {
+                groups.push((group, actions));
+            }
+        }
+        if !groups.is_empty() {
+            tree.push((phase, groups));
+        }
+    }
+    tree
+}
+
+/// The phase → owner → action tree, as bullets. The ONE tree renderer.
+///
+/// Free rather than an [`ApplyRun`] method so a caller holding nothing but a
+/// plan reaches it without inventing a [`RunContext`] whose every row would be
+/// empty — a fabricated context is a header waiting to be printed by accident.
+pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Printer) {
+    for (phase, groups) in in_scope_tree(plan, filter) {
+        let phase_section = printer.section(format!("Phase: {}", phase.name.display_name()));
+        for (group, actions) in groups {
+            let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
+            let owner_section = phase_section.section_owner(&label);
+            let items = format_plan_items(group);
+            for (index, action) in actions {
+                let item = condense_action_desc_for_display(action, &items[index]);
+                // An unknown system key is almost always a typo, so it keeps
+                // its warning role instead of reading as ordinary planned work.
+                if matches!(
+                    action,
+                    Action::System(SystemAction::Skip { unknown: true, .. })
+                ) {
+                    owner_section.status_simple(Role::Warn, item);
+                } else {
+                    owner_section.bullet(item);
+                }
+            }
+        }
     }
 }
 

@@ -161,22 +161,23 @@ pub fn run_apply(
     // When --module is set, try loading profile but fall back to empty if none
     // configured. The header these rows belong to is rendered once the plan is
     // final — it states the phase and action counts — so the profile label is
-    // carried down rather than printed here.
+    // carried down rather than printed here. A module-only run resolved no
+    // profile, so it carries none and the header omits the row.
     let (cfg, resolved, profile_label) = if let Some(mod_name) = module_filter {
         match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => (cfg, resolved, profile_name),
+            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name)),
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved =
                     empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                (cfg, resolved, "(module-only)".to_string())
+                (cfg, resolved, None)
             }
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        (cfg, resolved, profile_name)
+        (cfg, resolved, Some(profile_name))
     };
 
     // Open state only after config discovery so a missing config (or an
@@ -330,7 +331,7 @@ pub fn run_apply(
     let run_ctx = |title| reconciler::RunContext {
         title,
         config_path: Some(cli.config.as_path()),
-        profile: Some(profile_label.as_str()),
+        profile: profile_label.as_deref(),
         modules: &module_names,
         trigger: None,
     };
@@ -443,10 +444,12 @@ pub fn run_apply(
             printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
             return Ok(ApplyOutcome::success());
         }
-        // Neither arm is reachable for a run carrying a plan and no
-        // `preview_only`, and both mean "no actions ran", which is what
+        // None of these are reachable for a run carrying a plan and no
+        // `preview_only`, and none of them ran a plan action, which is what
         // the nothing-to-do exit already reports.
-        reconciler::RunDisposition::NothingToDo | reconciler::RunDisposition::Previewed => {
+        reconciler::RunDisposition::NothingToDo
+        | reconciler::RunDisposition::Previewed
+        | reconciler::RunDisposition::BackupsApplied(_) => {
             return Ok(ApplyOutcome::success());
         }
     };
