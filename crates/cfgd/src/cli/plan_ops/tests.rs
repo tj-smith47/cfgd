@@ -793,21 +793,32 @@ fn build_plan_output_counts_actions_and_sets_context() {
     assert_eq!(output.total_actions, 3);
     assert_eq!(output.phases.len(), 2);
     let files_phase = output.phases.iter().find(|p| p.phase == "Files").unwrap();
-    assert_eq!(files_phase.actions.len(), 2);
+    let files_actions = phase_actions(files_phase);
+    assert_eq!(files_actions.len(), 2);
     assert!(
-        files_phase
-            .actions
-            .iter()
-            .any(|a| a.action_type == "create"),
+        files_actions.iter().any(|a| a.action_type == "create"),
         "expected create action type"
     );
     assert!(
-        files_phase
-            .actions
-            .iter()
-            .any(|a| a.action_type == "update"),
+        files_actions.iter().any(|a| a.action_type == "update"),
         "expected update action type"
     );
+}
+
+/// Every action a phase holds, flattened across its owner groups — for the
+/// assertions that are about the action set rather than about the grouping.
+fn phase_actions(phase: &PlanPhaseOutput) -> Vec<&PlanActionOutput> {
+    phase.groups.iter().flat_map(|g| &g.actions).collect()
+}
+
+/// [`phase_actions`] on the serialized wire form.
+fn json_phase_actions(json: &serde_json::Value, phase: usize) -> Vec<&serde_json::Value> {
+    json["phases"][phase]["groups"]
+        .as_array()
+        .expect("groups is an array")
+        .iter()
+        .flat_map(|g| g["actions"].as_array().expect("actions is an array"))
+        .collect()
 }
 
 #[test]
@@ -829,7 +840,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
 }
 
 #[test]
-fn build_plan_output_names_the_kind_phase_and_carries_no_module_key() {
+fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
     let plan = make_plan_from_phases(vec![module_phase(
         PhaseName::PostScripts,
         vec![module_run_script()],
@@ -844,6 +855,77 @@ fn build_plan_output_names_the_kind_phase_and_carries_no_module_key() {
     assert!(
         phase.get("module").is_none() && phase.get("section").is_none(),
         "a phase is no longer scoped to one module: {phase}"
+    );
+    // The module identity the removed `module` key used to carry now rides on
+    // the group that owns the action, where it also names the action's owner.
+    assert_eq!(
+        phase["groups"][0]["owner"],
+        serde_json::json!({"kind": "module", "name": "dev-tools"}),
+        "the module owns its group: {phase}"
+    );
+    assert_eq!(
+        phase["groups"][0]["token"],
+        serde_json::json!("module:dev-tools")
+    );
+}
+
+#[test]
+fn build_plan_output_orders_groups_profile_first() {
+    // The payload's group order IS `Owner::sort_key`'s, so a consumer that
+    // renders the payload reproduces the tree's ordering. The actions are
+    // handed to the phase module-first to prove the order is the comparator's
+    // rather than insertion order's.
+    let plan = make_plan_from_phases(vec![Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("work"),
+        vec![
+            module_install(),
+            pkg_bootstrap(),
+            pkg_install("apt", vec!["sl"]),
+        ],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
+
+    assert_eq!(
+        output.phases[0]
+            .groups
+            .iter()
+            .map(|g| g.token.as_str())
+            .collect::<Vec<_>>(),
+        vec!["profile:work", "cfgd:managers", "module:dev-tools"],
+    );
+    for group in &output.phases[0].groups {
+        assert_eq!(
+            group.token,
+            group.owner.token(),
+            "token must be the group owner's own rendering"
+        );
+    }
+}
+
+#[test]
+fn no_bootstrap_means_no_managers_group_in_the_payload() {
+    // The `cfgd:managers` group exists only where a bootstrap does: a plan of
+    // ordinary installs leaves the payload with the profile's group alone, so
+    // a consumer never sees an empty manager group to special-case.
+    let plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![pkg_install("apt", vec!["sl"])],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None, &[]);
+
+    assert_eq!(
+        output.phases[0]
+            .groups
+            .iter()
+            .map(|g| g.token.as_str())
+            .collect::<Vec<_>>(),
+        vec!["profile:test"],
+    );
+    let json = serde_json::to_value(&output).unwrap();
+    assert!(
+        !json.to_string().contains("cfgd:managers"),
+        "no bootstrap planned, so no managers group anywhere in the payload: {json}"
     );
 }
 
@@ -884,7 +966,7 @@ fn build_plan_output_carries_source_module_origin() {
     )]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
 
-    let actions = &output.phases[0].actions;
+    let actions = phase_actions(&output.phases[0]);
     let sourced = actions
         .iter()
         .find(|a| a.description.contains(" <- acme"))
@@ -900,7 +982,7 @@ fn build_plan_output_carries_source_module_origin() {
     // The wire form omits origin for the local action and includes it for
     // the source-delivered one (serde camelCase + skip_serializing_if=None).
     let json = serde_json::to_value(&output).unwrap();
-    let acts = json["phases"][0]["actions"].as_array().unwrap();
+    let acts = json_phase_actions(&json, 0);
     assert!(
         acts.iter()
             .any(|a| a["origin"] == serde_json::json!("acme")),
@@ -921,7 +1003,7 @@ fn build_plan_output_local_only_omits_all_origins() {
     )]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
     for phase in &output.phases {
-        for action in &phase.actions {
+        for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
             assert!(
                 !action.description.contains(" <- "),
@@ -930,7 +1012,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         }
     }
     let json = serde_json::to_value(&output).unwrap();
-    let acts = json["phases"][0]["actions"].as_array().unwrap();
+    let acts = json_phase_actions(&json, 0);
     assert!(
         acts.iter().all(|a| a.get("origin").is_none()),
         "no origin key expected in local-only json: {json}"
@@ -961,7 +1043,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
 
-    let desc = &output.phases[0].actions[0].description;
+    let desc = &output.phases[0].groups[0].actions[0].description;
     assert!(
         desc.contains(raw_body),
         "PlanActionOutput.description must preserve the raw multi-line body byte-identical, got: {desc}"
@@ -986,7 +1068,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
     let output = build_plan_output(&plan, "ctx", None, &[]);
 
-    let desc = &output.phases[0].actions[0].description;
+    let desc = &output.phases[0].groups[0].actions[0].description;
     assert!(
         desc.contains(raw_body),
         "PlanActionOutput.description must preserve a MODULE script's raw multi-line body byte-identical, got: {desc}"
@@ -1927,10 +2009,11 @@ fn platform_skip_survives_in_the_plan_payload() {
         .iter()
         .find(|p| p.phase == "Modules")
         .expect("the Modules phase survives in the payload");
-    assert_eq!(modules.actions.len(), 1);
-    assert_eq!(modules.actions[0].action_type, "skip");
+    let modules_actions = phase_actions(modules);
+    assert_eq!(modules_actions.len(), 1);
+    assert_eq!(modules_actions[0].action_type, "skip");
     assert_eq!(
-        modules.actions[0].description, "skip: platform not matched (requires: windows)",
+        modules_actions[0].description, "skip: platform not matched (requires: windows)",
         "the reason is the action's own string, byte-for-byte"
     );
 

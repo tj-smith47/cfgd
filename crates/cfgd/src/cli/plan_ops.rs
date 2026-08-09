@@ -273,25 +273,40 @@ pub(in crate::cli) fn build_plan_output(
 ) -> PlanOutput {
     let mut phases = Vec::new();
     for phase_item in &plan.phases {
-        let actions: Vec<PlanActionOutput> = phase_item
-            .owned_actions()
-            .filter(|(owner, action)| in_phase_scope(phase_item, owner, action, phase_filter))
-            .map(|(_, action)| PlanActionOutput {
-                description: reconciler::format_plan_item(action),
-                action_type: action_type_str(action).to_string(),
-                targets: action_targets(action),
-                origin: action_origin(action),
-            })
-            .collect();
-        if actions.is_empty() {
+        // Walking `groups()` rather than the flat action list is what gives the
+        // payload the tree's owner axis: group order here IS `Owner::sort_key`
+        // order, because the phase can hold its groups in no other order.
+        let mut groups: Vec<PlanGroupOutput> = Vec::new();
+        for group in phase_item.groups() {
+            let actions: Vec<PlanActionOutput> = group
+                .actions
+                .iter()
+                .filter(|action| in_phase_scope(phase_item, &group.owner, action, phase_filter))
+                .map(|action| PlanActionOutput {
+                    description: reconciler::format_plan_item(action),
+                    action_type: action_type_str(action).to_string(),
+                    targets: action_targets(action),
+                    origin: action_origin(action),
+                })
+                .collect();
+            if actions.is_empty() {
+                continue;
+            }
+            groups.push(PlanGroupOutput::new(group.owner.clone(), actions));
+        }
+        if groups.is_empty() {
             continue;
         }
         phases.push(PlanPhaseOutput {
             phase: phase_item.name.display_name().to_string(),
-            actions,
+            groups,
         });
     }
-    let total_actions = phases.iter().map(|p| p.actions.len()).sum();
+    let total_actions = phases
+        .iter()
+        .flat_map(|p| &p.groups)
+        .map(|g| g.actions.len())
+        .sum();
     PlanOutput {
         context: context_name.to_string(),
         phases,

@@ -191,15 +191,35 @@ replacement. Skipping a bootstrap leaves the installs that needed it in the
 plan; cfgd warns and prints the `--skip packages.<manager>` flags that would
 drop those too.
 
+The `-o json` payload carries the same axes the tree draws: a phase holds owner
+groups, each group holds its actions. `token` is the rendered owner label, so a
+consumer never rebuilds the `kind:name` grammar itself, and groups arrive in the
+same order the tree prints them (`profile` before `cfgd` before `module` before
+`backup` before `source`, then by name).
+
 ```jsonc
-// cfgd plan -o json  →  phases[]
+// cfgd plan -o json  →  phases[].groups[]
 {
-  "phase": "Packages",          // the filter identity; module work routes here too
-  "actions": [
-    { "type": "install", "description": "brew install ripgrep, fd <- team", "origin": "team" }
+  "phase": "Packages",              // the kind phase; module work routes here too
+  "groups": [
+    {
+      "owner": { "kind": "module", "name": "dev-tools" },
+      "token": "module:dev-tools",  // exactly what the tree prints
+      "actions": [
+        { "type": "install", "description": "brew install ripgrep, fd <- team", "origin": "team" }
+      ]
+    }
   ]
 }
 ```
+
+Actions moved one level down, and a phase's module identity is now the group's
+owner rather than a `module`/`section` key on the phase:
+
+| Before | Now |
+|---|---|
+| `jq '.phases[].actions[]'` | `jq '.phases[].groups[].actions[]'` |
+| `jq '.phases[] \| select(.module=="nvim")'` | `jq '.phases[].groups[] \| select(.owner.name=="nvim")'` |
 
 ### `cfgd status`
 

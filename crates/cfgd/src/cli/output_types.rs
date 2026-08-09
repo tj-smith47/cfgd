@@ -193,7 +193,40 @@ pub struct PlanOutput {
 #[serde(rename_all = "camelCase")]
 pub struct PlanPhaseOutput {
     pub phase: String,
+    /// The phase's owner groups, in `Owner::sort_key` order — the same order
+    /// and the same grouping the human tree draws, so a consumer that renders
+    /// the payload reproduces the CLI's ordering without a comparator of its
+    /// own. Never empty: a phase whose every group was filtered away is
+    /// dropped from `phases[]`.
+    pub groups: Vec<PlanGroupOutput>,
+}
+
+/// One owner's slice of a phase: who declared the work, plus the actions.
+///
+/// `owner` is the reconciler's own [`cfgd_core::reconciler::Owner`], so the
+/// wire's `kind` vocabulary cannot drift from the one the planner assigns, and
+/// `token` is [`cfgd_core::reconciler::Owner::token`]'s rendering of it — the
+/// exact string the tree prints, carried so a consumer never re-implements the
+/// `kind:name` grammar.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanGroupOutput {
+    pub owner: cfgd_core::reconciler::Owner,
+    pub token: String,
     pub actions: Vec<PlanActionOutput>,
+}
+
+impl PlanGroupOutput {
+    /// Build a group from its owner, keeping `token` derived rather than
+    /// supplied — the two fields describe one owner and cannot be given
+    /// disagreeing values.
+    pub fn new(owner: cfgd_core::reconciler::Owner, actions: Vec<PlanActionOutput>) -> Self {
+        Self {
+            token: owner.token(),
+            owner,
+            actions,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -971,12 +1004,15 @@ mod tests {
             context: "default".to_string(),
             phases: vec![PlanPhaseOutput {
                 phase: "pre".to_string(),
-                actions: vec![PlanActionOutput {
-                    description: "install pkg".to_string(),
-                    action_type: "package".to_string(),
-                    targets: vec![],
-                    origin: None,
-                }],
+                groups: vec![PlanGroupOutput::new(
+                    cfgd_core::reconciler::Owner::profile("work"),
+                    vec![PlanActionOutput {
+                        description: "install pkg".to_string(),
+                        action_type: "package".to_string(),
+                        targets: vec![],
+                        origin: None,
+                    }],
+                )],
             }],
             total_actions: 1,
             warnings: vec![],
@@ -996,7 +1032,8 @@ mod tests {
         let phases = json["phases"].as_array().expect("phases is array");
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0]["phase"], json!("pre"));
-        let actions = phases[0]["actions"].as_array().expect("actions is array");
+        let groups = phases[0]["groups"].as_array().expect("groups is array");
+        let actions = groups[0]["actions"].as_array().expect("actions is array");
         assert_eq!(actions[0]["description"], json!("install pkg"));
     }
 
@@ -1027,19 +1064,35 @@ mod tests {
     }
 
     #[test]
-    fn plan_phase_output_emits_phase_name_and_actions_array() {
+    fn plan_phase_output_emits_phase_name_and_owner_groups() {
         let v = PlanPhaseOutput {
             phase: "main".to_string(),
-            actions: vec![PlanActionOutput {
-                description: "render file".to_string(),
-                action_type: "file".to_string(),
-                targets: vec!["/etc/hosts".to_string()],
-                origin: None,
-            }],
+            groups: vec![PlanGroupOutput::new(
+                cfgd_core::reconciler::Owner::module("nvim"),
+                vec![PlanActionOutput {
+                    description: "render file".to_string(),
+                    action_type: "file".to_string(),
+                    targets: vec!["/etc/hosts".to_string()],
+                    origin: None,
+                }],
+            )],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["phase"], json!("main"));
-        let actions = json["actions"].as_array().expect("actions is array");
+        let groups = json["groups"].as_array().expect("groups is array");
+        assert_eq!(groups.len(), 1);
+        // The wire vocabulary of `owner`, pinned here so a rename inside the
+        // reconciler's `Owner` cannot silently reshape the `-o json` payload.
+        assert_eq!(
+            groups[0]["owner"],
+            json!({"kind": "module", "name": "nvim"})
+        );
+        assert_eq!(
+            groups[0]["token"],
+            json!("module:nvim"),
+            "token is Owner::token()'s rendering, so a consumer never rebuilds the grammar"
+        );
+        let actions = groups[0]["actions"].as_array().expect("actions is array");
         assert_eq!(actions.len(), 1);
     }
 
