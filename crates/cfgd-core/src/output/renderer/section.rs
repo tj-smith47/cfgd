@@ -20,6 +20,17 @@ pub(crate) struct BufferedStatus {
     pub detail_style: Option<ThemedStyle>,
 }
 
+impl BufferedStatus {
+    /// The buffered view of [`super::status::has_trailing`].
+    pub(crate) fn has_trailing(&self) -> bool {
+        super::status::has_trailing(
+            self.detail.as_deref(),
+            self.duration,
+            self.target.as_deref(),
+        )
+    }
+}
+
 /// One open section's bookkeeping. Pushed on open, popped on close.
 pub(crate) struct SectionFrame {
     pub name: String,
@@ -173,13 +184,13 @@ impl Renderer {
         }
         let max_subject_width = statuses
             .iter()
-            .filter(|s| s.detail.is_some() || s.duration.is_some() || s.target.is_some())
+            .filter(|s| s.has_trailing())
             .map(|s| console::measure_text_width(&s.subject))
             .max()
             .unwrap_or(0);
         for s in statuses {
-            let has_trailing = s.detail.is_some() || s.duration.is_some() || s.target.is_some();
-            let padded = super::status::pad_subject(&s.subject, max_subject_width, has_trailing);
+            let padded =
+                super::status::pad_subject(&s.subject, max_subject_width, s.has_trailing());
             self.render_status_immediate(
                 w,
                 s.depth,

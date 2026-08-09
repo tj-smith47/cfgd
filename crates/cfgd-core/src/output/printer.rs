@@ -282,11 +282,7 @@ impl Printer {
     /// group is a bug whatever the caller is doing.
     #[must_use = "inheritance ends when the guard drops; bind it"]
     pub fn depth_inheritance(&self) -> super::renderer::DepthInheritGuard<'_> {
-        self.renderer.inherit_guards.fetch_add(1, Ordering::Relaxed);
-        super::renderer::DepthInheritGuard {
-            renderer: self.renderer.clone(),
-            _phantom: std::marker::PhantomData,
-        }
+        super::renderer::DepthInheritGuard::acquire(&self.renderer)
     }
 
     /// Status with no extra fields. For detail/duration/target, use the builder

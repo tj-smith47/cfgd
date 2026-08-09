@@ -31,9 +31,21 @@ enum StatusRoute {
 }
 
 /// True when a status carries content after its subject, which is the only
-/// case either alignment path pads for.
-pub(crate) fn has_trailing(f: &StatusFields<'_>) -> bool {
-    f.detail.is_some() || f.duration.is_some() || f.target.is_some()
+/// case either alignment path pads for. THE rule: `StatusFields` and
+/// `BufferedStatus` both answer through this, so the live column and the
+/// buffered close can never pad different sets of lines.
+pub(crate) fn has_trailing(
+    detail: Option<&str>,
+    duration: Option<Duration>,
+    target: Option<&Path>,
+) -> bool {
+    detail.is_some() || duration.is_some() || target.is_some()
+}
+
+impl StatusFields<'_> {
+    pub(crate) fn has_trailing(&self) -> bool {
+        has_trailing(self.detail, self.duration, self.target)
+    }
 }
 
 /// Right-pad `subject` to `width`, or `None` when this status is one the
@@ -95,7 +107,7 @@ impl Renderer {
                 self.flush_pending_section_headers(w);
             }
             StatusRoute::Live(width) => {
-                let padded = pad_subject(f.subject, width, has_trailing(f));
+                let padded = pad_subject(f.subject, width, f.has_trailing());
                 match padded {
                     Some(subject) => self.render_status_immediate(
                         w,
@@ -114,15 +126,27 @@ impl Renderer {
                 }
             }
             StatusRoute::Immediate => {
-                self.open_top_group(super::TopGroup::Status);
-                self.render_status_immediate(w, depth, f);
-                self.mark_top_level_group(super::TopGroup::Status);
+                // The group bookkeeping runs inside the SAME acquisition as
+                // the lines: a concurrent emission landing between
+                // `open_top_group` and the block would take this status's
+                // blank-line decision with it.
+                let (line, detail_tail) = self.compose_status(f);
+                self.emit_with(w, |e| {
+                    e.open_top_group(super::TopGroup::Status);
+                    e.flush_section_headers();
+                    e.push_line(depth, &line);
+                    for tail in &detail_tail {
+                        e.push_line(depth + 1, tail);
+                    }
+                    e.mark_top_level_group(super::TopGroup::Status);
+                });
             }
         }
     }
 
-    /// Actually emit a Status line, without buffering. Used by the immediate
-    /// path AND by `flush_pending_statuses` when a section closes.
+    /// Emit a Status line with no group bookkeeping: the live-column route,
+    /// and `flush_pending_statuses` when a section closes. Both are inside a
+    /// section, where `open_top_group` / `mark_top_level_group` are no-ops.
     pub(crate) fn render_status_immediate(
         &self,
         w: &dyn Writer,
@@ -132,6 +156,22 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
             return;
         }
+        let (line, detail_tail) = self.compose_status(f);
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.push_line(depth, &line);
+            // Continuation lines indent one level past the subject so they
+            // read as belonging to this status rather than as new siblings.
+            for tail in &detail_tail {
+                e.push_line(depth + 1, tail);
+            }
+        });
+    }
+
+    /// Build a status line and its continuation tails. Reads the theme only,
+    /// so both emission routes compose the same bytes and neither needs the
+    /// state lock to do it.
+    fn compose_status(&self, f: &StatusFields<'_>) -> (String, Vec<String>) {
         let (icon_opt, style) = role_glyph(&self.theme, f.role);
         let mut line = String::new();
         if let Some(icon) = icon_opt {
@@ -177,15 +217,7 @@ impl Renderer {
             let dim = self.theme.muted.apply_to(format!(" ({:.1}s)", secs));
             line.push_str(&dim.to_string());
         }
-        self.emit_with(w, |e| {
-            e.flush_section_headers();
-            e.push_line(depth, &line);
-            // Continuation lines indent one level past the subject so they
-            // read as belonging to this status rather than as new siblings.
-            for tail in &detail_tail {
-                e.push_line(depth + 1, tail);
-            }
-        });
+        (line, detail_tail)
     }
 
     /// Emit a Warn-styled diagnostic line that is shown regardless of verbosity

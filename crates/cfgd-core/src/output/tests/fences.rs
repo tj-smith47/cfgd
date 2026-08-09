@@ -63,12 +63,16 @@ fn suspend_is_never_called() {
 
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in
 /// `source`, by brace matching from the region's opening `{`.
+///
+/// An `impl` header may wrap across lines (rustfmt does that once the generics
+/// grow), so the header is matched against the text from `impl` up to the
+/// first `{` rather than against one physical line.
 fn emitting_regions(source: &str) -> Vec<String> {
     let mut regions = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
     for (start, line) in lines.iter().enumerate() {
         let opens_region = line.contains("struct Emitting")
-            || (line.trim_start().starts_with("impl") && line.contains("Emitting"));
+            || (line.trim_start().starts_with("impl") && impl_header(&lines[start..]));
         if !opens_region {
             continue;
         }
@@ -97,20 +101,38 @@ fn emitting_regions(source: &str) -> Vec<String> {
     regions
 }
 
+/// The header of the `impl` block starting at `lines[0]`, up to its opening
+/// brace, names `Emitting`.
+fn impl_header(lines: &[&str]) -> bool {
+    let mut header = String::new();
+    for line in lines {
+        match line.split_once('{') {
+            Some((head, _)) => {
+                header.push_str(head);
+                break;
+            }
+            None => {
+                header.push_str(line);
+                header.push(' ');
+            }
+        }
+    }
+    header.contains("Emitting")
+}
+
 /// The collector split is what makes the deferred-header flush and the kv
 /// drain unable to re-enter `write_line` — they hold `&mut RenderState`, not a
 /// sink and not the lock. A collector that regained either would deadlock or
 /// emit out of band, and neither failure is visible in a diff.
 #[test]
 fn emit_collectors_take_no_sink() {
-    let renderer = workspace_root().join("crates/cfgd-core/src/output/renderer");
-    let files = [
-        renderer.join("mod.rs"),
-        renderer.join("kv.rs"),
-        renderer.join("section.rs"),
-        renderer.join("status.rs"),
-        renderer.join("table.rs"),
-    ];
+    // The whole tree, not a file list: an `impl Emitting` added in a file
+    // nobody remembered to list would otherwise be silently unfenced.
+    let files: Vec<PathBuf> = workspace_rust_files()
+        .into_iter()
+        .filter(|p| p.components().any(|c| c.as_os_str() == "output"))
+        .filter(|p| !p.ends_with(Path::new("output/tests/fences.rs")))
+        .collect();
     let banned = ["Writer", "self.state.lock(", "write_line("];
     let mut regions = Vec::new();
     let mut offenders = Vec::new();

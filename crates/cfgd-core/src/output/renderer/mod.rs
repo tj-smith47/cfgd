@@ -435,8 +435,20 @@ impl Emitting<'_> {
 /// as it lives.
 #[must_use = "depth inheritance ends when the guard drops; bind it"]
 pub struct DepthInheritGuard<'p> {
-    pub(crate) renderer: std::sync::Arc<Renderer>,
-    pub(crate) _phantom: std::marker::PhantomData<&'p ()>,
+    renderer: std::sync::Arc<Renderer>,
+    _phantom: std::marker::PhantomData<&'p ()>,
+}
+
+impl DepthInheritGuard<'_> {
+    /// Both halves of the count live on the guard, so the increment cannot be
+    /// written without the decrement that pairs with it.
+    pub(crate) fn acquire(renderer: &std::sync::Arc<Renderer>) -> Self {
+        renderer.inherit_guards.fetch_add(1, Relaxed);
+        Self {
+            renderer: renderer.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 impl Drop for DepthInheritGuard<'_> {
