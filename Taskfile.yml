@@ -532,6 +532,23 @@ tasks:
     cmds:
       - cargo clean
 
+  clean:bloat:
+    desc: One-shot reclaim of session build-cache bloat (incremental cache, cross-target dirs, stale scratch target dirs). Safe to run between work; do NOT run while a build is live in a scratch dir.
+    cmds:
+      - df -h / | tail -1
+      # Incremental cache regrows unboundedly across test cycles; deleting costs one warm rebuild.
+      - rm -rf target/debug/incremental
+      # Cross-compile targets are check-only artifacts, rebuilt on demand.
+      - find target -maxdepth 1 -type d -name 'x86_64-*' -exec rm -rf {} +
+      - find target -maxdepth 1 -type d -name 'aarch64-*' -exec rm -rf {} +
+      # Any dir under the debug scratch root holding a CACHEDIR.TAG is a redirected
+      # cargo target dir — always regenerable. Logs/reports/sandboxes are untouched.
+      - |
+        for tag in $(find ~/.cache/cfgd-debug -maxdepth 3 -name CACHEDIR.TAG 2>/dev/null); do
+          rm -rf "$(dirname "$tag")"
+        done
+      - df -h / | tail -1
+
   # --- Docker ---
 
   docker:
