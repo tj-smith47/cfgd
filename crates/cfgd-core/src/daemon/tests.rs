@@ -7390,6 +7390,28 @@ async fn auto_apply_tick_does_not_regenerate_a_withheld_env_surface() {
     // the pruned plan, whenever a secret resolved env vars (or a manager was
     // bootstrapped this tick). The undecided variable must not reach the machine
     // through that back door.
+    //
+    // The control run (no pending decision) proves the fixture genuinely drives
+    // the regeneration: TEAM_TOKEN lands. Without it, an early bail anywhere in
+    // the tick would leave the withheld run vacuously green.
+    let landed = secret_env_tick_leaks(false).await;
+    assert!(
+        !landed.is_empty(),
+        "control: with no pending decision the regeneration must write TEAM_TOKEN — \
+         an empty result means the tick never reached the env surface at all"
+    );
+
+    let leaked = secret_env_tick_leaks(true).await;
+    assert!(
+        leaked.is_empty(),
+        "a variable awaiting a source decision must not reach the machine through the \
+         post-phase env regeneration; it landed in: {leaked:?}"
+    );
+}
+
+/// One auto-apply tick over a secret-envs profile; returns every file under the
+/// test home whose body names TEAM_TOKEN.
+async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
     let tmp = tempfile::tempdir().unwrap();
     // The home is a SEPARATE root from the config, so "nothing under the home
     // names the variable" cannot be satisfied by the declaring profile itself.
@@ -7402,7 +7424,7 @@ async fn auto_apply_tick_does_not_regenerate_a_withheld_env_surface() {
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    {
+    if seed_pending_decision {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
         seed.upsert_pending_decision(
             "acme",
@@ -7487,16 +7509,11 @@ async fn auto_apply_tick_does_not_regenerate_a_withheld_env_surface() {
     .await
     .unwrap();
 
-    let leaked: Vec<PathBuf> = files_under(home.path())
+    files_under(home.path())
         .into_iter()
         .filter(|(_, body)| body.contains("TEAM_TOKEN"))
         .map(|(path, _)| path)
-        .collect();
-    assert!(
-        leaked.is_empty(),
-        "a variable awaiting a source decision must not reach the machine through the \
-         post-phase env regeneration; it landed in: {leaked:?}"
-    );
+        .collect()
 }
 
 /// Records every package name passed to `uninstall`, so a daemon prune test can

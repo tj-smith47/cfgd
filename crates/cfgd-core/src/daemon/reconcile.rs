@@ -1188,7 +1188,7 @@ pub(crate) fn process_source_decisions(
 /// |---|---|
 /// | `files.<target>` | a `File` action on that target, and the same target inside a module's `DeployFiles` batch — profile files and module files are separate surfaces that can name one path, and withholding only the profile one would still write it. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
 /// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. A `Bootstrap` or `Skip` names no package and is never withheld — a bootstrap installs the package MANAGER, which every still-decided package in the batch needs |
-/// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine |
+/// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the next non-withholding tick plans env unconditionally and converges it) |
 /// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>:<key>` id an individual drift carries |
 ///
 /// No pending row can withhold a `Secret` or `Script` action as a whole, and a
@@ -1219,7 +1219,10 @@ impl PendingExclusions {
     ///
     /// `expand` is the caller's `~` expansion — the daemon passes the same
     /// injectable one its planning hooks use, so a test that redirects home
-    /// redirects this too.
+    /// redirects this too. The id-producing sides (`modules/resolve.rs`,
+    /// `files/plan.rs`) still call the free `expand_tilde`; the two are
+    /// identical in production, and a hooks impl that expanded differently
+    /// would stop this set matching the ids those sites mint.
     pub(crate) fn from_decision_paths<I, E>(paths: I, expand: E) -> Self
     where
         I: IntoIterator<Item = String>,
