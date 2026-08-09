@@ -287,6 +287,63 @@ mod tests {
         assert!(!s.contains("(none)"));
     }
 
+    /// The buffered close pads exactly the subjects that carry trailing
+    /// content. A section with NO live column mixing both kinds is the only
+    /// shape that exercises `BufferedStatus::has_trailing` on both answers:
+    /// the two trailing lines align on a common column, and the bare subject
+    /// is left at its own width rather than padded into it.
+    #[test]
+    fn section_close_pads_only_buffered_subjects_with_trailing_content() {
+        use std::time::Duration;
+
+        use crate::output::{Printer, Role, strip_ansi};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Packages");
+            let _ = s.status(Role::Ok, "ripgrep").detail("installed");
+            let _ = s.status(Role::Ok, "fd");
+            let _ = s.status(Role::Ok, "already-current");
+            let _ = s
+                .status(Role::Ok, "bat")
+                .duration(Duration::from_millis(400));
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+
+        // Width is the widest TRAILING subject (ripgrep, 7). One bare subject
+        // is longer than that and one is shorter, so the assertions below fail
+        // both if the width stops filtering (ripgrep would pad out to 15) and
+        // if the pad stops asking (fd would pad out to 7).
+        assert!(
+            out.contains("  ✓ ripgrep — installed\n"),
+            "widest trailing subject must not gain padding: {out:?}"
+        );
+        assert!(
+            out.contains("  ✓ bat     (0.4s)\n"),
+            "shorter trailing subject must pad to the 7-column width: {out:?}"
+        );
+        assert!(
+            out.contains("  ✓ fd\n") && out.contains("  ✓ already-current\n"),
+            "a subject with no trailing content must not be padded: {out:?}"
+        );
+
+        // The alignment claim itself: both trailing markers start at the same
+        // column, which is what the padding exists to produce.
+        let column = |needle: &str| {
+            let line = out
+                .lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("line {needle:?} missing from {out:?}"));
+            console::measure_text_width(&line[..line.find(needle).unwrap_or(0)])
+        };
+        assert_eq!(
+            column("—"),
+            column("("),
+            "trailing column misaligned across buffered statuses: {out:?}"
+        );
+    }
+
     #[test]
     fn section_with_children_emits_header_then_indents() {
         let (r, sink, buf) = capture();
