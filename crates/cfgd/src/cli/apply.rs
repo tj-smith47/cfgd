@@ -426,7 +426,7 @@ pub fn run_apply(
 
     if !has_actions && pending_backups.is_empty() {
         run.header(printer);
-        report_no_in_scope_actions(printer, &scope);
+        report_plan_verdict(printer, 0, Some(&scope));
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }

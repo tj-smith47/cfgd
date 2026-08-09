@@ -71,7 +71,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // 3. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
     // and the clone creates cfgd.yaml — skip this check so we reach the apply step
-    if target_dir.join("cfgd.yaml").exists() && !from_used {
+    if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
         printer.status_simple(
             Role::Info,
             format!("Already initialized at {}", target_dir.posix()),
@@ -92,16 +92,24 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // into a populated directory (and the failed attempt used to take the
     // directory's contents with it), while `scaffold` would overwrite the
     // user's cfgd.yaml with a fresh template.
-    let already_initialized = target_dir.join("cfgd.yaml").exists();
+    let already_initialized = target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists();
     if let Some(url) = args.from.filter(|f| is_git_source(f)) {
         if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }
-        apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
+        apply_clone_overrides(
+            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
+            args.name,
+            args.theme,
+        )?;
     } else if already_initialized {
         // `--from <plain path>`: the directory is the user's own config repo,
         // so --name/--theme land as overrides on it, never as a re-scaffold.
-        apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
+        apply_clone_overrides(
+            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
+            args.name,
+            args.theme,
+        )?;
     } else {
         scaffold(&target_dir, args.name, args.theme, printer)?;
     }
@@ -140,7 +148,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if should_apply {
-        let config_path = target_dir.join("cfgd.yaml");
+        let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
         let profiles_dir = target_dir.join("profiles");
 
         // Module-only apply: no profile needed
@@ -323,7 +331,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if args.install_daemon {
         #[cfg(any(unix, windows))]
         {
-            let config_path = target_dir.join("cfgd.yaml");
+            let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
             let cfg = config::load_config(&config_path)?;
             let profile = cfg.spec.profile.as_deref();
             // The flags this `cfgd init` ran under are baked into the unit, so
@@ -712,7 +720,7 @@ spec:
     );
     crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::Config,
-        &dir.join("cfgd.yaml"),
+        &dir.join(cfgd_core::config::CONFIG_FILENAME),
         &content,
     )?;
     printer.status_simple(Role::Ok, "Created cfgd.yaml");

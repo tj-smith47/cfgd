@@ -884,6 +884,12 @@ pub(crate) fn handle_reconcile(
 /// Mirrors the profile-level "fire on detected drift" rule scoped to one
 /// module's own actions: a `Skip` module action records no change, so it does
 /// not count as drift.
+///
+/// The caller passes the plan the tick will act on, which the reconcile loop
+/// has already pruned of every resource awaiting a source decision. A module
+/// whose only drifting resource is excluded therefore reports no drift and
+/// fires no `onDrift` hook — deliberate: the hook exists to react to work the
+/// daemon is about to do, and an undecided resource is work it will not do.
 pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str) -> bool {
     use crate::reconciler::{Action, ModuleActionKind};
     plan.phases.iter().flat_map(|p| p.actions()).any(|a| {

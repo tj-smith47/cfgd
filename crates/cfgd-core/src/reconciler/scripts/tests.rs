@@ -418,7 +418,10 @@ fn hook_status_line_matches_the_precomputed_hook_subject() {
     let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
     let tmp = tempfile::tempdir().unwrap();
     // A long body, so the condensing half of the derivation is exercised too.
-    let body = format!("exit 0 # {}", "x".repeat(120));
+    // `echo` and nothing else: a comment marker would not be one under
+    // `cmd.exe /C`, and the non-zero exit that follows would fail the call
+    // rather than the assertion.
+    let body = format!("echo {}", "x".repeat(120));
     let entry = ScriptEntry::Simple(body.clone());
 
     execute_script(
@@ -435,7 +438,7 @@ fn hook_status_line_matches_the_precomputed_hook_subject() {
             non_fatal: true,
         },
     )
-    .expect("`exit 0` must succeed");
+    .expect("`echo` must succeed on every shell ScriptShell::Auto dispatches to");
     drop(printer);
 
     let out = crate::output::strip_ansi(&buf.lock().unwrap());
