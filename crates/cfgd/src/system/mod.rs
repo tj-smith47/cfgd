@@ -58,7 +58,10 @@ pub(super) fn read_command_output(cmd: &mut Command) -> String {
 /// value to its string representation via `value_to_string_fn`, looks up
 /// the actual value via `get_actual(key_str)`, and pushes a `SystemDrift` when
 /// they differ.  The `key_prefix` is prepended (with a dot separator) to each
-/// drift key when non-empty.
+/// drift key when non-empty — it names an INNER grouping the desired mapping is
+/// nested under (a defaults domain, a registry key path, a kde file+group), and
+/// must never be the configurator's own name: the reconciler already composes
+/// `system:<configurator>.<key>` around whatever comes back.
 ///
 /// Returns an empty vec if `desired` is not a mapping.
 pub(crate) fn diff_yaml_mapping(
@@ -177,6 +180,30 @@ pub(crate) fn yaml_value_with_numeric_bools(value: &serde_yaml::Value) -> String
         serde_yaml::Value::Number(n) => n.to_string(),
         serde_yaml::Value::String(s) => s.clone(),
         _ => format!("{:?}", value),
+    }
+}
+
+/// Assert that no drift key repeats its own configurator's name.
+///
+/// The reconciler composes `system:<configurator>.<key>` for the plan line, the
+/// `managed_resources` id and the journal `resource_id`, so a key that opens
+/// with the configurator's name doubles it into all three — and because two of
+/// those are persisted, undoubling one later costs a state migration. Every
+/// configurator's diff test calls this against its own fixture, so the shape is
+/// pinned per configurator rather than only where an exact key is asserted.
+#[cfg(test)]
+pub(crate) fn assert_keys_undoubled(
+    configurator: &dyn cfgd_core::providers::SystemConfigurator,
+    drifts: &[SystemDrift],
+) {
+    let name = configurator.name();
+    for drift in drifts {
+        assert!(
+            !drift.key.starts_with(&format!("{name}.")),
+            "{name}: drift key `{}` repeats the configurator name; \
+             the reconciler already composes `system:{name}.<key>` around it",
+            drift.key
+        );
     }
 }
 

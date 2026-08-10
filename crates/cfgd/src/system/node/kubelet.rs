@@ -89,7 +89,7 @@ impl SystemConfigurator for KubeletConfigurator {
 
         Ok(diff_yaml_mapping(
             settings,
-            "kubelet",
+            "",
             yaml_value_to_string,
             |key_str| {
                 current

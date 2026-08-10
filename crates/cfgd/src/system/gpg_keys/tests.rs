@@ -946,8 +946,9 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         .unwrap();
 
         let drifts = GpgKeysConfigurator.diff(&desired).expect("Ok");
+        crate::system::assert_keys_undoubled(&GpgKeysConfigurator, &drifts);
         assert_eq!(drifts.len(), 1);
-        assert_eq!(drifts[0].key, "gpgKeys.work-signing.presence");
+        assert_eq!(drifts[0].key, "work-signing.presence");
         assert!(drifts[0].actual.contains("not found"));
     }
 
@@ -1004,8 +1005,9 @@ uid:e::::1700000000::HASH::Jane <jane@work.com>::::::::::0:
         .unwrap();
 
         let drifts = GpgKeysConfigurator.diff(&desired).expect("Ok");
+        crate::system::assert_keys_undoubled(&GpgKeysConfigurator, &drifts);
         assert_eq!(drifts.len(), 1);
-        assert_eq!(drifts[0].key, "gpgKeys.work-signing.expiry");
+        assert_eq!(drifts[0].key, "work-signing.expiry");
         assert!(drifts[0].actual.contains("FPR-EXPIRED"));
     }
 }

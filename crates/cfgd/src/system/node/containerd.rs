@@ -90,7 +90,7 @@ impl SystemConfigurator for ContainerdConfigurator {
 
         Ok(diff_yaml_mapping(
             settings,
-            "containerd",
+            "",
             yaml_value_to_string,
             |key_str| find_toml_value(&current, key_str).unwrap_or_else(|| "<not set>".to_string()),
         ))

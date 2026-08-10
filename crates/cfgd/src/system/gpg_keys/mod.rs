@@ -373,7 +373,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
 
             if matching.is_empty() {
                 drifts.push(SystemDrift {
-                    key: format!("gpgKeys.{}.presence", spec.name),
+                    key: format!("{}.presence", spec.name),
                     expected: format!(
                         "key for {} <{}> with usage={} present",
                         spec.real_name, spec.email, spec.usage
@@ -389,7 +389,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 let fingerprints: Vec<&str> =
                     matching.iter().map(|k| k.fingerprint.as_str()).collect();
                 drifts.push(SystemDrift {
-                    key: format!("gpgKeys.{}.expiry", spec.name),
+                    key: format!("{}.expiry", spec.name),
                     expected: "key not expired".to_string(),
                     actual: format!("key(s) expired: {}", fingerprints.join(", ")),
                 });

@@ -111,7 +111,7 @@ impl SystemConfigurator for AppArmorConfigurator {
 
             if !path.exists() {
                 drifts.push(SystemDrift {
-                    key: format!("apparmor.{}.file", name),
+                    key: format!("{}.file", name),
                     expected: "present".to_string(),
                     actual: "missing".to_string(),
                 });
@@ -123,7 +123,7 @@ impl SystemConfigurator for AppArmorConfigurator {
                 && current_content.trim() != desired_content.trim()
             {
                 drifts.push(SystemDrift {
-                    key: format!("apparmor.{}.content", name),
+                    key: format!("{}.content", name),
                     expected: "updated".to_string(),
                     actual: "outdated".to_string(),
                 });
@@ -131,7 +131,7 @@ impl SystemConfigurator for AppArmorConfigurator {
 
             if !Self::is_profile_loaded(name) {
                 drifts.push(SystemDrift {
-                    key: format!("apparmor.{}.loaded", name),
+                    key: format!("{}.loaded", name),
                     expected: "loaded".to_string(),
                     actual: "not loaded".to_string(),
                 });

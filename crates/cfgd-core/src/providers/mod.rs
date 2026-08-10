@@ -363,7 +363,17 @@ pub trait PackageManager: Send + Sync {
 
 // --- SystemConfigurator trait ---
 
+/// One setting a [`SystemConfigurator`] found diverging from the desired state.
 pub struct SystemDrift {
+    /// The setting's identity WITHIN this configurator — never prefixed with the
+    /// configurator's own name.
+    ///
+    /// The reconciler composes `system:<configurator>.<key>` around it for the
+    /// plan line, the persisted `managed_resources` id and the journal
+    /// `resource_id`, so a self-prefixed key doubles the name into all three at
+    /// once (`system:sshKeys.sshKeys.default.exists`). Because the id is
+    /// persisted, correcting such a key is not a display change — it strands
+    /// every row written under the old shape until a migration rewrites them.
     pub key: String,
     pub expected: String,
     pub actual: String,

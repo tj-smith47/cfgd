@@ -230,7 +230,10 @@ impl SystemConfigurator for SshKeysConfigurator {
 
         for spec in &specs {
             let path = spec.resolved_path();
-            let key_id = format!("sshKeys.{}", spec.name);
+            // The reconciler composes `system:<configurator>.<key>` around this
+            // key, so naming the configurator here would double it into the
+            // persisted resource id and every rendered line.
+            let key_id = spec.name.as_str();
 
             if !path.exists() {
                 drifts.push(SystemDrift {

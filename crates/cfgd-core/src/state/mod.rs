@@ -340,6 +340,78 @@ const MIGRATIONS: &[&str] = &[
     );
 
     CREATE INDEX IF NOT EXISTS idx_backup_runs_name ON backup_runs (name);",
+    // Migration 14: undouble the configurator name in persisted `system` ids.
+    // Six configurators prefixed their OWN name into `SystemDrift::key` while
+    // the reconciler composes `system:<configurator>.<key>` around it, so every
+    // id they wrote carried the name twice (`sshKeys.sshKeys.default.exists`).
+    // The id is what drift resolution, `resolve_drift_not_in` and the status
+    // view match on, so leaving the old rows behind would strand each one as a
+    // permanently-unresolved drift event beside its corrected twin.
+    // Rewritten rather than deleted: unlike migration 9's shape change, the row
+    // still names a resource cfgd manages, and `drift_events` carries the
+    // observation history that a DELETE would forfeit.
+    // The SET drops the first dot-segment — exactly the duplicated name —
+    // instead of REPLACE, which would also rewrite a repeat later in the key.
+    // GLOB, not LIKE: LIKE is ASCII-case-insensitive in SQLite, and these
+    // prefixes are the configurators' exact-case names.
+    // `UPDATE OR REPLACE` on managed_resources because UNIQUE(resource_type,
+    // resource_id) is reachable if a corrected row was already written by a
+    // newer cfgd against the same store; both name the same resource, and the
+    // rewritten row is the one whose `last_applied` is older, so keeping it
+    // costs nothing the next apply does not refresh.
+    // `compliance_snapshots` is included because `compliance diff` matches two
+    // snapshots on each check's `key`, so an un-rewritten snapshot would report
+    // every affected check as removed-and-re-added across the fix. Only the
+    // identifier moves; status/value/detail — the observation itself — are
+    // untouched. The anchor is `"key":"` with no spaces because the writer
+    // serializes compactly, and `content_hash` stays valid because it is a
+    // change-detector hashed from the in-memory (pretty-printed) snapshot, never
+    // re-derived from this column.
+    r#"UPDATE OR REPLACE managed_resources
+          SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
+        WHERE resource_type = 'system'
+          AND (resource_id GLOB 'sshKeys.sshKeys.*'
+            OR resource_id GLOB 'gpgKeys.gpgKeys.*'
+            OR resource_id GLOB 'seccomp.seccomp.*'
+            OR resource_id GLOB 'apparmor.apparmor.*'
+            OR resource_id GLOB 'containerd.containerd.*'
+            OR resource_id GLOB 'kubelet.kubelet.*');
+
+      UPDATE drift_events
+          SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
+        WHERE resource_type = 'system'
+          AND (resource_id GLOB 'sshKeys.sshKeys.*'
+            OR resource_id GLOB 'gpgKeys.gpgKeys.*'
+            OR resource_id GLOB 'seccomp.seccomp.*'
+            OR resource_id GLOB 'apparmor.apparmor.*'
+            OR resource_id GLOB 'containerd.containerd.*'
+            OR resource_id GLOB 'kubelet.kubelet.*');
+
+      UPDATE apply_journal
+          SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
+        WHERE action_type = 'system'
+          AND (resource_id GLOB 'sshKeys.sshKeys.*'
+            OR resource_id GLOB 'gpgKeys.gpgKeys.*'
+            OR resource_id GLOB 'seccomp.seccomp.*'
+            OR resource_id GLOB 'apparmor.apparmor.*'
+            OR resource_id GLOB 'containerd.containerd.*'
+            OR resource_id GLOB 'kubelet.kubelet.*');
+
+      UPDATE compliance_snapshots
+          SET snapshot_json = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                snapshot_json,
+                '"key":"sshKeys.sshKeys.',       '"key":"sshKeys.'),
+                '"key":"gpgKeys.gpgKeys.',       '"key":"gpgKeys.'),
+                '"key":"seccomp.seccomp.',       '"key":"seccomp.'),
+                '"key":"apparmor.apparmor.',     '"key":"apparmor.'),
+                '"key":"containerd.containerd.', '"key":"containerd.'),
+                '"key":"kubelet.kubelet.',       '"key":"kubelet.')
+        WHERE snapshot_json GLOB '*"key":"sshKeys.sshKeys.*'
+           OR snapshot_json GLOB '*"key":"gpgKeys.gpgKeys.*'
+           OR snapshot_json GLOB '*"key":"seccomp.seccomp.*'
+           OR snapshot_json GLOB '*"key":"apparmor.apparmor.*'
+           OR snapshot_json GLOB '*"key":"containerd.containerd.*'
+           OR snapshot_json GLOB '*"key":"kubelet.kubelet.*';"#,
 ];
 
 /// SQLite-backed state store for cfgd.

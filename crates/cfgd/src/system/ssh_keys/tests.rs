@@ -46,7 +46,7 @@ mod bridge {
             &BridgeApply {
                 configurator: &c,
                 desired: &desired,
-                key: "sshKeys.default.exists",
+                key: "default.exists",
                 current: "missing",
                 target: "present",
                 summary_role: Role::Ok,
@@ -84,7 +84,7 @@ mod bridge {
             &BridgeApply {
                 configurator: &c,
                 desired: &desired,
-                key: "sshKeys.default.type",
+                key: "default.type",
                 current: "rsa",
                 target: "ed25519",
                 summary_role: Role::Warn,
@@ -157,6 +157,7 @@ fn diff_detects_missing_key() {
 
     let c = SshKeysConfigurator;
     let drifts = c.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&c, &drifts);
 
     assert!(
         drifts.iter().any(|d| d.key.ends_with(".exists")),
@@ -185,6 +186,7 @@ fn diff_detects_wrong_permissions() {
 
     let c = SshKeysConfigurator;
     let drifts = c.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&c, &drifts);
 
     let perms_drift = drifts.iter().find(|d| d.key.ends_with(".permissions"));
     assert!(
@@ -243,6 +245,7 @@ fn diff_detects_type_mismatch() {
 
     let c = SshKeysConfigurator;
     let drifts = c.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&c, &drifts);
 
     let type_drift = drifts.iter().find(|d| d.key.ends_with(".type"));
     assert!(
@@ -571,6 +574,7 @@ fn diff_multiple_keys_reports_all_missing() {
 
     let c = SshKeysConfigurator;
     let drifts = c.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&c, &drifts);
 
     let exists_drifts: Vec<_> = drifts
         .iter()

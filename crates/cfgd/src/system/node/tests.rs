@@ -493,8 +493,9 @@ fn containerd_diff_detects_changed_setting() {
     let cc = ContainerdConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = cc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&cc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "containerd.sandbox_image");
+    assert_eq!(drifts[0].key, "sandbox_image");
     assert_eq!(drifts[0].expected, "pause:3.9");
     assert_eq!(drifts[0].actual, "pause:3.8");
 }
@@ -598,8 +599,9 @@ fn containerd_diff_with_nested_toml_settings() {
     let cc = ContainerdConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = cc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&cc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "containerd.plugins.cri.sandbox_image");
+    assert_eq!(drifts[0].key, "plugins.cri.sandbox_image");
     assert_eq!(drifts[0].expected, "pause:3.9");
     assert_eq!(drifts[0].actual, "pause:3.8");
 }
@@ -678,16 +680,14 @@ fn kubelet_diff_detects_changed_value() {
     let kc = KubeletConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = kc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&kc, &drifts);
     assert_eq!(drifts.len(), 2);
 
-    let max_pods_drift = drifts.iter().find(|d| d.key == "kubelet.maxPods").unwrap();
+    let max_pods_drift = drifts.iter().find(|d| d.key == "maxPods").unwrap();
     assert_eq!(max_pods_drift.expected, "110");
     assert_eq!(max_pods_drift.actual, "100");
 
-    let cgroup_drift = drifts
-        .iter()
-        .find(|d| d.key == "kubelet.cgroupDriver")
-        .unwrap();
+    let cgroup_drift = drifts.iter().find(|d| d.key == "cgroupDriver").unwrap();
     assert_eq!(cgroup_drift.expected, "systemd");
     assert_eq!(cgroup_drift.actual, "cgroupfs");
 }
@@ -745,8 +745,9 @@ fn kubelet_diff_missing_key_shows_not_set() {
     let kc = KubeletConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = kc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&kc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "kubelet.maxPods");
+    assert_eq!(drifts[0].key, "maxPods");
     assert_eq!(drifts[0].actual, "<not set>");
 }
 
@@ -815,11 +816,12 @@ fn apparmor_diff_missing_profile_file() {
     );
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = ac.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&ac, &drifts);
 
     // Should report file missing
     let file_drift = drifts
         .iter()
-        .find(|d| d.key == "apparmor.test-profile.file")
+        .find(|d| d.key == "test-profile.file")
         .unwrap();
     assert_eq!(file_drift.expected, "present");
     assert_eq!(file_drift.actual, "missing");
@@ -854,10 +856,11 @@ fn apparmor_diff_content_mismatch() {
     );
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = ac.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&ac, &drifts);
 
     let content_drift = drifts
         .iter()
-        .find(|d| d.key == "apparmor.test-profile.content")
+        .find(|d| d.key == "test-profile.content")
         .unwrap();
     assert_eq!(content_drift.expected, "updated");
     assert_eq!(content_drift.actual, "outdated");
@@ -1009,8 +1012,9 @@ fn seccomp_diff_missing_profile_file() {
 
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = sc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&sc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "seccomp.default-audit");
+    assert_eq!(drifts[0].key, "default-audit");
     assert_eq!(drifts[0].expected, "present");
     assert_eq!(drifts[0].actual, "missing");
 }
@@ -1049,8 +1053,9 @@ fn seccomp_diff_content_mismatch() {
 
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = sc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&sc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "seccomp.default-audit.content");
+    assert_eq!(drifts[0].key, "default-audit.content");
     assert_eq!(drifts[0].expected, "updated");
     assert_eq!(drifts[0].actual, "outdated");
 }
@@ -1214,9 +1219,10 @@ fn seccomp_diff_uses_default_profiles_dir() {
 
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = sc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&sc, &drifts);
     // File won't exist at default path, so should report missing
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "seccomp.test");
+    assert_eq!(drifts[0].key, "test");
     assert_eq!(drifts[0].actual, "missing");
 }
 
@@ -1566,8 +1572,9 @@ fn containerd_diff_boolean_setting() {
     let cc = ContainerdConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = cc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&cc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "containerd.SystemdCgroup");
+    assert_eq!(drifts[0].key, "SystemdCgroup");
     assert_eq!(drifts[0].expected, "true");
     assert_eq!(drifts[0].actual, "false");
 }
@@ -3465,7 +3472,7 @@ profiles:
             &BridgeApply {
                 configurator: &sc,
                 desired: &desired,
-                key: "seccomp.default-audit",
+                key: "default-audit",
                 current: "missing",
                 target: "present",
                 summary_role: Role::Ok,
@@ -3514,7 +3521,7 @@ profiles:
             &BridgeApply {
                 configurator: &sc,
                 desired: &desired,
-                key: "seccomp.allow-audit",
+                key: "allow-audit",
                 current: "missing",
                 target: "present",
                 summary_role: Role::Warn,

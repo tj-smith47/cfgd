@@ -1696,6 +1696,11 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
     // source_applies row whose FK lacks ON DELETE CASCADE. Reopening runs
     // migration 6, which must (a) preserve the existing row through the table
     // rebuild and (b) leave the FK with ON DELETE CASCADE so removal works.
+    //
+    // The hand-built schema must carry EVERY table a migration after 5 touches,
+    // not just the ones migration 6 rebuilds: reopening replays the whole tail,
+    // and a table missing here fails a later migration on a shape no real
+    // version-5 database has.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
@@ -1746,6 +1751,19 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
                 last_applied INTEGER,
                 UNIQUE(module_name, file_path),
                 FOREIGN KEY (last_applied) REFERENCES applies(id));
+             CREATE TABLE apply_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apply_id INTEGER NOT NULL, action_index INTEGER NOT NULL,
+                phase TEXT NOT NULL, action_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL, pre_state TEXT, post_state TEXT,
+                status TEXT NOT NULL DEFAULT 'pending', error TEXT,
+                started_at TEXT NOT NULL, completed_at TEXT, script_output TEXT,
+                FOREIGN KEY (apply_id) REFERENCES applies(id));
+             CREATE TABLE compliance_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL, content_hash TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL, summary_compliant INTEGER NOT NULL,
+                summary_warning INTEGER NOT NULL, summary_violation INTEGER NOT NULL);
              CREATE TABLE schema_version (version INTEGER NOT NULL);
              INSERT INTO schema_version (version) VALUES (5);
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
@@ -2309,6 +2327,198 @@ fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point(
         "backup_runs must exist and be readable after replaying the tail migration"
     );
     assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+}
+
+fn doubled_prefix_snapshot(key: &str) -> crate::compliance::ComplianceSnapshot {
+    use crate::compliance::{
+        ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
+    };
+    ComplianceSnapshot {
+        timestamp: crate::utc_now_iso8601(),
+        machine: MachineInfo {
+            hostname: "host".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        },
+        profile: "default".to_string(),
+        sources: vec![],
+        checks: vec![ComplianceCheck {
+            category: "system".to_string(),
+            key: Some(key.to_string()),
+            status: ComplianceStatus::Violation,
+            ..Default::default()
+        }],
+        summary: ComplianceSummary {
+            compliant: 0,
+            warning: 0,
+            violation: 1,
+        },
+    }
+}
+
+#[test]
+fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+
+    {
+        let store = StateStore::open(&path).unwrap();
+        let apply_id = store
+            .record_apply("default", "h", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Ids as the self-prefixing configurators wrote them.
+        store
+            .upsert_managed_resource(
+                "system",
+                "sshKeys.sshKeys.default.exists (missing → present)",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .record_drift(
+                "system",
+                "seccomp.seccomp.default-audit",
+                Some("present"),
+                Some("missing"),
+                "local",
+            )
+            .unwrap();
+        store
+            .journal_begin(
+                apply_id,
+                0,
+                "System",
+                "system",
+                "kubelet.kubelet.maxPods",
+                None,
+            )
+            .unwrap();
+        store
+            .store_compliance_snapshot(
+                &doubled_prefix_snapshot("apparmor.apparmor.test-profile.file"),
+                "h-doubled",
+            )
+            .unwrap();
+
+        // Controls. A configurator whose key prefix merely RESEMBLES its name
+        // (`certificates` → `cert.…`) is not doubled; a longer name sharing the
+        // doubled prefix's opening (`containerd.containerdx`) has no second
+        // segment boundary; a lowercased twin proves the match is case-SENSITIVE
+        // (SQLite's LIKE is not, GLOB is); and a non-`system` row proves the
+        // rewrite is scoped by resource type rather than by id shape alone.
+        store
+            .upsert_managed_resource(
+                "system",
+                "certificates.cert.kubelet-client.cert",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .upsert_managed_resource(
+                "system",
+                "containerd.containerdx",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .upsert_managed_resource(
+                "system",
+                "sshkeys.sshkeys.default.exists",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .record_drift(
+                "file",
+                "seccomp.seccomp.default-audit",
+                None,
+                Some("modified"),
+                "local",
+            )
+            .unwrap();
+
+        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
+        // id-undoubling rewrite", so appending a later migration must not
+        // silently re-point it at the new tail.
+        store
+            .conn
+            .execute("UPDATE schema_version SET version = 13", [])
+            .unwrap();
+    }
+
+    let state = StateStore::open(&path).unwrap();
+
+    let ids: Vec<String> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.resource_type == "system")
+        .map(|r| r.resource_id)
+        .collect();
+    assert!(
+        ids.contains(&"sshKeys.default.exists (missing → present)".to_string()),
+        "the doubled managed_resources id must be rewritten: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"certificates.cert.kubelet-client.cert".to_string())
+            && ids.contains(&"containerd.containerdx".to_string())
+            && ids.contains(&"sshkeys.sshkeys.default.exists".to_string()),
+        "no control id may be rewritten: {ids:?}"
+    );
+
+    let drift: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.resource_type, d.resource_id))
+        .collect();
+    assert!(
+        drift.contains(&("system".to_string(), "seccomp.default-audit".to_string())),
+        "the doubled drift id must be rewritten: {drift:?}"
+    );
+    assert!(
+        drift.contains(&(
+            "file".to_string(),
+            "seccomp.seccomp.default-audit".to_string()
+        )),
+        "a non-system drift row must be left alone: {drift:?}"
+    );
+
+    let journal_ids: Vec<String> = state
+        .journal_entries(1)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    assert_eq!(journal_ids, vec!["kubelet.maxPods".to_string()]);
+
+    let snapshot_id = state.compliance_history(None, 10).unwrap()[0].id;
+    let snapshot = state.get_compliance_snapshot(snapshot_id).unwrap().unwrap();
+    assert_eq!(
+        snapshot.checks[0].key.as_deref(),
+        Some("apparmor.test-profile.file"),
+        "the doubled compliance check key must be rewritten"
+    );
+
+    assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+}
+
+#[test]
+fn migration_14_is_a_no_op_on_a_fresh_store() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert_eq!(store.schema_version(), MIGRATIONS.len());
+    assert!(store.managed_resources().unwrap().is_empty());
+    assert!(store.unresolved_drift().unwrap().is_empty());
+    assert!(store.compliance_history(None, 10).unwrap().is_empty());
 }
 
 // --- get_apply by id ---

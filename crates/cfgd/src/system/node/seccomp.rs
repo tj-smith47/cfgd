@@ -75,7 +75,7 @@ impl SystemConfigurator for SeccompConfigurator {
 
             if !profile_path.exists() {
                 drifts.push(SystemDrift {
-                    key: format!("seccomp.{}", name),
+                    key: name.to_string(),
                     expected: "present".to_string(),
                     actual: "missing".to_string(),
                 });
@@ -87,7 +87,7 @@ impl SystemConfigurator for SeccompConfigurator {
                 && !json_equal(desired_content, &current_content)
             {
                 drifts.push(SystemDrift {
-                    key: format!("seccomp.{}.content", name),
+                    key: format!("{}.content", name),
                     expected: "updated".to_string(),
                     actual: "outdated".to_string(),
                 });
