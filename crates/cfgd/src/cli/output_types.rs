@@ -183,6 +183,13 @@ pub struct DiffOutput {
     pub files: Vec<cfgd_core::providers::FileDriftResult>,
     pub packages: Vec<PackageDrift>,
     pub system: Vec<SystemDriftOutput>,
+    /// One record per system configurator whose drift check could not run.
+    /// Deliberately separate from `system`: a check that errored reports
+    /// neither drift nor cleanliness, and a consumer reading only
+    /// `summary.hasSystemDrift` would otherwise read "the check failed" as
+    /// "the machine is in sync".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system_errors: Vec<SystemCheckError>,
     pub summary: DiffSummary,
 }
 
@@ -192,6 +199,10 @@ pub struct DiffSummary {
     pub has_file_drift: bool,
     pub has_pkg_drift: bool,
     pub has_system_drift: bool,
+    /// At least one configurator's drift check errored, so the system verdict
+    /// is unknown rather than clean. Read alongside `has_system_drift` by
+    /// every consumer that treats "no drift" as "nothing to do".
+    pub system_check_failed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -211,6 +222,15 @@ pub struct SystemDriftOutput {
     pub key: String,
     pub expected: String,
     pub actual: String,
+}
+
+/// A configurator whose drift check itself failed — the machine's state for
+/// that key is unknown.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemCheckError {
+    pub key: String,
+    pub error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1057,10 +1077,15 @@ mod tests {
                 expected: "1".to_string(),
                 actual: "0".to_string(),
             }],
+            system_errors: vec![SystemCheckError {
+                key: "launchd".to_string(),
+                error: "permission denied".to_string(),
+            }],
             summary: DiffSummary {
                 has_file_drift: true,
                 has_pkg_drift: true,
                 has_system_drift: true,
+                system_check_failed: true,
             },
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -1084,6 +1109,13 @@ mod tests {
         assert_eq!(json["summary"]["hasFileDrift"], json!(true));
         assert_eq!(json["summary"]["hasPkgDrift"], json!(true));
         assert_eq!(json["summary"]["hasSystemDrift"], json!(true));
+        let errs = json["systemErrors"]
+            .as_array()
+            .expect("systemErrors is array");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0]["key"], json!("launchd"));
+        assert_eq!(errs[0]["error"], json!("permission denied"));
+        assert_eq!(json["summary"]["systemCheckFailed"], json!(true));
     }
 
     #[test]
@@ -1092,11 +1124,25 @@ mod tests {
             has_file_drift: false,
             has_pkg_drift: true,
             has_system_drift: false,
+            system_check_failed: false,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["hasFileDrift"], json!(false));
         assert_eq!(json["hasPkgDrift"], json!(true));
         assert_eq!(json["hasSystemDrift"], json!(false));
+        assert_eq!(json["systemCheckFailed"], json!(false));
+    }
+
+    #[test]
+    fn diff_output_omits_system_errors_when_every_check_ran() {
+        // The common shape: the key is absent rather than an empty array, so a
+        // consumer's `if .systemErrors` reads false on a complete run.
+        let json = serde_json::to_value(DiffOutput::default()).unwrap();
+        assert!(
+            json.get("systemErrors").is_none(),
+            "a complete run carries no error list: {json}"
+        );
+        assert_eq!(json["summary"]["systemCheckFailed"], json!(false));
     }
 
     #[test]

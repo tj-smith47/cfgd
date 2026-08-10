@@ -201,32 +201,66 @@ pub fn cmd_diff(
                         }
                     }
                     Err(e) => {
+                        let error = cfgd_core::output::collapse_to_subject_line(e);
                         sys_group
                             .status(Role::Warn, format!("{}: error checking drift", key))
-                            .detail(cfgd_core::output::collapse_to_subject_line(e));
+                            .detail(&error);
+                        diff_payload.system_errors.push(SystemCheckError {
+                            key: key.to_string(),
+                            error,
+                        });
                     }
                     _ => {}
                 }
             }
         }
-        if !has_system_drift {
-            sys_sec.status_simple(Role::Ok, "No system drift");
-        }
+        close_system_phase(&sys_sec, has_system_drift, diff_payload.system_errors.len());
     }
 
     diff_payload.summary = DiffSummary {
         has_file_drift,
         has_pkg_drift,
         has_system_drift,
+        system_check_failed: !diff_payload.system_errors.is_empty(),
     };
 
     printer.emit(build_diff_doc(&diff_payload));
 
-    if exit_code && (has_file_drift || has_pkg_drift || has_system_drift) {
-        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
+        code.exit();
     }
 
     Ok(())
+}
+
+/// The System phase's closing line.
+///
+/// A configurator whose check ERRORED has already spoken inside its owner
+/// group; what the phase must not then do is close with `No system drift`. A
+/// check that could not run is not a check that passed, and the group above it
+/// makes the contradiction plain.
+fn close_system_phase(sec: &SectionGuard<'_>, drift: bool, unchecked: usize) {
+    if unchecked > 0 {
+        sec.status(Role::Warn, "System drift undetermined")
+            .detail(format!("{unchecked} configurator(s) could not be checked"));
+    } else if !drift {
+        sec.status_simple(Role::Ok, "No system drift");
+    }
+}
+
+/// What `--exit-code` reports, from the same summary the `-o json` payload
+/// carries — so the exit status and the payload can never disagree about
+/// whether this machine is in sync.
+///
+/// A failed check outranks drift: `DriftDetected` tells a script the machine
+/// needs an apply, while a check that could not run means the answer is
+/// unknown, which is an error rather than a verdict.
+fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
+    if summary.system_check_failed {
+        return Some(cfgd_core::exit::ExitCode::Error);
+    }
+    (summary.has_file_drift || summary.has_pkg_drift || summary.has_system_drift)
+        .then_some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
 fn cmd_diff_module(
@@ -323,13 +357,16 @@ fn cmd_diff_module(
     diff_payload.summary = DiffSummary {
         has_file_drift: has_file_diff,
         has_pkg_drift,
+        // A single module's diff evaluates no system configurator, so the
+        // system verdict is neither drifted nor undetermined here.
         has_system_drift: false,
+        system_check_failed: false,
     };
 
     printer.emit(build_diff_doc(&diff_payload));
 
-    if exit_code && (has_file_diff || has_pkg_drift) {
-        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
+        code.exit();
     }
 
     Ok(())
@@ -439,9 +476,18 @@ pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     let any_drift = output.summary.has_file_drift
         || output.summary.has_pkg_drift
         || output.summary.has_system_drift;
-    let role = if any_drift { Role::Warn } else { Role::Ok };
+    // A run that could not check everything has no clean verdict to give, so
+    // it never renders one — whether or not the checks that DID run found
+    // drift.
+    let role = if any_drift || output.summary.system_check_failed {
+        Role::Warn
+    } else {
+        Role::Ok
+    };
     let subject = if any_drift {
         "Drift detected"
+    } else if output.summary.system_check_failed {
+        "Drift undetermined — a system check could not run"
     } else {
         "No drift detected"
     };
@@ -502,6 +548,7 @@ mod tests {
                 has_file_drift: false,
                 has_pkg_drift: false,
                 has_system_drift: false,
+                system_check_failed: false,
             },
             ..Default::default()
         };
@@ -522,6 +569,7 @@ mod tests {
                 has_file_drift: true,
                 has_pkg_drift: false,
                 has_system_drift: false,
+                system_check_failed: false,
             },
             ..Default::default()
         };
@@ -532,6 +580,95 @@ mod tests {
         assert!(
             out.contains("Drift detected"),
             "drift doc must surface warning: {out}"
+        );
+    }
+
+    /// A configurator whose check errored leaves the machine's state unknown.
+    /// All three of the command's answers — the human phase line, the `-o json`
+    /// summary and the `--exit-code` status — must say so, because a script
+    /// that reads any one of them as "clean" acts on a check that never ran.
+    #[test]
+    fn a_failed_system_check_is_never_reported_as_clean() {
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        {
+            let sec = printer.section(PhaseName::System.section_title());
+            close_system_phase(&sec, false, 1);
+        }
+        drop(printer);
+        let human = strip_ansi(&buf.lock().expect("capture").clone());
+        assert!(
+            !human.contains("No system drift"),
+            "a check that could not run is not a check that passed: {human}"
+        );
+        assert!(
+            human.contains("System drift undetermined"),
+            "the phase must name the gap: {human}"
+        );
+
+        let payload = DiffOutput {
+            system_errors: vec![SystemCheckError {
+                key: "sysctl".to_string(),
+                error: "permission denied".to_string(),
+            }],
+            summary: DiffSummary {
+                has_file_drift: false,
+                has_pkg_drift: false,
+                has_system_drift: false,
+                system_check_failed: true,
+            },
+            ..Default::default()
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_diff_doc(&payload));
+        drop(printer);
+        let doc_human = strip_ansi(&cap.human());
+        assert!(
+            !doc_human.contains("No drift detected"),
+            "the summary must not report a verdict it does not have: {doc_human}"
+        );
+        assert!(
+            doc_human.contains("Drift undetermined"),
+            "the summary must name the gap: {doc_human}"
+        );
+        let json = cap.json().expect("diff emits a data payload");
+        assert_eq!(
+            json["summary"]["systemCheckFailed"],
+            serde_json::json!(true)
+        );
+        assert_eq!(json["systemErrors"][0]["key"], serde_json::json!("sysctl"));
+
+        assert_eq!(
+            diff_exit_code(&payload.summary),
+            Some(cfgd_core::exit::ExitCode::Error),
+            "--exit-code must not report success on an unknown verdict"
+        );
+    }
+
+    #[test]
+    fn a_clean_run_reports_its_clean_verdict_on_every_channel() {
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        {
+            let sec = printer.section(PhaseName::System.section_title());
+            close_system_phase(&sec, false, 0);
+        }
+        drop(printer);
+        let human = strip_ansi(&buf.lock().expect("capture").clone());
+        assert!(
+            human.contains("No system drift"),
+            "an all-checks-ran, no-drift phase still says so"
+        );
+        assert_eq!(
+            diff_exit_code(&DiffSummary::default()),
+            None,
+            "nothing drifted and every check ran: exit 0"
+        );
+        assert_eq!(
+            diff_exit_code(&DiffSummary {
+                has_pkg_drift: true,
+                ..Default::default()
+            }),
+            Some(cfgd_core::exit::ExitCode::DriftDetected),
+            "ordinary drift keeps its own code"
         );
     }
 
