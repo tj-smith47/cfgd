@@ -1130,6 +1130,52 @@ pub fn normalize_cfgd_version<'a>(s: &'a str, cfgd_version: &str) -> std::borrow
     }
 }
 
+/// Replace every ` (N.Ns)` duration suffix with a stable ` (XXs)` placeholder,
+/// so a golden that captures a run's elapsed time is host-stable.
+///
+/// The renderer formats durations as `{:.1}s`, so the span is always digits,
+/// one dot, exactly one digit, `s`, `)`. Anything else in parentheses — a
+/// package version, an exit code, a byte size — is left alone.
+pub fn normalize_snapshot_durations(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match duration_span(&chars[i..]) {
+            Some(len) => {
+                out.push_str(" (XXs)");
+                i += len;
+            }
+            None => {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Length in chars of a ` (N.Ns)` suffix opening at `window`, if there is one.
+fn duration_span(window: &[char]) -> Option<usize> {
+    if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
+        return None;
+    }
+    let mut i = 2;
+    while window.get(i).is_some_and(char::is_ascii_digit) {
+        i += 1;
+    }
+    if i == 2 {
+        return None;
+    }
+    if window.get(i) != Some(&'.') || !window.get(i + 1).is_some_and(char::is_ascii_digit) {
+        return None;
+    }
+    if window.get(i + 2) != Some(&'s') || window.get(i + 3) != Some(&')') {
+        return None;
+    }
+    Some(i + 4)
+}
+
 /// Composite normalizer for snapshot tests: CRLF→LF, fold `\`→`/`, then
 /// substitute each `(path, placeholder)` pair. Substitutions are applied
 /// longest-first to handle nested temp paths correctly (e.g. when

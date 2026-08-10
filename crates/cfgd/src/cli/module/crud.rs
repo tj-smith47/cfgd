@@ -320,7 +320,7 @@ pub fn cmd_module_create(
                 cfgd_core::reconciler::Confirm::Ask("Apply these changes?")
             };
             match run.execute(printer, confirm, &mut exec)? {
-                cfgd_core::reconciler::RunDisposition::Applied(result) => {
+                cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
                     apply_status = result.status.clone();
                     // A module whose packages come from a manager this apply
                     // bootstrapped leaves the invoking shell one `source` away
@@ -341,7 +341,7 @@ pub fn cmd_module_create(
                 // `preview_only`, and none of them ran an action.
                 cfgd_core::reconciler::RunDisposition::NothingToDo
                 | cfgd_core::reconciler::RunDisposition::Previewed
-                | cfgd_core::reconciler::RunDisposition::BackupsApplied(_) => {}
+                | cfgd_core::reconciler::RunDisposition::BackupsApplied { .. } => {}
             }
         }
     }

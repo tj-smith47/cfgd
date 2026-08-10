@@ -616,6 +616,37 @@ impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
     }
 }
 
+impl BackupRunOutput {
+    /// The payload entry for one unit's [`cfgd_core::backup::BackupRunReport`].
+    ///
+    /// The ONE mapping, so `cfgd backup run`, `cfgd apply` and the daemon emit
+    /// the same three shapes for the same three outcomes: a recorded run, a
+    /// unit another writer held (`"skipped"`, which is not a failure of this
+    /// run), and a state-store refusal (`"failed"`, which is). The unit's name
+    /// is the caller's because a record-less report has no name of its own.
+    pub fn from_report(name: &str, report: &cfgd_core::backup::BackupRunReport) -> Self {
+        match (&report.record, &report.skipped) {
+            (Some(record), _) => Self::from(record),
+            (None, Some(holder)) => Self {
+                name: name.to_string(),
+                status: "skipped".to_string(),
+                destination_path: None,
+                clean: false,
+                error: Some(format!("already running ({holder})")),
+            },
+            (None, None) => Self {
+                name: name.to_string(),
+                status: cfgd_core::state::BackupRunStatus::Failed
+                    .as_str()
+                    .to_string(),
+                destination_path: None,
+                clean: false,
+                error: report.error.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceShowOutput {

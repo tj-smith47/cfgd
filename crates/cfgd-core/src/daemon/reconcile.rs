@@ -763,13 +763,13 @@ pub(crate) fn handle_reconcile(
                 match run
                     .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
                     .map(|disposition| match disposition {
-                        crate::reconciler::RunDisposition::Applied(result) => Some(result),
+                        crate::reconciler::RunDisposition::Applied { result, .. } => Some(result),
                         // A run carrying a plan, executing (not `preview_only`)
                         // and never prompting has no other disposition.
                         crate::reconciler::RunDisposition::NothingToDo
                         | crate::reconciler::RunDisposition::Previewed
                         | crate::reconciler::RunDisposition::Declined
-                        | crate::reconciler::RunDisposition::BackupsApplied(_) => None,
+                        | crate::reconciler::RunDisposition::BackupsApplied { .. } => None,
                     }) {
                     Ok(None) => {}
                     Ok(Some(result)) => {

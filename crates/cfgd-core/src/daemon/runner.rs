@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::backup::{
-    BackupReloadSummary, BackupTimers, DegradedReason, resolve_backup_tasks, run_scheduled_backup,
+    BackupReloadSummary, BackupTimers, DegradedReason, resolve_backup_tasks, run_scheduled_backups,
 };
 use super::reconcile::{ReconcileCtx, handle_reconcile};
 use super::sync::{handle_compliance_snapshot, handle_sync, handle_version_check};
@@ -520,27 +520,29 @@ pub(super) async fn handle_backup_tick(
         return Ok(());
     };
 
-    for (profile_name, spec) in due {
+    for (_, spec) in &due {
         tracing::info!(backup = %spec.name, "scheduled backup tick");
-        let printer = Arc::clone(&ctx.printer);
-        let abort = Arc::clone(&ctx.abort);
-        let config_dir = config_dir.clone();
-        let state_dir = state_dir.clone();
-        crate::spawn_blocking_with_test_home(move || {
-            run_scheduled_backup(
-                &spec,
-                &config_dir,
-                &profile_name,
-                &state_dir,
-                &printer,
-                &abort,
-            );
-        })
-        .await
-        .map_err(|e| DaemonError::WatchError {
-            message: format!("backup task failed: {}", e),
-        })?;
     }
+    // One dispatch for the whole due set, not one per unit: the fire renders as
+    // a single run — header, `Backups` pseudo-phase, rollup — and a per-unit
+    // dispatch would print that skeleton once per unit.
+    let printer = Arc::clone(&ctx.printer);
+    let abort = Arc::clone(&ctx.abort);
+    let config_path = ctx.config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        run_scheduled_backups(
+            &due,
+            &config_path,
+            &config_dir,
+            &state_dir,
+            &printer,
+            &abort,
+        );
+    })
+    .await
+    .map_err(|e| DaemonError::WatchError {
+        message: format!("backup task failed: {}", e),
+    })?;
     Ok(())
 }
 

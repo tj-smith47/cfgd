@@ -193,10 +193,21 @@ fn backup_run_named_human() {
         "naming 'docs' must not touch the unrelated 'weekly' backup"
     );
 
+    // The run skeleton names the config file and times itself, and the
+    // snapshot subject carries the run's own clock stamp — all three are
+    // host-varying, so all three are normalized before the compare.
+    let config_file = config_dir.path().join("cfgd.yaml");
     let normalized = cfgd_core::normalize_for_snapshot(
         &cfgd_core::output::strip_ansi(&cap.human()),
-        &[(&source, "<SOURCE>"), (state_dir.path(), "<STATE_DIR>")],
+        &[
+            (&source, "<SOURCE>"),
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
     );
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "backup/run_named.txt",
@@ -496,8 +507,12 @@ fn apply_runs_schedule_less_backups_even_with_an_empty_file_plan() {
 
     let human = cfgd_core::output::strip_ansi(&cap.human());
     assert!(
-        human.contains("backup 'docs'"),
-        "human output must report the backup that ran: {human}"
+        human.contains("Backups") && human.contains("backup:docs"),
+        "the backup that ran renders as its own owner group inside the run: {human}"
+    );
+    assert!(
+        human.contains("snapshot notes.txt."),
+        "the group's snapshot line names the artifact it wrote: {human}"
     );
 }
 
@@ -785,12 +800,16 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
     // `apply` renders the same event as Skipped; the unit IS being backed up,
     // just not by us. Only the exit code distinguishes the two surfaces.
     assert!(
-        human.contains("— backup 'docs'"),
-        "a busy unit renders with the Skipped role, matching apply: {human:?}"
+        human.contains("backup:docs") && human.contains("— snapshot"),
+        "a busy unit renders with the Skipped role inside its own group, matching apply: {human:?}"
     );
     assert!(
-        !human.contains("✗ backup 'docs'"),
+        !human.contains("✗ snapshot"),
         "a busy unit is not a failed backup: {human:?}"
+    );
+    assert!(
+        human.contains("⊙ 1 action(s) not attempted"),
+        "the snapshot the held lock cost the run is counted, not silently dropped: {human:?}"
     );
     assert!(
         !state_dir.path().join("backups").join("docs").exists(),

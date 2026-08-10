@@ -726,7 +726,7 @@ fn execute_skips_the_preview_when_confirmation_is_skipped() {
     drop(printer);
     let out = strip_ansi(&buf.lock().unwrap());
 
-    assert!(matches!(disposition, RunDisposition::Applied(_)));
+    assert!(matches!(disposition, RunDisposition::Applied { .. }));
     assert_eq!(exec.calls, 1);
     assert!(
         !out.contains("Phase: Files"),
@@ -796,7 +796,7 @@ fn a_backups_run_with_no_units_does_nothing() {
     let units: Vec<crate::backup::BackupUnit<'_>> = Vec::new();
     let run = ApplyRun::backups(ctx(RunTitle::Backup), &units, &store);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let status = run.execute_backups(&printer).unwrap();
+    let (status, _reports) = run.execute_backups(&printer).unwrap();
     drop(printer);
     let out = strip_ansi(&buf.lock().unwrap());
 
@@ -826,7 +826,10 @@ fn execute_on_a_backups_run_reports_the_work_it_did() {
     assert!(
         matches!(
             disposition,
-            RunDisposition::BackupsApplied(ApplyStatus::Success)
+            RunDisposition::BackupsApplied {
+                status: ApplyStatus::Success,
+                ..
+            }
         ),
         "a backups run that executed must not report NothingToDo"
     );

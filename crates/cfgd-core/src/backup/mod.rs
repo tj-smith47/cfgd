@@ -113,6 +113,44 @@ struct Artifact {
     size_bytes: u64,
 }
 
+/// One rendered line of a backup unit's run, in the order it was emitted.
+///
+/// NOT persisted — `backup_runs` keeps its columns; this is what the
+/// pseudo-phase's rollup counts and what the run's `RunTally` is built from.
+/// A [`BackupRunRecord`] is one row per *unit* and carries no hook counts, so
+/// a rollup built from records alone would report one action for a unit that
+/// rendered three lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupItem {
+    pub label: String,
+    pub ok: bool,
+}
+
+/// What one unit produced: the row that was written (absent only on the two
+/// record-less arms — a `Busy` skip and a state-store failure) and the items
+/// that were rendered under it.
+#[derive(Debug, Default)]
+pub struct BackupRunReport {
+    pub record: Option<BackupRunRecord>,
+    pub items: Vec<BackupItem>,
+    /// Set on the `Busy` skip, so the caller's `-o json` payload keeps the
+    /// `"skipped"` status it emits today.
+    pub skipped: Option<String>,
+    /// Set on the OTHER record-less arm — the state store refused the row — so
+    /// the payload can name the failure. Without it the one arm that has no
+    /// record would also be the one arm whose `-o json` entry could not say
+    /// what went wrong.
+    pub error: Option<String>,
+}
+
+impl BackupRunReport {
+    /// Whether this unit's work completed with an intact snapshot. A skip is
+    /// not clean: the unit the caller asked for did not run here.
+    pub fn is_clean(&self) -> bool {
+        self.skipped.is_none() && self.record.as_ref().is_some_and(BackupRunRecord::is_clean)
+    }
+}
+
 /// Which side of the backup a hook list is running for.
 ///
 /// Reaches `preBackup` / `postBackup` hooks as `CFGD_OPERATION`. The two
@@ -180,6 +218,7 @@ pub fn run_backup(
     unit: &BackupUnit<'_>,
     store: &StateStore,
     printer: &Printer,
+    items: &mut Vec<BackupItem>,
 ) -> Result<BackupRunRecord> {
     let _lock = acquire_unit_lock(unit)?;
     let spec = unit.spec;
@@ -192,6 +231,7 @@ pub fn run_backup(
         ScriptPhase::PreBackup,
         BackupOperation::Backup,
         printer,
+        items,
     )
     .err();
     // A failed `preBackup` means the source is not in the state the hook was
@@ -200,12 +240,22 @@ pub fn run_backup(
         Some(_) => None,
         None => Some(take_snapshot(unit, &source)),
     };
+    // The snapshot's item, from the same value the record is built out of. A
+    // skipped snapshot (`None`) contributes NO item, because no line is
+    // rendered for it either — the rollup counts lines, not intentions.
+    if let Some(result) = &copy {
+        items.push(BackupItem {
+            label: snapshot_subject(result.as_ref().ok().map(|a| a.path.as_path())),
+            ok: result.is_ok(),
+        });
+    }
     let post_error = run_hooks(
         unit,
         &spec.post_backup,
         ScriptPhase::PostBackup,
         BackupOperation::Backup,
         printer,
+        items,
     )
     .err();
 
@@ -250,6 +300,8 @@ fn snapshot_and_record(
     let started_at = crate::utc_now_iso8601();
     let source = unit.source();
     let copy = Some(take_snapshot(unit, &source));
+    // No items out-parameter: a restore's safety snapshot renders no owner
+    // group, so there is no pseudo-phase rollup to count its lines.
     record_run(
         store,
         unit,
@@ -264,6 +316,125 @@ fn snapshot_and_record(
     )
 }
 
+/// The snapshot line's subject: `snapshot <destination file name>`, or the bare
+/// `snapshot` when nothing was captured.
+///
+/// The file-name COMPONENT, never the whole path: `namePattern` may nest
+/// (`daily/{filename}.{timestamp}`), and the file name is also what `cfgd
+/// backup restore --at` asks the operator to type. The ONE derivation, shared
+/// by the rendered line, by the item the rollup counts, and — through
+/// [`predicted_snapshot_subject`] — by the alignment column the pseudo-phase
+/// sizes before the first hook runs.
+fn snapshot_subject(destination: Option<&Path>) -> String {
+    match destination.and_then(|p| p.file_name()) {
+        Some(name) => format!("snapshot {}", name.to_string_lossy()),
+        None => "snapshot".to_string(),
+    }
+}
+
+/// The width the snapshot line will occupy, derived before the run.
+///
+/// `namePattern`, the unit name and the source's file name all come from the
+/// spec, and `{timestamp}` is fixed-width (`BACKUP_TIMESTAMP_FORMAT` renders 16
+/// characters for every instant), so the subject is exact ahead of time. The
+/// `{filename}` fallback is [`snapshot_name`]'s own — the unit's name when the
+/// source has no final component — because the empty string a `file_name()`
+/// -only derivation would substitute is narrower than what the run will print,
+/// and narrower is the direction that mis-aligns the column.
+fn predicted_snapshot_subject(unit: &BackupUnit<'_>) -> String {
+    let spec = unit.spec;
+    let source = unit.source();
+    let filename = source
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| spec.name.clone());
+    let rendered = crate::config::render_backup_name_pattern(
+        &spec.name_pattern,
+        &spec.name,
+        &filename,
+        // Any instant renders the same width, so the value is irrelevant and
+        // only its shape matters.
+        &crate::utc_now_backup_stamp(),
+    );
+    snapshot_subject(Some(Path::new(&rendered)))
+}
+
+/// The labels the `Backups` pseudo-phase's alignment column is measured over:
+/// one per hook entry, plus the unit's predicted snapshot line.
+///
+/// The same strings the run will emit — the hook subjects come from
+/// [`hook_script_subject`](crate::reconciler::hook_script_subject), which is
+/// also what `ScriptStatus::new` composes each hook's line from, so the column
+/// cannot be sized against a label no line reaches.
+pub fn backup_unit_labels(unit: &BackupUnit<'_>) -> Vec<String> {
+    let spec = unit.spec;
+    let mut labels: Vec<String> = Vec::new();
+    for (phase, entries) in [
+        (ScriptPhase::PreBackup, &spec.pre_backup),
+        (ScriptPhase::PostBackup, &spec.post_backup),
+    ] {
+        for entry in entries {
+            labels.push(hook_item_label(&phase, entry));
+        }
+    }
+    labels.push(predicted_snapshot_subject(unit));
+    labels
+}
+
+/// One hook's line, as both the alignment column and the rollup's item see it.
+fn hook_item_label(phase: &ScriptPhase, entry: &ScriptEntry) -> String {
+    crate::reconciler::hook_script_subject(phase.display_name(), entry.run_str()).to_string()
+}
+
+/// Render one unit's owner group and return what it produced.
+///
+/// The ONE backup renderer: `cfgd backup run`, apply's pending backups and the
+/// daemon's scheduled fire all call it, so a unit cannot look different
+/// depending on which surface dispatched it — the property
+/// [`report_backup_record`] already carried, extended to the group and to the
+/// items its rollup counts.
+///
+/// The two record-less arms render inside the group like every other row, with
+/// the same `snapshot` subject the no-artifact row uses: naming the unit in the
+/// group heading and again in the subject is the duplication the owner model
+/// exists to remove. A `Busy` skip is `Role::Skipped` and moves no count — it
+/// is the one-writer-per-unit rule working, not a failure — while a
+/// state-store failure is `Role::Fail` and does.
+pub fn run_backup_group(
+    unit: &BackupUnit<'_>,
+    store: &StateStore,
+    phase: &crate::reconciler::PseudoPhase<'_>,
+    width: usize,
+    printer: &Printer,
+) -> BackupRunReport {
+    let group = phase.owner(&crate::reconciler::Owner::backup(&unit.spec.name), width);
+    let mut report = BackupRunReport::default();
+    match run_backup(unit, store, printer, &mut report.items) {
+        Ok(record) => {
+            report_backup_record(printer, &record);
+            report.record = Some(record);
+        }
+        Err(crate::errors::CfgdError::Backup(BackupError::Busy { holder, .. })) => {
+            group
+                .status(Role::Skipped, snapshot_subject(None))
+                .detail(format!("already running ({holder})"));
+            report.skipped = Some(holder);
+        }
+        Err(e) => {
+            let detail = collapse_to_subject_line(&e);
+            group
+                .status(Role::Fail, snapshot_subject(None))
+                .detail(&detail);
+            report.items.push(BackupItem {
+                label: snapshot_subject(None),
+                ok: false,
+            });
+            report.error = Some(detail);
+        }
+    }
+    report
+}
+
 /// Join a run's failures, write its record, and prune to `spec.retention`.
 ///
 /// Report a completed run on the status line every surface shares.
@@ -274,8 +445,15 @@ fn snapshot_and_record(
 /// attention), and no artifact at all is Fail. `cfgd apply`, `cfgd backup run`,
 /// and the daemon's scheduled fire all render through here so a run cannot look
 /// different depending on which surface produced it.
+///
+/// **Size versus error in the one detail slot — the error wins, and the size
+/// joins it.** Both can be present at once: `record_run` sets `Success`
+/// whenever an artifact exists and still joins any hook failures into `error`,
+/// so a `postBackup` failure after a good snapshot carries both. The error
+/// leads because it is what the reader must act on; the size stays because it
+/// is the evidence that the snapshot itself landed.
 pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) {
-    let subject = format!("backup '{}'", record.name);
+    let subject = snapshot_subject(record.destination_path.as_deref().map(Path::new));
     let role = if record.is_clean() {
         Role::Ok
     } else if record.status == BackupRunStatus::Success {
@@ -283,11 +461,16 @@ pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) {
     } else {
         Role::Fail
     };
-    match &record.error {
-        Some(e) => {
-            printer
-                .status(role, subject)
-                .detail(collapse_to_subject_line(e));
+    let size = record.size_bytes.map(crate::format_bytes);
+    let detail = match (&record.error, size) {
+        (Some(e), Some(size)) => Some(format!("{} ({size})", collapse_to_subject_line(e))),
+        (Some(e), None) => Some(collapse_to_subject_line(e)),
+        (None, Some(size)) => Some(size),
+        (None, None) => None,
+    };
+    match detail {
+        Some(detail) => {
+            printer.status(role, subject).detail(detail);
         }
         None => printer.status_simple(role, subject),
     }
@@ -379,6 +562,7 @@ fn run_hooks(
     phase: ScriptPhase,
     operation: BackupOperation,
     printer: &Printer,
+    items: &mut Vec<BackupItem>,
 ) -> std::result::Result<(), BackupError> {
     if entries.is_empty() {
         return Ok(());
@@ -409,6 +593,11 @@ fn run_hooks(
     let mut first_error: Option<BackupError> = None;
 
     for entry in entries {
+        // Computed once, before the call: the value IS the arm's whole
+        // meaning, and `execute_script` needs it to decide whether its single
+        // line reads as fatal. Evaluating it again after the failure is what
+        // let the role and the control flow disagree.
+        let non_fatal = effective_continue_on_error(entry, &phase);
         let outcome = execute_script(
             entry,
             unit.config_dir,
@@ -420,19 +609,28 @@ fn run_hooks(
             unit.abort,
             ScriptReport {
                 subject: ScriptSubject::Hook(phase.display_name()),
-                non_fatal: effective_continue_on_error(entry, &phase),
+                non_fatal,
             },
         );
+        // One item per hook, pushed as it completes — the fatal one included,
+        // because its line was rendered before this function returned.
+        items.push(BackupItem {
+            label: hook_item_label(&phase, entry),
+            ok: outcome.is_ok(),
+        });
         if let Err(e) = outcome {
             let failure = BackupError::HookFailed {
                 name: unit.spec.name.clone(),
                 phase: phase.display_name(),
                 message: collapse_to_subject_line(&e),
             };
-            if !effective_continue_on_error(entry, &phase) {
+            if !non_fatal {
                 return Err(failure);
             }
-            printer.status_simple(Role::Warn, collapse_to_subject_line(&failure));
+            // No second line: `execute_script` has already emitted this hook's
+            // one status, at `Role::Warn` because `non_fatal` rode in on the
+            // report. A softer re-render here would make one hook two lines
+            // and repeat what the owner heading now says.
             first_error.get_or_insert(failure);
         }
     }

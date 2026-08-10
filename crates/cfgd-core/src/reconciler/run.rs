@@ -84,11 +84,22 @@ pub enum RunDisposition {
     NothingToDo,
     Previewed,
     Declined,
-    Applied(ApplyResult),
+    Applied {
+        result: ApplyResult,
+        /// What the run's `Backups` pseudo-phase produced, one report per unit
+        /// and empty for a run that carried none. Returned rather than
+        /// rendered-and-discarded because the caller's `-o json` payload names
+        /// each unit's outcome, and re-deriving it from the state store would
+        /// be a second answer to a question the run already answered.
+        backups: Vec<crate::backup::BackupRunReport>,
+    },
     /// A run built by [`ApplyRun::backups`] did its work. Nothing it ran was a
     /// plan action, so there is no [`ApplyResult`] to carry — only the status
-    /// the `Backups` pseudo-phase rolled up.
-    BackupsApplied(ApplyStatus),
+    /// the `Backups` pseudo-phase rolled up, and the reports behind it.
+    BackupsApplied {
+        status: ApplyStatus,
+        backups: Vec<crate::backup::BackupRunReport>,
+    },
 }
 
 /// What [`ApplyRun::execute`] delegates the actual work to. One method, so the
@@ -445,9 +456,10 @@ impl<'a> ApplyRun<'a> {
             // A run built by `backups()` has no plan action to execute; its
             // whole body is the pseudo-phase.
             return match &self.backups {
-                Some(_) => Ok(RunDisposition::BackupsApplied(
-                    self.execute_backups_after_header(printer)?,
-                )),
+                Some(_) => {
+                    let (status, backups) = self.execute_backups_after_header(printer)?;
+                    Ok(RunDisposition::BackupsApplied { status, backups })
+                }
                 None => Ok(RunDisposition::NothingToDo),
             };
         };
@@ -467,85 +479,67 @@ impl<'a> ApplyRun<'a> {
         let started = Instant::now();
         let result = exec.apply(plan, printer)?;
         let mut tally = result.tally();
-        tally.merge(self.render_backups(printer)?);
+        let (backup_tally, backups) = self.render_backups(printer)?;
+        tally.merge(backup_tally);
         render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
-        Ok(RunDisposition::Applied(result))
+        Ok(RunDisposition::Applied { result, backups })
     }
 
     /// header → `Backups` pseudo-phase → rollup, for a run built by
     /// [`ApplyRun::backups`]. No preview, no confirm, no [`RunExecutor`] —
     /// nothing here is a plan action, and [`RunDisposition`] has no arm that
     /// would be true.
-    pub fn execute_backups(&self, printer: &Printer) -> Result<ApplyStatus> {
+    pub fn execute_backups(
+        &self,
+        printer: &Printer,
+    ) -> Result<(ApplyStatus, Vec<crate::backup::BackupRunReport>)> {
         self.header(printer);
         self.execute_backups_after_header(printer)
     }
 
-    fn execute_backups_after_header(&self, printer: &Printer) -> Result<ApplyStatus> {
+    fn execute_backups_after_header(
+        &self,
+        printer: &Printer,
+    ) -> Result<(ApplyStatus, Vec<crate::backup::BackupRunReport>)> {
         let started = Instant::now();
-        let tally = self.render_backups(printer)?;
-        Ok(render_run_rollup(
-            &tally,
-            self.ctx.title,
-            printer,
-            Some(started.elapsed()),
-        ))
+        let (tally, backups) = self.render_backups(printer)?;
+        let status = render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
+        Ok((status, backups))
     }
 
     /// The `Backups` pseudo-phase: one owner group per unit, each carrying that
     /// unit's outcome. Emits nothing and tallies nothing when the run carries
     /// no units, which is every run that did not ask for them.
-    fn render_backups(&self, printer: &Printer) -> Result<RunTally> {
+    fn render_backups(
+        &self,
+        printer: &Printer,
+    ) -> Result<(RunTally, Vec<crate::backup::BackupRunReport>)> {
         let Some(pending) = &self.backups else {
-            return Ok(RunTally::empty());
+            return Ok((RunTally::empty(), Vec::new()));
         };
         if pending.units.is_empty() {
-            return Ok(RunTally::empty());
+            return Ok((RunTally::empty(), Vec::new()));
         }
-        let labels: Vec<String> = pending
+        // Derived ONCE, before the first hook runs: a live stream cannot buffer
+        // to find its own column, and the widest label — the snapshot's — is
+        // not minted until mid-run.
+        let labels: Vec<Vec<String>> = pending
             .units
             .iter()
-            .map(|unit| backup_unit_label(unit))
+            .map(crate::backup::backup_unit_labels)
             .collect();
-        let width = align_width_of(labels.iter().map(String::as_str));
+        let width = align_width_of(labels.iter().flatten().map(String::as_str));
 
         let phase = pseudo_phase(printer, BACKUPS_PHASE_LABEL);
-        let mut tally = RunTally {
-            planned_total: pending.units.len(),
-            ..RunTally::empty()
-        };
-        for unit in pending.units {
-            let owner = Owner::backup(unit.spec().name.clone());
-            let group = phase.owner(&owner, width);
-            match crate::backup::run_backup(unit, pending.store, printer) {
-                Ok(record) => {
-                    let clean = record.is_clean();
-                    crate::backup::report_backup_record(printer, &record);
-                    if clean {
-                        tally.succeeded += 1;
-                    } else {
-                        tally.failed += 1;
-                        if status_severity(&ApplyStatus::Partial) > status_severity(&tally.status) {
-                            tally.status = ApplyStatus::Partial;
-                        }
-                    }
-                }
-                // Another surface holds this unit's lock, so the unit IS being
-                // backed up right now — just not by us. Skipping is the correct
-                // outcome of the engine's one-writer-per-unit rule, so it moves
-                // neither count and surfaces as the run's shortfall.
-                Err(crate::errors::CfgdError::Backup(crate::errors::BackupError::Busy {
-                    holder,
-                    ..
-                })) => {
-                    group
-                        .status(Role::Skipped, format!("backup '{}'", unit.spec().name))
-                        .detail(format!("already running ({holder})"));
-                }
-                Err(e) => return Err(e),
-            }
+        let mut tally = RunTally::empty();
+        let mut reports = Vec::with_capacity(pending.units.len());
+        for (unit, planned) in pending.units.iter().zip(&labels) {
+            let report =
+                crate::backup::run_backup_group(unit, pending.store, &phase, width, printer);
+            tally.merge(backup_report_tally(&report, planned.len()));
+            reports.push(report);
         }
-        Ok(tally)
+        Ok((tally, reports))
     }
 
     /// The same in-scope predicate `Reconciler::apply` counts its own
@@ -579,13 +573,18 @@ impl<'a> ApplyRun<'a> {
     /// The `Backups` pseudo-phase's item count: one per hook entry plus one
     /// snapshot per unit.
     ///
-    /// The value is one per unit, which is the snapshot each unit is certain to
-    /// attempt. A unit's hook entries are known only from the record the engine
-    /// returns after the unit runs, so they are not addable to a number the
-    /// header prints before it; counting a hook here would name work the run
-    /// might never reach.
+    /// The same enumeration [`crate::backup::backup_unit_labels`] measures the
+    /// alignment column over, so the header's `Actions N planned` and the
+    /// rollup's counts reconcile against one list rather than two: a unit whose
+    /// `preBackup` hook fails renders one line fewer than this and the
+    /// difference surfaces as the run's `⊙ N action(s) not attempted`.
     fn pending_backup_count(&self) -> usize {
-        self.backups.as_ref().map_or(0, |p| p.units.len())
+        self.backups.as_ref().map_or(0, |p| {
+            p.units
+                .iter()
+                .map(|unit| crate::backup::backup_unit_labels(unit).len())
+                .sum()
+        })
     }
 
     fn planned_count(&self) -> usize {
@@ -714,9 +713,31 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
     }
 }
 
-/// The subject a backup unit's group is measured and reported against.
-fn backup_unit_label(unit: &BackupUnit<'_>) -> String {
-    format!("backup '{}'", unit.spec().name)
+/// One backup unit's contribution to the run's rollup: `succeeded`/`failed`
+/// counted from the lines its group actually emitted, `planned_total` from
+/// `planned` — the same per-unit enumeration the header counted and the
+/// alignment column was measured over.
+///
+/// The two counts are deliberately different sources. A unit whose `preBackup`
+/// hook failed never reached its snapshot, so it emits one line fewer than it
+/// planned, and that difference is the run's `⊙ N action(s) not attempted`. A
+/// `Busy` skip emits no line at all — the unit IS being backed up, just not
+/// here — so it moves no count and no exit code and surfaces only as the
+/// shortfall.
+fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) -> RunTally {
+    let succeeded = report.items.iter().filter(|item| item.ok).count();
+    RunTally {
+        succeeded,
+        failed: report.items.len() - succeeded,
+        planned_total: planned,
+        // A skip is not a partial run of this unit; it is no run of it, so it
+        // leaves the run's status alone.
+        status: match (&report.skipped, report.is_clean()) {
+            (Some(_), _) | (None, true) => ApplyStatus::Success,
+            (None, false) => ApplyStatus::Partial,
+        },
+        aborted: None,
+    }
 }
 
 /// A pseudo-phase heading held open across execution, so each item's status

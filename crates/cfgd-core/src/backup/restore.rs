@@ -316,12 +316,17 @@ pub fn restore_backup(
     let staged = stage_snapshot(&name, &snapshot, &target)?;
 
     let mut failures: Vec<String> = Vec::new();
+    // A restore renders no owner group and rolls nothing up, so its hook items
+    // are collected and dropped: the out-parameter exists for the pseudo-phase
+    // that counts the lines it emitted, and a restore has none.
+    let mut items: Vec<super::BackupItem> = Vec::new();
     let pre_error = super::run_hooks(
         unit,
         &spec.pre_backup,
         ScriptPhase::PreBackup,
         BackupOperation::Restore,
         printer,
+        &mut items,
     )
     .err();
 
@@ -347,6 +352,7 @@ pub fn restore_backup(
         ScriptPhase::PostBackup,
         BackupOperation::Restore,
         printer,
+        &mut items,
     )
     .err();
 

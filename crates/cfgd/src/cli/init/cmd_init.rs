@@ -565,7 +565,7 @@ pub(super) fn apply_plan(
         cfgd_core::reconciler::Confirm::Ask("Apply these changes?")
     };
     match run.execute(printer, confirm, &mut exec)? {
-        cfgd_core::reconciler::RunDisposition::Applied(result) => {
+        cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
             // The one-command bootstrap is exactly where a stale shell bites
             // hardest: this apply may have installed the first package manager
             // on the box, and the invoking shell predates the env file naming
@@ -581,7 +581,7 @@ pub(super) fn apply_plan(
         // `preview_only`, and none of them ran an action.
         cfgd_core::reconciler::RunDisposition::NothingToDo
         | cfgd_core::reconciler::RunDisposition::Previewed
-        | cfgd_core::reconciler::RunDisposition::BackupsApplied(_) => {
+        | cfgd_core::reconciler::RunDisposition::BackupsApplied { .. } => {
             Ok(cfgd_core::state::ApplyStatus::Success)
         }
     }

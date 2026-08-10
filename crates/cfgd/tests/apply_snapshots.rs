@@ -68,47 +68,10 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, 
 }
 
 /// Replace ` (N.Ns)` duration suffixes (rendered by StatusBuilder.duration())
-/// with a stable placeholder so the apply-summary golden is host-stable.
+/// with a stable placeholder so the apply-summary golden is host-stable, and
+/// fold any surviving `\` so a Windows capture matches the same golden.
 fn normalize_duration(raw: &str) -> String {
-    let chars: Vec<char> = raw.chars().collect();
-    let mut out = String::with_capacity(raw.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if let Some(len) = duration_span(&chars[i..]) {
-            out.push_str(" (XXs)");
-            i += len;
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-    out.replace('\\', "/")
-}
-
-/// Detect a ` (N.Ns)` or ` (NN.Ns)` (etc.) suffix and return its length in chars.
-/// Renderer formats `{:.1}s` so there is always exactly one fractional digit.
-fn duration_span(window: &[char]) -> Option<usize> {
-    if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
-        return None;
-    }
-    let mut i = 2;
-    let int_start = i;
-    while i < window.len() && window[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == int_start {
-        return None;
-    }
-    if i + 3 >= window.len() {
-        return None;
-    }
-    if window[i] != '.' || !window[i + 1].is_ascii_digit() {
-        return None;
-    }
-    if window[i + 2] != 's' || window[i + 3] != ')' {
-        return None;
-    }
-    Some(i + 4)
+    cfgd_core::normalize_snapshot_durations(raw).replace('\\', "/")
 }
 
 #[test]

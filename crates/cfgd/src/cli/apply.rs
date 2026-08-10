@@ -485,10 +485,31 @@ pub fn run_apply(
     // diff, so a converged machine (the common case once a fleet is settled)
     // must not short-circuit here — that would silently starve backups of
     // the cadence "every apply" promises.
+    // Register cooperative-cancellation handlers for the duration of the apply.
+    // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between
+    // atomic actions); the in-flight action still finishes, so no file is torn.
+    // The flag itself is built here rather than after the no-work gate because
+    // the backup units below borrow it, and they are part of the run this
+    // gate decides about.
+    let abort = cfgd_core::AbortFlag::new();
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let backup_profile = active_profile_name(cli, Some(&cfg));
+    // The units the run's `Backups` pseudo-phase will render. Built before the
+    // run so the header's `Actions N planned` can count their hooks and
+    // snapshots, which is the same enumeration the rollup reconciles against.
+    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = pending_backup_specs
+        .iter()
+        .map(|spec| {
+            cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)
+                .with_abort(&abort)
+        })
+        .collect();
+
     let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Apply), &plan)
         .with_filter(phase_filter.as_ref())
         .with_withheld(&withheld)
-        .decisions_answerable(owns_the_store);
+        .decisions_answerable(owns_the_store)
+        .with_pending_backups(&backup_units, &state);
 
     if !has_actions && pending_backups.is_empty() {
         run.header(printer);
@@ -505,10 +526,6 @@ pub fn run_apply(
         return Ok(ApplyOutcome::success());
     }
 
-    // Register cooperative-cancellation handlers for the duration of the apply.
-    // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between
-    // atomic actions); the in-flight action still finishes, so no file is torn.
-    let abort = cfgd_core::AbortFlag::new();
     register_abort_handlers(&abort);
 
     // The confirmation gate is about the reconciler's file/package/module diff.
@@ -544,8 +561,8 @@ pub fn run_apply(
     if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
         reconciler::mint_decisions(&state, &review);
     }
-    let result = match disposition {
-        reconciler::RunDisposition::Applied(result) => result,
+    let (result, backup_reports) = match disposition {
+        reconciler::RunDisposition::Applied { result, backups } => (result, backups),
         reconciler::RunDisposition::Declined => {
             printer.status_simple(Role::Info, "Aborted");
             printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
@@ -556,7 +573,7 @@ pub fn run_apply(
         // the nothing-to-do exit already reports.
         reconciler::RunDisposition::NothingToDo
         | reconciler::RunDisposition::Previewed
-        | reconciler::RunDisposition::BackupsApplied(_) => {
+        | reconciler::RunDisposition::BackupsApplied { .. } => {
             return Ok(ApplyOutcome::success());
         }
     };
@@ -610,25 +627,23 @@ pub fn run_apply(
         tracing::warn!(error = %e, "failed to prune old backups");
     }
 
-    // Run every schedule-less `spec.backups[]` entry. Not a reconciler action
-    // (no diff against desired state — they always run), and independent of
-    // the reconcile outcome above, so they run here unconditionally rather
-    // than being folded into `plan`/`result`. A dirty run (good snapshot, but
-    // a failed post-hook) is user-declared work, so — unlike the best-effort
-    // pruning above — it downgrades a `Success` apply to `Partial` and drives
-    // the process exit code the same way a failed reconciler action would.
-    let backup_outputs = run_pending_backups(
-        &pending_backup_specs,
-        &PendingBackupCtx {
-            cli,
-            cfg: &cfg,
-            config_dir: &config_dir,
-            state: &state,
-            printer,
-            abort: &abort,
-        },
-        &mut status,
-    )?;
+    // Every schedule-less `spec.backups[]` entry ran inside the run above, as
+    // the `Backups` pseudo-phase before the rollup. What is left here is the
+    // half the run cannot decide: user-declared work that did not complete
+    // cleanly downgrades a `Success` apply to `Partial` and drives the process
+    // exit code the same way a failed reconciler action would. A unit another
+    // writer held is NOT that — it is the engine's one-writer rule working, so
+    // it leaves the exit code alone.
+    let backup_outputs: Vec<BackupRunOutput> = pending_backup_specs
+        .iter()
+        .zip(&backup_reports)
+        .map(|(spec, report)| {
+            if report.skipped.is_none() && !report.is_clean() {
+                downgrade_to_partial(&mut status);
+            }
+            BackupRunOutput::from_report(&spec.name, report)
+        })
+        .collect();
 
     let output = ApplyOutput {
         status: status.display_str().to_string(),
@@ -644,102 +659,6 @@ pub fn run_apply(
         status,
         aborted_code: None,
     })
-}
-
-/// What [`run_pending_backups`] needs from the apply it runs inside.
-struct PendingBackupCtx<'a> {
-    cli: &'a Cli,
-    cfg: &'a CfgdConfig,
-    config_dir: &'a std::path::Path,
-    state: &'a cfgd_core::state::StateStore,
-    printer: &'a cfgd_core::output::Printer,
-    abort: &'a cfgd_core::AbortFlag,
-}
-
-/// Run the apply's schedule-less `spec.backups[]` units, downgrading `status`
-/// for any unit whose work did not complete cleanly.
-fn run_pending_backups(
-    specs: &[&cfgd_core::config::BackupSpec],
-    ctx: &PendingBackupCtx<'_>,
-    status: &mut cfgd_core::state::ApplyStatus,
-) -> anyhow::Result<Vec<BackupRunOutput>> {
-    let mut outputs = Vec::with_capacity(specs.len());
-    if specs.is_empty() {
-        return Ok(outputs);
-    }
-    let printer = ctx.printer;
-    let profile_name = active_profile_name(ctx.cli, Some(ctx.cfg));
-    let state_dir = cfgd_core::resolve_state_dir(ctx.cli.state_dir.as_deref(), ctx.cli.scope())?;
-    for spec in specs {
-        let backup_name = &spec.name;
-        let unit =
-            cfgd_core::backup::BackupUnit::new(spec, ctx.config_dir, &profile_name, &state_dir)
-                .with_abort(ctx.abort);
-        // Best-effort, matching the neighboring `record_source_apply` call in
-        // the caller: `run_backup` only returns `Err` on a state-store write
-        // failure (ordinary snapshot/hook failures are captured into the
-        // returned record, not propagated), so a `?` here would abort every
-        // remaining backup AND the rest of apply over what's really a single
-        // unit's storage problem. Warn, count the unit as failed for
-        // exit-code purposes, and keep going.
-        let record = match cfgd_core::backup::run_backup(&unit, ctx.state, printer) {
-            Ok(record) => record,
-            // Another surface (a daemon timer fire, a hand-run) holds this
-            // unit's lock, so the unit IS being backed up right now — just
-            // not by us. Skipping is the correct outcome of the engine's
-            // one-writer-per-unit rule, not an apply failure, so it does
-            // not move the exit code; the structured payload still carries
-            // the skip so a script can see the run did not come from here.
-            Err(cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::Busy {
-                holder,
-                ..
-            })) => {
-                printer
-                    .status(Role::Skipped, format!("backup '{backup_name}'"))
-                    .detail(format!("already running ({holder})"));
-                tracing::info!(
-                    backup = %backup_name,
-                    holder = %holder,
-                    "backup already running elsewhere; skipped"
-                );
-                outputs.push(BackupRunOutput {
-                    name: backup_name.clone(),
-                    status: "skipped".to_string(),
-                    destination_path: None,
-                    clean: false,
-                    error: Some(format!("already running ({holder})")),
-                });
-                continue;
-            }
-            Err(e) => {
-                printer
-                    .status(Role::Fail, format!("backup '{backup_name}'"))
-                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                tracing::warn!(
-                    backup = %backup_name,
-                    error = %e,
-                    "backup run failed; continuing with remaining backups"
-                );
-                downgrade_to_partial(status);
-                outputs.push(BackupRunOutput {
-                    name: backup_name.clone(),
-                    status: cfgd_core::state::BackupRunStatus::Failed
-                        .as_str()
-                        .to_string(),
-                    destination_path: None,
-                    clean: false,
-                    error: Some(e.to_string()),
-                });
-                continue;
-            }
-        };
-        cfgd_core::backup::report_backup_record(printer, &record);
-        if !record.is_clean() {
-            downgrade_to_partial(status);
-        }
-        outputs.push(BackupRunOutput::from(&record));
-    }
-    Ok(outputs)
 }
 
 /// Structured `-o json` payload emitted when an apply is cooperatively aborted

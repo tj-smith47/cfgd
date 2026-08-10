@@ -126,11 +126,20 @@ impl Harness {
     /// `$HOME`, so hook working directories and `~` expansion never touch the
     /// developer's home.
     fn run(&self, spec: &BackupSpec) -> BackupRunRecord {
+        self.run_with_items(spec).0
+    }
+
+    /// [`Self::run`] plus the per-line items the run pushed — what the
+    /// `Backups` pseudo-phase's rollup counts.
+    fn run_with_items(&self, spec: &BackupSpec) -> (BackupRunRecord, Vec<BackupItem>) {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
             let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
-            run_backup(&unit, &self.store, &self.printer).expect("run must be recorded")
+            let mut items = Vec::new();
+            let record = run_backup(&unit, &self.store, &self.printer, &mut items)
+                .expect("run must be recorded");
+            (record, items)
         })
     }
 
@@ -1308,7 +1317,7 @@ fn run_against_dir(
         let store = StateStore::open_in_dir(state_dir).expect("file-backed store");
         let (printer, _) = Printer::for_test();
         let unit = BackupUnit::new(spec, config_dir, "workstation", state_dir);
-        run_backup(&unit, &store, &printer)
+        run_backup(&unit, &store, &printer, &mut Vec::new())
     })
 }
 
@@ -1331,7 +1340,8 @@ fn a_run_is_refused_while_the_unit_lock_is_held() {
     let state_dir = h.state_dir();
     let err = crate::with_test_home(&h.root, || {
         let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
-        run_backup(&unit, &h.store, &h.printer).expect_err("a held unit lock must refuse the run")
+        run_backup(&unit, &h.store, &h.printer, &mut Vec::new())
+            .expect_err("a held unit lock must refuse the run")
     });
 
     assert!(
@@ -2531,4 +2541,215 @@ fn restore_target_reports_the_link_it_followed_alongside_what_was_asked_for() {
             "every surface renders the path the same way"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// The `Backups` pseudo-phase inside a run
+//
+// `cfgd backup run`, the daemon's scheduled fire and `cfgd apply`'s pending
+// backups all render through `ApplyRun`, so these assert the grammar once,
+// against the skeleton all three share.
+// ---------------------------------------------------------------------------
+
+/// The icons a SETTLED item line can start with. `◐` is deliberately absent:
+/// a running script's window is one live line that its outcome replaces on a
+/// terminal, and counting it would double every hook.
+const STATUS_ICONS: [char; 4] = ['✓', '⚠', '✗', '—'];
+
+/// Drive `specs` through the run skeleton — header, `Backups` pseudo-phase,
+/// rollup — and return the human render with its exit status.
+fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::state::ApplyStatus) {
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    let status = crate::with_test_home(&h.root, || {
+        let units: Vec<BackupUnit<'_>> = specs
+            .iter()
+            .map(|s| BackupUnit::new(s, &config_dir, "workstation", &state_dir))
+            .collect();
+        let ctx = crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Backup,
+            config_path: None,
+            profile: Some("workstation"),
+            modules: &[],
+            trigger: None,
+        };
+        let (status, _reports) = crate::reconciler::ApplyRun::backups(ctx, &units, &h.store)
+            .execute_backups(&printer)
+            .expect("a backup run renders");
+        status
+    });
+    drop(printer);
+    let human = crate::output::strip_ansi(&buf.lock().expect("capture").clone());
+    (human, status)
+}
+
+/// The item lines the `Backups` pseudo-phase emitted: everything between its
+/// heading and the rollup that carries a status icon, group headings excluded.
+fn rendered_item_lines(human: &str) -> Vec<String> {
+    human
+        .lines()
+        .skip_while(|line| line.trim() != "Backups")
+        .take_while(|line| !line.contains("action(s)"))
+        .map(|line| line.trim().to_string())
+        .filter(|line| line.starts_with(STATUS_ICONS))
+        .collect()
+}
+
+#[test]
+fn backup_hook_continue_on_error_emits_one_line() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.pre_backup =
+        vec![serde_yaml::from_str("run: exit 5\ncontinueOnError: true\n").expect("hook")];
+
+    let (human, _) = render_backup_run(&h, &[&s]);
+
+    let lines = rendered_item_lines(&human);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the unit's whole group is the hook's line and the snapshot's — a second summary of the same failure is one line too many: {human}"
+    );
+    let hook_lines: Vec<String> = lines
+        .into_iter()
+        .filter(|line| line.contains("preBackup:"))
+        .collect();
+    assert_eq!(
+        hook_lines.len(),
+        1,
+        "a continueOnError hook failure renders ONE line, not the script's own plus a second summary: {human}"
+    );
+    assert!(
+        hook_lines[0].starts_with('⚠'),
+        "a non-fatal hook failure is a warning, not a failure: {:?}",
+        hook_lines[0]
+    );
+    assert!(
+        hook_lines[0].contains("preBackup: exit 5"),
+        "the marker and the hook's own body name the line: {:?}",
+        hook_lines[0]
+    );
+
+    let record = h
+        .store
+        .latest_backup_run("db")
+        .expect("query")
+        .expect("a row is written on every path");
+    assert!(
+        record.error.is_some(),
+        "one rendered line must not cost the recorded failure: {record:?}"
+    );
+}
+
+#[test]
+fn backup_pre_hook_failure_reports_the_shortfall() {
+    // A fatal `preBackup` failure skips the copy, so the unit renders one of
+    // the two items it planned and the run says so rather than silently
+    // reporting a smaller total.
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.pre_backup = vec![hook("exit 7")];
+
+    let (human, _) = render_backup_run(&h, &[&s]);
+
+    assert!(
+        human.contains("⊙ 1 action(s) not attempted"),
+        "the snapshot the failed hook cost the run must be counted: {human}"
+    );
+}
+
+#[test]
+fn backup_tally_counts_the_lines_it_rendered() {
+    // §6.4's arithmetic: three succeeded items and one failed across two units
+    // — a `postBackup` failure still leaves an artifact, so its snapshot line
+    // counts as a success.
+    let h = Harness::new();
+    let clean_source = h.seed_file("data.db", b"payload");
+    let warned_source = h.seed_file("secrets.env", b"secret");
+    let mut clean = spec("dotfiles", &clean_source);
+    clean.pre_backup = vec![hook("exit 0")];
+    let mut warned = spec("secrets", &warned_source);
+    warned.post_backup = vec![hook("exit 3")];
+
+    let (human, status) = render_backup_run(&h, &[&clean, &warned]);
+
+    let lines = rendered_item_lines(&human);
+    assert_eq!(
+        lines.len(),
+        4,
+        "two hooks and two snapshots are four lines: {human}"
+    );
+    assert!(
+        human.contains("✓ 3 action(s) succeeded"),
+        "the rollup counts the lines it rendered: {human}"
+    );
+    assert!(
+        human.contains("1 action(s) failed"),
+        "the failed hook is the only failure: {human}"
+    );
+    assert!(
+        !human.contains("not attempted"),
+        "every planned item rendered, so there is no shortfall: {human}"
+    );
+    assert_eq!(status, crate::state::ApplyStatus::Partial);
+}
+
+#[test]
+fn backup_run_header_counts_hooks_and_snapshots() {
+    // The header's `Actions N planned` and the rollup's counts are two views
+    // of one enumeration: one item per hook entry plus one snapshot per unit.
+    let h = Harness::new();
+    let first = h.seed_file("data.db", b"payload");
+    let second = h.seed_file("notes.txt", b"notes");
+    let mut a = spec("dotfiles", &first);
+    a.pre_backup = vec![hook("exit 0")];
+    a.post_backup = vec![hook("exit 0")];
+    let b = spec("notes", &second);
+
+    let (human, status) = render_backup_run(&h, &[&a, &b]);
+
+    assert!(
+        human.contains("Actions  4 planned"),
+        "two hooks plus one snapshot per unit is four: {human}"
+    );
+    assert!(
+        human.contains("✓ Backup complete — 4 action(s) succeeded"),
+        "the rollup reconciles against the header: {human}"
+    );
+    assert_eq!(status, crate::state::ApplyStatus::Success);
+}
+
+#[test]
+fn a_busy_unit_renders_inside_its_group_and_moves_no_exit_code() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let s = spec("db", &source);
+    let _held = crate::acquire_backup_lock(&h.state_dir(), "db").expect("take the unit lock");
+
+    let (human, status) = render_backup_run(&h, &[&s]);
+
+    let lines = rendered_item_lines(&human);
+    assert_eq!(lines.len(), 1, "a refused unit renders one line: {human}");
+    assert!(
+        lines[0].starts_with("— snapshot"),
+        "a refused unit is a skip, and the group heading already named it: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("already running (pid"),
+        "the refusal names the holder: {:?}",
+        lines[0]
+    );
+    assert!(
+        human.contains("backup:db"),
+        "the skip renders inside its owner group: {human}"
+    );
+    assert_eq!(
+        status,
+        crate::state::ApplyStatus::Success,
+        "the one-writer rule working is not a failed run"
+    );
 }

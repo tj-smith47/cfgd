@@ -17467,4 +17467,197 @@ mod backup_timers {
              got: {unreadable_config:?}"
         );
     }
+    // ----- one group, whichever surface dispatched it -----
+
+    /// The `Backups` block of a captured run, with the wall-clock parts of it
+    /// neutralised: the snapshot stamp (and the `-N` suffix the engine appends
+    /// when two runs land in one second) and every duration. What is left is
+    /// exactly the grammar — icons, subjects, alignment, group headings.
+    fn backups_block(human: &str) -> String {
+        let plain = crate::output::strip_ansi(human);
+        let block: Vec<&str> = plain
+            .lines()
+            .skip_while(|line| line.trim() != "Backups")
+            .take_while(|line| !line.contains("action(s)"))
+            .map(str::trim_end)
+            .collect();
+        let mut out = block.join("\n");
+        while let Some(start) = find_stamp(&out) {
+            let mut end = start + 16;
+            let bytes = out.as_bytes().to_vec();
+            if bytes.get(end) == Some(&b'-') {
+                end += 1;
+                while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                    end += 1;
+                }
+            }
+            out.replace_range(start..end, "<STAMP>");
+        }
+        strip_durations(&out)
+    }
+
+    /// Byte offset of the first `YYYYmmddTHHMMSSZ` stamp in `s`, if any. Byte
+    /// offsets rather than char offsets because the captured lines carry
+    /// multibyte status icons, and `replace_range` indexes bytes.
+    fn find_stamp(s: &str) -> Option<usize> {
+        let b = s.as_bytes();
+        (0..b.len().saturating_sub(15)).find(|&i| {
+            b[i..i + 8].iter().all(u8::is_ascii_digit)
+                && b[i + 8] == b'T'
+                && b[i + 9..i + 15].iter().all(u8::is_ascii_digit)
+                && b[i + 15] == b'Z'
+        })
+    }
+
+    /// Replace every `(1.2s)` with `(<DUR>)`.
+    fn strip_durations(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(open) = rest.find('(') {
+            let Some(close) = rest[open..].find(')') else {
+                break;
+            };
+            let inner = &rest[open + 1..open + close];
+            out.push_str(&rest[..open]);
+            if inner.ends_with('s')
+                && inner[..inner.len() - 1]
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.')
+            {
+                out.push_str("(<DUR>)");
+            } else {
+                out.push('(');
+                out.push_str(inner);
+                out.push(')');
+            }
+            rest = &rest[open + close + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// A backup spec's whole rendered group must not depend on which surface
+    /// dispatched it: `cfgd backup run`, `cfgd apply`'s pending backups and the
+    /// daemon's scheduled fire all render through `backup::run_backup_group`,
+    /// so a user reading a scheduled fire in the journal sees exactly what they
+    /// saw when they ran it by hand.
+    #[test]
+    fn backup_group_is_identical_across_surfaces() {
+        /// One surface's render of the same unit, against its own state dir so
+        /// each run is that unit's first.
+        fn render(
+            tmp: &Path,
+            label: &str,
+            run: impl FnOnce(&Path, &StateStore, &Printer),
+        ) -> String {
+            let home = tmp.join(label);
+            let state_dir = home.join("state");
+            std::fs::create_dir_all(&state_dir).unwrap();
+            let store = StateStore::open_in_dir(&state_dir).unwrap();
+            let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+            crate::with_test_home(&home, || run(&state_dir, &store, &printer));
+            drop(printer);
+            let human = buf.lock().unwrap().clone();
+            backups_block(&human)
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let config_dir = tmp.path().to_path_buf();
+        let config_path = tmp.path().join("cfgd.yaml");
+        let mut s = spec("db", &source, Some("1h"));
+        s.pre_backup = vec![config::ScriptEntry::Simple("exit 0".to_string())];
+
+        let ctx_for = |title| crate::reconciler::RunContext {
+            title,
+            config_path: None,
+            profile: Some("workstation"),
+            modules: &[],
+            trigger: None,
+        };
+
+        // `cfgd backup run`
+        let by_hand = render(tmp.path(), "cli", |state_dir, store, printer| {
+            let units = vec![crate::backup::BackupUnit::new(
+                &s,
+                &config_dir,
+                "workstation",
+                state_dir,
+            )];
+            crate::reconciler::ApplyRun::backups(
+                ctx_for(crate::reconciler::RunTitle::Backup),
+                &units,
+                store,
+            )
+            .execute_backups(printer)
+            .expect("a backup run renders");
+        });
+
+        // `cfgd apply`'s pending backups: the same units carried by a plan run.
+        let during_apply = render(tmp.path(), "apply", |state_dir, store, printer| {
+            let units = vec![crate::backup::BackupUnit::new(
+                &s,
+                &config_dir,
+                "workstation",
+                state_dir,
+            )];
+            let plan = crate::reconciler::Plan {
+                phases: Vec::new(),
+                warnings: Vec::new(),
+            };
+            let mut exec = NoopExecutor;
+            crate::reconciler::ApplyRun::new(ctx_for(crate::reconciler::RunTitle::Apply), &plan)
+                .with_pending_backups(&units, store)
+                .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
+                .expect("an apply with pending backups renders");
+        });
+
+        // The daemon's scheduled fire.
+        let scheduled = render(tmp.path(), "schedule", |state_dir, _store, printer| {
+            let due = vec![("workstation".to_string(), s.clone())];
+            let abort = crate::AbortFlag::default();
+            crate::daemon::backup::run_scheduled_backups(
+                &due,
+                &config_path,
+                &config_dir,
+                state_dir,
+                printer,
+                &abort,
+            );
+        });
+
+        assert!(
+            by_hand.contains("backup:db") && by_hand.contains("snapshot data.db.<STAMP>"),
+            "the group must render at all before it can be compared: {by_hand:?}"
+        );
+        assert_eq!(
+            by_hand, during_apply,
+            "`cfgd apply`'s pending backups render a different group than `cfgd backup run`"
+        );
+        assert_eq!(
+            by_hand, scheduled,
+            "a scheduled fire renders a different group than `cfgd backup run`"
+        );
+    }
+
+    /// A `RunExecutor` for the apply surface's empty plan — the backups are the
+    /// only work in that run.
+    struct NoopExecutor;
+
+    impl crate::reconciler::RunExecutor for NoopExecutor {
+        fn apply(
+            &mut self,
+            _plan: &crate::reconciler::Plan,
+            _printer: &Printer,
+        ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+            Ok(crate::reconciler::ApplyResult {
+                action_results: Vec::new(),
+                status: crate::state::ApplyStatus::Success,
+                apply_id: 1,
+                aborted: None,
+                planned_total: 0,
+            })
+        }
+    }
 }
