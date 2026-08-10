@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 /// Build the `source update <name>` not-found error. Carries the typed
 /// `SourceError::NotFound` in the chain so the exit-code downcast in `main.rs`
@@ -110,22 +110,18 @@ pub(crate) fn run_source_update(
                         Vec::new()
                     };
 
-                    // Per-source SectionGuard binds across both the prompt
-                    // and the success emit so the canonical
+                    // Per-source owner group binds across both the prompt and
+                    // the success emit so the canonical
                     // accept-confirm-then-success line nests under the same
-                    // section header as the prompt context bullets. The
-                    // section header phrasing pivots on whether permission
-                    // changes were detected.
-                    let source_sec = if perm_changes.is_empty() {
-                        printer.section(format!("Source '{}'", source.name))
-                    } else {
-                        printer.section(format!(
-                            "Source '{}' update changes permissions",
-                            source.name
-                        ))
-                    };
-                    for change in &perm_changes {
-                        source_sec.status_simple(Role::Warn, change.description.clone());
+                    // heading as the prompt context bullets. Every line inside
+                    // names its outcome only — the group heading says whose.
+                    let source_sec =
+                        printer.section_owner(&OwnerLabel::new("source", &source.name));
+                    if !perm_changes.is_empty() {
+                        let perm_sec = source_sec.section("permission changes");
+                        for change in &perm_changes {
+                            perm_sec.status_simple(Role::Warn, change.description.clone());
+                        }
                     }
 
                     let proceed = if !perm_changes.is_empty() {
@@ -134,10 +130,7 @@ pub(crate) fn run_source_update(
                             Ok(false) => {
                                 source_sec.status_simple(
                                     Role::Info,
-                                    format!(
-                                        "Skipped source '{}' (permission changes rejected)",
-                                        source.name
-                                    ),
+                                    "skipped (permission changes rejected)",
                                 );
                                 entries.push(UpdateEntry {
                                     name: source.name.clone(),
@@ -148,10 +141,7 @@ pub(crate) fn run_source_update(
                                 false
                             }
                             Err(_) => {
-                                source_sec.status_simple(
-                                    Role::Info,
-                                    format!("Skipped source '{}' (prompt cancelled)", source.name),
-                                );
+                                source_sec.status_simple(Role::Info, "skipped (prompt cancelled)");
                                 entries.push(UpdateEntry {
                                     name: source.name.clone(),
                                     status: "cancelled".into(),
@@ -196,8 +186,7 @@ pub(crate) fn run_source_update(
                             }
                         }
 
-                        source_sec
-                            .status_simple(Role::Ok, format!("Updated source '{}'", source.name));
+                        source_sec.status_simple(Role::Ok, "updated");
                         entries.push(UpdateEntry {
                             name: source.name.clone(),
                             status: "updated".into(),

@@ -5,8 +5,9 @@ Update Sources
      <SHA>..<SHA>  master     -> origin/master
 ✓ Fetching source 'accept-src'
 
-Source 'accept-src' update changes permissions
-  ⚠ Required items increased from 0 to 2
-  ✓ Updated source 'accept-src'
+source:accept-src
+  permission changes
+    ⚠ Required items increased from 0 to 2
+  ✓ updated
 
 ✓ Updated 1 source(s)

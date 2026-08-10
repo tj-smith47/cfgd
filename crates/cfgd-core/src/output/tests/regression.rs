@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::golden_doc;
-use crate::output::{Doc, Role};
+use crate::output::{Doc, OwnerLabel, Role};
 
 // BEFORE: cli/rollback.rs:108  printer.info(&format!("  {}", action));
 golden_doc!(regression, rollback_action, |p, cap| {
@@ -319,17 +319,22 @@ golden_doc!(regression, module_list_table_styled_cells, |p, cap| {
     p.emit(Doc::new().heading("Modules").table(t));
 });
 
-// Surface: `cfgd sync` per-source pivot line. `Role::Secondary` status_simple
-// before each source's spinner block creates a visual group boundary when N>1
-// sources are configured. Snapshot anchors the placement — the marker emits
-// before the spinner-finish line.
-golden_doc!(regression, sync_per_source_secondary_marker, |p, cap| {
+// Surface: `cfgd sync`'s per-source owner group. Each source is a
+// `source:<name>` group and every line inside it names its outcome only —
+// the heading already says whose it is. Snapshot anchors the nesting and the
+// per-group alignment, which is what makes two sources readable as two blocks
+// rather than one stream.
+golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
     let s = p.section("Sources");
-    s.status_simple(Role::Secondary, "Source: dotfiles");
-    s.status(Role::Ok, "'dotfiles' synced")
-        .detail("commit: abc1234");
-    s.status_simple(Role::Secondary, "Source: k8s-manifests");
-    s.status(Role::Fail, "Failed to sync 'k8s-manifests'")
+    {
+        let dotfiles = s.section_owner(&OwnerLabel::new("source", "dotfiles"));
+        dotfiles
+            .status(Role::Ok, "synced")
+            .detail("commit: abc1234");
+    }
+    let manifests = s.section_owner(&OwnerLabel::new("source", "k8s-manifests"));
+    manifests
+        .status(Role::Fail, "sync failed")
         .detail("network unreachable");
 });
 

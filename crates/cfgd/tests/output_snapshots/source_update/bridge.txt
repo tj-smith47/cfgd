@@ -4,7 +4,7 @@ Update Sources
    * branch            master     -> FETCH_HEAD
 ✓ Fetching source 'bridge-upd'
 
-Source 'bridge-upd'
-  ✓ Updated source 'bridge-upd'
+source:bridge-upd
+  ✓ updated
 
 ✓ Updated 1 source(s)

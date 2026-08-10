@@ -1,9 +1,9 @@
-Replace Source: replace-old
+Replace source:replace-old
 
-Remove Source: replace-old
-✓ Source 'replace-old' removed
+Remove source:replace-old
+✓ removed
 
-Add Config Source
+Add source:replace-old
 ◐ Cloning source 'replace-old'
   Cloning into '<STATE_DIR>/sources/replace-old'...
 ✓ Cloning source 'replace-old'
@@ -19,10 +19,10 @@ Policy
 
 ✓ No conflicts with current config
 
-✓ Subscribed to source 'replace-old'
+✓ subscribed
 
 Profile  default
 
 → Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
 
-✓ Source 'replace-old' replaced with file://<BARE_NEW>
+✓ replaced with file://<BARE_NEW>

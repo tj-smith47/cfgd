@@ -12998,7 +12998,7 @@ fn cmd_source_show_exists() {
 
     let output = buf.lock().unwrap();
     assert!(
-        output.contains("team-config") || output.contains("Source"),
+        output.contains("team-config") || output.contains("source:"),
         "source show should display source info, got: {output}"
     );
 }
@@ -16344,7 +16344,9 @@ fn cmd_source_remove_prints_success_message() {
     super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false)
         .unwrap();
 
-    h.assert_output_contains("Source 'team-config' removed");
+    // The heading names the source; the line below it names the outcome.
+    h.assert_output_contains("Remove source:team-config");
+    h.assert_output_contains("removed");
 }
 
 // -----------------------------------------------------------------------
@@ -17983,8 +17985,8 @@ spec:
         "file:///nonexistent/new-config.git",
     );
     // The header should be printed regardless of success/failure
-    h.assert_output_contains("Replace Source: old-source");
-    h.assert_output_contains("Remove Source: old-source");
+    h.assert_output_contains("Replace source:old-source");
+    h.assert_output_contains("Remove source:old-source");
     // The add step will fail (can't clone), so the overall result should be Err
     assert!(
         result.is_err(),
@@ -18203,7 +18205,8 @@ spec:
     h.assert_output_contains("Sources");
     // The source sync will fail because the URL is non-existent — spinner
     // finishes with finish_fail("Failed to sync ...").
-    h.assert_output_contains("Failed to sync 'team-config'");
+    h.assert_output_contains("source:team-config");
+    h.assert_output_contains("sync failed");
 }
 
 // -----------------------------------------------------------------------
@@ -18307,7 +18310,7 @@ spec:
     let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
     // Replace will fail on the add step, but dispatch arm is exercised
     assert!(result.is_err());
-    h.assert_output_contains("Replace Source: replaceable");
+    h.assert_output_contains("Replace source:replaceable");
 }
 
 #[test]
@@ -19010,7 +19013,8 @@ mod cmd_source_add_local {
     // cmd_source_update then walks the happy-path arm that has previously
     // only had error-path coverage (no-sources, name-not-found, load-failure):
     // refresh the source manifest, upsert the state-store row, and emit
-    // "Updated source 'X'". The "load failure" arm is exercised by pointing
+    // the `source:<name>` group's `updated` line. The "load failure" arm is
+    // exercised by pointing
     // at a non-existent file:// URL.
 
     #[test]
@@ -19030,11 +19034,11 @@ mod cmd_source_add_local {
 
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
-            // "Updated source" success line.
+            // the group's `updated` success line.
             super::source::cmd_source_update(&h.cli(), h.printer(), None)
                 .expect("cmd_source_update should succeed against the staged source");
 
-            h.assert_output_contains("Updated source 'upd-src'");
+            h.assert_output_contains("source:upd-src");
 
             // The state store should now have a row recording the source.
             let store =
@@ -19092,11 +19096,11 @@ mod cmd_source_add_local {
             let full = h.output();
             let update_out = &full[baseline_len..];
             assert!(
-                update_out.contains("Updated source 'src-b'"),
+                update_out.contains("source:src-b"),
                 "named update should report src-b: {update_out}"
             );
             assert!(
-                !update_out.contains("Updated source 'src-a'"),
+                !update_out.contains("source:src-a"),
                 "named update must NOT touch src-a — the filter arm is broken if it does: {update_out}"
             );
         });
@@ -19199,7 +19203,7 @@ mod cmd_source_add_local {
             let show_out = &full[baseline_len..];
 
             assert!(
-                show_out.contains("Source: shown-src"),
+                show_out.contains("source:shown-src"),
                 "expected header, got: {show_out}"
             );
             assert!(
@@ -19238,7 +19242,7 @@ mod cmd_source_add_local {
         // the v2 manifest; detect_permission_changes returns "Required
         // items increased from 0 to 2"; the warning fires; prompt_confirm
         // in test mode returns Err → the Err(_) arm prints
-        // "Skipped source 'X' (prompt cancelled)" and continue's out of the
+        // the group's `skipped (prompt cancelled)` line and continue's out of the
         // loop. Pins the prompt-cancel branch (lines 72-77 in source/update.rs).
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
@@ -19271,7 +19275,7 @@ mod cmd_source_add_local {
             let full = h.output();
             let update_out = &full[baseline_len..];
             assert!(
-                update_out.contains("update changes permissions"),
+                update_out.contains("permission changes"),
                 "expected permission-change warning, got: {update_out}"
             );
             assert!(
@@ -19279,13 +19283,13 @@ mod cmd_source_add_local {
                 "expected required-items expansion message, got: {update_out}"
             );
             assert!(
-                update_out.contains("Skipped source 'perm-src' (prompt cancelled)"),
+                update_out.contains("skipped (prompt cancelled)"),
                 "expected prompt-cancelled skip line, got: {update_out}"
             );
             // The upsert_config_source success line MUST NOT appear — the
             // continue must short-circuit before the state-store write.
             assert!(
-                !update_out.contains("Updated source 'perm-src'"),
+                !update_out.contains("✓ updated"),
                 "perm-src should NOT have been marked updated when prompt is cancelled: {update_out}"
             );
         });

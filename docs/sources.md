@@ -541,7 +541,7 @@ sources:
 `cfgd source show acme-corp` surfaces the lockfile data in the State section:
 
 ```
-Source: acme-corp
+source:acme-corp
   URL            git@github.com:acme-corp/dev-config.git
   Branch         master
   Priority       500

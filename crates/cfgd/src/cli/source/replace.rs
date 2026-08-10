@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::reconciler::Owner;
 
 pub fn cmd_source_replace(
     cli: &Cli,
@@ -7,7 +8,7 @@ pub fn cmd_source_replace(
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {
-    printer.heading(format!("Replace Source: {}", old_name));
+    printer.heading(format!("Replace {}", Owner::source(old_name).token()));
 
     // Capture old source's profile and priority before removing
     let config_path = cli.config.clone();
@@ -40,10 +41,7 @@ pub fn cmd_source_replace(
 
     printer.emit(
         Doc::new()
-            .status(
-                Role::Ok,
-                format!("Source '{}' replaced with {}", old_name, new_url),
-            )
+            .status(Role::Ok, format!("replaced with {}", new_url))
             .with_data(serde_json::json!({
                 "oldName": old_name,
                 "newUrl": new_url,

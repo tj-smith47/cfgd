@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::reconciler::Owner;
 
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
     let url = &args.url;
@@ -12,12 +13,11 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     let sync_interval = args.sync_interval.as_deref();
     let auto_apply = args.auto_apply;
     let pin_version = args.pin_version.as_deref();
-    printer.heading("Add Config Source");
-
     // Infer name from URL if not provided
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
+    printer.heading(format!("Add {}", Owner::source(&source_name).token()));
 
     // A pin selects its own git ref (tag or commit), so an explicit branch is
     // meaningless and contradictory — reject the combination before any clone.
@@ -286,7 +286,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         }
     }
 
-    let mut doc = Doc::new().status(Role::Ok, format!("Subscribed to source '{}'", source_name));
+    let mut doc = Doc::new().status(Role::Ok, "subscribed");
     if let Some(ref p) = selected_profile {
         doc = doc.kv("Profile", p);
     }

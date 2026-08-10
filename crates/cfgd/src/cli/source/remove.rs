@@ -1,6 +1,7 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::reconciler::Owner;
 
 pub fn cmd_source_remove(
     cli: &Cli,
@@ -19,7 +20,9 @@ pub fn cmd_source_remove(
         ));
     }
 
-    printer.heading(format!("Remove Source: {}", name));
+    // The heading names the subject with the canonical owner token, so every
+    // line below it says only what happened.
+    printer.heading(format!("Remove {}", Owner::source(name).token()));
 
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
@@ -158,8 +161,7 @@ pub fn cmd_source_remove(
         printer.status_simple(
             Role::Warn,
             format!(
-                "Could not remove cached data for '{}': {}",
-                name,
+                "Could not remove cached data: {}",
                 cfgd_core::output::collapse_to_subject_line(&e)
             ),
         );
@@ -167,7 +169,7 @@ pub fn cmd_source_remove(
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Source '{}' removed", name))
+            .status(Role::Ok, "removed")
             .with_data(serde_json::json!({
                 "name": name,
                 "managedResources": managed_count,

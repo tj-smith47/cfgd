@@ -6,7 +6,8 @@ Local repo
   ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
 
 Sources
-  'perm-team' permission changes
-    - Locked items increased from 0 to 2
-  ⚠ 'perm-team' has permission changes
-  ⊙ Skipped source 'perm-team' (permission changes rejected)
+  source:perm-team
+    permission changes
+      - Locked items increased from 0 to 2
+    ⚠ permission changes need approval
+    ⊙ skipped (permission changes rejected)

@@ -4,7 +4,7 @@ Update Sources
    * branch            master     -> FETCH_HEAD
 ✓ Fetching source 'upd-src'
 
-Source 'upd-src'
-  ✓ Updated source 'upd-src'
+source:upd-src
+  ✓ updated
 
 ✓ Updated 1 source(s)

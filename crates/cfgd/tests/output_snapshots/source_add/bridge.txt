@@ -1,4 +1,4 @@
-Add Config Source
+Add source:bridge-src
 ◐ Cloning source 'bridge-src'
   Cloning into '<STATE_DIR>/sources/bridge-src'...
 ✓ Cloning source 'bridge-src'
@@ -14,7 +14,7 @@ Policy
 
 ✓ No conflicts with current config
 
-✓ Subscribed to source 'bridge-src'
+✓ subscribed
 
 Profile  default
 

@@ -1,2 +1,2 @@
-Remove Source: missing
+Remove source:missing
 ✗ Source 'missing' not found in config

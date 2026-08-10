@@ -1,4 +1,4 @@
-Add Config Source
+Add source:doomed-src
 ◐ Cloning source 'doomed-src'
   Cloning into '<STATE_DIR>/sources/doomed-src'...
   fatal: '<BARE>' does not appear to be a git repository

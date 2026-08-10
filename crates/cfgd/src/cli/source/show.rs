@@ -35,7 +35,7 @@ pub fn build_source_show_doc(
     manifest: Option<&ConfigSourceDocument>,
 ) -> Doc {
     let mut doc = Doc::new()
-        .heading(format!("Source: {}", output.name))
+        .heading(cfgd_core::reconciler::Owner::source(&output.name).token())
         .kv("URL", &output.url)
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
