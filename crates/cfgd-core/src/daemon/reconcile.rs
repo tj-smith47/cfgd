@@ -304,7 +304,11 @@ pub(crate) fn handle_reconcile(
                 return;
             }
         },
-        None => match StateStore::open_default() {
+        // Reachable only when startup's scope-default materialization failed
+        // (`run_daemon_with` fills `state_dir_override` on every healthy
+        // tick); re-derive from the SAME scope rather than the user default,
+        // or a system-scope daemon would fall back to the per-user store.
+        None => match StateStore::open_default_for(scope) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "reconcile: state store error");

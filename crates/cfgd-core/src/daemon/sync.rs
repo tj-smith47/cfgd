@@ -435,7 +435,11 @@ pub(crate) fn handle_compliance_snapshot(
                 return;
             }
         },
-        None => match StateStore::open_default() {
+        // Startup materializes the scope default, so `None` means that
+        // resolution failed; re-derive for the SAME scope rather than the
+        // user default, or a system-scope daemon's compliance snapshot would
+        // read (and write) the per-user store.
+        None => match StateStore::open_default_for(scope) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "compliance: state store error");

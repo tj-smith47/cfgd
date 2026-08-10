@@ -353,6 +353,16 @@ impl StateStore {
         Self::open_in_dir(&default_state_dir()?)
     }
 
+    /// Open or create the state store at `scope`'s default location — the
+    /// fallback for a daemon path whose materialized state dir is absent:
+    /// re-deriving from scope either lands on the same directory the loop
+    /// would have carried or fails the same way the materialization did,
+    /// where an unqualified [`Self::open_default`] would silently hand a
+    /// system-scope daemon the per-user store.
+    pub fn open_default_for(scope: crate::Scope) -> Result<Self> {
+        Self::open_in_dir(&default_state_dir_for(scope)?)
+    }
+
     /// Open or create the canonical [`STATE_DB_FILENAME`] DB inside `dir`,
     /// creating the directory if needed. Every state-dir override resolves the
     /// DB through here so it cannot drift from the default-location filename.

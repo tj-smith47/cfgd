@@ -195,7 +195,10 @@ pub(super) async fn handle_file_change_tick(
     if is_managed {
         let store = match ctx.state_dir_override.as_deref() {
             Some(dir) => StateStore::open_in_dir(dir),
-            None => StateStore::open_default(),
+            // `None` means startup's scope-default materialization failed;
+            // re-derive for the daemon's own scope so a system daemon never
+            // records drift into the per-user store.
+            None => StateStore::open_default_for(ctx.scope),
         };
         match store {
             Ok(store) => {
