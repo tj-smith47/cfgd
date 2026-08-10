@@ -328,19 +328,27 @@ The dashboard degrades rather than failing on that classification: if it cannot
 be built (a malformed package manifest, say), status still renders everything
 else and prints a warning naming what it could not read. Under `-o json` the
 warning line is suppressed, so the degradation is part of the payload instead —
-`classificationDegraded` is always present, and the reason field appears only
-when it is `true`, so a broken classification is never mistaken for a clean
-machine with nothing pending:
+`classificationDegraded` is always present, and the code and reason fields
+appear only when it is `true`, so a broken classification is never mistaken
+for a clean machine with nothing pending:
 
 ```jsonc
 {
   "classificationDegraded": true,
+  "classificationDegradedCode": "manifestUnreadable",
   "classificationDegradedReason": "cargo manifest manifests/Cargo.toml: TOML parse error at line 1",
   "pendingDecisions": []   // recorded rows only; the unrecorded ones could not be read
 }
 ```
 
-The bare `cfgd decide -o json` listing carries the same pair alongside its
+`classificationDegradedCode` is the machine-stable half — a closed set a
+consumer can branch on: `decisionStoreUnreadable` (fix the state directory /
+database), `sourceUnreadable` (re-sync or inspect the source's cached
+config), `manifestUnreadable` (fix the referenced Brewfile / `package.json` /
+`Cargo.toml` / apt list), or `classificationFailed` (anything else). The
+reason string is the human detail and carries no stability promise.
+
+The bare `cfgd decide -o json` listing carries the same fields alongside its
 `decisions` array.
 
 ### `cfgd diff`

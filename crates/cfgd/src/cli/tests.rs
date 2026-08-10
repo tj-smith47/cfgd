@@ -21538,6 +21538,11 @@ fn a_degraded_status_json_payload_says_so_structurally() {
         serde_json::json!(true),
         "the degradation is structural: {json}"
     );
+    assert_eq!(
+        json["classificationDegradedCode"],
+        serde_json::json!("manifestUnreadable"),
+        "the machine-stable code names the cause class: {json}"
+    );
     assert!(
         json["classificationDegradedReason"]
             .as_str()
@@ -21563,8 +21568,9 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
         "a working classification is marked clean: {json}"
     );
     assert!(
-        json.get("classificationDegradedReason").is_none(),
-        "a clean payload carries no reason field: {json}"
+        json.get("classificationDegradedCode").is_none()
+            && json.get("classificationDegradedReason").is_none(),
+        "a clean payload carries no code or reason field: {json}"
     );
 }
 
@@ -21597,6 +21603,11 @@ fn a_degraded_decide_json_listing_says_so_structurally() {
         json["classificationDegraded"],
         serde_json::json!(true),
         "the degradation is structural: {json}"
+    );
+    assert_eq!(
+        json["classificationDegradedCode"],
+        serde_json::json!("manifestUnreadable"),
+        "the machine-stable code names the cause class: {json}"
     );
     assert!(
         json["classificationDegradedReason"]
@@ -21638,8 +21649,9 @@ fn a_clean_decide_json_listing_marks_classification_undegraded() {
         "a working classification is marked clean: {json}"
     );
     assert!(
-        json.get("classificationDegradedReason").is_none(),
-        "a clean payload carries no reason field: {json}"
+        json.get("classificationDegradedCode").is_none()
+            && json.get("classificationDegradedReason").is_none(),
+        "a clean payload carries no code or reason field: {json}"
     );
 }
 

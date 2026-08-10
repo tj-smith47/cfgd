@@ -4,6 +4,57 @@ use serde::Serialize;
 
 // --- Command output types ---
 
+/// Machine-stable cause class for a degraded source-decision classification
+/// (`classificationDegradedCode` in the `status` / `decide` payloads). A
+/// closed set, deliberately coarse: each variant maps to a distinct operator
+/// remedy, and the human detail stays in `classificationDegradedReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClassificationDegradedCode {
+    /// The decision store itself could not be read — fix the state
+    /// directory / database before trusting any decision surface.
+    DecisionStoreUnreadable,
+    /// A source's cached config failed to load or compose — re-sync or
+    /// inspect the source.
+    SourceUnreadable,
+    /// A local package-manifest reference failed to resolve (Brewfile,
+    /// `package.json`, `Cargo.toml`, apt list) — fix the referenced file.
+    ManifestUnreadable,
+    /// Anything the classes above cannot claim.
+    ClassificationFailed,
+}
+
+impl ClassificationDegradedCode {
+    /// Classify a degradation error by the FIRST typed cause in its chain —
+    /// the innermost `anyhow` contexts wrap the typed error that actually
+    /// failed, so the first hit names the failing input rather than a
+    /// wrapper.
+    pub fn from_error(e: &anyhow::Error) -> Self {
+        use cfgd_core::errors::CfgdError;
+        for cause in e.chain() {
+            if let Some(err) = cause.downcast_ref::<CfgdError>() {
+                return match err {
+                    CfgdError::State(_) => Self::DecisionStoreUnreadable,
+                    CfgdError::Source(_) | CfgdError::Composition(_) | CfgdError::Config(_) => {
+                        Self::SourceUnreadable
+                    }
+                    CfgdError::Package(_) | CfgdError::File(_) | CfgdError::Io(_) => {
+                        Self::ManifestUnreadable
+                    }
+                    _ => Self::ClassificationFailed,
+                };
+            }
+            if cause
+                .downcast_ref::<cfgd_core::errors::StateError>()
+                .is_some()
+            {
+                return Self::DecisionStoreUnreadable;
+            }
+        }
+        Self::ClassificationFailed
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogOutput {
@@ -697,6 +748,49 @@ mod tests {
     use cfgd_core::state::{ApplyRecord, ApplyStatus, ComplianceHistoryRow};
     use pretty_assertions::assert_eq;
     use serde_json::{Value, json};
+
+    /// The degradation code is a CLOSED, camelCase token set, and the
+    /// error-chain mapping lands each cause class on its own token — the
+    /// machine-stable half of the degraded payload pair.
+    #[test]
+    fn classification_degraded_code_maps_causes_to_stable_camelcase_tokens() {
+        use cfgd_core::errors::{CfgdError, StateError};
+
+        let store_err =
+            anyhow::Error::from(CfgdError::State(StateError::Database("locked".into())))
+                .context("source classification failed");
+        assert_eq!(
+            ClassificationDegradedCode::from_error(&store_err),
+            ClassificationDegradedCode::DecisionStoreUnreadable
+        );
+
+        let bare = anyhow::anyhow!("something unexpected");
+        assert_eq!(
+            ClassificationDegradedCode::from_error(&bare),
+            ClassificationDegradedCode::ClassificationFailed
+        );
+
+        for (code, token) in [
+            (
+                ClassificationDegradedCode::DecisionStoreUnreadable,
+                "decisionStoreUnreadable",
+            ),
+            (
+                ClassificationDegradedCode::SourceUnreadable,
+                "sourceUnreadable",
+            ),
+            (
+                ClassificationDegradedCode::ManifestUnreadable,
+                "manifestUnreadable",
+            ),
+            (
+                ClassificationDegradedCode::ClassificationFailed,
+                "classificationFailed",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), json!(token));
+        }
+    }
 
     #[test]
     fn log_output_serializes_entries_array_under_camelcase_key() {

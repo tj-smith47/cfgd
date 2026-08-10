@@ -32,6 +32,11 @@ pub(super) struct DecideListOutput {
     /// holds only the recorded rows — a degraded listing is otherwise
     /// indistinguishable from a clean empty one to a `-o json` consumer.
     pub classification_degraded: bool,
+    /// The machine-stable cause class, present only when degraded — the
+    /// reason string beside it is the human detail and carries no stability
+    /// promise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_degraded_code: Option<super::output_types::ClassificationDegradedCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification_degraded_reason: Option<String>,
 }
@@ -130,24 +135,25 @@ pub(super) fn cmd_decide(
     // dashboard, not an answer, so a broken classification degrades it — the
     // recorded rows still list, with a warning that the unrecorded ones could
     // not be read — where a resolving invocation above refuses outright.
-    let mut classification_degraded_reason: Option<String> = None;
+    let mut classification_degraded: Option<(
+        super::output_types::ClassificationDegradedCode,
+        String,
+    )> = None;
     match classification {
         Ok((withheld, _)) => {
             decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
         }
         Err(e) => {
+            let code = super::output_types::ClassificationDegradedCode::from_error(&e);
             let reason = cfgd_core::output::collapse_to_subject_line(format!("{e:#}"));
             printer.status_simple(
                 Role::Warn,
                 format!("Unrecorded source items not listed: {reason}"),
             );
-            classification_degraded_reason = Some(reason);
+            classification_degraded = Some((code, reason));
         }
     }
-    printer.emit(build_decide_list_doc(
-        &decisions,
-        classification_degraded_reason,
-    ));
+    printer.emit(build_decide_list_doc(&decisions, classification_degraded));
     Ok(())
 }
 
@@ -266,16 +272,17 @@ pub fn build_decide_single_doc(resolution: &str, resource_path: &str, resolved: 
 }
 
 /// Pure builder: pending-decisions listing Doc (bare `cfgd decide`). A
-/// `Some` reason marks the payload as degraded — the human warning for it is
-/// the caller's, printed where the failure happened.
+/// `Some` (code, reason) pair marks the payload as degraded — the human
+/// warning for it is the caller's, printed where the failure happened.
 pub fn build_decide_list_doc(
     decisions: &[PendingDecision],
-    classification_degraded_reason: Option<String>,
+    classification_degraded: Option<(super::output_types::ClassificationDegradedCode, String)>,
 ) -> Doc {
     let payload = DecideListOutput {
         decisions: decisions.to_vec(),
-        classification_degraded: classification_degraded_reason.is_some(),
-        classification_degraded_reason,
+        classification_degraded: classification_degraded.is_some(),
+        classification_degraded_code: classification_degraded.as_ref().map(|(c, _)| *c),
+        classification_degraded_reason: classification_degraded.map(|(_, r)| r),
     };
     if decisions.is_empty() {
         return Doc::new()

@@ -62,6 +62,7 @@ fn clean_output() -> StatusOutput {
             last_applied: Some(1_715_680_800),
         }],
         classification_degraded: false,
+        classification_degraded_code: None,
         classification_degraded_reason: None,
     }
 }
@@ -128,6 +129,7 @@ fn drift_output() -> StatusOutput {
         }],
         managed_resources: Vec::new(),
         classification_degraded: false,
+        classification_degraded_code: None,
         classification_degraded_reason: None,
     }
 }

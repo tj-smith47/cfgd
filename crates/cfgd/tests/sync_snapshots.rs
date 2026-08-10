@@ -273,6 +273,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         modules: Vec::new(),
         managed_resources: Vec::new(),
         classification_degraded: false,
+        classification_degraded_code: None,
         classification_degraded_reason: None,
     };
     let (status_printer, status_cap) = Printer::for_test_doc();
