@@ -782,10 +782,19 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
         .expect("a busy unit is an outcome, not an error");
     drop(printer);
 
+    let skipped: Vec<&str> = outcome
+        .reports
+        .iter()
+        .filter_map(|r| r.skipped.as_deref())
+        .collect();
     assert_eq!(
-        outcome.busy,
-        vec!["docs".to_string()],
+        skipped.len(),
+        1,
         "the busy unit must be carried out to the exit-code decision"
+    );
+    assert!(
+        skipped[0].starts_with("pid "),
+        "the report names the holder: {skipped:?}"
     );
     assert!(
         !outcome.fully_clean(),

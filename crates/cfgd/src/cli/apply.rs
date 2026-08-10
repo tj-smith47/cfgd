@@ -634,6 +634,14 @@ pub fn run_apply(
     // exit code the same way a failed reconciler action would. A unit another
     // writer held is NOT that — it is the engine's one-writer rule working, so
     // it leaves the exit code alone.
+    // One report per pending unit, in unit order — `render_backups` pushes them
+    // as it walks the same slice. A silent `zip` truncation here would drop
+    // both the payload entry AND the status downgrade for units that did run.
+    debug_assert_eq!(
+        pending_backup_specs.len(),
+        backup_reports.len(),
+        "one report per pending backup unit"
+    );
     let backup_outputs: Vec<BackupRunOutput> = pending_backup_specs
         .iter()
         .zip(&backup_reports)

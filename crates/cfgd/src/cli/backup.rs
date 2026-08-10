@@ -486,10 +486,6 @@ pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyho
 #[derive(Debug, Default)]
 pub struct BackupRunOutcome {
     pub reports: Vec<cfgd_core::backup::BackupRunReport>,
-    /// Names of the units another process was already backing up. Rendered
-    /// inside their own group as a skip, but still nonzero-exit material: a run
-    /// the user asked for did not happen.
-    pub busy: Vec<String>,
 }
 
 impl BackupRunOutcome {
@@ -562,18 +558,15 @@ pub fn run_backup_run(
     let (_status, reports) =
         cfgd_core::reconciler::ApplyRun::backups(ctx, &units, &state).execute_backups(printer)?;
 
+    // One report per unit, in unit order — `render_backups` pushes them as it
+    // walks the same slice. A silent `zip` truncation here would drop payload
+    // entries for units that did run.
+    debug_assert_eq!(targets.len(), reports.len(), "one report per target unit");
     let outputs: Vec<BackupRunOutput> = targets
         .iter()
         .zip(&reports)
         .map(|(spec, report)| BackupRunOutput::from_report(&spec.name, report))
         .collect();
-    let busy: Vec<String> = targets
-        .iter()
-        .zip(&reports)
-        .filter(|(_, report)| report.skipped.is_some())
-        .map(|(spec, _)| spec.name.clone())
-        .collect();
-
     printer.emit(Doc::new().with_data(&outputs));
-    Ok(BackupRunOutcome { reports, busy })
+    Ok(BackupRunOutcome { reports })
 }
