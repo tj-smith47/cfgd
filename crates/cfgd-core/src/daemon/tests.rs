@@ -605,6 +605,60 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
 }
 
 #[test]
+fn a_changed_source_reasks_an_item_already_answered() {
+    use crate::config::{CargoSpec, PackagesSpec};
+    // The other half of the first-observation split: once a PREVIOUS
+    // observation disagrees with the delivered set, every answered item is
+    // asked again — `docs/sources.md`: a rejection does not persist across
+    // source versions, so an update mints a fresh decision beside the
+    // resolved one and the fresh answer is the operator's current intent.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
+        .unwrap();
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+    )
+    .unwrap();
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "a source that moved re-asks the item its operator already answered"
+    );
+}
+
+#[test]
 fn an_installed_item_with_no_decision_row_is_still_asked_about() {
     use crate::config::{CargoSpec, PackagesSpec};
     // The classifier's "known" proxy reads decision rows ONLY. A
