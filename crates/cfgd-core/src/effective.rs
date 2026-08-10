@@ -99,8 +99,11 @@ pub fn effective_system_map(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
 ) -> BTreeMap<String, serde_yaml::Value> {
-    let mut system: BTreeMap<String, serde_yaml::Value> =
-        profile.system.clone().into_iter().collect();
+    let mut system: BTreeMap<String, serde_yaml::Value> = profile
+        .system
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     for module in modules {
         for (key, value) in &module.system {
             crate::deep_merge_yaml(

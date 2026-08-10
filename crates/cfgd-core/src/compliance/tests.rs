@@ -1598,7 +1598,8 @@ fn a_fixed_snapshot_hashes_to_a_pinned_digest() {
     assert_eq!(
         hash, "2a1c0cef36205ca80c5ea9b03601d9f79a8a4aec020e3d554d5f741a9ea90094",
         "the canonical form moved — check whether a dependency enabled \
-         serde_json/preserve_order"
+         serde_json/preserve_order, or whether a serialized field was added to \
+         ComplianceSnapshot/ComplianceCheck (stored hashes change meaning either way)"
     );
 
     // The timestamp is excluded, so restamping the same content cannot move it.
