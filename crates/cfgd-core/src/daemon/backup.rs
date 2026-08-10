@@ -589,9 +589,9 @@ pub(super) fn run_scheduled_backups(
     printer: &Printer,
     abort: &crate::AbortFlag,
 ) {
-    let Some((first_profile, _)) = due.first() else {
+    if due.is_empty() {
         return;
-    };
+    }
     let store = match StateStore::open_in_dir(state_dir) {
         Ok(s) => s,
         Err(e) => {
@@ -612,22 +612,49 @@ pub(super) fn run_scheduled_backups(
         })
         .collect();
 
+    // A due set can span profiles — one timer set covers the whole config — and
+    // the header has one profile row, so naming the first unit's profile would
+    // attribute every other unit to a profile that never declared it. A
+    // heterogeneous set omits the row instead.
+    let single_profile = due
+        .first()
+        .map(|(profile, _)| profile.as_str())
+        .filter(|first| due.iter().all(|(profile, _)| profile == first));
+
     let ctx = crate::reconciler::RunContext {
         title: crate::reconciler::RunTitle::Backup,
         config_path: Some(config_path),
-        profile: Some(first_profile.as_str()),
+        profile: single_profile,
         modules: &[],
         trigger: Some(SCHEDULE_TRIGGER),
     };
     let run = crate::reconciler::ApplyRun::backups(ctx, &units, &store);
-    if let Err(e) = run.execute_backups(printer) {
-        tracing::error!(error = %e, "scheduled backup: run could not be rendered");
-        return;
-    }
+    let reports = match run.execute_backups(printer) {
+        Ok((_, reports)) => reports,
+        Err(e) => {
+            tracing::error!(error = %e, "scheduled backup: run could not be rendered");
+            return;
+        }
+    };
 
-    for (_, spec) in due {
-        match store.latest_backup_run(&spec.name) {
-            Ok(Some(record)) => match &record.error {
+    // The reports the run just handed back, never a re-read of the store: a
+    // `latest_backup_run` lookup returns whatever ran LAST, so a unit skipped
+    // for a held lock but backed up an hour ago would be journalled as a run
+    // that completed here and did not.
+    debug_assert_eq!(
+        due.len(),
+        reports.len(),
+        "one report per due unit, in unit order"
+    );
+    for ((_, spec), report) in due.iter().zip(&reports) {
+        match (&report.skipped, &report.error, &report.record) {
+            (Some(holder), _, _) => {
+                tracing::info!(backup = %spec.name, holder = %holder, "scheduled backup skipped: the unit is already running elsewhere");
+            }
+            (None, Some(e), _) => {
+                tracing::warn!(backup = %spec.name, error = %e, "scheduled backup: the run could not be recorded");
+            }
+            (None, None, Some(record)) => match &record.error {
                 Some(e) => {
                     tracing::warn!(backup = %record.name, error = %e, "scheduled backup completed with errors");
                 }
@@ -635,13 +662,11 @@ pub(super) fn run_scheduled_backups(
                     tracing::info!(backup = %record.name, "scheduled backup completed");
                 }
             },
-            // No row for a unit that was skipped for a held lock, or whose row
-            // could not be written; the rendered group already said which.
-            Ok(None) => {
-                tracing::info!(backup = %spec.name, "scheduled backup produced no run record");
-            }
-            Err(e) => {
-                tracing::warn!(backup = %spec.name, error = %e, "scheduled backup: could not read back the run record");
+            // Unreachable while `run_backup_group` fills exactly one of the
+            // three: a report with none of them is a unit whose outcome was
+            // lost, which is worth a line rather than silence.
+            (None, None, None) => {
+                tracing::warn!(backup = %spec.name, "scheduled backup produced no outcome");
             }
         }
     }

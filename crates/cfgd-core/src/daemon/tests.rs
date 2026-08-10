@@ -17641,6 +17641,105 @@ mod backup_timers {
         );
     }
 
+    /// Thread-local log capture: only events emitted on THIS thread inside `f`
+    /// are seen. Sound because `run_scheduled_backups` is blocking and logs on
+    /// the calling thread.
+    fn capture_run_logs<F: FnOnce()>(f: F) -> String {
+        #[derive(Clone)]
+        struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for LogCapture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+            type Writer = LogCapture;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(LogCapture(buf.clone()))
+            .with_max_level(tracing::Level::INFO)
+            // Styled field names would put escape sequences between `holder`
+            // and its value, so an assertion on the pair could not match.
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.lock().expect("lock").clone();
+        String::from_utf8(bytes).expect("utf8 logs")
+    }
+
+    /// A unit skipped for a held lock must say so in the journal — the only
+    /// view an operator has of a background fire. The reports the run returns
+    /// carry the holder per unit; a `latest_backup_run` re-read cannot, because
+    /// the row it finds is whatever ran BEFORE, so a unit with any history at
+    /// all would be logged as a run that completed and did not happen.
+    #[test]
+    fn a_busy_scheduled_unit_logs_its_holder_over_its_own_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let config_dir = tmp.path().to_path_buf();
+        let config_path = tmp.path().join("cfgd.yaml");
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let s = spec("db", &source, Some("1h"));
+        let due = vec![("workstation".to_string(), s)];
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let abort = crate::AbortFlag::default();
+
+        // A first fire, so the unit has the history a re-read would find.
+        crate::daemon::backup::run_scheduled_backups(
+            &due,
+            &config_path,
+            &config_dir,
+            &state_dir,
+            &printer,
+            &abort,
+        );
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        assert!(
+            store
+                .latest_backup_run("db")
+                .unwrap()
+                .is_some_and(|r| r.error.is_none()),
+            "the first fire must leave a clean row for the second to be confused by"
+        );
+
+        let _held = crate::acquire_backup_lock(&state_dir, "db").expect("hold the unit lock");
+        let logs = capture_run_logs(|| {
+            crate::daemon::backup::run_scheduled_backups(
+                &due,
+                &config_path,
+                &config_dir,
+                &state_dir,
+                &printer,
+                &abort,
+            );
+        });
+
+        assert!(
+            logs.contains("already running"),
+            "a refused unit must be logged as refused: {logs}"
+        );
+        assert!(
+            logs.contains("holder="),
+            "the refusal must name who holds the lock: {logs}"
+        );
+        assert!(
+            !logs.contains("scheduled backup completed"),
+            "the previous fire's row must not be reported as this fire's outcome: {logs}"
+        );
+    }
+
     /// A `RunExecutor` for the apply surface's empty plan — the backups are the
     /// only work in that run.
     struct NoopExecutor;
