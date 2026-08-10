@@ -572,14 +572,16 @@ pub fn review_source_policy(
     // source moved" would re-mint, and so re-ask, the very item just answered.
     let source_changed = previous_hash.is_some() && config_changed;
 
-    // The old resource set is not stored, only its hash — so what the machine
-    // already knows about this source stands in for it: what it installed, plus
-    // what it is still being asked about.
+    // The old resource set is not stored, only its hash — the items still
+    // being asked about stand in for it. Those rows were minted in this very
+    // vocabulary, so the comparison below needs no translation. The
+    // managed-resource table is deliberately NOT consulted: its rows live in
+    // the state vocabulary (`package` + `<mgr>/<pkg>`), which never matches a
+    // decision path — and an installed item that has no row is an item nobody
+    // was ever asked about, exactly the one the `Notify` arm below still owes
+    // a question.
     let mut known: HashSet<String> = HashSet::new();
     if previous_hash.is_some() {
-        for r in store.managed_resources_by_source(source_name)? {
-            known.insert(format!("{}.{}", r.resource_type, r.resource_id));
-        }
         for d in store.pending_decisions_for_source(source_name)? {
             known.insert(d.resource);
         }

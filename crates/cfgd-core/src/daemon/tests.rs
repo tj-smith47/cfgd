@@ -604,6 +604,52 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
     );
 }
 
+#[test]
+fn an_installed_item_with_no_decision_row_is_still_asked_about() {
+    use crate::config::{CargoSpec, PackagesSpec};
+    // The classifier's "known" proxy reads decision rows ONLY. A
+    // managed-resource row — even one attributed to the source, in the state
+    // vocabulary its table speaks (`package` + `cargo/bat`) — must not stand
+    // in for a decision: an installed item nobody was asked about is exactly
+    // the item Notify still owes a question, and letting the state table
+    // suppress it would revive the vocabulary mismatch this pin retires.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+    store
+        .upsert_managed_resource("package", "cargo/bat", "acme", None, None)
+        .unwrap();
+    store
+        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
+        .unwrap();
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+    )
+    .unwrap();
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "a managed-resource row is not a decision; the item is still asked about"
+    );
+}
+
 /// Every withholding decision's resource path, straight from the store — the
 /// read [`DecisionScope`] then filters down to what a run may still withhold.
 fn withheld_paths(store: &StateStore) -> HashSet<String> {
@@ -14373,6 +14419,139 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
             .any(|(title, body)| title.contains("reconcile skipped")
                 && body.contains("source's cached config is broken")),
         "a required-uncached source must raise the fail-closed skip alert; got: {alerts:?}"
+    );
+}
+
+/// One real reconcile tick against `config_path`, with the daemon's own
+/// collaborator shape (`quiet_reconcile_ctx`), returning how many
+/// "pending decisions" notifications it dispatched.
+async fn tick_pending_decision_notifications(
+    config_path: &Path,
+    state_dir: &Path,
+) -> Vec<(String, String)> {
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let not = Arc::clone(&notifier);
+    let cp = config_path.to_path_buf();
+    let sd = state_dir.to_path_buf();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(
+                &state,
+                &not,
+                false,
+                &crate::test_helpers::NoopDaemonHooks,
+                &sd,
+                &printer,
+            ),
+        );
+    })
+    .await
+    .expect("the tick runs to completion");
+    notifier
+        .captured()
+        .into_iter()
+        .filter(|(title, _)| title.contains("pending decisions"))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_tick_renotifies_a_changed_source_and_stays_silent_on_an_unchanged_one() {
+    // The re-notify comparison, through the daemon's real tick shape: the
+    // delivered set is hashed in the decision vocabulary and rows are compared
+    // in the same vocabulary, so an unchanged source raises no second
+    // notification for the item it already asked about, and a changed one
+    // notifies for exactly what it newly delivers.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // reconcile runs on a `spawn_blocking` worker thread where the
+    // thread-local home override re-installs but `XDG_CACHE_HOME` is honored
+    // only by the Linux `directories` backend, so pin the cache root with the
+    // process-global, every-platform `CFGD_CACHE_DIR` short-circuit.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  packages:\n    cargo:\n      - bat\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: NotifyOnly\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // First observation: the item is new, Notify mints and notifies.
+    let first = tick_pending_decision_notifications(&config_path, &state_dir).await;
+    assert_eq!(
+        first.len(),
+        1,
+        "the first tick asks about the newly delivered item; got: {first:?}"
+    );
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    assert_eq!(
+        store
+            .pending_decisions()
+            .unwrap()
+            .iter()
+            .map(|d| d.resource.clone())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat".to_string()]
+    );
+
+    // Unchanged source: same delivered set, same hash — no re-notification.
+    let second = tick_pending_decision_notifications(&config_path, &state_dir).await;
+    assert!(
+        second.is_empty(),
+        "an unchanged source does not re-notify the item it already asked about; got: {second:?}"
+    );
+
+    // The source changes what it delivers: the new item notifies again.
+    std::fs::write(
+        cache_root
+            .join("sources")
+            .join("acme")
+            .join("profiles")
+            .join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  packages:\n    cargo:\n      - bat\n      - eza\n",
+    )
+    .unwrap();
+    let third = tick_pending_decision_notifications(&config_path, &state_dir).await;
+    assert_eq!(
+        third.len(),
+        1,
+        "a changed source notifies for what it newly delivers; got: {third:?}"
+    );
+    let mut resources: Vec<String> = store
+        .pending_decisions()
+        .unwrap()
+        .iter()
+        .map(|d| d.resource.clone())
+        .collect();
+    resources.sort_unstable();
+    assert_eq!(
+        resources,
+        vec![
+            "packages.cargo.bat".to_string(),
+            "packages.cargo.eza".to_string()
+        ]
     );
 }
 
