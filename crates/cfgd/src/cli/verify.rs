@@ -36,7 +36,7 @@ pub fn cmd_verify(
         .unwrap_or_default();
         (resolved, mods, registry)
     } else {
-        let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
+        let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
         // Compose with sources (cache-only — read paths stay offline) and resolve
         // the effective module set through the one shared resolver, so `verify`
         // checks the same source-composed desired state that `apply` writes.

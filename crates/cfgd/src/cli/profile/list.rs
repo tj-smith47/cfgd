@@ -63,11 +63,16 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let profiles = cfgd_core::config::scan_profiles(&profiles_dir)
         .map_err(cfgd_core::errors::CfgdError::Config)?;
 
-    let active = cli.profile.clone().unwrap_or_else(|| {
-        config::load_config(&cli.config)
-            .map(|c| c.spec.profile.unwrap_or_default())
-            .unwrap_or_default()
-    });
+    let active = match &cli.profile {
+        Some(p) => p.clone(),
+        None => match config::load_config(&cli.config) {
+            Ok(c) => {
+                drain_config_deprecations(printer, &c);
+                c.spec.profile.unwrap_or_default()
+            }
+            Err(_) => String::new(),
+        },
+    };
 
     let entries: Vec<super::ProfileListEntry> = profiles
         .iter()

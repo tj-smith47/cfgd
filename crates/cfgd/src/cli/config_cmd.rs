@@ -80,7 +80,10 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     let cfg = match config::load_config(config_path) {
-        Ok(c) => c,
+        Ok(c) => {
+            drain_config_deprecations(printer, &c);
+            c
+        }
         Err(e) => {
             let msg = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
@@ -108,7 +111,8 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let mut valid = false;
     loop {
         match config::load_config(config_path) {
-            Ok(_) => {
+            Ok(c) => {
+                drain_config_deprecations(printer, &c);
                 valid = true;
                 break;
             }

@@ -113,7 +113,8 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
 pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     let (profile_name, resolved) = match name {
         Some(n) => {
-            config::load_config(&cli.config)?;
+            let cfg = config::load_config(&cli.config)?;
+            drain_config_deprecations(printer, &cfg);
             let dir = profiles_dir(cli);
             // resolve_profile already returns a typed ProfileNotFound (→ exit 6);
             // wrap the missing case with a `not_found` CliErrorMeta so structured
@@ -147,7 +148,7 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
             (n.to_string(), resolved)
         }
         None => {
-            let (_cfg, active, resolved) = helpers::load_config_and_profile(cli)?;
+            let (_cfg, active, resolved) = helpers::load_config_and_profile(cli, printer)?;
             (active, resolved)
         }
     };

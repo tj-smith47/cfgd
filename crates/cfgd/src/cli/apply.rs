@@ -192,7 +192,7 @@ pub fn run_apply(
     // carried down rather than printed here. A module-only run resolved no
     // profile, so it carries none and the header omits the row.
     let (cfg, resolved, profile_label, config_parsed) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli) {
+        match load_config_and_profile(cli, printer) {
             Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name), true),
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
@@ -202,7 +202,10 @@ pub fn run_apply(
                 // every decision row on the machine, turning "awaiting your
                 // answer" into "applies silently" with nothing to recover from.
                 let (cfg, config_parsed) = match config::load_config(&cli.config) {
-                    Ok(c) => (c, true),
+                    Ok(c) => {
+                        drain_config_deprecations(printer, &c);
+                        (c, true)
+                    }
                     Err(_) => (config::minimal_config(), false),
                 };
                 let resolved =
@@ -211,7 +214,7 @@ pub fn run_apply(
             }
         }
     } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
+        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
         (cfg, resolved, Some(profile_name), true)
     };
 

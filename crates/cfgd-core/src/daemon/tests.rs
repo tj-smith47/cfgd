@@ -359,6 +359,7 @@ fn find_server_url_returns_none_for_git_origin() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -393,6 +394,7 @@ fn find_server_url_returns_url_for_server_origin() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -3099,6 +3101,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -3130,6 +3133,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -3733,6 +3737,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -5820,6 +5825,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -5877,6 +5883,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {

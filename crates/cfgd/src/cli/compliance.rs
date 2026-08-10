@@ -8,14 +8,15 @@ use cfgd_core::state::ComplianceHistoryRow;
 /// Shared setup used by both `cmd_compliance_snapshot` and `cmd_compliance_export`.
 pub(super) fn collect_and_store_compliance_snapshot(
     cli: &Cli,
+    printer: &Printer,
 ) -> anyhow::Result<(CfgdConfig, ComplianceSnapshot)> {
-    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli)?;
+    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the compliance
     // snapshot reflects the same source-composed desired state that `apply` writes.
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let quiet_printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     // Report mode: a source security-constraint violation surfaces as a compliance
     // check rather than aborting (exit 4). `compliance` reports state; it does not
     // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
@@ -24,7 +25,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
         &cfg,
         &local_resolved,
         None,
-        &printer,
+        &quiet_printer,
         false,
         composition::ConstraintMode::Report,
     )?;
@@ -62,7 +63,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
         &registry,
         &scope,
         &sources,
-        &printer,
+        &quiet_printer,
         &state,
     )?;
 
@@ -122,14 +123,14 @@ fn append_constraint_violation_checks(
 
 /// Build a snapshot and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
+    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
     printer.emit(build_compliance_summary_doc(&snapshot));
     Ok(())
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
+    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
 
     let export = cfg
         .spec

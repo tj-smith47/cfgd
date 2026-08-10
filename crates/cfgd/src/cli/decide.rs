@@ -199,7 +199,7 @@ fn source_classification(
     if !cli.config.exists() {
         return Ok(Default::default());
     }
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)
+    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)
         .with_context(|| format!("config {} is unreadable", cli.config.posix()))?;
     if cfg.spec.sources.is_empty() {
         return Ok(Default::default());

@@ -22,6 +22,11 @@ pub struct CfgdConfig {
     pub kind: String,
     pub metadata: ConfigMetadata,
     pub spec: ConfigSpec,
+    /// Deprecation messages collected while parsing (e.g. legacy `theme.overrides.*`
+    /// keys). Not part of the schema: never serialized, never compared. A command
+    /// boundary that owns a terminal drains these through `printer.deprecation()`.
+    #[serde(skip)]
+    pub deprecations: Vec<String>,
 }
 
 impl CfgdConfig {
@@ -243,6 +248,7 @@ pub fn minimal_config() -> CfgdConfig {
             name: "default".to_string(),
         },
         spec: ConfigSpec::default(),
+        deprecations: Vec::new(),
     }
 }
 

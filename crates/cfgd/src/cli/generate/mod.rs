@@ -65,7 +65,10 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 1. Load config, resolve AiConfig
     let ai_config = match config::load_config(&cli.config) {
-        Ok(cfg) => cfg.spec.ai.clone().unwrap_or_default(),
+        Ok(cfg) => {
+            crate::cli::helpers::drain_config_deprecations(printer, &cfg);
+            cfg.spec.ai.clone().unwrap_or_default()
+        }
         Err(cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
             ..
         })) => AiConfig::default(),

@@ -221,11 +221,16 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
 
     #[cfg(windows)]
     let payload = {
-        let event_log_on = cfgd_core::config::load_config(&cli.config)
-            .ok()
-            .and_then(|cfg| cfg.spec.daemon)
-            .map(|d| d.windows_event_log)
-            .unwrap_or(false);
+        let event_log_on = match cfgd_core::config::load_config(&cli.config) {
+            Ok(cfg) => {
+                drain_config_deprecations(printer, &cfg);
+                cfg.spec
+                    .daemon
+                    .map(|d| d.windows_event_log)
+                    .unwrap_or(false)
+            }
+            Err(_) => false,
+        };
         DaemonInstallOutput {
             platform: "windows".to_string(),
             service: "cfgd".to_string(),

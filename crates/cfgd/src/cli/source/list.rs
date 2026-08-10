@@ -68,6 +68,7 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     let cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &cfg);
 
     if cfg.spec.sources.is_empty() {
         let entries: Vec<SourceListEntry> = Vec::new();

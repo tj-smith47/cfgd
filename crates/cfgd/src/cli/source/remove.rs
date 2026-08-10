@@ -26,6 +26,7 @@ pub fn cmd_source_remove(
 
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &cfg);
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
         if ignore_not_found {

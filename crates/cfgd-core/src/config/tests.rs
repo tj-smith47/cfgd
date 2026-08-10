@@ -2120,8 +2120,6 @@ command: "ls -la"
 // --- Legacy theme-override key warnings ---
 
 #[test]
-#[serial_test::serial]
-#[tracing_test::traced_test]
 fn legacy_theme_subheader_emits_warning() {
     let yaml = r##"
 spec:
@@ -2130,16 +2128,16 @@ spec:
     overrides:
       subheader: "#ff79c6"
 "##;
-    super::parse::warn_on_legacy_theme_keys(yaml);
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
     assert!(
-        logs_contain("theme.overrides.subheader is no longer supported"),
-        "expected legacy-key warning to fire"
+        messages
+            .iter()
+            .any(|m| m.contains("theme.overrides.subheader is no longer supported")),
+        "expected legacy-key warning to fire, got: {messages:?}"
     );
 }
 
 #[test]
-#[serial_test::serial]
-#[tracing_test::traced_test]
 fn legacy_icon_success_emits_rename_warning() {
     let yaml = r##"
 spec:
@@ -2148,16 +2146,16 @@ spec:
     overrides:
       iconSuccess: "++"
 "##;
-    super::parse::warn_on_legacy_theme_keys(yaml);
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
     assert!(
-        logs_contain("iconSuccess is renamed to iconOk"),
-        "expected rename warning to fire"
+        messages
+            .iter()
+            .any(|m| m.contains("iconSuccess is renamed to iconOk")),
+        "expected rename warning to fire, got: {messages:?}"
     );
 }
 
 #[test]
-#[serial_test::serial]
-#[tracing_test::traced_test]
 fn modern_overrides_emit_no_warning() {
     let yaml = r##"
 spec:
@@ -2167,9 +2165,11 @@ spec:
       iconOk: "✔"
       running: "#00ff00"
 "##;
-    super::parse::warn_on_legacy_theme_keys(yaml);
-    assert!(!logs_contain("no longer supported"));
-    assert!(!logs_contain("renamed to"));
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(
+        messages.is_empty(),
+        "expected no deprecations, got: {messages:?}"
+    );
 }
 
 /// Resolve the primary package list a bare-list form should populate, for a

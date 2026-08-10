@@ -158,7 +158,7 @@ pub fn cmd_backup_list(
         return Ok(());
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
@@ -333,7 +333,7 @@ pub fn run_backup_restore(
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
     printer.heading("Restore Backup");
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     // Enforce, like `backup run`: a restore executes the unit's hooks and
     // overwrites live data, so a source constraint violation must abort rather
     // than be recorded and stepped over.
@@ -512,7 +512,7 @@ pub fn run_backup_run(
     printer: &Printer,
     name: Option<&str>,
 ) -> anyhow::Result<BackupRunOutcome> {
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
     // mutating surface like apply/plan/daemon and must abort on a source

@@ -29,6 +29,7 @@ pub fn cmd_module_add_from_registry(
         return Err(no_config_error(printer, &cli.config));
     }
     let cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &cfg);
 
     let registries = cfg
         .spec
@@ -232,6 +233,7 @@ pub fn cmd_module_add_remote(
     let mut added_to_profile: Option<String> = None;
     if cli.config.exists() {
         let cfg = config::load_config(&cli.config)?;
+        drain_config_deprecations(printer, &cfg);
         let profile_name = match cli.profile.as_deref() {
             Some(p) => p,
             None => cfg.active_profile()?,
@@ -635,6 +637,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     }
 
     let cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &cfg);
     let registries = cfg
         .spec
         .modules
@@ -942,6 +945,7 @@ pub fn cmd_module_registry_rename(
     }
 
     let cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &cfg);
     let registries = cfg
         .spec
         .modules
@@ -1066,6 +1070,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
     }
 
     let cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &cfg);
     let registries = cfg
         .spec
         .modules

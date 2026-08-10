@@ -56,22 +56,25 @@ pub(super) fn check_yaml_anchor_limit(contents: &str, context: &Path) -> Result<
     Ok(())
 }
 
-/// Emit `tracing::warn!` for any legacy `theme.overrides.*` keys present in the
-/// raw YAML. Removed keys (subheader/key/value/iconInfo) and renamed keys
+/// Collect a deprecation message for every legacy `theme.overrides.*` key present
+/// in the raw YAML. Removed keys (subheader/key/value/iconInfo) and renamed keys
 /// (iconSuccess→iconOk, iconWarning→iconWarn, iconError→iconFail) are silently
 /// dropped by `ThemeOverrides`'s typed deserialize; this pre-pass surfaces them
 /// so users can migrate their `cfgd.yaml` instead of wondering why an override
-/// did nothing.
-pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) {
+/// did nothing. Returns the messages rather than logging them directly: this is
+/// a core function with many callers, none of which hold a `Printer`, so the
+/// caller that owns a terminal drains the result through `printer.deprecation()`.
+pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
+    let mut messages = Vec::new();
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(raw_yaml) else {
-        return;
+        return messages;
     };
     let overrides = value
         .get("spec")
         .and_then(|s| s.get("theme"))
         .and_then(|t| t.get("overrides"));
     let Some(serde_yaml::Value::Mapping(m)) = overrides else {
-        return;
+        return messages;
     };
 
     let removed_keys = ["subheader", "key", "value", "iconInfo"];
@@ -83,20 +86,21 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) {
 
     for k in removed_keys {
         if m.contains_key(serde_yaml::Value::String(k.into())) {
-            tracing::warn!(
+            messages.push(format!(
                 "config: theme.overrides.{k} is no longer supported (capability removed in v0.4); \
                  the field will be ignored. Remove it from your cfgd.yaml."
-            );
+            ));
         }
     }
     for (old, new) in renamed_keys {
         if m.contains_key(serde_yaml::Value::String(old.into())) {
-            tracing::warn!(
+            messages.push(format!(
                 "config: theme.overrides.{old} is renamed to {new}; \
                  the old name still works for now but will be removed in a future release."
-            );
+            ));
         }
     }
+    messages
 }
 
 /// Reject a document whose `apiVersion` is not the version this build understands.
@@ -228,10 +232,12 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
 pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
 
-    if ext != "toml" {
+    let deprecations = if ext != "toml" {
         check_yaml_anchor_limit(contents, path)?;
-        warn_on_legacy_theme_keys(contents);
-    }
+        warn_on_legacy_theme_keys(contents)
+    } else {
+        Vec::new()
+    };
 
     let raw: RawCfgdConfig = match ext {
         "toml" => toml::from_str(contents).map_err(ConfigError::from)?,
@@ -267,6 +273,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             compliance: raw.spec.compliance,
             update: raw.spec.update,
         },
+        deprecations,
     })
 }
 

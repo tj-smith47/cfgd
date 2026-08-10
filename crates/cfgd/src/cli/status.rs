@@ -279,7 +279,7 @@ pub(super) fn cmd_status(
         return cmd_status_module(cli, printer, mod_name);
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let last_apply = state.last_apply()?;

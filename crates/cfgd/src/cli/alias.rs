@@ -44,6 +44,7 @@ pub fn cmd_alias_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     let cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &cfg);
 
     let mut entries: Vec<AliasListEntry> = cfg
         .spec

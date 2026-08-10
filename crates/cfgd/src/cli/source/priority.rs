@@ -10,6 +10,7 @@ pub fn cmd_source_priority(
 ) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &cfg);
 
     let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(s) => s,

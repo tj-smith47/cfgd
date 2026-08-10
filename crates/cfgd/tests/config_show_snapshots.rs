@@ -121,6 +121,7 @@ fn happy_config() -> CfgdConfig {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     }
 }
 
@@ -135,6 +136,7 @@ fn empty_config() -> CfgdConfig {
             profile: Some("base".into()),
             ..ConfigSpec::default()
         },
+        deprecations: Vec::new(),
     }
 }
 

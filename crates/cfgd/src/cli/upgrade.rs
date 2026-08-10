@@ -14,10 +14,13 @@ pub fn cmd_upgrade(
     // The effective update config supplies the release channel for the version
     // check and gates the user-scope skill ride-along that `install_release`
     // runs after a successful install (no second prompt).
-    let update_cfg = config::load_config(config_path)
-        .ok()
-        .and_then(|c| c.spec.update)
-        .unwrap_or_default();
+    let update_cfg = match config::load_config(config_path) {
+        Ok(c) => {
+            crate::cli::helpers::drain_config_deprecations(printer, &c);
+            c.spec.update.unwrap_or_default()
+        }
+        Err(_) => Default::default(),
+    };
     let channel = update_cfg.channel.as_deref();
 
     if check_only {

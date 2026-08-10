@@ -182,6 +182,5 @@ optional = true
 tempfile = "3"
 serial_test = "4"
 mockito = "1"
-tracing-test = "0.2"
 regex = "1"
 

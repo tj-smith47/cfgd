@@ -166,6 +166,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             }
 
             let cfg = config::load_config(&config_path)?;
+            drain_config_deprecations(printer, &cfg);
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
             let store = super::open_state_store(args.state_dir, args.scope)?;
@@ -223,6 +224,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
                 // Set as active profile in cfgd.yaml
                 let mut cfg = config::load_config(&config_path)?;
+                drain_config_deprecations(printer, &cfg);
                 cfg.spec.profile = Some(name.to_string());
                 crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
                 printer.status_simple(Role::Ok, format!("Set active profile: {}", name));
@@ -230,6 +232,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             } else {
                 // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively
                 let cfg = config::load_config(&config_path)?;
+                drain_config_deprecations(printer, &cfg);
                 if let Some(ref p) = cfg.spec.profile {
                     p.clone()
                 } else {
@@ -333,6 +336,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         {
             let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
             let cfg = config::load_config(&config_path)?;
+            drain_config_deprecations(printer, &cfg);
             let profile = cfg.spec.profile.as_deref();
             // The flags this `cfgd init` ran under are baked into the unit, so
             // `cfgd --state-dir X init --install-daemon` installs a daemon that

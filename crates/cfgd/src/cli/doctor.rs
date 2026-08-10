@@ -67,17 +67,20 @@ fn collect_doctor_output(
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
-            Ok(cfg) => (
-                DoctorConfigCheck {
-                    valid: true,
-                    path: cli.config.display().to_string(),
-                    name: Some(cfg.metadata.name.clone()),
-                    profile: cfg.spec.profile.clone(),
-                    error: None,
-                    state: DoctorConfigState::Valid,
-                },
-                Some(cfg),
-            ),
+            Ok(cfg) => {
+                drain_config_deprecations(printer, &cfg);
+                (
+                    DoctorConfigCheck {
+                        valid: true,
+                        path: cli.config.display().to_string(),
+                        name: Some(cfg.metadata.name.clone()),
+                        profile: cfg.spec.profile.clone(),
+                        error: None,
+                        state: DoctorConfigState::Valid,
+                    },
+                    Some(cfg),
+                )
+            }
             Err(e) => (
                 DoctorConfigCheck {
                     valid: false,

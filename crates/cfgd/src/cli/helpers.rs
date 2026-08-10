@@ -59,10 +59,25 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
     Ok(())
 }
 
+/// Surface every deprecation message `warn_on_legacy_theme_keys` collected
+/// while parsing `cfg` (legacy `theme.overrides.*` keys today; any future
+/// `parse_config`-time deprecation lands here too). `parse_config` is a core
+/// function reachable from many non-terminal callers, so it cannot log
+/// directly — this is the one drain point every command boundary that reads
+/// the user's real `cfgd.yaml` and owns a `Printer` calls right after a
+/// successful load.
+pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &CfgdConfig) {
+    for msg in &cfg.deprecations {
+        printer.deprecation(msg);
+    }
+}
+
 pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
+    printer: &Printer,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
     let cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &cfg);
     let profile_name = match cli.profile.as_deref() {
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
@@ -705,6 +720,7 @@ pub(in crate::cli) fn resolve_profile_name(
         return Err(no_config_error(printer, config_path));
     }
     let cfg = config::load_config(config_path)?;
+    drain_config_deprecations(printer, &cfg);
     if let Some(ref profile_override) = cli.profile {
         Ok(profile_override.clone())
     } else {

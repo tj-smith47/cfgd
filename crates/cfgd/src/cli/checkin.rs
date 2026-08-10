@@ -14,7 +14,7 @@ pub fn cmd_checkin(
 ) -> anyhow::Result<()> {
     printer.heading("Checkin");
 
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the

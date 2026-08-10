@@ -11,6 +11,7 @@ pub fn cmd_source_override(
 ) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &cfg);
 
     // Verify source exists in config
     if !cfg.spec.sources.iter().any(|s| s.name == source_name) {

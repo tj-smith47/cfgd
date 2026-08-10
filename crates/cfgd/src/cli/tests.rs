@@ -5555,7 +5555,8 @@ fn cmd_apply_with_env_vars() {
     }
 
     // Verify the profile was loaded with env vars by loading config+profile
-    let (_, _, resolved) = super::load_config_and_profile(&cli).unwrap();
+    let (_, _, resolved) =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap();
     assert!(
         resolved.merged.env.iter().any(|e| e.name == "EDITOR"),
         "resolved profile should contain EDITOR env var"
@@ -9080,7 +9081,7 @@ fn load_config_and_profile_default_profile() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     assert!(
         result.is_ok(),
         "loading config and default profile should succeed: {:?}",
@@ -9100,7 +9101,7 @@ fn load_config_and_profile_with_override() {
     let mut cli = test_cli(dir.path());
     cli.profile = Some("work".to_string());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     assert!(
         result.is_ok(),
         "loading config with profile override should succeed: {:?}",
@@ -9118,7 +9119,7 @@ fn load_config_and_profile_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9138,7 +9139,7 @@ fn load_config_and_profile_missing_profile_errors() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9174,7 +9175,8 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let err = super::load_config_and_profile(&cli).unwrap_err();
+    let err =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
 
     // Exit code survives the metadata wrap (typed ProfileNotFound → exit 6).
     assert_eq!(
@@ -9260,7 +9262,8 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let err = super::load_config_and_profile(&cli).unwrap_err();
+    let err =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
 
     assert_eq!(
         super::exit_code_for_anyhow(&err),
@@ -9303,7 +9306,8 @@ fn load_config_and_profile_plain_typo_returns_bare_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let err = super::load_config_and_profile(&cli).unwrap_err();
+    let err =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
 
     assert_eq!(
         super::exit_code_for_anyhow(&err),
@@ -11909,7 +11913,8 @@ fn load_config_and_profile_returns_correct_config() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let (cfg, _, resolved) = super::load_config_and_profile(&cli).unwrap();
+    let (cfg, _, resolved) =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap();
     assert_eq!(cfg.metadata.name, "t");
     assert!(
         !resolved.merged.env.is_empty(),
@@ -11925,7 +11930,7 @@ fn load_config_and_profile_missing_profile_fails() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -14326,6 +14331,7 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
             name: "test".into(),
         },
         spec: cfgd_core::config::ConfigSpec::default(),
+        deprecations: Vec::new(),
     };
     let registry = hooks.build_registry(&cfg);
     assert!(
@@ -15450,6 +15456,7 @@ fn build_registry_with_config_populates_secret_backend() {
             }),
             ..config::ConfigSpec::default()
         },
+        deprecations: Vec::new(),
     };
     let registry = super::build_registry_with_config_and_packages(Some(&cfg), None);
     assert!(

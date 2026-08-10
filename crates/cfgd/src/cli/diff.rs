@@ -79,7 +79,7 @@ pub fn cmd_diff(
         return cmd_diff_module(cli, printer, mod_name, &config_dir, exit_code);
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display_posix()),
         ("Profile".to_string(), profile_name.clone()),
