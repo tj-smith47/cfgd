@@ -326,7 +326,22 @@ cfgd status --module nvim                   # status for a single module (no pro
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).
 The dashboard degrades rather than failing on that classification: if it cannot
 be built (a malformed package manifest, say), status still renders everything
-else and prints a warning naming what it could not read.
+else and prints a warning naming what it could not read. Under `-o json` the
+warning line is suppressed, so the degradation is part of the payload instead —
+`classificationDegraded` is always present, and the reason field appears only
+when it is `true`, so a broken classification is never mistaken for a clean
+machine with nothing pending:
+
+```jsonc
+{
+  "classificationDegraded": true,
+  "classificationDegradedReason": "cargo manifest manifests/Cargo.toml: TOML parse error at line 1",
+  "pendingDecisions": []   // recorded rows only; the unrecorded ones could not be read
+}
+```
+
+The bare `cfgd decide -o json` listing carries the same pair alongside its
+`decisions` array.
 
 ### `cfgd diff`
 

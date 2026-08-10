@@ -61,6 +61,8 @@ fn clean_output() -> StatusOutput {
             last_hash: Some("hash1".into()),
             last_applied: Some(1_715_680_800),
         }],
+        classification_degraded: false,
+        classification_degraded_reason: None,
     }
 }
 
@@ -125,6 +127,8 @@ fn drift_output() -> StatusOutput {
             status: "installed".into(),
         }],
         managed_resources: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_reason: None,
     }
 }
 

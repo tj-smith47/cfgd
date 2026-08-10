@@ -28,6 +28,12 @@ pub(super) struct DecideSingleOutput {
 #[serde(rename_all = "camelCase")]
 pub(super) struct DecideListOutput {
     pub decisions: Vec<PendingDecision>,
+    /// True when the source-decision classification failed and `decisions`
+    /// holds only the recorded rows — a degraded listing is otherwise
+    /// indistinguishable from a clean empty one to a `-o json` consumer.
+    pub classification_degraded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_degraded_reason: Option<String>,
 }
 
 pub(super) fn cmd_decide(
@@ -124,19 +130,24 @@ pub(super) fn cmd_decide(
     // dashboard, not an answer, so a broken classification degrades it — the
     // recorded rows still list, with a warning that the unrecorded ones could
     // not be read — where a resolving invocation above refuses outright.
+    let mut classification_degraded_reason: Option<String> = None;
     match classification {
         Ok((withheld, _)) => {
             decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
         }
-        Err(e) => printer.status_simple(
-            Role::Warn,
-            format!(
-                "Unrecorded source items not listed: {}",
-                cfgd_core::output::collapse_to_subject_line(format!("{e:#}"))
-            ),
-        ),
+        Err(e) => {
+            let reason = cfgd_core::output::collapse_to_subject_line(format!("{e:#}"));
+            printer.status_simple(
+                Role::Warn,
+                format!("Unrecorded source items not listed: {reason}"),
+            );
+            classification_degraded_reason = Some(reason);
+        }
     }
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(
+        &decisions,
+        classification_degraded_reason,
+    ));
     Ok(())
 }
 
@@ -254,12 +265,22 @@ pub fn build_decide_single_doc(resolution: &str, resource_path: &str, resolved: 
     })
 }
 
-/// Pure builder: pending-decisions listing Doc (bare `cfgd decide`).
-pub fn build_decide_list_doc(decisions: &[PendingDecision]) -> Doc {
+/// Pure builder: pending-decisions listing Doc (bare `cfgd decide`). A
+/// `Some` reason marks the payload as degraded — the human warning for it is
+/// the caller's, printed where the failure happened.
+pub fn build_decide_list_doc(
+    decisions: &[PendingDecision],
+    classification_degraded_reason: Option<String>,
+) -> Doc {
+    let payload = DecideListOutput {
+        decisions: decisions.to_vec(),
+        classification_degraded: classification_degraded_reason.is_some(),
+        classification_degraded_reason,
+    };
     if decisions.is_empty() {
         return Doc::new()
             .status(Role::Info, "No pending decisions")
-            .with_data(DecideListOutput { decisions: vec![] });
+            .with_data(payload);
     }
 
     Doc::new()
@@ -270,7 +291,5 @@ pub fn build_decide_list_doc(decisions: &[PendingDecision]) -> Doc {
         .hint(
             "Use `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
         )
-        .with_data(DecideListOutput {
-            decisions: decisions.to_vec(),
-        })
+        .with_data(payload)
 }

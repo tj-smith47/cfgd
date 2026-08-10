@@ -12,6 +12,13 @@ pub struct StatusOutput {
     pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
     pub modules: Vec<ModuleStatusEntry>,
     pub managed_resources: Vec<cfgd_core::state::ManagedResource>,
+    /// True when the source-decision classification failed and
+    /// `pendingDecisions` is missing the classified-but-unrecorded items — a
+    /// degraded listing is otherwise indistinguishable from a clean empty one
+    /// to a `-o json` consumer.
+    pub classification_degraded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_degraded_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -302,6 +309,7 @@ pub(super) fn cmd_status(
     // failure (a malformed package manifest, say) costs the unrecorded rows
     // and says so, never the whole status surface. And with no sources there
     // is nothing to classify, so none of the classification's work runs.
+    let mut classification_degraded_reason: Option<String> = None;
     if !cfg.spec.sources.is_empty() {
         match plan_ops::withheld_for_run(
             &state,
@@ -314,13 +322,14 @@ pub(super) fn cmd_status(
             Ok((withheld, _review)) => {
                 pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
             }
-            Err(e) => printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Source decisions not classified: {}",
-                    cfgd_core::output::collapse_to_subject_line(format!("{e:#}"))
-                ),
-            ),
+            Err(e) => {
+                let reason = cfgd_core::output::collapse_to_subject_line(format!("{e:#}"));
+                printer.status_simple(
+                    Role::Warn,
+                    format!("Source decisions not classified: {reason}"),
+                );
+                classification_degraded_reason = Some(reason);
+            }
         }
     }
 
@@ -351,6 +360,8 @@ pub(super) fn cmd_status(
         pending_decisions: pending,
         modules: module_entries,
         managed_resources: resources,
+        classification_degraded: classification_degraded_reason.is_some(),
+        classification_degraded_reason,
     };
 
     // Plain `status` (no --exit-code) keeps the fast RECORDED-drift dashboard by
@@ -485,12 +496,45 @@ mod tests {
             pending_decisions: Vec::new(),
             modules: Vec::new(),
             managed_resources: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_reason: None,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
         assert_eq!(
             json["lastApply"]["status"],
             serde_json::json!(ApplyStatus::InProgress.display_str())
+        );
+        assert_eq!(json["classificationDegraded"], serde_json::json!(false));
+        assert!(
+            json.get("classificationDegradedReason").is_none(),
+            "a clean payload carries no reason field"
+        );
+    }
+
+    /// A degraded classification must be visible IN the `-o json` payload:
+    /// the human warning is suppressed under structured output, so without
+    /// these fields a broken classification is indistinguishable from a clean
+    /// machine with nothing pending.
+    #[test]
+    fn status_json_degraded_classification_is_structural() {
+        let output = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: Vec::new(),
+            managed_resources: Vec::new(),
+            classification_degraded: true,
+            classification_degraded_reason: Some(
+                "source 'acme': cached config is unreadable".to_string(),
+            ),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["classificationDegraded"], serde_json::json!(true));
+        assert_eq!(
+            json["classificationDegradedReason"],
+            serde_json::json!("source 'acme': cached config is unreadable")
         );
     }
 

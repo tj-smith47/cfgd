@@ -21397,6 +21397,133 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
 
 #[test]
 #[serial_test::serial]
+fn a_degraded_status_json_payload_says_so_structurally() {
+    // The human warning above is auto-quieted under `-o json`, so the payload
+    // itself must distinguish "nothing pending" from "could not classify" —
+    // without these fields a broken classification reads as a clean machine.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false)
+        .expect("a read-only dashboard renders through a classification failure");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(true),
+        "the degradation is structural: {json}"
+    );
+    assert!(
+        json["classificationDegradedReason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Cargo.toml")),
+        "the reason names the unreadable input: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_clean_status_json_payload_marks_classification_undegraded() {
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        ..Default::default()
+    });
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false)
+        .expect("a clean classification renders");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(false),
+        "a working classification is marked clean: {json}"
+    );
+    assert!(
+        json.get("classificationDegradedReason").is_none(),
+        "a clean payload carries no reason field: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_decide_json_listing_says_so_structurally() {
+    // Same contract as status: the recorded rows still list, and the payload
+    // says the unrecorded ones could not be read instead of impersonating a
+    // complete listing.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+    f.with_pending_decision();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .expect("a degraded listing renders, it does not refuse");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(true),
+        "the degradation is structural: {json}"
+    );
+    assert!(
+        json["classificationDegradedReason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Cargo.toml")),
+        "the reason names the unreadable input: {json}"
+    );
+    assert!(
+        json["decisions"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|row| row["resource"]
+                .as_str()
+                .is_some_and(|r| r.contains("withheld.txt")))),
+        "the recorded row still lists: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_clean_decide_json_listing_marks_classification_undegraded() {
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        ..Default::default()
+    });
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .expect("a clean listing renders");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(false),
+        "a working classification is marked clean: {json}"
+    );
+    assert!(
+        json.get("classificationDegradedReason").is_none(),
+        "a clean payload carries no reason field: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn a_sourceless_status_skips_source_classification_entirely() {
     // With no sources there is nothing to classify, so none of the
     // classification's work runs — the broken manifest it would have read is

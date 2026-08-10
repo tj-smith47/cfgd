@@ -52,7 +52,7 @@ fn pending_fixture() -> Vec<PendingDecision> {
 fn decide_pending_human() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending.txt");
 }
@@ -61,7 +61,7 @@ fn decide_pending_human() {
 fn decide_pending_json() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, None));
     drop(printer);
 
     let actual = cap.json().expect("doc captured json");
@@ -79,7 +79,7 @@ fn decide_pending_json() {
 #[test]
 fn decide_empty_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&[]));
+    printer.emit(build_decide_list_doc(&[], None));
     drop(printer);
     let human = cap.human();
     assert!(
@@ -116,7 +116,7 @@ fn decide_pending_multi_source_human() {
         ),
     ];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, None));
     drop(printer);
     let human = cap.human();
     let app = human.find("app-config:").expect("app-config subsection");
@@ -140,7 +140,7 @@ fn decide_pending_single_item_human() {
         "Create bashrc",
     )];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, None));
     drop(printer);
     let human = cap.human();
     assert!(
