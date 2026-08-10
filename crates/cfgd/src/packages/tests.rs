@@ -3827,6 +3827,9 @@ impl PackageManager for CiVersionedMockManager {
     fn package_identity(&self, entry: &str) -> String {
         entry.to_lowercase()
     }
+    fn listed_identity(&self, listed_name: &str) -> String {
+        listed_name.to_lowercase()
+    }
     fn install(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -3923,5 +3926,110 @@ fn observed_enumeration_threads_manager_versions_into_the_satisfies_gate() {
         review.to_mint.is_empty(),
         "nothing left to ask: {:?}",
         review.to_mint
+    );
+}
+
+/// Mock in FreeBSD `pkg`'s shape: `package_identity` strips a trailing
+/// `-VERSION` and is NOT a fixed point (`drm-510-kmod` strips again to
+/// `drm`), while the versioned listing is the trait default — names already
+/// in identity space, stripped once by the listing parse.
+struct PkgLikeMockManager;
+
+impl PackageManager for PkgLikeMockManager {
+    fn name(&self) -> &str {
+        "pkg"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        // What `parse_pkg_lines` yields for a listed `drm-510-kmod-5.10.163_1`.
+        Ok(HashSet::from(["drm-510-kmod".to_string()]))
+    }
+    fn package_identity(&self, entry: &str) -> String {
+        super::shared::strip_version_suffix(entry)
+    }
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_non_fixed_point_identity_never_collapses_a_listed_name() {
+    // The listing already reports identities (stripped once); applying the
+    // entry-side fold to it again would collapse `drm-510-kmod` onto `drm` —
+    // suppressing a real install and, worse, minting auto-accept consent for
+    // a package that is NOT installed. Fail-closed means neither may happen.
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    let mock = PkgLikeMockManager;
+    let profile = test_profile(PackagesSpec {
+        pkg: vec!["drm".into()],
+        ..Default::default()
+    });
+    let managers: Vec<&dyn PackageManager> = vec![&mock];
+
+    let (actions, actual) =
+        plan_packages_observed(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
+
+    let items = plan_items(actions);
+    assert!(
+        items.iter().any(|i| i.contains("drm")),
+        "`drm` is not installed — `drm-510-kmod` is a different package — so \
+         the install must be planned: {items:?}"
+    );
+
+    let layer = cfgd_core::config::ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "offered".to_string(),
+        priority: 500,
+        policy: cfgd_core::config::LayerPolicy::Recommended,
+        spec: cfgd_core::config::ProfileSpec {
+            packages: Some(PackagesSpec {
+                pkg: vec!["drm".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    };
+    let delivered = cfgd_core::reconciler::DeliveredItems::from_layers(&[layer]);
+    let review = cfgd_core::reconciler::review_source_policy(
+        &state,
+        "acme",
+        &delivered,
+        &cfgd_core::config::AutoApplyPolicyConfig::default(),
+        &actual,
+    )
+    .unwrap();
+
+    assert!(
+        review.auto_accepted.is_empty(),
+        "a listed `drm-510-kmod` is not consent for `drm`: {:?}",
+        review.auto_accepted
+    );
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.pkg.drm"],
+        "the not-installed item still owes its question"
     );
 }

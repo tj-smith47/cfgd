@@ -119,6 +119,13 @@ impl PackageManager for ScoopManager {
         canonical_ci_pkg_name(entry)
     }
 
+    /// The versioned listing keeps the REGISTERED app-name case for display;
+    /// fold a listed name to the same lowercase identity form the matching
+    /// surfaces use.
+    fn listed_identity(&self, listed_name: &str) -> String {
+        canonical_ci_pkg_name(listed_name)
+    }
+
     /// Display surface (scan/status): keep the REGISTERED app-name case and the real
     /// version, rather than the lowercase identity form used for matching.
     fn installed_packages_with_versions(

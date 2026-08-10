@@ -245,22 +245,25 @@ pub fn plan_packages_observed(
             // source-decision observation: `installed_packages_with_versions`
             // reads the same manager database as `installed_packages` and
             // additionally carries the version the satisfies-gate judges a
-            // pinned source item against. Names fold through
-            // `package_identity` so the diff below still compares the exact
-            // identity space it always has (a case-insensitive manager's
-            // display-case listing folds to its lowercase identity form).
+            // pinned source item against. Listed names fold through
+            // `listed_identity` — NOT `package_identity`, which maps declared
+            // entries and need not be a fixed point over listed names — so
+            // the diff below still compares the exact identity space it
+            // always has (a case-insensitive manager's display-case listing
+            // folds to its lowercase identity form; everyone else's listing
+            // already reports identities and passes through untouched).
             // Managers whose enumeration reports no version record `None`,
             // and a pinned item under them stays pending (fail-closed).
             let listed = manager.installed_packages_with_versions(cx)?;
             let installed: HashSet<String> = listed
                 .iter()
-                .map(|pkg| manager.package_identity(&pkg.name))
+                .map(|pkg| manager.listed_identity(&pkg.name))
                 .collect();
             actual.record_enumeration(
                 manager.name(),
                 listed
                     .iter()
-                    .map(|pkg| (manager.package_identity(&pkg.name), known_version(pkg))),
+                    .map(|pkg| (manager.listed_identity(&pkg.name), known_version(pkg))),
             );
             for entry in &desired {
                 actual.record_identity(manager.name(), entry, &manager.package_identity(entry));

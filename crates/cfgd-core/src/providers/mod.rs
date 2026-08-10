@@ -259,6 +259,23 @@ pub trait PackageManager: Send + Sync {
         Ok(vec![])
     }
 
+    /// Map a name as reported by
+    /// [`installed_packages_with_versions`](Self::installed_packages_with_versions)
+    /// into the identity space [`installed_packages`](Self::installed_packages)
+    /// reports — the space the planner diffs in.
+    ///
+    /// Identity for most managers, whose listings already report identity
+    /// names; the case-insensitive managers (chocolatey, scoop, winget)
+    /// override this to fold their display-case listing to the lowercase
+    /// identity form. Deliberately NOT
+    /// [`package_identity`](Self::package_identity): that maps a *declared
+    /// entry* and need not be a fixed point over listed names (FreeBSD `pkg`
+    /// strips a trailing `-VERSION`, so re-folding an already-stripped listed
+    /// `drm-510-kmod` would collapse it onto the unrelated `drm`).
+    fn listed_identity(&self, listed_name: &str) -> String {
+        listed_name.to_string()
+    }
+
     /// Map a profile package entry to the identity name that
     /// [`installed_packages`](Self::installed_packages) reports for it.
     ///
