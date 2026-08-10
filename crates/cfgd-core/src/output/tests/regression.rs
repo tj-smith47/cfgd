@@ -8,10 +8,12 @@ use crate::golden_doc;
 use crate::output::{Doc, OwnerLabel, Role};
 
 // BEFORE: cli/rollback.rs:108  printer.info(&format!("  {}", action));
-// A rollback restores a file set, so its work is grouped under the phase name
-// file work carries in every other surface rather than a heading of its own.
+// The non-file actions a rollback cannot undo, listed under their own heading.
+// `Phase: Files` is the rollback's FILE work (status lines, no bullets) and is
+// anchored by the `rollback/*` command goldens; this list is the surface the
+// migrated call site produces, so the anchor keeps the heading it renders under.
 golden_doc!(regression, rollback_action, |p, cap| {
-    let s = p.section(crate::reconciler::PhaseName::Files.section_title());
+    let s = p.section("Actions");
     s.bullet("revert /etc/hosts");
 });
 
@@ -234,14 +236,18 @@ golden_doc!(regression, worked_example_status, |p, cap| {
         })
         .section("Modules", |s| {
             // Subject is the owner token — the same string the module's group
-            // is headed with in an apply tree; the counts are the detail.
-            s.status_with(Role::Ok, "module:base", |sf| sf.detail("3 files, 5 pkgs"))
-                .status_with(Role::Ok, "module:dev-tools", |sf| {
-                    sf.detail("12 files, 18 pkgs")
-                })
-                .status_with(Role::Warn, "module:shell-config", |sf| {
-                    sf.detail("4 files, 0 pkgs")
-                })
+            // is headed with in an apply tree — and the detail is the producer's
+            // own `{pkgs}, {files}, {state}` order (`cli/status.rs`), so the
+            // worked example cannot model a line the command does not emit.
+            s.status_with(Role::Ok, "module:base", |sf| {
+                sf.detail("5 pkgs, 3 files, installed")
+            })
+            .status_with(Role::Ok, "module:dev-tools", |sf| {
+                sf.detail("18 pkgs, 12 files, installed")
+            })
+            .status_with(Role::Warn, "module:shell-config", |sf| {
+                sf.detail("0 pkgs, 4 files, drifted")
+            })
         });
     p.emit(doc);
 });

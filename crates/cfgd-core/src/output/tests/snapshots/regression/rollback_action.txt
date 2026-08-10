@@ -1,2 +1,2 @@
-Phase: Files
+Actions
   - revert /etc/hosts
