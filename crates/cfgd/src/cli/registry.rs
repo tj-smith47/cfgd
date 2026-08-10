@@ -1,6 +1,7 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
+use cfgd_core::output::Printer;
 
 // --- Provider registry, daemon hooks, state store ---
 
@@ -434,10 +435,13 @@ pub(in crate::cli) fn open_state_store(
 /// Returns a registry whose `secret_backend` is guaranteed `Some`.
 pub(in crate::cli) fn resolve_secret_backend(
     cli: &Cli,
+    printer: &Printer,
     file: &Path,
 ) -> anyhow::Result<ProviderRegistry> {
     let cfg = if cli.config.exists() {
-        Some(config::load_config(&cli.config)?)
+        let cfg = config::load_config(&cli.config)?;
+        drain_config_deprecations(printer, &cfg);
+        Some(cfg)
     } else {
         None
     };
@@ -471,9 +475,10 @@ pub(in crate::cli) fn resolve_secret_backend(
 /// Shorthand: resolve secret backend and extract it in one call.
 pub(in crate::cli) fn get_secret_backend(
     cli: &Cli,
+    printer: &Printer,
     file: &Path,
 ) -> anyhow::Result<Box<dyn SecretBackend>> {
-    let registry = resolve_secret_backend(cli, file)?;
+    let registry = resolve_secret_backend(cli, printer, file)?;
     registry
         .secret_backend
         .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
@@ -686,7 +691,11 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // ProviderRegistry is not Debug, so match rather than expect_err.
-        let err = match resolve_secret_backend(&cli, &missing) {
+        let err = match resolve_secret_backend(
+            &cli,
+            &cfgd_core::test_helpers::test_printer(),
+            &missing,
+        ) {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
         };
@@ -703,7 +712,8 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // Box<dyn SecretBackend> is not Debug, so match rather than expect_err.
-        let err = match get_secret_backend(&cli, &missing) {
+        let err = match get_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &missing)
+        {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
         };

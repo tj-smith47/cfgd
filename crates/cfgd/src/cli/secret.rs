@@ -13,7 +13,7 @@ fn secret_path_detail(file: &Path, detail: &str) -> serde_json::Value {
 }
 
 pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = match get_secret_backend(cli, file) {
+    let backend = match get_secret_backend(cli, printer, file) {
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
@@ -59,7 +59,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
 }
 
 pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = match get_secret_backend(cli, file) {
+    let backend = match get_secret_backend(cli, printer, file) {
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
@@ -126,7 +126,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
 }
 
 pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = match get_secret_backend(cli, file) {
+    let backend = match get_secret_backend(cli, printer, file) {
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);

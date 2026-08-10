@@ -13833,7 +13833,11 @@ fn secret_init_prints_header_and_key_path() {
 fn resolve_secret_backend_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("does-not-exist.yaml");
-    let result = super::resolve_secret_backend(&h.cli(), &nonexistent);
+    let result = super::resolve_secret_backend(
+        &h.cli(),
+        &cfgd_core::test_helpers::test_printer(),
+        &nonexistent,
+    );
     assert_error_contains(&result.map(|_| ()), "File not found");
 }
 
@@ -13841,7 +13845,11 @@ fn resolve_secret_backend_file_not_found() {
 fn get_secret_backend_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("nonexistent-secret.yaml");
-    let result = super::get_secret_backend(&h.cli(), &nonexistent);
+    let result = super::get_secret_backend(
+        &h.cli(),
+        &cfgd_core::test_helpers::test_printer(),
+        &nonexistent,
+    );
     assert_error_contains(&result.map(|_| ()), "File not found");
 }
 
@@ -13852,7 +13860,8 @@ fn resolve_secret_backend_no_config_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let nonexistent = dir.path().join("secret.enc.yaml");
-    let result = super::resolve_secret_backend(&cli, &nonexistent);
+    let result =
+        super::resolve_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &nonexistent);
     // Config file missing: load_config will fail
     match result {
         Ok(_) => panic!("expected error when config file is missing"),
