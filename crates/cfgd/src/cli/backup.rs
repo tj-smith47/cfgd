@@ -4,6 +4,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo, run_backup};
+use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
 

@@ -401,6 +401,24 @@ pub fn powershell_double_quoted(value: &str) -> String {
     format!("\"{}\"", escape_powershell_double_quoted(value))
 }
 
+/// Render a byte count for a human, at the largest scale that keeps it under
+/// four digits.
+///
+/// The single byte-size renderer for the whole workspace: `cfgd upgrade` sizes
+/// a release asset, `cfgd backup list --snapshots` sizes a snapshot, and a
+/// backup group's snapshot line sizes the artifact it just wrote. Two surfaces
+/// of one binary reporting `1.5 MB` and `1.5 MiB` for the same number is
+/// exactly the consumer-facing drift the output conventions exist to stop.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Escape a string for safe inclusion in XML/plist content (single pass).
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 8);
@@ -420,6 +438,51 @@ pub fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn format_bytes_small_value() {
+        assert_eq!(format_bytes(512), "512 B");
+    }
+
+    #[test]
+    fn format_bytes_just_below_kb_boundary() {
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_bytes_exact_kb_boundary() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_kb() {
+        assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_bytes_just_below_mb_boundary() {
+        assert_eq!(format_bytes(1048575), "1024.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_exact_mb_boundary() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_large_mb_value() {
+        assert_eq!(format_bytes(52_428_800), "50.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_mb() {
+        assert_eq!(format_bytes(1_572_864), "1.5 MB");
+    }
 
     #[test]
     fn expand_env_vars_basic_and_braced() {

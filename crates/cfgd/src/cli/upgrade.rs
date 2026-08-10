@@ -1,7 +1,6 @@
 use cfgd_core::PathDisplayExt;
+use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role};
-
-use super::helpers::format_bytes;
 
 pub fn cmd_upgrade(
     printer: &Printer,
@@ -440,51 +439,6 @@ mod tests {
     fn release_json_current_version() -> String {
         let tag = current_version_tag();
         format!(r#"{{"tag_name": "{tag}", "assets": []}}"#)
-    }
-
-    #[test]
-    fn format_bytes_zero() {
-        assert_eq!(format_bytes(0), "0 B");
-    }
-
-    #[test]
-    fn format_bytes_small_value() {
-        assert_eq!(format_bytes(512), "512 B");
-    }
-
-    #[test]
-    fn format_bytes_just_below_kb_boundary() {
-        assert_eq!(format_bytes(1023), "1023 B");
-    }
-
-    #[test]
-    fn format_bytes_exact_kb_boundary() {
-        assert_eq!(format_bytes(1024), "1.0 KB");
-    }
-
-    #[test]
-    fn format_bytes_fractional_kb() {
-        assert_eq!(format_bytes(1536), "1.5 KB");
-    }
-
-    #[test]
-    fn format_bytes_just_below_mb_boundary() {
-        assert_eq!(format_bytes(1048575), "1024.0 KB");
-    }
-
-    #[test]
-    fn format_bytes_exact_mb_boundary() {
-        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
-    }
-
-    #[test]
-    fn format_bytes_large_mb_value() {
-        assert_eq!(format_bytes(52_428_800), "50.0 MB");
-    }
-
-    #[test]
-    fn format_bytes_fractional_mb() {
-        assert_eq!(format_bytes(1_572_864), "1.5 MB");
     }
 
     /// GitHub returns a 500 during `--check` → function returns Err and emits
