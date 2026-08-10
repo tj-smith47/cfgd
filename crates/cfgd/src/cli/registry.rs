@@ -57,6 +57,21 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         packages::plan_packages(profile, &[], managers, cfgd_installed, cx)
     }
 
+    fn plan_packages_observed(
+        &self,
+        profile: &cfgd_core::config::MergedProfile,
+        managers: &[&dyn cfgd_core::providers::PackageManager],
+        cfgd_installed: &std::collections::HashSet<String>,
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<(
+        Vec<cfgd_core::providers::PackageAction>,
+        cfgd_core::reconciler::ActualPackages,
+    )> {
+        // Same planner as `plan_packages` above, capturing its own
+        // installed-state enumeration for the source-decision classification.
+        packages::plan_packages_observed(profile, &[], managers, cfgd_installed, cx)
+    }
+
     fn extend_registry_custom_managers(
         &self,
         registry: &mut ProviderRegistry,

@@ -58,6 +58,27 @@ pub trait DaemonHooks: Send + Sync {
         cx: &PackageContext<'_>,
     ) -> Result<Vec<PackageAction>>;
 
+    /// [`Self::plan_packages`] plus what its enumeration observed, as the
+    /// [`crate::reconciler::ActualPackages`] the source-decision classification
+    /// consumes.
+    ///
+    /// The default records nothing — a hook that does not capture its
+    /// enumeration leaves the classification fail-closed, so nothing
+    /// auto-accepts on a guess. The workstation binary overrides this with the
+    /// planner's real observation.
+    fn plan_packages_observed(
+        &self,
+        profile: &MergedProfile,
+        managers: &[&dyn PackageManager],
+        cfgd_installed: &std::collections::HashSet<String>,
+        cx: &PackageContext<'_>,
+    ) -> Result<(Vec<PackageAction>, crate::reconciler::ActualPackages)> {
+        Ok((
+            self.plan_packages(profile, managers, cfgd_installed, cx)?,
+            crate::reconciler::ActualPackages::default(),
+        ))
+    }
+
     /// Extend the registry with custom (user-defined) package managers from the profile.
     fn extend_registry_custom_managers(
         &self,

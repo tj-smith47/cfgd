@@ -73,8 +73,14 @@ fn process_tiered_decisions(
     policy: &AutoApplyPolicyConfig,
     notifier: &Notifier,
 ) -> HashSet<String> {
-    let review = review_source_policy(store, source_name, delivered, policy)
-        .expect("policy review reads the test store");
+    let review = review_source_policy(
+        store,
+        source_name,
+        delivered,
+        policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .expect("policy review reads the test store");
     super::reconcile::mint_reviewed_decisions(store, &review, notifier);
     review.declined
 }
@@ -587,6 +593,7 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
         "acme",
         &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
         &policy,
+        &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
 
@@ -646,6 +653,7 @@ fn a_changed_source_reasks_an_item_already_answered() {
         "acme",
         &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
         &policy,
+        &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
     assert_eq!(
@@ -692,6 +700,7 @@ fn an_installed_item_with_no_decision_row_is_still_asked_about() {
         "acme",
         &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
         &policy,
+        &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
     assert_eq!(
@@ -702,6 +711,396 @@ fn an_installed_item_with_no_decision_row_is_still_asked_about() {
             .collect::<Vec<_>>(),
         vec!["packages.cargo.bat"],
         "a managed-resource row is not a decision; the item is still asked about"
+    );
+}
+
+/// A cargo profile delivering the named packages, for the auto-accept pins.
+fn cargo_profile(packages: &[&str]) -> MergedProfile {
+    use crate::config::PackagesSpec;
+    MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: packages.iter().map(|p| p.to_string()).collect(),
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The planner's observation of one cargo enumeration: installed
+/// `(identity, version)` pairs plus the identity every desired entry mapped to.
+fn cargo_observation(
+    installed: &[(&str, Option<&str>)],
+    identities: &[(&str, &str)],
+) -> crate::reconciler::ActualPackages {
+    let mut actual = crate::reconciler::ActualPackages::default();
+    actual.record_enumeration(
+        "cargo",
+        installed
+            .iter()
+            .map(|(name, v)| (name.to_string(), v.map(str::to_string))),
+    );
+    for (entry, identity) in identities {
+        actual.record_identity("cargo", entry, identity);
+    }
+    actual
+}
+
+#[test]
+fn an_installed_source_package_auto_accepts_instead_of_minting() {
+    // The satisfies-gate's trivial case (`docs/sources.md`): an item with no
+    // version spec is satisfied by any installed version, so the machine
+    // already running it answers the question nobody was asked yet. The
+    // never-installed sibling is still minted.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+    let merged = cargo_profile(&["bat", "eza"]);
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert_eq!(
+        review
+            .auto_accepted
+            .iter()
+            .map(|a| a.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "the installed item is accepted without asking"
+    );
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.eza"],
+        "the absent item still owes its question"
+    );
+
+    // The writing path records the acceptance as an already-resolved row with
+    // auto provenance, and the resource is released from withholding.
+    crate::reconciler::mint_decisions(&store, &review);
+    let rows: Vec<_> = store
+        .withheld_decisions()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.resource)
+        .collect();
+    assert_eq!(
+        rows,
+        vec!["packages.cargo.eza"],
+        "only the still-pending item withholds"
+    );
+    let recorded = store
+        .pending_decisions_for_source("acme")
+        .unwrap()
+        .into_iter()
+        .find(|d| d.resource == "packages.cargo.bat");
+    assert!(
+        recorded.is_none(),
+        "the auto-accepted row is resolved, not pending"
+    );
+    assert!(
+        store.has_decision("acme", "packages.cargo.bat").unwrap(),
+        "resolved with provenance, not merely skipped — the row exists \
+         (its resolution/summary shape is pinned at the store level)"
+    );
+}
+
+#[test]
+fn a_mismatched_version_pin_stays_pending_with_the_conflict_annotated() {
+    // `docs/sources.md`: a version mismatch never auto-accepts — the row
+    // stays pending and carries the conflict as data, so `status` / `decide`
+    // can say WHY the installed copy did not answer the question.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["tool@^14"]);
+    let actual = cargo_observation(&[("tool", Some("13.0"))], &[("tool@^14", "tool")]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert!(
+        review.auto_accepted.is_empty(),
+        "a mismatch is never consent"
+    );
+    assert_eq!(review.to_mint.len(), 1);
+    let mint = &review.to_mint[0];
+    assert_eq!(
+        mint.annotation.as_deref(),
+        Some("installed 13.0, source wants ^14")
+    );
+    assert!(
+        mint.as_row()
+            .summary
+            .contains("installed 13.0, source wants ^14"),
+        "the annotation rides the row summary every listing renders"
+    );
+}
+
+#[test]
+fn a_satisfied_version_pin_auto_accepts() {
+    // The satisfies-gate proper: installed state satisfies the source's spec,
+    // judged by the shared `version_satisfies` helper.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["tool@^14"]);
+    let actual = cargo_observation(&[("tool", Some("14.2"))], &[("tool@^14", "tool")]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert!(
+        review.to_mint.is_empty(),
+        "a satisfied pin owes no question"
+    );
+    assert_eq!(review.auto_accepted.len(), 1);
+    assert_eq!(
+        review.auto_accepted[0].reason, "installed 14.2 satisfies ^14",
+        "the provenance names the satisfying version and the spec"
+    );
+}
+
+#[test]
+fn an_unobserved_manager_fails_closed_to_pending() {
+    // Fail-closed on unknown state: the run never enumerated this manager
+    // (unavailable, or its probe errored), so nothing auto-accepts on a guess
+    // — the item is minted plain, exactly as before.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat"]);
+    // An observation exists, but for a DIFFERENT manager entirely.
+    let mut actual = crate::reconciler::ActualPackages::default();
+    actual.record_enumeration("brew", [("bat".to_string(), None)]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert!(review.auto_accepted.is_empty());
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| (m.resource.as_str(), m.annotation.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("packages.cargo.bat", None)],
+        "unknown installed state keeps the plain question"
+    );
+}
+
+#[test]
+fn a_files_item_already_on_disk_never_auto_accepts() {
+    // Packages only: an existing file matching source content is NOT consent.
+    // The file genuinely exists on disk; the classification must not care.
+    use crate::config::{FilesSpec, ManagedFileSpec};
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("delivered.conf");
+    std::fs::write(&target, "already here\n").unwrap();
+
+    let merged = MergedProfile {
+        files: FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/delivered.conf".into(),
+                target: target.clone(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+
+    assert!(
+        review.auto_accepted.is_empty(),
+        "a file on disk is not consent"
+    );
+    assert_eq!(
+        review.to_mint.len(),
+        1,
+        "the files item is still asked about"
+    );
+    assert!(review.to_mint[0].resource.starts_with("files."));
+}
+
+#[test]
+fn a_pending_row_auto_accepts_once_its_package_is_installed() {
+    // The manual-install path `docs/sources.md` promises: the operator
+    // installs the pending package by hand, and the next classification finds
+    // it present, resolves the row with auto provenance, and releases the
+    // resource — no `cfgd decide` required.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat"]);
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &delivered.resource_hash())
+        .unwrap();
+
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat")]);
+    let review = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+
+    assert_eq!(
+        review
+            .auto_accepted
+            .iter()
+            .map(|a| a.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"]
+    );
+    assert!(review.to_mint.is_empty());
+
+    // Read-only paths release the row without writing anything…
+    let scope = DecisionScope::new(["acme".to_string()], &MergedProfile::default());
+    let withheld = WithheldDecisions::read(&store, &scope)
+        .unwrap()
+        .with_auto_accepted(&review.auto_accepted);
+    assert!(
+        withheld.pending.is_empty(),
+        "the released item no longer withholds the preview"
+    );
+
+    // …and the writing path resolves the SAME row in place.
+    crate::reconciler::mint_decisions(&store, &review);
+    assert!(withheld_paths(&store).is_empty());
+    assert!(
+        store
+            .pending_decisions_for_source("acme")
+            .unwrap()
+            .is_empty(),
+        "the row is resolved, not duplicated"
+    );
+}
+
+#[test]
+fn an_explicit_rejection_is_never_auto_accepted() {
+    // The operator's standing answer outranks installed state: a rejected row
+    // keeps withholding even when the package is on the machine.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat"]);
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &delivered.resource_hash())
+        .unwrap();
+
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat")]);
+    let review = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+
+    assert!(review.auto_accepted.is_empty(), "rejected means rejected");
+    assert!(review.to_mint.is_empty(), "and the answer is not re-asked");
+    crate::reconciler::mint_decisions(&store, &review);
+    assert_eq!(
+        withheld_paths(&store),
+        HashSet::from(["packages.cargo.bat".to_string()]),
+        "the rejection still withholds"
+    );
+}
+
+#[test]
+fn a_pending_rows_conflict_annotation_is_refreshed_in_place() {
+    // A row minted before the operator installed a WRONG version must not
+    // keep its stale summary: the conflict lands on the row (and only
+    // re-writes when it actually moves, so a steady conflict is not a
+    // fresh notification every tick).
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["tool@^14"]);
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.tool@^14",
+            "recommended",
+            "install",
+            "recommended packages.cargo.tool@^14 (from acme)",
+        )
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &delivered.resource_hash())
+        .unwrap();
+
+    let actual = cargo_observation(&[("tool", Some("13.0"))], &[("tool@^14", "tool")]);
+    let review = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+    assert!(review.auto_accepted.is_empty() && review.to_mint.is_empty());
+    assert_eq!(review.annotation_refresh.len(), 1);
+
+    crate::reconciler::mint_decisions(&store, &review);
+    let rows = store.pending_decisions_for_source("acme").unwrap();
+    assert_eq!(rows.len(), 1, "refreshed in place, never duplicated");
+    assert!(
+        rows[0].summary.contains("installed 13.0, source wants ^14"),
+        "the row the operator reads carries the current conflict, got {:?}",
+        rows[0].summary
+    );
+
+    // A second identical observation is a no-op.
+    let again = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+    assert!(
+        again.annotation_refresh.is_empty(),
+        "an unchanged conflict does not rewrite the row every tick"
     );
 }
 
@@ -2801,6 +3200,7 @@ fn a_scoop_item_mints_and_withholds_under_notify_exactly_like_a_brew_item() {
         "acme",
         &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
         &policy,
+        &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
     let mut minted: Vec<&str> = review.to_mint.iter().map(|m| m.resource.as_str()).collect();
@@ -2848,6 +3248,7 @@ fn a_locked_tier_scoop_item_still_applies_when_the_policy_accepts_locked() {
         "acme",
         &tiered_items(&merged, crate::config::LayerPolicy::Required),
         &policy,
+        &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
     assert!(

@@ -344,6 +344,34 @@ pub(crate) fn handle_reconcile(
         tracing::warn!(error = %e, "failed to discard decisions of removed sources");
     }
 
+    let available_managers = registry.available_package_managers();
+    // The daemon is a full, unscoped reconcile, so it prunes: feed the real
+    // cfgd-tracked set as `"<manager>/<identity>"` entries.
+    let cfgd_installed: HashSet<String> = store
+        .managed_package_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
+        .collect();
+    let pkg_cx = crate::providers::PackageContext::new(printer, &store);
+    // Planned BEFORE the policy review because the classification consumes the
+    // planner's own installed-state observation — one enumeration, threaded,
+    // never a second shell-out. A planning failure therefore skips the tick
+    // before anything is minted: a review taken without the observation would
+    // ask about items the machine may already run.
+    let (pkg_actions, actual_packages) = match hooks.plan_packages_observed(
+        &resolved.merged,
+        &available_managers,
+        &cfgd_installed,
+        &pkg_cx,
+    ) {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: package planning failed");
+            return;
+        }
+    };
+
     // The policy review is profile-wide; skip it when we're scoped to a single
     // module so a per-module tick doesn't accidentally accept/reject items from
     // sources unrelated to the patched module. The classification itself is the
@@ -351,7 +379,13 @@ pub(crate) fn handle_reconcile(
     // daemon declines cannot be installed by a manual apply; only the WRITES
     // below (the rows, the hashes) belong to the daemon.
     let review = if module_filter.is_none() {
-        match crate::reconciler::review_source_policies(&store, &cfg, &resolved, auto_apply) {
+        match crate::reconciler::review_source_policies(
+            &store,
+            &cfg,
+            &resolved,
+            auto_apply,
+            &actual_packages,
+        ) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(error = %e, "reconcile: cannot review source auto-apply policy");
@@ -391,7 +425,8 @@ pub(crate) fn handle_reconcile(
         Ok(w) => w
             .with_policy_declined(review.declined)
             .with_unrecorded(&review.to_mint, &decision_scope)
-            .with_undecidable(review.undecidable),
+            .with_undecidable(review.undecidable)
+            .with_auto_accepted(&review.auto_accepted),
         Err(e) => {
             tracing::error!(error = %e, "reconcile: cannot read source decisions");
             notifier.notify(
@@ -411,29 +446,6 @@ pub(crate) fn handle_reconcile(
     // plan — so the pruning below is only half the guarantee without this.
     let reconciler = crate::reconciler::Reconciler::new(&registry, &store)
         .withholding_env_surface(pending_exclusions.withholds_env_surface());
-
-    let available_managers = registry.available_package_managers();
-    // The daemon is a full, unscoped reconcile, so it prunes: feed the real
-    // cfgd-tracked set as `"<manager>/<identity>"` entries.
-    let cfgd_installed: HashSet<String> = store
-        .managed_package_ids()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
-        .collect();
-    let pkg_cx = crate::providers::PackageContext::new(printer, &store);
-    let pkg_actions = match hooks.plan_packages(
-        &resolved.merged,
-        &available_managers,
-        &cfgd_installed,
-        &pkg_cx,
-    ) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::error!(error = %e, "reconcile: package planning failed");
-            return;
-        }
-    };
 
     let file_actions = match hooks.plan_files(&config_dir, &resolved) {
         Ok(a) => a,

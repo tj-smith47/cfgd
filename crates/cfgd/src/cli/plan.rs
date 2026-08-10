@@ -102,8 +102,13 @@ pub fn cmd_plan(
         .map(str::to_string);
 
     // Plan-only mode: no secret providers needed
-    let (pkg_actions, file_actions, dry_run_fm) = if module_only {
-        (Vec::new(), Vec::new(), None)
+    let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
+        (
+            Vec::new(),
+            Vec::new(),
+            None,
+            cfgd_core::reconciler::ActualPackages::default(),
+        )
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
@@ -126,7 +131,7 @@ pub fn cmd_plan(
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
-        let pkg = packages::plan_packages(
+        let (pkg, actual) = packages::plan_packages_observed(
             &effective_resolved.merged,
             &[],
             &all_managers,
@@ -141,7 +146,7 @@ pub fn cmd_plan(
         }
 
         let fa = fm.plan(&effective_resolved.merged)?;
-        (pkg, fa, Some(fm))
+        (pkg, fa, Some(fm), actual)
     };
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
@@ -169,6 +174,7 @@ pub fn cmd_plan(
         &config_dir,
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
+        &actual_packages,
     )?;
     reconciler::withhold_from_plan(
         &mut plan,

@@ -21476,6 +21476,201 @@ fn a_local_declaration_under_a_dotted_manager_still_applies() {
     );
 }
 
+/// A source-delivered custom manager whose one package the machine ALREADY
+/// runs: `listInstalled` reports it (cross-OS — `echo` exists in `sh` and
+/// `cmd.exe` alike), so the planner's own enumeration sees it installed.
+const INSTALLED_CUSTOM_TEAM_SPEC: &str = "  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo kubectx\n        install: echo install\n        uninstall: echo uninstall\n        packages:\n          - kubectx\n";
+
+/// The same manager delivering a version-PINNED entry while the enumeration
+/// lists only the bare name — installed, but at an unverifiable version.
+const PINNED_CUSTOM_TEAM_SPEC: &str = "  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo tool\n        install: echo install\n        uninstall: echo uninstall\n        packages:\n          - \"tool@^14\"\n";
+
+/// The annotation the pinned-entry fixture's row must carry: something IS
+/// installed, but its version cannot answer the source's spec.
+const PINNED_CONFLICT_ANNOTATION: &str = "installed (version unknown), source wants ^14";
+
+#[test]
+#[serial_test::serial]
+fn plan_previews_an_installed_source_package_as_included_and_mints_nothing() {
+    // The satisfies-gate from the preview side: the machine already runs the
+    // source's package, so the plan neither withholds it as pending nor — as
+    // a strictly read-only surface — mints any row for it. The undelivered
+    // FILE the same source ships proves the contrast: not installed on any
+    // reading of the machine, so it stays pending.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("the source's file item still pends");
+    assert!(
+        pending.iter().any(|d| d["resource"]
+            .as_str()
+            .is_some_and(|r| r.contains("withheld.txt"))),
+        "the not-installed file is still asked about: {json}"
+    );
+    assert!(
+        !pending.iter().any(|d| d["resource"]
+            .as_str()
+            .is_some_and(|r| r.contains("kubectx"))),
+        "the installed package is included, not withheld: {json}"
+    );
+    let phases = json["phases"].to_string();
+    assert!(
+        !phases.contains("kubectx"),
+        "already installed — the plan holds no work for it: {phases}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        !state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "plan is read-only: the auto-accept is previewed, never recorded"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_records_an_installed_source_package_as_auto_accepted() {
+    // The writing path: `cfgd apply --yes` records the auto-acceptance as a
+    // resolved row (provenance shape pinned at the store level), so the item
+    // neither pends nor withholds afterwards.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "the acceptance is recorded, not merely skipped"
+    );
+    assert!(
+        !state
+            .pending_decisions()
+            .unwrap()
+            .iter()
+            .any(|d| d.resource.contains("kubectx")),
+        "the row is resolved, not pending"
+    );
+    assert!(
+        !state
+            .withheld_decisions()
+            .unwrap()
+            .iter()
+            .any(|d| d.resource.contains("kubectx")),
+        "an auto-accepted resolution releases the resource"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_version_conflict_annotates_the_pending_row_in_the_plan_payload() {
+    // A version-pinned entry whose installed version cannot be verified stays
+    // pending — fail-closed — and the row itself says why, so the `-o json`
+    // consumer reads the conflict as data on the row, not a free-floating line.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+    let row = json["pendingDecisions"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|d| d["resource"] == serde_json::json!("packages.fakemgr.tool@^14"))
+        })
+        .unwrap_or_else(|| panic!("the mismatched item stays pending: {json}"));
+    assert_eq!(
+        row["id"],
+        serde_json::json!(0),
+        "classified, not yet recorded"
+    );
+    assert!(
+        row["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains(PINNED_CONFLICT_ANNOTATION)),
+        "the conflict rides the row summary: {row}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_version_conflict_annotation_reaches_the_status_dashboard() {
+    // After a writing path records the annotated row, the dashboard the
+    // operator reads renders the conflict beside the item.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+    let (apply_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains(PINNED_CONFLICT_ANNOTATION),
+        "status names the version conflict on the pending row:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_version_conflict_annotation_reaches_the_decide_listing() {
+    // Same row, the answering surface, structured: `cfgd decide -o json`
+    // carries the annotation in the row's summary.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+    let (apply_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let json = f.h.json_output();
+    assert!(
+        json["decisions"].as_array().is_some_and(|rows| {
+            rows.iter().any(|d| {
+                d["resource"] == serde_json::json!("packages.fakemgr.tool@^14")
+                    && d["summary"]
+                        .as_str()
+                        .is_some_and(|s| s.contains(PINNED_CONFLICT_ANNOTATION))
+            })
+        }),
+        "the decide listing carries the conflict as row data: {json}"
+    );
+}
+
 /// A cargo manifest reference whose file the tests below write as invalid TOML,
 /// so the shared source classification fails while the config itself parses.
 const BROKEN_MANIFEST_SPEC: &str =

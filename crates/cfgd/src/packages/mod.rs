@@ -26,6 +26,7 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::output::Role;
 use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageContext, PackageManager};
+use cfgd_core::reconciler::ActualPackages;
 
 mod brew;
 mod cargo;
@@ -156,7 +157,27 @@ pub fn plan_packages(
     cfgd_installed: &HashSet<String>,
     cx: &PackageContext<'_>,
 ) -> Result<Vec<PackageAction>> {
+    Ok(plan_packages_observed(profile, modules, managers, cfgd_installed, cx)?.0)
+}
+
+/// [`plan_packages`] plus what its enumeration observed, for the callers that
+/// also classify source decisions.
+///
+/// The captured [`ActualPackages`] is the planner's OWN installed-state read —
+/// the same `installed_packages` call and the same `package_identity` mapping
+/// the diff below runs on — so the source-decision auto-accept judges presence
+/// exactly as the plan does, with no second shell-out. Only available managers
+/// are recorded: an unavailable or erroring manager contributes nothing, and
+/// the classification fails closed for its packages.
+pub fn plan_packages_observed(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
+) -> Result<(Vec<PackageAction>, ActualPackages)> {
     let mut actions = Vec::new();
+    let mut actual = ActualPackages::default();
 
     // Single-source the desired set from the effective (profile ⊕ modules) view
     // so this planner sees exactly what every other read/write surface does.
@@ -207,6 +228,17 @@ pub fn plan_packages(
         // package is still present before pruning.
         if manager.is_available() {
             let installed = manager.installed_packages(cx)?;
+            // This enumeration carries no versions — `installed_packages` is
+            // identity-only by contract — so the observation records None and
+            // a version-pinned source item stays pending (fail-closed) rather
+            // than auto-accepting on an unverifiable satisfaction.
+            actual.record_enumeration(
+                manager.name(),
+                installed.iter().map(|pkg| (pkg.clone(), None)),
+            );
+            for entry in &desired {
+                actual.record_identity(manager.name(), entry, &manager.package_identity(entry));
+            }
 
             // Install before uninstall so a rename (old pkg dropped, new pkg
             // added) lands the replacement before removing the old. The diff
@@ -279,7 +311,7 @@ pub fn plan_packages(
         }
     }
 
-    Ok(actions)
+    Ok((actions, actual))
 }
 
 /// Apply package actions.

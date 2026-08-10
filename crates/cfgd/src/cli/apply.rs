@@ -266,8 +266,13 @@ pub fn run_apply(
 
     // In dry-run mode we don't need secret providers wired up — just plan files for display.
     // In apply mode we wire up the full file manager with secret providers.
-    let (pkg_actions, file_actions, dry_run_fm) = if module_only {
-        (Vec::new(), Vec::new(), None)
+    let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
+        (
+            Vec::new(),
+            Vec::new(),
+            None,
+            cfgd_core::reconciler::ActualPackages::default(),
+        )
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
@@ -283,7 +288,7 @@ pub fn run_apply(
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
-        let pkg = packages::plan_packages(
+        let (pkg, actual) = packages::plan_packages_observed(
             &effective_resolved.merged,
             &[],
             &all_managers,
@@ -313,11 +318,11 @@ pub fn run_apply(
 
         if dry_run {
             // Keep fm around for diff display but don't register it
-            (pkg, fa, Some(fm))
+            (pkg, fa, Some(fm), actual)
         } else {
             // Register the file manager so the reconciler delegates through the trait
             registry.file_manager = Some(Box::new(fm));
-            (pkg, fa, None)
+            (pkg, fa, None, actual)
         }
     };
 
@@ -368,6 +373,7 @@ pub fn run_apply(
         &config_dir,
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
+        &actual_packages,
     )?;
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
     let reconciler = Reconciler::new(&registry, &state)

@@ -738,6 +738,87 @@ fn accepting_a_resource_that_was_once_rejected_releases_it() {
 }
 
 #[test]
+fn record_auto_accepted_resolves_the_open_row_with_auto_provenance() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .record_auto_accepted_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme) — auto-accepted: already installed",
+        )
+        .unwrap();
+
+    assert!(
+        withheld_resources(&store).is_empty(),
+        "an auto-accepted resolution releases the resource"
+    );
+    let (resolution, resolved_at, summary): (Option<String>, Option<String>, String) = store
+        .conn
+        .query_row(
+            "SELECT resolution, resolved_at, summary FROM pending_decisions
+                 WHERE source = 'acme' AND resource = 'packages.cargo.bat'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        resolution.as_deref(),
+        Some(super::RESOLUTION_AUTO_ACCEPTED),
+        "distinguishable from an operator's `accepted`"
+    );
+    assert!(resolved_at.is_some());
+    assert!(summary.contains("auto-accepted: already installed"));
+}
+
+#[test]
+fn record_auto_accepted_with_no_open_row_inserts_once() {
+    // No row existed (nothing had asked yet): the provenance still lands, as
+    // an already-resolved row — and re-observing the same fact on the next
+    // run is a no-op, not a history row per tick.
+    let store = StateStore::open_in_memory().unwrap();
+    let summary = "recommended packages.cargo.bat (from acme) — auto-accepted: already installed";
+    for _ in 0..2 {
+        store
+            .record_auto_accepted_decision(
+                "acme",
+                "packages.cargo.bat",
+                "recommended",
+                "install",
+                summary,
+            )
+            .unwrap();
+    }
+
+    let count: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pending_decisions
+                 WHERE source = 'acme' AND resource = 'packages.cargo.bat'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "idempotent for an unchanged observation");
+    assert!(store.pending_decisions().unwrap().is_empty());
+    assert!(withheld_resources(&store).is_empty());
+    assert!(
+        store.has_decision("acme", "packages.cargo.bat").unwrap(),
+        "the provenance row exists for `status` to explain"
+    );
+}
+
+#[test]
 fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
     let store = StateStore::open_in_memory().unwrap();
     store

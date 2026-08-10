@@ -2092,6 +2092,7 @@ fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file
         dir.path(),
         true,
         DecisionWrites::ReadOnly,
+        &reconciler::ActualPackages::default(),
     )
     .expect("the decision gate reads a healthy store");
 
@@ -2125,6 +2126,7 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
         dir.path(),
         false,
         DecisionWrites::ReadOnly,
+        &reconciler::ActualPackages::default(),
     )
     .expect("the decision gate reads a healthy store");
 

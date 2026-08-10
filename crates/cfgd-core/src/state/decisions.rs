@@ -10,6 +10,11 @@ use crate::errors::Result;
 const DECISION_COLUMNS: &str =
     "id, source, resource, tier, action, summary, created_at, resolved_at, resolution";
 
+/// The `pending_decisions.resolution` value a row carries when installed state
+/// answered the question — accepted because the machine already satisfies the
+/// item, not by the operator's hand.
+pub const RESOLUTION_AUTO_ACCEPTED: &str = "auto-accepted";
+
 fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingDecision> {
     Ok(PendingDecision {
         id: row.get(0)?,
@@ -179,6 +184,76 @@ impl StateStore {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(rows)
+    }
+
+    /// Record that installed state answered a decision — the machine already
+    /// satisfies the item, so the question is closed without the operator's
+    /// hand.
+    ///
+    /// The resolution value is [`RESOLUTION_AUTO_ACCEPTED`], distinguishable
+    /// from an operator's `accepted` wherever the row is read; any
+    /// non-`rejected` resolution releases the resource from
+    /// [`Self::withheld_decisions`] by construction. An open row is resolved
+    /// in place (its summary rewritten to say why); with no open row, an
+    /// already-resolved row is inserted so the provenance exists even for an
+    /// item nothing had asked about yet. Re-observing an unchanged fact is a
+    /// no-op rather than a fresh history row per run.
+    pub fn record_auto_accepted_decision(
+        &self,
+        source: &str,
+        resource: &str,
+        tier: &str,
+        action: &str,
+        summary: &str,
+    ) -> Result<()> {
+        let timestamp = crate::utc_now_iso8601();
+        let updated = self.conn.execute(
+            "UPDATE pending_decisions
+                 SET tier = ?1, action = ?2, summary = ?3, resolved_at = ?4, resolution = ?5
+                 WHERE source = ?6 AND resource = ?7 AND resolved_at IS NULL",
+            params![
+                tier,
+                action,
+                summary,
+                timestamp,
+                RESOLUTION_AUTO_ACCEPTED,
+                source,
+                resource
+            ],
+        )?;
+        if updated > 0 {
+            return Ok(());
+        }
+
+        let already_recorded: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM pending_decisions AS d
+                 WHERE source = ?1 AND resource = ?2
+                   AND resolution = ?3 AND summary = ?4
+                   AND id = (SELECT MAX(id) FROM pending_decisions AS newer
+                             WHERE newer.source = d.source AND newer.resource = d.resource)",
+            params![source, resource, RESOLUTION_AUTO_ACCEPTED, summary],
+            |row| row.get(0),
+        )?;
+        if already_recorded > 0 {
+            return Ok(());
+        }
+
+        self.conn.execute(
+            "INSERT INTO pending_decisions
+                 (source, resource, tier, action, summary, created_at, resolved_at, resolution)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                source,
+                resource,
+                tier,
+                action,
+                summary,
+                timestamp,
+                timestamp,
+                RESOLUTION_AUTO_ACCEPTED
+            ],
+        )?;
+        Ok(())
     }
 
     /// Resolve a pending decision by resource path.

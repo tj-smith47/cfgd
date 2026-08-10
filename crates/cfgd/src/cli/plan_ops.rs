@@ -282,6 +282,7 @@ pub(in crate::cli) fn withheld_for_run(
     config_dir: &Path,
     config_parsed: bool,
     writes: DecisionWrites<'_>,
+    actual: &reconciler::ActualPackages,
 ) -> anyhow::Result<(
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
@@ -309,6 +310,7 @@ pub(in crate::cli) fn withheld_for_run(
         cfg,
         resolved,
         reconciler::configured_auto_apply(cfg),
+        actual,
     )?;
     // Minting first is what makes the rows readable below, so a minting run
     // names the same rows `cfgd status` and `cfgd decide` will. It is also why
@@ -323,7 +325,8 @@ pub(in crate::cli) fn withheld_for_run(
     let withheld = reconciler::WithheldDecisions::read(state, &scope)?
         .with_policy_declined(review.declined.clone())
         .with_unrecorded(&review.to_mint, &scope)
-        .with_undecidable(review.undecidable.clone());
+        .with_undecidable(review.undecidable.clone())
+        .with_auto_accepted(&review.auto_accepted);
     Ok((withheld, review))
 }
 

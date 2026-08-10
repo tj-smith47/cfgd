@@ -286,6 +286,14 @@ discriminator reaches the other two read surfaces: `cfgd status -o json`
 (`pendingDecisions`) and the bare `cfgd decide -o json` listing (`decisions`)
 fold in the same classified-but-unrecorded rows, `id: 0` included.
 
+A `Notify`-tier package the machine **already satisfies** never lands in
+`pendingDecisions` at all: the run's own package enumeration answers the
+question and the item is [auto-accepted](sources.md#edge-cases) — previewed as
+included by `plan`, recorded as a resolved row with resolution `auto-accepted`
+by the writing paths. A version conflict instead stays pending with the
+conflict annotated in the row's `summary` (e.g. `… — installed 13.0, source
+wants ^14`), on the recorded row and the `id: 0` shape alike.
+
 In the human render, an unrecorded item keeps the usual ``run `cfgd decide
 accept/reject` `` instruction only where that command could actually record it.
 On a config that cannot mint the row — a foreign `--config` without

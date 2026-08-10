@@ -202,6 +202,9 @@ fn source_classification(
         composition::ConstraintMode::Report,
     )
     .context("source composition failed")?;
+    // Decide enumerates no package state (it stays offline), so the
+    // classification auto-accepts nothing here — installed-but-undecided items
+    // keep listing until a run that enumerates (plan/apply/tick) releases them.
     plan_ops::withheld_for_run(
         state,
         &cfg,
@@ -209,6 +212,7 @@ fn source_classification(
         &config_dir(cli),
         true,
         writes,
+        &reconciler::ActualPackages::default(),
     )
     .context("source classification failed")
 }

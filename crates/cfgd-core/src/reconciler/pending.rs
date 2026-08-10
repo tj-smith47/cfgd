@@ -446,6 +446,24 @@ impl WithheldDecisions {
         self
     }
 
+    /// Release the rows this run's classification auto-accepted.
+    ///
+    /// The rows were read before the classification resolved them (or, on a
+    /// read-only path, were never resolved at all), so they still sit in
+    /// `pending` and would withhold an item the machine already runs. Pruning
+    /// here is what lets `cfgd plan` — which writes nothing — preview the item
+    /// as included, and keeps the writing paths' plans identical to that
+    /// preview. Only `pending` is touched: a rejection is the operator's
+    /// standing answer and no installed state overrides it.
+    pub fn with_auto_accepted(mut self, accepted: &[AutoAccepted]) -> Self {
+        self.pending.retain(|row| {
+            !accepted
+                .iter()
+                .any(|a| a.source == row.source && a.resource == row.resource)
+        });
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
             && self.rejected.is_empty()
@@ -483,13 +501,25 @@ pub fn configured_auto_apply(cfg: &CfgdConfig) -> bool {
 pub struct DecisionMint {
     pub source: String,
     pub resource: String,
-    pub tier: &'static str,
+    pub tier: String,
+    /// Why the item is still being asked about even though something is
+    /// installed — the version-conflict annotation
+    /// (`installed 13.0, source wants ^14`). Data on the row: it rides the
+    /// summary, so `status` / `decide` list it and the `-o json` payloads
+    /// carry it, recorded or not.
+    pub annotation: Option<String>,
 }
 
 impl DecisionMint {
     /// The `pending_decisions.summary` text the row carries.
     pub fn summary(&self) -> String {
-        format!("{} {} (from {})", self.tier, self.resource, self.source)
+        match &self.annotation {
+            Some(annotation) => format!(
+                "{} {} (from {}) — {}",
+                self.tier, self.resource, self.source, annotation
+            ),
+            None => format!("{} {} (from {})", self.tier, self.resource, self.source),
+        }
     }
 
     /// The row this mint stands for, before anything records it.
@@ -520,6 +550,220 @@ impl DecisionMint {
 /// is whether to put the item ON the machine.
 pub const DECISION_ACTION_INSTALL: &str = "install";
 
+/// What this run's own package planning observed, threaded into the
+/// source-decision classification so a source-delivered package the machine
+/// already runs can be accepted without asking.
+///
+/// Built by the SAME enumeration the planner diffs desired state against —
+/// `docs/sources.md` promises one derivation of "installed", so the
+/// classification never shells out a second time or invents a second
+/// package-listing vocabulary. A manager absent from this value was never
+/// enumerated (unavailable, probe failed, or the run planned no packages), and
+/// the classification fails closed: nothing auto-accepts on a guess.
+#[derive(Debug, Default)]
+pub struct ActualPackages {
+    managers: HashMap<String, ObservedManager>,
+}
+
+#[derive(Debug, Default)]
+struct ObservedManager {
+    /// Installed identity → version, when the enumeration carries one.
+    installed: HashMap<String, Option<String>>,
+    /// Raw desired entry → the identity the planner diffed it under.
+    identities: HashMap<String, String>,
+}
+
+impl ActualPackages {
+    /// Record what `manager`'s enumeration listed as installed. Recording an
+    /// EMPTY enumeration still marks the manager as observed — "nothing
+    /// installed" is an answer, "never asked" is not.
+    pub fn record_enumeration<I>(&mut self, manager: &str, installed: I)
+    where
+        I: IntoIterator<Item = (String, Option<String>)>,
+    {
+        self.managers
+            .entry(manager.to_string())
+            .or_default()
+            .installed
+            .extend(installed);
+    }
+
+    /// Record the identity the planner diffed a desired `entry` under, so the
+    /// classification agrees with the planner about presence by construction —
+    /// a manager that maps `example.com/tool@v1.2.3` to `tool` answers for the
+    /// entry, not just the raw string.
+    pub fn record_identity(&mut self, manager: &str, entry: &str, identity: &str) {
+        self.managers
+            .entry(manager.to_string())
+            .or_default()
+            .identities
+            .insert(entry.to_string(), identity.to_string());
+    }
+}
+
+impl ObservedManager {
+    fn verdict_for(&self, entry: &str) -> InstallVerdict {
+        let identity = self
+            .identities
+            .get(entry)
+            .map(String::as_str)
+            .unwrap_or(entry);
+        if let Some(version) = self.installed.get(identity) {
+            // Present exactly as the planner diffs it: the plan holds no work
+            // for this entry, so accepting it blesses converged state and
+            // installs nothing.
+            if self.installed.contains_key(entry) {
+                // Listed verbatim — any `@` is part of the NAME here (brew's
+                // `python@3.12` is a formula, not a version pin).
+                return InstallVerdict::AutoAccept {
+                    reason: installed_reason(version),
+                };
+            }
+            if let Some(spec) = embedded_version_spec(entry) {
+                return match version {
+                    Some(v) if crate::version_satisfies(v, &spec) => InstallVerdict::AutoAccept {
+                        reason: format!("installed {} satisfies {}", v, spec),
+                    },
+                    Some(v) => InstallVerdict::Conflict {
+                        annotation: format!("installed {}, source wants {}", v, spec),
+                    },
+                    // Satisfaction cannot be judged without a version, so the
+                    // question stands — never auto-accept on a guess.
+                    None => InstallVerdict::Conflict {
+                        annotation: format!("installed (version unknown), source wants {}", spec),
+                    },
+                };
+            }
+            return InstallVerdict::AutoAccept {
+                reason: installed_reason(version),
+            };
+        }
+        // Absent by planner identity: the plan holds a real install, so
+        // nothing may auto-accept — but when the entry pins a version and the
+        // BARE name is installed, the row can say why it is still asked about.
+        // A satisfying installed version stays a plain question rather than
+        // carrying an annotation that reads like a conflict.
+        if let Some(spec) = embedded_version_spec(entry)
+            && let Some((name, _)) = entry.rsplit_once('@')
+        {
+            match self.installed.get(name) {
+                Some(Some(v)) if !crate::version_satisfies(v, &spec) => {
+                    return InstallVerdict::Conflict {
+                        annotation: format!("installed {}, source wants {}", v, spec),
+                    };
+                }
+                Some(None) => {
+                    return InstallVerdict::Conflict {
+                        annotation: format!("installed (version unknown), source wants {}", spec),
+                    };
+                }
+                _ => {}
+            }
+        }
+        InstallVerdict::Undetermined
+    }
+}
+
+fn installed_reason(version: &Option<String>) -> String {
+    match version {
+        Some(v) => format!("already installed ({})", v),
+        None => "already installed".to_string(),
+    }
+}
+
+/// The version requirement a package entry embeds, when it embeds one.
+///
+/// The grammar is deliberately narrow, because `@` is also a legal NAME
+/// character (brew's `python@3.12`, npm's `@scope/name`): the trailing segment
+/// counts as a spec only when it announces itself with a range operator
+/// (`^14`, `>=2.1`, `~1.4`, `*`) or a `v`-prefixed version (`v1.2.3`), and
+/// parses as a semver requirement after the `v` is stripped. Anything else is
+/// part of the package's name and carries no satisfaction semantics.
+fn embedded_version_spec(entry: &str) -> Option<String> {
+    let (name, raw) = entry.rsplit_once('@')?;
+    if name.is_empty() || raw.is_empty() {
+        return None;
+    }
+    let looks_like_spec = raw.starts_with(['^', '~', '>', '<', '=', '*'])
+        || (raw.starts_with(['v', 'V']) && raw[1..].starts_with(|c: char| c.is_ascii_digit()));
+    if !looks_like_spec {
+        return None;
+    }
+    let normalized = raw.strip_prefix(['v', 'V']).unwrap_or(raw);
+    semver::VersionReq::parse(normalized).ok()?;
+    Some(normalized.to_string())
+}
+
+/// What the installed state says about one delivered resource.
+enum InstallVerdict {
+    /// The machine already satisfies the item — accept without asking.
+    AutoAccept { reason: String },
+    /// Something IS installed but does not answer the source's ask — stays
+    /// pending, with the reason as data on the row.
+    Conflict { annotation: String },
+    /// Not a package, not installed, or never enumerated — the question
+    /// stands unchanged.
+    Undetermined,
+}
+
+/// Judge one delivered resource against the run's observed package state.
+///
+/// Packages only, by contract: a `files.` / `env.` / `system.` path always
+/// comes back [`InstallVerdict::Undetermined`] — an existing file matching
+/// source content is NOT consent to manage it.
+fn manual_install_verdict(resource: &str, actual: &ActualPackages) -> InstallVerdict {
+    let Some(rest) = resource.strip_prefix("packages.") else {
+        return InstallVerdict::Undetermined;
+    };
+    let Some((manager, entry)) = rest.split_once('.') else {
+        return InstallVerdict::Undetermined;
+    };
+    // The decision vocabulary folds casks into `brew`, so both planner
+    // batches answer for a `packages.brew.<pkg>` path.
+    let candidates: &[&str] = if manager == "brew" {
+        &["brew", "brew-cask"]
+    } else {
+        &[manager]
+    };
+    let mut best = InstallVerdict::Undetermined;
+    for name in candidates {
+        let Some(observed) = actual.managers.get(*name) else {
+            continue;
+        };
+        match observed.verdict_for(entry) {
+            v @ InstallVerdict::AutoAccept { .. } => return v,
+            v @ InstallVerdict::Conflict { .. } => best = v,
+            InstallVerdict::Undetermined => {}
+        }
+    }
+    best
+}
+
+/// An item the classification accepted because the machine already satisfies
+/// it — the auto-accept half of a [`SourcePolicyReview`].
+///
+/// Read-only paths use it to release the withhold; writing paths record it
+/// through [`mint_decisions`] as an already-resolved row whose resolution says
+/// it was accepted by installed state, not by the operator's hand.
+#[derive(Debug, Clone)]
+pub struct AutoAccepted {
+    pub source: String,
+    pub resource: String,
+    pub tier: String,
+    /// Why no question was owed — the provenance the resolved row carries.
+    pub reason: String,
+}
+
+impl AutoAccepted {
+    /// The `pending_decisions.summary` text the resolved row carries.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} {} (from {}) — auto-accepted: {}",
+            self.tier, self.resource, self.source, self.reason
+        )
+    }
+}
+
 /// What the auto-apply policy makes of everything the subscribed sources
 /// currently deliver.
 ///
@@ -537,6 +781,13 @@ pub struct SourcePolicyReview {
     pub declined: HashSet<String>,
     /// Rows to record for the operator to answer.
     pub to_mint: Vec<DecisionMint>,
+    /// Items the machine already satisfies — released from withholding, and
+    /// recorded as resolved rows by whichever writing path runs first.
+    pub auto_accepted: Vec<AutoAccepted>,
+    /// Pending rows whose installed-state annotation moved — re-recorded so
+    /// the row the operator reads carries the current conflict, without
+    /// counting as a fresh notification.
+    pub annotation_refresh: Vec<DecisionMint>,
     /// `(source, hash)` for every source whose delivered set changed.
     pub changed_hashes: Vec<(String, String)>,
     /// Batches no decision can name (dotted custom manager) — withheld
@@ -563,6 +814,11 @@ impl SourcePolicyReview {
                 .filter(|m| targets.covers(m))
                 .cloned()
                 .collect(),
+            // An answer records only what it answers; an auto-accepted item
+            // and a refreshed annotation are the classification's writes, not
+            // the operator's, and stay with the full-review paths.
+            auto_accepted: Vec::new(),
+            annotation_refresh: Vec::new(),
             changed_hashes: Vec::new(),
             // Nothing recordable: no row can name these batches, so an
             // answering run has nothing to narrow to.
@@ -606,6 +862,7 @@ pub fn review_source_policies(
     cfg: &CfgdConfig,
     resolved: &ResolvedProfile,
     auto_apply: bool,
+    actual: &ActualPackages,
 ) -> Result<SourcePolicyReview> {
     let mut review = SourcePolicyReview::default();
     if !auto_apply || cfg.spec.sources.is_empty() {
@@ -626,9 +883,12 @@ pub fn review_source_policies(
             &source.name,
             &DeliveredItems::for_source(resolved, &source.name),
             policy,
+            actual,
         )?;
         review.declined.extend(one.declined);
         review.to_mint.extend(one.to_mint);
+        review.auto_accepted.extend(one.auto_accepted);
+        review.annotation_refresh.extend(one.annotation_refresh);
         review.changed_hashes.extend(one.changed_hashes);
     }
     // Computed with the review rather than beside it so every surface that
@@ -649,6 +909,7 @@ pub fn review_source_policy(
     source_name: &str,
     delivered: &DeliveredItems,
     policy: &AutoApplyPolicyConfig,
+    actual: &ActualPackages,
 ) -> Result<SourcePolicyReview> {
     let mut review = SourcePolicyReview::default();
     let current_hash = delivered.resource_hash();
@@ -671,19 +932,57 @@ pub fn review_source_policy(
     // decision path — and an installed item that has no row is an item nobody
     // was ever asked about, exactly the one the `Notify` arm below still owes
     // a question.
+    let rows = store.pending_decisions_for_source(source_name)?;
     let mut known: HashSet<String> = HashSet::new();
     if previous_hash.is_some() {
-        for d in store.pending_decisions_for_source(source_name)? {
-            known.insert(d.resource);
+        for d in &rows {
+            known.insert(d.resource.clone());
+        }
+    }
+
+    // The rows already asked about answer to installed state too — this is
+    // the manual-install path `docs/sources.md` promises: the operator
+    // installs a pending package by hand, and the next classification finds
+    // it present and accepts the row instead of leaving the question open.
+    // Judged under the item's CURRENT policy action, because a row whose tier
+    // the policy now declines is withheld by `declined` recomputation the
+    // moment its row resolves — releasing it here would launder a
+    // `Reject`-tier item onto the machine through its own leftover row.
+    for row in &rows {
+        let Some(tier) = delivered.tier_for(&row.resource) else {
+            // The source no longer delivers it; a stale row is not consent.
+            continue;
+        };
+        let action = policy_action_for(policy, tier);
+        if matches!(action, PolicyAction::Reject | PolicyAction::Ignore) {
+            continue;
+        }
+        match manual_install_verdict(&row.resource, actual) {
+            InstallVerdict::AutoAccept { reason } => review.auto_accepted.push(AutoAccepted {
+                source: source_name.to_string(),
+                resource: row.resource.clone(),
+                tier: row.tier.clone(),
+                reason,
+            }),
+            InstallVerdict::Conflict { annotation } => {
+                let refreshed = DecisionMint {
+                    source: source_name.to_string(),
+                    resource: row.resource.clone(),
+                    tier: row.tier.clone(),
+                    annotation: Some(annotation),
+                };
+                // Re-recorded only when the summary actually moved, so a
+                // steady conflict does not rewrite the row every tick.
+                if refreshed.summary() != row.summary {
+                    review.annotation_refresh.push(refreshed);
+                }
+            }
+            InstallVerdict::Undetermined => {}
         }
     }
 
     for (resource, tier) in delivered.iter().filter(|(r, _)| !known.contains(*r)) {
-        let action = match tier {
-            TIER_OPTIONAL => &policy.new_optional,
-            TIER_LOCKED => &policy.locked_conflict,
-            _ => &policy.new_recommended,
-        };
+        let action = policy_action_for(policy, tier);
         match action {
             // Included in the plan normally.
             PolicyAction::Accept => {}
@@ -705,11 +1004,34 @@ pub fn review_source_policy(
             // not re-asked every tick.
             PolicyAction::Notify => {
                 if source_changed || !store.has_decision(source_name, resource)? {
-                    review.to_mint.push(DecisionMint {
-                        source: source_name.to_string(),
-                        resource: resource.clone(),
-                        tier,
-                    });
+                    match manual_install_verdict(resource, actual) {
+                        // Already on the machine as delivered: no question is
+                        // owed, and the writing path records the resolved row
+                        // directly instead of asking one tick and answering
+                        // the next.
+                        InstallVerdict::AutoAccept { reason } => {
+                            review.auto_accepted.push(AutoAccepted {
+                                source: source_name.to_string(),
+                                resource: resource.clone(),
+                                tier: tier.to_string(),
+                                reason,
+                            })
+                        }
+                        InstallVerdict::Conflict { annotation } => {
+                            review.to_mint.push(DecisionMint {
+                                source: source_name.to_string(),
+                                resource: resource.clone(),
+                                tier: tier.to_string(),
+                                annotation: Some(annotation),
+                            })
+                        }
+                        InstallVerdict::Undetermined => review.to_mint.push(DecisionMint {
+                            source: source_name.to_string(),
+                            resource: resource.clone(),
+                            tier: tier.to_string(),
+                            annotation: None,
+                        }),
+                    }
                 }
             }
         }
@@ -721,6 +1043,17 @@ pub fn review_source_policy(
             .push((source_name.to_string(), current_hash));
     }
     Ok(review)
+}
+
+/// The policy action governing an item delivered at `tier` — one lookup,
+/// shared by the never-asked classification and the existing-row walk so the
+/// two cannot disagree about what a tier's disposition is.
+fn policy_action_for<'a>(policy: &'a AutoApplyPolicyConfig, tier: &str) -> &'a PolicyAction {
+    match tier {
+        TIER_OPTIONAL => &policy.new_optional,
+        TIER_LOCKED => &policy.locked_conflict,
+        _ => &policy.new_recommended,
+    }
 }
 
 /// Record the rows a [`SourcePolicyReview`] asked for, returning how many were
@@ -750,7 +1083,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
         if let Err(e) = store.upsert_pending_decision(
             &mint.source,
             &mint.resource,
-            mint.tier,
+            &mint.tier,
             DECISION_ACTION_INSTALL,
             &mint.summary(),
         ) {
@@ -763,6 +1096,37 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
         {
             Some((_, count)) => *count += 1,
             None => minted_per_source.push((mint.source.clone(), 1)),
+        }
+    }
+
+    // A refreshed annotation rewrites the row the operator already knows
+    // about; it is not a new question, so it never counts toward the
+    // notification totals above.
+    for mint in &review.annotation_refresh {
+        if let Err(e) = store.upsert_pending_decision(
+            &mint.source,
+            &mint.resource,
+            &mint.tier,
+            DECISION_ACTION_INSTALL,
+            &mint.summary(),
+        ) {
+            tracing::warn!(error = %e, "failed to refresh pending decision annotation");
+        }
+    }
+
+    // Auto-accepted items land as already-resolved rows: `status` can show
+    // WHY the item was accepted (installed state, not the operator's hand),
+    // and `withheld_decisions` releases the resource by construction because
+    // the newest row's resolution is not a rejection.
+    for accepted in &review.auto_accepted {
+        if let Err(e) = store.record_auto_accepted_decision(
+            &accepted.source,
+            &accepted.resource,
+            &accepted.tier,
+            DECISION_ACTION_INSTALL,
+            &accepted.summary(),
+        ) {
+            tracing::warn!(error = %e, "failed to record auto-accepted decision");
         }
     }
 
@@ -912,6 +1276,11 @@ impl DeliveredItems {
     /// `(resource, tier)` for everything the source delivers, in path order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &'static str)> + '_ {
         self.tiers.iter().map(|(r, t)| (r, *t))
+    }
+
+    /// The tier `resource` is delivered at, if this source still delivers it.
+    pub fn tier_for(&self, resource: &str) -> Option<&'static str> {
+        self.tiers.get(resource).copied()
     }
 
     /// The hash the change detector compares against the last run's.

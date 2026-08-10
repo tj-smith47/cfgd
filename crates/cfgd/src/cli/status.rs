@@ -319,6 +319,11 @@ pub(super) fn cmd_status(
         String,
     )> = None;
     if !cfg.spec.sources.is_empty() {
+        // The dashboard enumerates no package state (it is offline by design),
+        // so the classification sees an empty observation and auto-accepts
+        // nothing — installed-but-undecided items keep their pending rows
+        // here and are released by the next plan/apply/tick, which does
+        // enumerate.
         match plan_ops::withheld_for_run(
             &state,
             &cfg,
@@ -326,6 +331,7 @@ pub(super) fn cmd_status(
             &config_dir,
             true,
             plan_ops::DecisionWrites::ReadOnly,
+            &reconciler::ActualPackages::default(),
         ) {
             Ok((withheld, _review)) => {
                 pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
