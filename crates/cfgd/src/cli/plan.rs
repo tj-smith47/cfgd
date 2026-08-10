@@ -34,7 +34,7 @@ pub fn cmd_plan(
     }
 
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let module_filter = args.module.as_deref();
 
     // Load config and profile — same pattern as cmd_apply. The header these

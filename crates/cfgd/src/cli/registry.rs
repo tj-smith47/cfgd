@@ -398,12 +398,19 @@ pub(in crate::cli) fn cfgd_installed_packages(
         .collect())
 }
 
-pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
-    if let Some(dir) = state_dir {
-        Ok(StateStore::open_in_dir(dir)?)
-    } else {
-        Ok(StateStore::open_default()?)
-    }
+/// Open the run's state store: `--state-dir` verbatim, else the default for
+/// the run's `--scope`, through the same [`super::helpers::run_state_dir`]
+/// resolution the apply lock takes — so the store a command judges ownership
+/// against, the lock that serializes it, and the scope the command claims are
+/// always one picture. Opening the USER store from a `--scope system` run was
+/// exactly how a system-picture sweep landed in the per-user rows.
+pub(in crate::cli) fn open_state_store(
+    state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> anyhow::Result<StateStore> {
+    Ok(StateStore::open_in_dir(&super::helpers::run_state_dir(
+        state_dir, scope,
+    )?)?)
 }
 
 // --- Secret backend resolution ---
@@ -694,12 +701,45 @@ mod tests {
     #[test]
     fn open_state_store_honors_explicit_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let state = open_state_store(Some(dir.path())).expect("open in explicit dir");
+        let state = open_state_store(Some(dir.path()), cfgd_core::Scope::User)
+            .expect("open in explicit dir");
         // Round-trip a write to prove the store at this dir is live and usable.
         state
             .upsert_package_resource("apt/curl", "local", None, None)
             .expect("write to explicit-dir store");
         let set = cfgd_installed_packages(&state).expect("read back");
         assert!(set.contains("apt/curl"));
+    }
+
+    /// The system-scope cell: a `--scope system` run with no `--state-dir`
+    /// resolves the MACHINE-wide state root, not the per-user default —
+    /// pinned at the resolution seam `open_state_store` opens verbatim
+    /// (`open_state_store_honors_explicit_dir` above proves the open half),
+    /// because opening the real machine root from a test would write into
+    /// `/var/lib`.
+    #[test]
+    #[serial_test::serial]
+    fn a_scope_system_run_resolves_the_machine_state_root_not_the_user_one() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = cfgd_core::with_test_home_guard(home.path());
+        let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = cfgd_core::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
+
+        let user = super::helpers::run_state_dir(None, cfgd_core::Scope::User)
+            .expect("user-scope state dir resolves");
+        assert_eq!(
+            user,
+            home.path().join(".local").join("state").join("cfgd"),
+            "the user cell stays per-user"
+        );
+
+        let system = super::helpers::run_state_dir(None, cfgd_core::Scope::System)
+            .expect("system-scope state dir resolves");
+        assert_ne!(
+            system, user,
+            "a system-scope run must not open the per-user store"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(system, std::path::PathBuf::from("/var/lib/cfgd"));
     }
 }

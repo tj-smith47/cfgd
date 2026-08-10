@@ -168,7 +168,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let cfg = config::load_config(&config_path)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
-            let store = super::open_state_store(None)?;
+            let store = super::open_state_store(args.state_dir, args.scope)?;
 
             // Build a minimal resolved profile for the reconciler
             let resolved = config::ResolvedProfile {
@@ -241,7 +241,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
-            let store = super::open_state_store(None)?;
+            let store = super::open_state_store(args.state_dir, args.scope)?;
 
             // Resolve modules (profile modules + any --apply-module additions)
             let mut module_names = resolved.merged.modules.clone();
@@ -481,7 +481,7 @@ pub(super) fn is_module_only_apply(apply_profile: Option<&str>, apply_modules: &
 pub(super) struct ApplyPlanOpts<'a> {
     pub dry_run: bool,
     pub yes: bool,
-    /// `--state-dir` override for the apply mutex (see `helpers::apply_lock_dir`).
+    /// `--state-dir` override for the apply mutex (see `helpers::run_state_dir`).
     pub state_dir: Option<&'a Path>,
     /// Installation scope for the apply mutex (`--scope system` vs per-user).
     pub scope: cfgd_core::Scope,
@@ -549,7 +549,7 @@ pub(super) fn apply_plan(
     // see the PATH directories of a manager this very run bootstrapped. Handing
     // it an empty slice made `cfgd init --apply-module` leave both undone.
     //
-    // see helpers::apply_lock_dir — honor --state-dir so init --apply
+    // see helpers::run_state_dir — honor --state-dir so init --apply
     // mutually-excludes against `cfgd apply` and the daemon.
     let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
         reconciler,
@@ -557,7 +557,7 @@ pub(super) fn apply_plan(
         config_dir,
         modules,
         &abort,
-        apply_lock_dir(opts.state_dir, opts.scope)?,
+        run_state_dir(opts.state_dir, opts.scope)?,
     );
     let confirm = if opts.yes {
         cfgd_core::reconciler::Confirm::Skip

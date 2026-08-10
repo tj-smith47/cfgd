@@ -229,7 +229,7 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
         Vec::new()
     };
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_map = module_state_map(&state);
 
     let mut names: Vec<String> = all_modules.keys().cloned().collect();
@@ -312,7 +312,7 @@ pub(crate) fn cmd_module_show(
         "local"
     };
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_rec = state.module_state_by_name(name)?;
 
     let output = ModuleShowOutput {

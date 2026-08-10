@@ -256,7 +256,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     add_source_to_config(&config_path, &source_spec)?;
 
     // Update state store
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     state.upsert_config_source(
         &source_name,
         url,

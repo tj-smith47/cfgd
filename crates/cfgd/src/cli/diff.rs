@@ -123,7 +123,7 @@ pub fn cmd_diff(
             .collect();
         // Tracked-but-dropped packages must surface as drift here, so read the
         // cfgd-installed set from state to bound prune the same way apply does.
-        let state = open_state_store(cli.state_dir.as_deref())?;
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
         let cfgd_installed = cfgd_installed_packages(&state)?;
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
         let pkg_actions = packages::plan_packages(
@@ -227,7 +227,7 @@ fn cmd_diff_module(
 
     printer.kv_block([("Module".to_string(), mod_name.to_string())]);
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
 
     let mut diff_payload = DiffOutput::default();

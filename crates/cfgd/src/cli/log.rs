@@ -7,8 +7,9 @@ pub fn cmd_log(
     count: u32,
     show_output: Option<i64>,
     state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(state_dir)?;
+    let state = open_state_store(state_dir, scope)?;
 
     if let Some(apply_id) = show_output {
         return cmd_log_show_output(printer, &state, apply_id);

@@ -7,8 +7,9 @@ pub fn cmd_rollback(
     apply_id: i64,
     yes: bool,
     state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(state_dir)?;
+    let state = open_state_store(state_dir, scope)?;
 
     if state.get_apply(apply_id)?.is_none() {
         anyhow::bail!("no apply found with ID {}", apply_id);

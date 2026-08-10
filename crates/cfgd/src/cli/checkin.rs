@@ -48,7 +48,7 @@ pub fn cmd_checkin(
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
         if compliance_cfg.enabled {
             let profile_name = cfg.active_profile().unwrap_or("unknown");
-            let checkin_state = open_state_store(cli.state_dir.as_deref())?;
+            let checkin_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
             match cfgd_core::compliance::collect_snapshot(
                 profile_name,
                 &resolved.merged,

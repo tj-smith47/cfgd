@@ -1416,7 +1416,7 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
     // Persistence ran against a real state store (temp state_dir); reopening
     // it must succeed, proving the open_state_store branch was exercised.
     assert!(
-        open_state_store(cli.state_dir.as_deref()).is_ok(),
+        open_state_store(cli.state_dir.as_deref(), cli.scope()).is_ok(),
         "state store must be openable after persistence"
     );
 }

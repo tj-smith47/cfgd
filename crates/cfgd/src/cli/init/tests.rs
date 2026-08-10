@@ -1650,7 +1650,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
     // Isolate the state store under the tempdir so parallel tests don't
     // contend on the shared default state database (SQLite lock contention
     // manifests as 'database is locked' on slower filesystems, e.g. macOS).
-    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2172,7 +2172,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     let (printer, cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
-    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2245,7 +2245,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let store = super::open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2311,7 +2311,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let store = super::open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2398,7 +2398,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let store = super::open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2461,7 +2461,7 @@ fn apply_plan_dry_run_skips_apply() {
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
     // contend on the shared default state database.
-    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),

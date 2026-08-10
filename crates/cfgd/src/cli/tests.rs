@@ -4512,7 +4512,14 @@ fn cmd_verify_module() {
 #[test]
 fn cmd_log_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     h.assert_header("Apply History");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -4859,7 +4866,14 @@ fn cmd_log_after_apply() {
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
     let (log_printer, log_buf) = test_printer_capture();
-    super::log::cmd_log(&log_printer, 10, None, Some(state_dir.path())).unwrap();
+    super::log::cmd_log(
+        &log_printer,
+        10,
+        None,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(log_printer);
     let output = log_buf.lock().unwrap();
     assert!(
@@ -5108,7 +5122,14 @@ fn cmd_status_structured_output() {
 #[test]
 fn cmd_log_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 5, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        5,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_eq!(
         parsed,
@@ -5612,7 +5633,7 @@ fn cmd_status_with_drift_events() {
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
     // Record a drift event
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .record_drift(
             "package",
@@ -5704,7 +5725,7 @@ fn cmd_decide_accept_all_empty() {
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
     let output = buf.lock().unwrap();
@@ -5732,7 +5753,7 @@ fn cmd_decide_reject_all_empty() {
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
     let output = buf.lock().unwrap();
@@ -5764,7 +5785,7 @@ fn cmd_decide_accept_specific_resource() {
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let pending = state.pending_decisions().unwrap();
     assert_eq!(pending.len(), 0, "no decisions should remain pending");
 
@@ -5799,7 +5820,7 @@ fn cmd_decide_reject_by_source() {
     );
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let pending = state.pending_decisions().unwrap();
     assert_eq!(
         pending.len(),
@@ -6328,7 +6349,13 @@ fn cmd_rollback_invalid_id_empty_state() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
-    let result = super::rollback::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        9999,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -6375,7 +6402,7 @@ fn cmd_rollback_after_file_apply() {
     assert!(target.exists());
 
     // Get the apply ID from history
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let history = state.history(1).unwrap();
     assert!(
         !history.is_empty(),
@@ -6384,7 +6411,13 @@ fn cmd_rollback_after_file_apply() {
     let apply_id = history[0].id;
 
     let (printer, buf) = test_printer_capture();
-    let result = super::rollback::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(
         result.is_ok(),
         "rollback should succeed for valid apply ID: {:?}",
@@ -6446,7 +6479,7 @@ fn apply_one_file_and_record(
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let history = state.history(1).unwrap();
     let apply_id = history[0].id;
     (config_dir, state_dir, target, apply_id)
@@ -6462,7 +6495,13 @@ fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(
         result.is_ok(),
         "prompt-confirmed rollback must succeed: {:?}",
@@ -6490,7 +6529,13 @@ fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_ok(), "prompt-declined rollback must return Ok");
     drop(printer);
     let output = buf.lock().unwrap();
@@ -6521,7 +6566,7 @@ fn cmd_compliance_snapshot_basic() {
     );
 
     // Verify snapshot was recorded in state store
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert!(
         !entries.is_empty(),
@@ -6573,7 +6618,7 @@ fn cmd_compliance_history_empty() {
     );
 
     // Verify state store has no compliance entries
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(
         entries.len(),
@@ -6654,7 +6699,7 @@ fn cmd_compliance_diff_after_two_snapshots() {
     super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     // Get snapshot IDs from history — must have exactly 2
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(
         entries.len(),
@@ -6691,7 +6736,7 @@ fn cmd_compliance_history_after_snapshot() {
         result.err()
     );
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(
         entries.len(),
@@ -6772,7 +6817,13 @@ fn cmd_log_show_output_nonexistent_apply() {
     let printer = test_printer();
 
     // show_output for a nonexistent apply ID should fail
-    let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        10,
+        Some(9999),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -7265,7 +7316,7 @@ fn cmd_plan_module_with_packages() {
 fn open_state_store_creates_dir() {
     let dir = tempfile::tempdir().unwrap();
     let subdir = dir.path().join("nested").join("state");
-    let result = super::open_state_store(Some(&subdir));
+    let result = super::open_state_store(Some(&subdir), cfgd_core::Scope::User);
     assert!(
         result.is_ok(),
         "open_state_store should create nested directories: {:?}",
@@ -7284,7 +7335,7 @@ fn open_state_store_default() {
     // Verify the default path variant does not panic and creates a DB.
     // Serialized against other tests that touch the default DB path so
     // parallel SQLite access doesn't trigger 'database is locked'.
-    let result = super::open_state_store(None);
+    let result = super::open_state_store(None, cfgd_core::Scope::User);
     assert!(
         result.is_ok(),
         "open_state_store with default path should not panic: {:?}",
@@ -10323,7 +10374,7 @@ fn cmd_decide_with_pending_decision() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "team-config",
@@ -10368,7 +10419,7 @@ fn cmd_decide_accept_all_with_pending() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "team",
@@ -10413,7 +10464,7 @@ fn cmd_decide_reject_by_source_with_pending() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "team",
@@ -10487,7 +10538,13 @@ fn cmd_log_show_output_nonexistent_apply_via_dispatch() {
     let printer = test_printer();
 
     // Nonexistent apply ID should fail (routes through cmd_log → cmd_log_show_output)
-    let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        10,
+        Some(9999),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -11008,7 +11065,13 @@ fn cmd_log_show_output_for_nonexistent_apply() {
     let printer = test_printer();
 
     // Nonexistent apply ID should fail
-    let result = super::log::cmd_log(&printer, 10, Some(999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        10,
+        Some(999),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -12027,7 +12090,14 @@ fn cmd_verify_with_module_filter() {
 #[test]
 fn cmd_log_empty_state_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply History") || output.contains("No applies"),
@@ -12038,7 +12108,14 @@ fn cmd_log_empty_state_succeeds() {
 #[test]
 fn cmd_log_structured_json_output() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["entries"]);
     assert_eq!(
@@ -13068,7 +13145,13 @@ fn cmd_rollback_missing_apply_id_fails() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
-    let result = super::rollback::cmd_rollback(&printer, 99, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        99,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err(), "rollback with no history should fail");
 }
 
@@ -13078,7 +13161,7 @@ fn cmd_rollback_missing_apply_id_fails() {
 fn open_state_store_creates_db_file() {
     let state_dir = tempfile::tempdir().unwrap();
 
-    let result = super::open_state_store(Some(state_dir.path()));
+    let result = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User);
     assert!(
         result.is_ok(),
         "open_state_store should succeed: {:?}",
@@ -13106,14 +13189,14 @@ fn open_state_store_override_matches_default_filename() {
 
     // The default path honors CFGD_STATE_DIR; the override path is handed the
     // same dir. They must land on identical basenames.
-    let from_override = super::open_state_store(Some(dir.path()));
+    let from_override = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User);
     assert!(
         from_override.is_ok(),
         "override open failed: {:?}",
         from_override.err()
     );
     drop(from_override);
-    let from_default = super::open_state_store(None);
+    let from_default = super::open_state_store(None, cfgd_core::Scope::User);
     assert!(
         from_default.is_ok(),
         "default open failed: {:?}",
@@ -13601,7 +13684,14 @@ fn json_schema_status_module() {
 #[test]
 fn json_schema_log() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["entries"]);
     assert_json_field_type(&parsed, "entries", "array");
@@ -15987,7 +16077,7 @@ fn copy_files_to_dir_allows_home_directory() {
 fn cmd_source_list_table_shows_status_and_priority() {
     let h = CliTestHarness::builder().rich_config().build();
     // Populate state with source info so the table columns have values
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_config_source(
             "team-config",
@@ -16016,7 +16106,7 @@ fn cmd_source_list_table_shows_status_and_priority() {
 #[test]
 fn cmd_source_list_structured_json_includes_state_info() {
     let h = CliTestHarness::builder().rich_config().json().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_config_source(
             "team-config",
@@ -16091,7 +16181,7 @@ fn cmd_source_show_displays_all_key_fields() {
 #[test]
 fn cmd_source_show_with_state_shows_status_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_config_source(
             "team-config",
@@ -16132,7 +16222,7 @@ fn cmd_source_show_with_state_shows_status_section() {
 #[test]
 fn cmd_source_show_with_managed_resources_shows_table() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
@@ -16160,7 +16250,7 @@ fn cmd_source_show_with_managed_resources_shows_table() {
 #[test]
 fn cmd_source_show_json_includes_managed_resources() {
     let h = CliTestHarness::builder().rich_config().json().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
         .unwrap();
@@ -16184,7 +16274,7 @@ fn cmd_source_show_json_includes_managed_resources() {
 #[test]
 fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     // Pre-populate managed resources owned by team-config
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
@@ -16223,7 +16313,7 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
 #[test]
 fn cmd_source_remove_remove_all_does_not_reassign() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
@@ -16269,7 +16359,7 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
     super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
     super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
 
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(entries.len(), 2);
 
@@ -16285,7 +16375,7 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
 #[test]
 fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
     let h = CliTestHarness::builder().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
 
     // Create first snapshot with one check
     let snap1 = cfgd_core::compliance::ComplianceSnapshot {
@@ -16365,7 +16455,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
 #[test]
 fn cmd_compliance_diff_with_status_change_shows_changed() {
     let h = CliTestHarness::builder().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
 
     let snap1 = cfgd_core::compliance::ComplianceSnapshot {
         timestamp: "2026-01-01T00:00:00Z".into(),
@@ -16440,7 +16530,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
 #[test]
 fn cmd_compliance_diff_structured_json_with_changes() {
     let h = CliTestHarness::builder().json().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
 
     let snap1 = cfgd_core::compliance::ComplianceSnapshot {
         timestamp: "2026-01-01T00:00:00Z".into(),
@@ -17495,7 +17585,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("alpha", "pkg/git", "required", "install", "Install git")
@@ -17553,7 +17643,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision(
@@ -17599,7 +17689,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("team", "file/bashrc", "required", "create", "Create bashrc")
@@ -17664,7 +17754,7 @@ fn cmd_decide_accept_all_reports_count() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     for i in 0..3 {
         state
@@ -17712,7 +17802,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
@@ -17761,7 +17851,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
@@ -17794,7 +17884,7 @@ fn cmd_decide_accept_single_item_singular_message() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
@@ -20071,7 +20161,8 @@ impl DecisionFixture {
     /// The store, with the row `acme` would mint for its own file already in
     /// it. Returned so a caller can resolve or re-read the decision.
     fn with_pending_decision(&self) -> cfgd_core::state::StateStore {
-        let state = super::open_state_store(Some(self.h.state_path())).unwrap();
+        let state =
+            super::open_state_store(Some(self.h.state_path()), cfgd_core::Scope::User).unwrap();
         state
             .upsert_pending_decision(
                 "acme",
@@ -20429,7 +20520,7 @@ fn plan_payload_marks_an_unrecorded_decision_with_id_zero() {
         "an unrecorded row is unresolved: {json}"
     );
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "the payload row is classification, not a store write"
@@ -20554,7 +20645,7 @@ fn a_decision_never_withholds_what_the_operator_declares_themselves() {
     // subscriber's own declaration; a row about a source's offer of the same
     // path must not be what takes it off the machine.
     let f = decision_fixture(false);
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     let local_resource = format!("files.{}", f.kept.posix());
     state
         .upsert_pending_decision(
@@ -20582,7 +20673,7 @@ fn a_decision_whose_source_is_not_subscribed_withholds_nothing() {
     // decide` acts against a source that is gone. A rejection especially: left
     // live it would be a permanent, unanswerable block on the path.
     let f = decision_fixture(false);
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "gone",
@@ -20623,7 +20714,7 @@ fn apply_withholds_the_item_a_rejecting_policy_declines() {
         !f.withheld.exists(),
         "a manual apply must not install what the policy declines:\n{output}"
     );
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "declining is silent — it records no row for the operator to answer"
@@ -20750,7 +20841,7 @@ fn apply_asks_about_a_source_item_no_run_has_seen_yet_instead_of_installing_it()
         "and the item is named rather than silently missing:\n{output}"
     );
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     let rows = state.pending_decisions().unwrap();
     assert_eq!(
         rows.iter().map(|d| d.resource.clone()).collect::<Vec<_>>(),
@@ -20770,7 +20861,7 @@ fn apply_installs_the_item_once_its_freshly_minted_decision_is_accepted() {
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
     super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.resolve_decision(&f.resource(), "accepted").unwrap(),
         "the minted row is resolvable by resource path, exactly as `cfgd decide` resolves it"
@@ -20815,7 +20906,7 @@ fn an_apply_declined_at_the_prompt_records_nothing() {
         output.contains("Pending Decisions"),
         "the operator declined AFTER seeing the withheld item:\n{output}"
     );
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "declining the run declines its writes — the rows belong to the apply \
@@ -20849,7 +20940,7 @@ fn plan_withholds_an_unrecorded_item_without_recording_it() {
         "the withheld item is named, not silently absent:\n{output}"
     );
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "a preview records nothing"
@@ -20864,7 +20955,7 @@ fn a_foreign_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
     // default config location — with the state dir left at its default, must
     // not delete rows that config knows nothing about.
     let f = decision_fixture(false);
-    let default_state = super::open_state_store(None).unwrap();
+    let default_state = super::open_state_store(None, cfgd_core::Scope::User).unwrap();
     default_state
         .upsert_pending_decision(
             "gone",
@@ -20916,7 +21007,7 @@ fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
     )
     .unwrap();
 
-    let default_state = super::open_state_store(None).unwrap();
+    let default_state = super::open_state_store(None, cfgd_core::Scope::User).unwrap();
     default_state
         .upsert_pending_decision(
             "gone",
@@ -21021,7 +21112,7 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
     // A read-only plan classifies the item (and populates the source cache)
     // without recording anything.
     super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "the premise: nothing has recorded the item the plan named"
@@ -21087,7 +21178,7 @@ fn decide_lists_the_unrecorded_item_without_recording_it() {
         output.contains("withheld.txt"),
         "the item the plan withheld is offered for an answer:\n{output}"
     );
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "a listing records nothing"
@@ -21114,7 +21205,7 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
         "an item awaiting its first recorded decision is still work awaiting \
          the operator, and status is where they look for it:\n{output}"
     );
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "status is a read path and records nothing"
@@ -21148,7 +21239,7 @@ fn decide_answers_one_item_without_consuming_the_other_items_notification() {
     )
     .unwrap();
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.has_decision("acme", &f.resource()).unwrap(),
         "the answered item's row was minted and resolved"
@@ -21186,7 +21277,7 @@ fn an_apply_with_nothing_else_to_do_still_records_the_withheld_item() {
         "the item is named even when nothing else is planned:\n{output}"
     );
     assert!(!f.withheld.exists(), "the item itself is still withheld");
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert_eq!(
         state
             .pending_decisions()
@@ -21240,7 +21331,7 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
     // any config — the instruction holds even where an unrecorded item's would
     // not.
     let f = decision_fixture(false);
-    let default_state = super::open_state_store(None).unwrap();
+    let default_state = super::open_state_store(None, cfgd_core::Scope::User).unwrap();
     default_state
         .upsert_pending_decision(
             "acme",
@@ -21408,7 +21499,7 @@ fn a_degraded_decide_refuses_rather_than_denying_the_decision_exists() {
         msg.contains("Cargo.toml"),
         "the refusal names the unreadable input: {msg}"
     );
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "nothing was minted from the broken picture"
@@ -21514,7 +21605,7 @@ fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
         "the row names the withheld resource: {json}"
     );
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "status is a read path and records nothing"
@@ -21551,7 +21642,7 @@ fn decide_listing_payload_marks_the_unrecorded_item_with_id_zero() {
         "id 0 marks a row nothing has recorded yet: {json}"
     );
 
-    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "a listing records nothing"

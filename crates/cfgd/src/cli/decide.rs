@@ -39,7 +39,7 @@ pub(super) fn cmd_decide(
     all: bool,
 ) -> anyhow::Result<()> {
     let resolution = action.resolution();
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     // A resolution is inherently a write, so an item `cfgd plan` classified
     // that nothing has recorded yet becomes a real row HERE, through the same

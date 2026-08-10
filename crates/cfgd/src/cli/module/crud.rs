@@ -252,7 +252,7 @@ pub fn cmd_module_create(
         let cfg = config::load_config(&config_path)?;
         let mut registry = super::build_registry_with_config(Some(&cfg));
         registry.set_system_config_dir(&config_dir);
-        let store = super::open_state_store(cli.state_dir.as_deref())?;
+        let store = super::open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
         let platform = cfgd_core::platform::Platform::detect();
         let mgr_map = super::managers_map(&registry);
@@ -303,7 +303,7 @@ pub fn cmd_module_create(
             // module state from this slice, and regenerates the env files from
             // the PATH directories of a manager it bootstrapped mid-run.
             //
-            // see helpers::apply_lock_dir — honor --state-dir so this lock
+            // see helpers::run_state_dir — honor --state-dir so this lock
             // mutually-excludes against `cfgd apply` and the daemon.
             let abort = cfgd_core::AbortFlag::new();
             let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
@@ -312,7 +312,7 @@ pub fn cmd_module_create(
                 &config_dir,
                 &resolved_modules,
                 &abort,
-                apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?,
+                run_state_dir(cli.state_dir.as_deref(), cli.scope())?,
             );
             let confirm = if args.yes {
                 cfgd_core::reconciler::Confirm::Skip
@@ -874,7 +874,7 @@ pub fn cmd_module_delete(
     std::fs::remove_dir_all(&module_dir)?;
 
     // Clean module state from DB
-    if let Ok(state) = open_state_store(cli.state_dir.as_deref())
+    if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope())
         && let Err(e) = state.remove_module_state(name)
     {
         printer.status_simple(

@@ -261,7 +261,7 @@ pub(super) fn cmd_status(
     }
 
     let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let last_apply = state.last_apply()?;
     let drift_events = state.unresolved_drift()?;
@@ -427,7 +427,7 @@ pub(super) fn cmd_status_module(
         }
     };
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_rec = state.module_state_by_name(mod_name)?;
 
     let status = state_rec
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn cmd_status_with_apply_record_prints_last_apply_block() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_apply(
                 "default",
@@ -659,7 +659,7 @@ mod tests {
     #[test]
     fn cmd_status_drift_present_renders_warning_line() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_drift(
                 "file",
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn cmd_status_drift_non_local_source_includes_source_tag() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_drift(
                 "package",
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn cmd_status_managed_resources_renders_table() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .upsert_managed_resource("file", "/etc/managed.conf", "local", Some("hashval"), None)
             .unwrap();
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn cmd_status_running_script_managed_resource_condenses_for_human_display() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
             .upsert_managed_resource("Running script", raw_body, "local", None, None)
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn cmd_status_running_script_json_preserves_raw_resource_id() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
             .upsert_managed_resource("Running script", raw_body, "local", None, None)
@@ -805,7 +805,7 @@ mod tests {
         // process::exit. Only the non-exiting half is testable in-process; the
         // drift-present branch would terminate the test runner via process::exit.
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_drift("file", "/etc/x", Some("a"), Some("b"), "local")
             .unwrap();
@@ -836,7 +836,7 @@ mod tests {
     #[test]
     fn cmd_status_json_output_emits_expected_shape() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_apply("default", "abc123", ApplyStatus::Success, Some("ok"))
             .unwrap();
@@ -953,7 +953,7 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
         // Pre-populate module state.
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .upsert_module_state(
                 "test-mod",
@@ -1016,7 +1016,7 @@ mod tests {
         let real_file = tmp_home.path().join("real.conf");
         std::fs::write(&real_file, b"x").unwrap();
 
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let apply_id = store
             .record_apply("default", "h", ApplyStatus::Success, None)
             .unwrap();
@@ -1066,7 +1066,7 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .upsert_module_state("test-mod", None, "pkgh", "fileh", None, "installed")
             .unwrap();

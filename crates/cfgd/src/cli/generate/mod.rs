@@ -174,7 +174,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
-    let gen_state = open_state_store(cli.state_dir.as_deref())?;
+    let gen_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &gen_state);
 
     // 9. Conversation loop

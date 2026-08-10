@@ -49,7 +49,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         // below records a fetch per source. Best-effort — the cache refreshes
         // either way, so a read-only state dir must not turn a successful sync
         // into a failure; it costs the freshness ledger, not the sync.
-        let state = match open_state_store(cli.state_dir.as_deref()) {
+        let state = match open_state_store(cli.state_dir.as_deref(), cli.scope()) {
             Ok(state) => Some(state),
             Err(e) => {
                 sources_sec

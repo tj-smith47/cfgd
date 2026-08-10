@@ -16,7 +16,7 @@ pub fn cmd_verify(
     exit_code: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
         let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));

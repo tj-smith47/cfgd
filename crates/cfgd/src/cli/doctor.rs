@@ -255,7 +255,7 @@ fn collect_doctor_output(
     let modules_registry = build_registry();
     let mgr_map = managers_map(&modules_registry);
     let platform = Platform::detect();
-    let doctor_state = open_state_store(cli.state_dir.as_deref()).ok();
+    let doctor_state = open_state_store(cli.state_dir.as_deref(), cli.scope()).ok();
     let doctor_cx = doctor_state
         .as_ref()
         .map(|state| cfgd_core::providers::PackageContext::new(printer, state));

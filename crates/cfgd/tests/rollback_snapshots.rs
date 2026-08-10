@@ -33,7 +33,14 @@ fn rollback_happy_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let normalized = cap
@@ -73,7 +80,14 @@ fn rollback_no_changes_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -97,7 +111,14 @@ fn rollback_accept_human() {
         Verbosity::Normal,
     );
 
-    cmd_rollback(&printer, apply_id, false, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     printer.flush();
     drop(printer);
 
@@ -118,7 +139,14 @@ fn rollback_aborted_human() {
         Verbosity::Normal,
     );
 
-    cmd_rollback(&printer, apply_id, false, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     printer.flush();
     drop(printer);
 
@@ -139,7 +167,14 @@ fn rollback_non_file_actions_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -161,7 +196,14 @@ fn rollback_non_file_script_action_condenses_multiline_bullet() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let human = strip_ansi(&cap.human());

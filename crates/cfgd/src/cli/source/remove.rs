@@ -42,7 +42,7 @@ pub fn cmd_source_remove(
         ));
     }
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let resources = state.managed_resources_by_source(name)?;
 
     let mut disposition = "removed";
@@ -303,7 +303,7 @@ mod tests {
         // (or later declare themselves) would silently never be applied.
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
             .expect("seed pending decision");
@@ -320,7 +320,7 @@ mod tests {
             .expect("removing a source must succeed");
         drop(printer);
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         assert!(
             state
                 .withheld_decisions()
@@ -336,7 +336,7 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
 
         // Seed state: one managed resource owned by source "acme".
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -368,7 +368,7 @@ mod tests {
         );
 
         // The resource must now be re-owned by "local", not "acme".
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         let res = state.managed_resources().expect("list resources");
         let foo = res
             .iter()
@@ -392,7 +392,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(doc["managedResources"], 1);
 
         // The config_source row is removed.
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         assert!(
             state
                 .config_sources()
@@ -456,7 +456,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -496,7 +496,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -528,7 +528,7 @@ mod tests {
             "keep still removes the source from config (resources transferred, not the subscription)"
         );
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         let res = state.managed_resources().expect("list");
         let r = res
             .iter()

@@ -305,7 +305,11 @@ picture of the machine. Ownership follows the resolved path, not the spelling:
 discards. The default location is the **run's scope's**: a user-scope run does
 not treat `/etc/cfgd/cfgd.yaml` as its own config, because the store it opened
 is the per-user one and the system picture's subscription list must not sweep
-it (and vice versa for a system-scope run).
+it (and vice versa for a system-scope run). The store itself follows the same
+scope: with no `--state-dir`, a `--scope system` run opens the machine-wide
+state root (Linux `/var/lib/cfgd`, macOS `/Library/Application Support/cfgd/state`,
+Windows `%ProgramData%\cfgd\state`) rather than the per-user one, so the store
+a run judges ownership against is always the store it opened.
 
 ### `cfgd status`
 

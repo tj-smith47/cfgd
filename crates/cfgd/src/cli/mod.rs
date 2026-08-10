@@ -2003,9 +2003,13 @@ pub fn execute(
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }
-        Command::Log { limit, show_output } => {
-            log::cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
-        }
+        Command::Log { limit, show_output } => log::cmd_log(
+            printer,
+            *limit,
+            *show_output,
+            cli.state_dir.as_deref(),
+            cli.scope(),
+        ),
         Command::Verify { module, exit_code } => {
             verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
         }
@@ -2375,13 +2379,20 @@ pub fn execute(
             Ok(())
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),
-        Command::Rollback { apply_id, yes } => {
-            rollback::cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
-        }
+        Command::Rollback { apply_id, yes } => rollback::cmd_rollback(
+            printer,
+            *apply_id,
+            *yes,
+            cli.state_dir.as_deref(),
+            cli.scope(),
+        ),
         Command::State { command } => match command {
-            StateCommand::ForgetPrefix { manager } => {
-                state_cmd::cmd_state_forget_prefix(printer, manager, cli.state_dir.as_deref())
-            }
+            StateCommand::ForgetPrefix { manager } => state_cmd::cmd_state_forget_prefix(
+                printer,
+                manager,
+                cli.state_dir.as_deref(),
+                cli.scope(),
+            ),
         },
         Command::McpServer => {
             crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref())

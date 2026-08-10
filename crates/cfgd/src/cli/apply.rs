@@ -89,7 +89,7 @@ impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
         plan: &reconciler::Plan,
         printer: &cfgd_core::output::Printer,
     ) -> cfgd_core::errors::Result<cfgd_core::reconciler::ApplyResult> {
-        // Prevent concurrent applies (see helpers::apply_lock_dir).
+        // Prevent concurrent applies (see helpers::run_state_dir).
         self.lock = Some(cfgd_core::acquire_apply_lock(&self.lock_dir)?);
         self.reconciler.apply(
             plan,
@@ -218,7 +218,7 @@ pub fn run_apply(
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a
     // NoConfig exit would leave an orphan state directory behind.
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
@@ -527,7 +527,7 @@ pub fn run_apply(
         skip_scripts: args.skip_scripts,
         shell_override: args.shell.map(super::apply_shell_to_script_shell),
         abort: &abort,
-        lock_dir: apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?,
+        lock_dir: run_state_dir(cli.state_dir.as_deref(), cli.scope())?,
         lock: None,
     };
     let disposition = run.execute(printer, confirm, &mut exec)?;

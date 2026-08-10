@@ -652,15 +652,20 @@ pub(in crate::cli) fn module_cache_dir_for(
     Ok(cfgd_core::resolve_cache_dir(cache_over, scope)?.join("modules"))
 }
 
-/// Directory holding the apply mutex (`apply.lock`).
+/// The ONE state directory a run uses — `state.db`, the apply mutex
+/// (`apply.lock`), and everything else state-rooted resolve HERE.
 ///
 /// The apply mutex serializes the only operation that mutates live system
 /// state, so it co-locates with the `state.db` it guards — the same dir the
 /// daemon reconcile loop locks — and every acquirer must resolve it identically
 /// (`--state-dir` flag > `CFGD_STATE_DIR` env > `XDG_STATE_HOME` > platform
-/// default) regardless of how the process was launched, or the lock fails to
-/// mutually-exclude and concurrent applies corrupt state.
-pub(in crate::cli) fn apply_lock_dir(
+/// default, per the run's `--scope`) regardless of how the process was
+/// launched, or the lock fails to mutually-exclude and concurrent applies
+/// corrupt state. `open_state_store` resolves through the same call for the
+/// same reason: a `--scope system` run that locked the system dir while
+/// opening the user store would judge ownership against one store and sweep
+/// another.
+pub(in crate::cli) fn run_state_dir(
     state_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
@@ -905,7 +910,7 @@ fn display_and_persist_conflicts(
     }
     drop(guard);
 
-    if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
+    if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) {
         for conflict in &result.conflicts {
             if let Err(e) = state.record_source_conflict(
                 &conflict.winning_source,

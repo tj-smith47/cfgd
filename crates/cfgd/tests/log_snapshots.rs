@@ -38,7 +38,14 @@ fn log_empty_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&printer, 10, None, Some(state_dir.path())).unwrap();
+    cmd_log(
+        &printer,
+        10,
+        None,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -76,7 +83,14 @@ fn log_multi_row_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&printer, 10, None, Some(state_dir.path())).unwrap();
+    cmd_log(
+        &printer,
+        10,
+        None,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let normalized = normalize_timestamps(&cap.human());
@@ -106,7 +120,14 @@ fn log_show_output_happy_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    cmd_log(
+        &printer,
+        10,
+        Some(apply_id),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -129,7 +150,14 @@ fn log_show_output_empty_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    cmd_log(
+        &printer,
+        10,
+        Some(apply_id),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -150,7 +178,14 @@ fn log_show_output_no_journal_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    cmd_log(
+        &printer,
+        10,
+        Some(apply_id),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -184,7 +219,14 @@ fn log_show_output_happy_json() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    cmd_log(
+        &printer,
+        10,
+        Some(apply_id),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "log/show_output_happy.json");

@@ -53,7 +53,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let mut snapshot = cfgd_core::compliance::collect_snapshot(
         profile_name,
         &resolved.merged,
@@ -151,7 +151,7 @@ pub(super) fn cmd_compliance_history(
     printer: &Printer,
     since: Option<&str>,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let since_ts: Option<String> = since
         .map(|s| {
@@ -174,7 +174,7 @@ pub(super) fn cmd_compliance_diff(
     id1: i64,
     id2: i64,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let snap1 = state
         .get_compliance_snapshot(id1)?
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id1))?;
@@ -490,7 +490,7 @@ mod tests {
     }
 
     fn store_snapshot(state_dir: &std::path::Path, snapshot: &ComplianceSnapshot) {
-        let state = open_state_store(Some(state_dir)).unwrap();
+        let state = open_state_store(Some(state_dir), cfgd_core::Scope::User).unwrap();
         let json = serde_json::to_string(snapshot).unwrap();
         let hash = cfgd_core::sha256_hex(json.as_bytes());
         state.store_compliance_snapshot(snapshot, &hash).unwrap();

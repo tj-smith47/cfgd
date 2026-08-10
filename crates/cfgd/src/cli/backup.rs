@@ -46,7 +46,7 @@ fn find_backup_spec<'a>(
 /// the run-history store, and the state dir a `BackupUnit` anchors to.
 fn unit_context(cli: &Cli) -> anyhow::Result<(PathBuf, cfgd_core::state::StateStore, PathBuf)> {
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
     Ok((config_dir, state, state_dir))
 }
@@ -196,7 +196,7 @@ pub fn cmd_backup_list(
     // "never" with a warning keeps the config half of the command useful when
     // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
     // same failure.
-    let state = match open_state_store(cli.state_dir.as_deref()) {
+    let state = match open_state_store(cli.state_dir.as_deref(), cli.scope()) {
         Ok(state) => Some(state),
         Err(e) => {
             printer

@@ -206,7 +206,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         }
     };
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_info = state.config_source_by_name(name)?;
     let resources = state.managed_resources_by_source(name)?;
 
