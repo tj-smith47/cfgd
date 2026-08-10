@@ -28,6 +28,12 @@ pub(super) struct DecideSingleOutput {
 #[serde(rename_all = "camelCase")]
 pub(super) struct DecideListOutput {
     pub decisions: Vec<PendingDecision>,
+    /// Source batches no decision row can name (a dotted custom manager) —
+    /// withheld from every plan fail-closed, so the listing names them here
+    /// instead of showing clean-empty. Same lines the `plan` payload's
+    /// `warnings` carries; absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// True when the source-decision classification failed and `decisions`
     /// holds only the recorded rows — a degraded listing is otherwise
     /// indistinguishable from a clean empty one to a `-o json` consumer.
@@ -139,8 +145,10 @@ pub(super) fn cmd_decide(
         super::output_types::ClassificationDegradedCode,
         String,
     )> = None;
+    let mut warnings: Vec<String> = Vec::new();
     match classification {
         Ok((withheld, _)) => {
+            warnings = withheld.undecidable.iter().map(|b| b.warning()).collect();
             decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
         }
         Err(e) => {
@@ -153,7 +161,11 @@ pub(super) fn cmd_decide(
             classification_degraded = Some((code, reason));
         }
     }
-    printer.emit(build_decide_list_doc(&decisions, classification_degraded));
+    printer.emit(build_decide_list_doc(
+        &decisions,
+        &warnings,
+        classification_degraded,
+    ));
     Ok(())
 }
 
@@ -278,29 +290,34 @@ pub fn build_decide_single_doc(resolution: &str, resource_path: &str, resolved: 
 /// Pure builder: pending-decisions listing Doc (bare `cfgd decide`). A
 /// `Some` (code, reason) pair marks the payload as degraded — the human
 /// warning for it is the caller's, printed where the failure happened.
+/// `warnings` names the undecidable source batches no row can carry, so an
+/// otherwise-empty listing never reads as "nothing withheld" while a dotted
+/// custom manager's packages are.
 pub fn build_decide_list_doc(
     decisions: &[PendingDecision],
+    warnings: &[String],
     classification_degraded: Option<(super::output_types::ClassificationDegradedCode, String)>,
 ) -> Doc {
     let payload = DecideListOutput {
         decisions: decisions.to_vec(),
+        warnings: warnings.to_vec(),
         classification_degraded: classification_degraded.is_some(),
         classification_degraded_code: classification_degraded.as_ref().map(|(c, _)| *c),
         classification_degraded_reason: classification_degraded.map(|(_, r)| r),
     };
+    let warn_lines =
+        |doc: Doc| -> Doc { warnings.iter().fold(doc, |d, w| d.status(Role::Warn, w)) };
     if decisions.is_empty() {
-        return Doc::new()
-            .status(Role::Info, "No pending decisions")
+        return warn_lines(Doc::new().status(Role::Info, "No pending decisions"))
             .with_data(payload);
     }
 
-    Doc::new()
-        .section("Pending Decisions", |s| {
-            build_pending_decisions_table_section(s, decisions)
-        })
-        .hint("Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve")
-        .hint(
-            "Use `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
-        )
-        .with_data(payload)
+    warn_lines(Doc::new().section("Pending Decisions", |s| {
+        build_pending_decisions_table_section(s, decisions)
+    }))
+    .hint("Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve")
+    .hint(
+        "Use `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
+    )
+    .with_data(payload)
 }

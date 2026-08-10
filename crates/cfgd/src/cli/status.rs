@@ -12,6 +12,12 @@ pub struct StatusOutput {
     pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
     pub modules: Vec<ModuleStatusEntry>,
     pub managed_resources: Vec<cfgd_core::state::ManagedResource>,
+    /// Source batches no decision row can name (a dotted custom manager) —
+    /// withheld from every plan fail-closed, so the dashboard names them here
+    /// instead of showing clean-empty. Same lines the `plan` payload's
+    /// `warnings` carries; absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// True when the source-decision classification failed and
     /// `pendingDecisions` is missing the classified-but-unrecorded items — a
     /// degraded listing is otherwise indistinguishable from a clean empty one
@@ -173,6 +179,14 @@ pub fn build_fleet_status_doc(
         },
     );
 
+    // Rendered beside the pending rows those batches would otherwise be:
+    // "why isn't requests installed?" must be answerable from the dashboard,
+    // not only from a plan/apply run header.
+    doc = output
+        .warnings
+        .iter()
+        .fold(doc, |d, w| d.status(Role::Warn, w));
+
     doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
         mods.iter().fold(s, |s, m| {
             let summary = format!("{} pkgs, {} files", m.packages, m.files);
@@ -318,6 +332,7 @@ pub(super) fn cmd_status(
         super::output_types::ClassificationDegradedCode,
         String,
     )> = None;
+    let mut warnings: Vec<String> = Vec::new();
     if !cfg.spec.sources.is_empty() {
         // The dashboard enumerates no package state (it is offline by design),
         // so the classification sees an empty observation and auto-accepts
@@ -334,6 +349,7 @@ pub(super) fn cmd_status(
             &reconciler::ActualPackages::default(),
         ) {
             Ok((withheld, _review)) => {
+                warnings = withheld.undecidable.iter().map(|b| b.warning()).collect();
                 pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
             }
             Err(e) => {
@@ -375,6 +391,7 @@ pub(super) fn cmd_status(
         pending_decisions: pending,
         modules: module_entries,
         managed_resources: resources,
+        warnings,
         classification_degraded: classification_degraded.is_some(),
         classification_degraded_code: classification_degraded.as_ref().map(|(c, _)| *c),
         classification_degraded_reason: classification_degraded.map(|(_, r)| r),
@@ -512,6 +529,7 @@ mod tests {
             pending_decisions: Vec::new(),
             modules: Vec::new(),
             managed_resources: Vec::new(),
+            warnings: Vec::new(),
             classification_degraded: false,
             classification_degraded_code: None,
             classification_degraded_reason: None,
@@ -543,6 +561,7 @@ mod tests {
             pending_decisions: Vec::new(),
             modules: Vec::new(),
             managed_resources: Vec::new(),
+            warnings: Vec::new(),
             classification_degraded: true,
             classification_degraded_code: Some(
                 crate::cli::output_types::ClassificationDegradedCode::SourceUnreadable,

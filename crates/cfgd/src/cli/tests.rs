@@ -21671,6 +21671,131 @@ fn the_version_conflict_annotation_reaches_the_decide_listing() {
     );
 }
 
+#[test]
+#[serial_test::serial]
+fn status_names_the_undecidable_source_batch_in_warnings() {
+    // The dashboard half of the fail-closed dotted-manager withhold: a user
+    // asking "why isn't requests installed?" must see the answer in `cfgd
+    // status`, structurally — not only on a plan/apply run header.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let json = f.h.json_output();
+    let warnings = json["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the status payload names the undecidable batch: {json}"));
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.contains("pip3.11") && w.contains("'.'"))),
+        "the warning names the manager and the grammar limitation: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_renders_the_undecidable_batch_warning_for_the_operator() {
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("pip3.11") && output.contains("'.'"),
+        "the human dashboard names the withheld manager and why:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_listing_names_the_undecidable_source_batch() {
+    // Same contract on the answering surface: the bare listing must not read
+    // clean-empty while a batch nothing can answer for is withheld.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let json = f.h.json_output();
+    let warnings = json["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the decide payload names the undecidable batch: {json}"));
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.contains("pip3.11") && w.contains("'.'"))),
+        "the warning names the manager and the grammar limitation: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_listing_renders_the_undecidable_batch_warning() {
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("pip3.11") && output.contains("'.'"),
+        "the human listing names the withheld manager and why:\n{output}"
+    );
+}
+
 /// A cargo manifest reference whose file the tests below write as invalid TOML,
 /// so the shared source classification fails while the config itself parses.
 const BROKEN_MANIFEST_SPEC: &str =
@@ -21767,6 +21892,10 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
             && json.get("classificationDegradedReason").is_none(),
         "a clean payload carries no code or reason field: {json}"
     );
+    assert!(
+        json.get("warnings").is_none(),
+        "no undecidable batches, no warnings field: {json}"
+    );
 }
 
 #[test]
@@ -21847,6 +21976,10 @@ fn a_clean_decide_json_listing_marks_classification_undegraded() {
         json.get("classificationDegradedCode").is_none()
             && json.get("classificationDegradedReason").is_none(),
         "a clean payload carries no code or reason field: {json}"
+    );
+    assert!(
+        json.get("warnings").is_none(),
+        "no undecidable batches, no warnings field: {json}"
     );
 }
 

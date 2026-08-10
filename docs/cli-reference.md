@@ -356,8 +356,22 @@ config), `manifestUnreadable` (fix the referenced Brewfile / `package.json` /
 `Cargo.toml` / apt list), or `classificationFailed` (anything else). The
 reason string is the human detail and carries no stability promise.
 
-The bare `cfgd decide -o json` listing carries the same fields alongside its
-`decisions` array.
+A source batch no decision row can name — packages under a
+[dotted custom manager](sources.md#edge-cases) — is withheld fail-closed, and
+the dashboard names it the same way `cfgd plan` does: the human render carries
+the warning line, and the payload carries a `warnings` array (omitted when
+empty) with the same strings the plan payload's `warnings` holds:
+
+```jsonc
+{
+  "warnings": [
+    "custom manager 'pip3.11' cannot carry source decisions — its name contains '.', which the decision path grammar splits on. Withheld from this run until the manager is renamed: requests (from acme-corp)"
+  ]
+}
+```
+
+The bare `cfgd decide -o json` listing carries the same fields — the
+degradation pair and `warnings` alike — alongside its `decisions` array.
 
 ### `cfgd diff`
 
