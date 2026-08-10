@@ -110,6 +110,11 @@ pub(crate) struct ReconcileCtx<'a> {
     pub notify_on_drift: bool,
     pub hooks: &'a dyn DaemonHooks,
     pub state_dir_override: Option<&'a Path>,
+    /// Whether the operator explicitly passed `--state-dir` — distinct from
+    /// `state_dir_override`, which the production loop always materializes
+    /// from the scope default. Store ownership is judged on this bit, exactly
+    /// as the CLI judges `cli.state_dir.is_some()`.
+    pub explicit_state_dir: bool,
     pub printer: &'a crate::output::Printer,
     /// When set, restrict reconcile to actions targeting this module name.
     /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
@@ -179,6 +184,7 @@ pub(crate) fn handle_reconcile(
         notify_on_drift,
         hooks,
         state_dir_override,
+        explicit_state_dir,
         printer,
         module_filter,
         auto_apply_override,
@@ -321,10 +327,16 @@ pub(crate) fn handle_reconcile(
     // store would otherwise delete another config's rows. Ownership is judged
     // on the resolved config path itself, so an installed service unit baking
     // `--config <default path>` still sweeps its own machine's rows.
+    // Ownership is judged on the OPERATOR's `--state-dir`, never on the
+    // materialized `state_dir_override` — the production loop always fills
+    // that in from the scope default, so `.is_some()` on it would make every
+    // deployed daemon an owner of whatever store the default resolved and a
+    // `cfgd daemon --config /foreign.yaml` would sweep and mint the default
+    // store's rows.
+    let owns_the_store =
+        crate::reconciler::owns_decision_store(config_path, explicit_state_dir, scope);
     let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
-    if crate::reconciler::owns_decision_store(config_path, state_dir_override.is_some(), scope)
-        && let Err(e) = store.discard_decisions_not_in(&subscribed)
-    {
+    if owns_the_store && let Err(e) = store.discard_decisions_not_in(&subscribed) {
         tracing::warn!(error = %e, "failed to discard decisions of removed sources");
     }
 
@@ -351,7 +363,13 @@ pub(crate) fn handle_reconcile(
     } else {
         crate::reconciler::SourcePolicyReview::default()
     };
-    mint_reviewed_decisions(&store, &review, notifier);
+    // The WRITE half takes the same gate as the sweep, mirroring `cfgd
+    // apply`: a foreign config does not record rows and hashes into someone
+    // else's store. The items are withheld from this tick either way — the
+    // unrecorded mints ride `with_unrecorded` below.
+    if owns_the_store {
+        mint_reviewed_decisions(&store, &review, notifier);
+    }
 
     // The rows are read whatever the mode: minting a decision is an auto-apply
     // behaviour, but honouring one that already exists is not. A tick that read

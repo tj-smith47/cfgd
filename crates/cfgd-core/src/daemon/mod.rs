@@ -872,7 +872,11 @@ pub(super) async fn run_daemon_with(
     // Materialize the state dir from scope when no explicit override is given,
     // so every downstream site (reconcile ticks, /drift endpoint, the backup
     // timers' restart seeding) all agree on the same path rather than each
-    // re-deriving it independently from scope.
+    // re-deriving it independently from scope. The operator-explicit bit is
+    // captured FIRST: once the default is materialized, `is_some()` can no
+    // longer say whether `--state-dir` was passed, and store ownership hangs
+    // on exactly that fact.
+    let explicit_state_dir = overrides.state_dir_override.is_some();
     let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
         Some(ref d) => Some(d.clone()),
         None => crate::state::default_state_dir_for(overrides.scope).ok(),
@@ -1068,6 +1072,7 @@ pub(super) async fn run_daemon_with(
         compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
         state_dir_override: resolved_state_dir.clone(),
+        explicit_state_dir,
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
         cfgd_version: cfgd_version.to_string(),

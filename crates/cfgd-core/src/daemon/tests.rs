@@ -101,6 +101,7 @@ fn quiet_reconcile_ctx<'a>(
         notify_on_drift,
         hooks,
         state_dir_override: Some(state_dir),
+        explicit_state_dir: true,
         printer,
         module_filter: None,
         auto_apply_override: None,
@@ -1056,9 +1057,16 @@ fn inert_config_named(root: &std::path::Path, filename: &str) -> PathBuf {
 
 /// Run one tick against the DEFAULT state store, from whatever config path the
 /// daemon was pointed at — ownership of the store's decision rows is judged on
-/// that path alone.
+/// that path alone. The ctx carries the EXACT shape the production loop
+/// produces: `run_daemon_with` materializes the scope default into
+/// `state_dir_override` on every real tick, and the operator-explicit
+/// `--state-dir` fact rides its own bit, `false` here because no operator
+/// passed one. A `None` override is a shape the deployed loop never sends,
+/// and driving it here once hid a vacuous ownership gate.
 async fn tick_against_default_store(config_path: PathBuf) {
     crate::spawn_blocking_with_test_home(move || {
+        let materialized =
+            crate::state::default_state_dir().expect("the test home resolves a default state dir");
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
         let printer = test_printer();
@@ -1070,7 +1078,8 @@ async fn tick_against_default_store(config_path: PathBuf) {
                 notifier: &notifier,
                 notify_on_drift: false,
                 hooks: &crate::test_helpers::NoopDaemonHooks,
-                state_dir_override: None,
+                state_dir_override: Some(&materialized),
+                explicit_state_dir: false,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -1104,6 +1113,52 @@ async fn a_daemon_on_a_foreign_config_leaves_the_default_stores_rows_alone() {
         store.pending_decisions().unwrap().len(),
         1,
         "a config this daemon was pointed at is not authoritative over another config's rows"
+    );
+}
+
+/// The mint half of the same gate: a daemon on a foreign config whose sources
+/// deliver new items must not write those questions into the DEFAULT store —
+/// the answers would bind a config the operator never subscribed the machine
+/// to, and the recorded source hash would silence the real config's own first
+/// ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_daemon_on_a_foreign_config_mints_no_decisions_into_the_default_store() {
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let cache_root = staging.path().join("cache-root").join("cfgd");
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  packages:\n    cargo:\n      - bat\n",
+    );
+
+    let config_path = staging.path().join("other.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: solo\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: NotifyOnly\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles = staging.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("solo.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec: {}\n",
+    )
+    .unwrap();
+
+    tick_against_default_store(config_path).await;
+
+    let store = StateStore::open_default().expect("the default store lands under the test home");
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "a foreign config's delivered items must not become the default store's questions"
+    );
+    assert!(
+        store.source_config_hash("acme").unwrap().is_none(),
+        "no source hash may be recorded either, or the real config's first ask is silenced"
     );
 }
 
@@ -7754,6 +7809,7 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 notify_on_drift: false,
                 hooks: &hooks,
                 state_dir_override: Some(&sd),
+                explicit_state_dir: true,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -9914,6 +9970,7 @@ mod harness {
             compliance_config: compliance,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10691,6 +10748,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10776,6 +10834,7 @@ mod harness {
             compliance_config: Some(compliance_cfg),
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -11027,6 +11086,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -11102,6 +11162,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -11162,6 +11223,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -15256,6 +15318,7 @@ mod handle_reconcile_extra_branches {
                     notify_on_drift: false,
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
+                    explicit_state_dir: true,
                     printer: &printer,
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),

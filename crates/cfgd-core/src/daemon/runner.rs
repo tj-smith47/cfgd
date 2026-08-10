@@ -49,8 +49,19 @@ pub(super) struct DaemonLoopContext {
     pub printer: Arc<Printer>,
     /// When set, `handle_reconcile` uses this directory instead of the
     /// platform default state dir. Tests pass a tempdir here so the loop
-    /// never touches `~/.local/state/cfgd/`.
+    /// never touches `~/.local/state/cfgd/`. The production loop ALWAYS sets
+    /// it — `run_daemon_with` materializes the scope default so every
+    /// downstream site agrees on one path — which is why it cannot double as
+    /// "the operator overrode the state dir": that fact rides
+    /// [`Self::explicit_state_dir`].
     pub state_dir_override: Option<PathBuf>,
+    /// Whether the OPERATOR passed `--state-dir` (captured before the default
+    /// is materialized into `state_dir_override`). Bringing your own state
+    /// dir is what makes a foreign config authoritative over the store it
+    /// sweeps and mints into, so the ownership gate reads THIS bit — reading
+    /// `state_dir_override.is_some()` instead made every production tick an
+    /// owner of whatever store the scope default resolved.
+    pub explicit_state_dir: bool,
     /// Managed file targets the profile declares. A file-watch event records
     /// drift only when its path is one of these; config/source/`.git` paths
     /// trigger a reconcile but are not drift.
@@ -219,6 +230,7 @@ pub(super) async fn handle_file_change_tick(
         let notify_drift = ctx.notify_on_drift;
         let hk = Arc::clone(&ctx.hooks);
         let state_dir = ctx.state_dir_override.clone();
+        let explicit = ctx.explicit_state_dir;
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
         let abort = Arc::clone(&ctx.abort);
@@ -232,6 +244,7 @@ pub(super) async fn handle_file_change_tick(
                     notify_on_drift: notify_drift,
                     hooks: &*hk,
                     state_dir_override: state_dir.as_deref(),
+                    explicit_state_dir: explicit,
                     printer: &printer,
                     module_filter: None,
                     auto_apply_override: None,
@@ -275,6 +288,7 @@ pub(super) async fn handle_reconcile_tick(
             let notify_drift = ctx.notify_on_drift;
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
+            let explicit = ctx.explicit_state_dir;
             let printer = Arc::clone(&ctx.printer);
             let scope = ctx.scope;
             let abort = Arc::clone(&ctx.abort);
@@ -288,6 +302,7 @@ pub(super) async fn handle_reconcile_tick(
                         notify_on_drift: notify_drift,
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
+                        explicit_state_dir: explicit,
                         printer: &printer,
                         module_filter: None,
                         auto_apply_override: None,
@@ -319,6 +334,7 @@ pub(super) async fn handle_reconcile_tick(
             let notify_drift = ctx.notify_on_drift;
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
+            let explicit = ctx.explicit_state_dir;
             let printer = Arc::clone(&ctx.printer);
             let module_name = entity_name.clone();
             let scope = ctx.scope;
@@ -333,6 +349,7 @@ pub(super) async fn handle_reconcile_tick(
                         notify_on_drift: notify_drift,
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
+                        explicit_state_dir: explicit,
                         printer: &printer,
                         module_filter: Some(&module_name),
                         auto_apply_override: Some(task_auto_apply),
