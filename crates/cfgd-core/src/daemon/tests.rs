@@ -1060,6 +1060,72 @@ fn an_explicit_rejection_is_never_auto_accepted() {
 }
 
 #[test]
+fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question() {
+    // `docs/sources.md`: a rejection answers ONE delivered set — when the
+    // source's set changes, the item is a fresh question. Installed state
+    // answers that fresh question exactly as it answers a first-time one (an
+    // installed-despite-rejection package is one the operator put there), so
+    // the composed path is a decision, not an accident: no re-ask, one
+    // auto-accepted resolution.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let old_delivered = tiered_items(
+        &cargo_profile(&["bat"]),
+        crate::config::LayerPolicy::Recommended,
+    );
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &old_delivered.resource_hash())
+        .unwrap();
+
+    // The source moves: its delivered set gains an item, voiding the standing
+    // answer for everything it delivers.
+    let new_delivered = tiered_items(
+        &cargo_profile(&["bat", "eza"]),
+        crate::config::LayerPolicy::Recommended,
+    );
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
+    let review = review_source_policy(&store, "acme", &new_delivered, &policy, &actual).unwrap();
+
+    assert_eq!(
+        review
+            .auto_accepted
+            .iter()
+            .map(|a| a.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "the fresh question is answered by installed state, not re-asked"
+    );
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.eza"],
+        "the not-installed newcomer still owes its question"
+    );
+
+    crate::reconciler::mint_decisions(&store, &review);
+    assert_eq!(
+        withheld_paths(&store),
+        HashSet::from(["packages.cargo.eza".to_string()]),
+        "the auto-accepted item is released; only the fresh ask withholds"
+    );
+}
+
+#[test]
 fn a_pending_rows_conflict_annotation_is_refreshed_in_place() {
     // A row minted before the operator installed a WRONG version must not
     // keep its stale summary: the conflict lands on the row (and only

@@ -622,10 +622,18 @@ impl ObservedManager {
             if let Some(spec) = embedded_version_spec(entry) {
                 return match version {
                     Some(v) if crate::version_satisfies(v, &spec) => InstallVerdict::AutoAccept {
-                        reason: format!("installed {} satisfies {}", v, spec),
+                        reason: format!(
+                            "installed {} satisfies {}",
+                            crate::escape_control_chars(v),
+                            spec
+                        ),
                     },
                     Some(v) => InstallVerdict::Conflict {
-                        annotation: format!("installed {}, source wants {}", v, spec),
+                        annotation: format!(
+                            "installed {}, source wants {}",
+                            crate::escape_control_chars(v),
+                            spec
+                        ),
                     },
                     // Satisfaction cannot be judged without a version, so the
                     // question stands — never auto-accept on a guess.
@@ -638,18 +646,40 @@ impl ObservedManager {
                 reason: installed_reason(version),
             };
         }
-        // Absent by planner identity: the plan holds a real install, so
-        // nothing may auto-accept — but when the entry pins a version and the
-        // BARE name is installed, the row can say why it is still asked about.
-        // A satisfying installed version stays a plain question rather than
-        // carrying an annotation that reads like a conflict.
+        // Absent by planner identity — but when the entry pins a version, the
+        // BARE name is what the machine actually lists (`tool@^14` installs
+        // and lists as `tool`), so the pin is judged against it. A satisfying
+        // installed version answers the source's ask and auto-accepts; the
+        // plan may still converge the pin, which is what accepting means. A
+        // mismatch or an unknowable version stays pending, with the reason as
+        // row data. The bare name resolves through the planner's identity
+        // mapping so a case-insensitive manager's listing (`tool`) answers
+        // for the source's spelling (`Tool@^14`).
         if let Some(spec) = embedded_version_spec(entry)
             && let Some((name, _)) = entry.rsplit_once('@')
         {
+            let name = self
+                .identities
+                .get(name)
+                .map(String::as_str)
+                .unwrap_or(name);
             match self.installed.get(name) {
-                Some(Some(v)) if !crate::version_satisfies(v, &spec) => {
+                Some(Some(v)) if crate::version_satisfies(v, &spec) => {
+                    return InstallVerdict::AutoAccept {
+                        reason: format!(
+                            "installed {} satisfies {}",
+                            crate::escape_control_chars(v),
+                            spec
+                        ),
+                    };
+                }
+                Some(Some(v)) => {
                     return InstallVerdict::Conflict {
-                        annotation: format!("installed {}, source wants {}", v, spec),
+                        annotation: format!(
+                            "installed {}, source wants {}",
+                            crate::escape_control_chars(v),
+                            spec
+                        ),
                     };
                 }
                 Some(None) => {
@@ -657,7 +687,7 @@ impl ObservedManager {
                         annotation: format!("installed (version unknown), source wants {}", spec),
                     };
                 }
-                _ => {}
+                None => {}
             }
         }
         InstallVerdict::Undetermined
@@ -666,7 +696,9 @@ impl ObservedManager {
 
 fn installed_reason(version: &Option<String>) -> String {
     match version {
-        Some(v) => format!("already installed ({})", v),
+        // Manager-reported strings reach terminal-rendered row summaries, so
+        // control characters render escaped rather than repainting the line.
+        Some(v) => format!("already installed ({})", crate::escape_control_chars(v)),
         None => "already installed".to_string(),
     }
 }
@@ -1530,4 +1562,150 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
         );
     }
     withheld
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::*;
+
+    fn observed(
+        manager: &str,
+        installed: &[(&str, Option<&str>)],
+        identities: &[(&str, &str)],
+    ) -> ActualPackages {
+        let mut actual = ActualPackages::default();
+        actual.record_enumeration(
+            manager,
+            installed
+                .iter()
+                .map(|(name, v)| (name.to_string(), v.map(str::to_string))),
+        );
+        for (entry, identity) in identities {
+            actual.record_identity(manager, entry, identity);
+        }
+        actual
+    }
+
+    #[test]
+    fn version_spec_grammar_admits_operators_and_v_prefixed_versions_only() {
+        // `@` is a legal NAME character; the suffix is a spec only when it
+        // announces itself. These edges are the grammar's whole point — a
+        // widening would silently turn manager-native names into pins.
+        assert_eq!(embedded_version_spec("tool@^14").as_deref(), Some("^14"));
+        assert_eq!(
+            embedded_version_spec("tool@>=2.1").as_deref(),
+            Some(">=2.1")
+        );
+        assert_eq!(embedded_version_spec("tool@~1.4").as_deref(), Some("~1.4"));
+        assert_eq!(embedded_version_spec("tool@*").as_deref(), Some("*"));
+        assert_eq!(
+            embedded_version_spec("tool@v1.2.3").as_deref(),
+            Some("1.2.3"),
+            "a v-prefixed version is a pin, normalized without the v"
+        );
+        assert_eq!(embedded_version_spec("tool@V2").as_deref(), Some("2"));
+        assert_eq!(
+            embedded_version_spec("python@3.12"),
+            None,
+            "bare digits after @ are a NAME (brew's python@3.12 formula)"
+        );
+        assert_eq!(
+            embedded_version_spec("tool@1.2.3"),
+            None,
+            "same rule regardless of how version-shaped the suffix looks"
+        );
+        assert_eq!(
+            embedded_version_spec("@scope/name"),
+            None,
+            "npm scope: nothing before the @, so no name to pin"
+        );
+        assert_eq!(
+            embedded_version_spec("tool@"),
+            None,
+            "trailing @ pins nothing"
+        );
+        assert_eq!(
+            embedded_version_spec("tool@v"),
+            None,
+            "v alone is not a version"
+        );
+        assert_eq!(
+            embedded_version_spec("tool@vanilla"),
+            None,
+            "v must introduce a digit"
+        );
+        assert_eq!(embedded_version_spec("plain"), None);
+    }
+
+    #[test]
+    fn a_verbatim_listed_at_name_auto_accepts_as_a_name() {
+        // brew's `python@3.12` is a formula whose NAME contains `@`: the
+        // enumeration lists the entry verbatim, so it auto-accepts as an
+        // installed name — never judged as a `3.12` version pin.
+        let actual = observed(
+            "brew",
+            &[("python@3.12", Some("3.12.7"))],
+            &[("python@3.12", "python@3.12")],
+        );
+        match manual_install_verdict("packages.brew.python@3.12", &actual) {
+            InstallVerdict::AutoAccept { reason } => {
+                assert_eq!(reason, "already installed (3.12.7)")
+            }
+            InstallVerdict::Conflict { annotation } => {
+                panic!("a formula name must not be read as a pin: {annotation}")
+            }
+            InstallVerdict::Undetermined => panic!("listed verbatim must auto-accept"),
+        }
+    }
+
+    #[test]
+    fn a_bare_v_pin_keeps_caret_semantics() {
+        // `docs/sources.md`: `tool@v1.2.3` means `^1.2.3` (the semver crate's
+        // default, matching cargo/npm convention), so installed 1.4.0
+        // satisfies the pin.
+        let actual = observed("cargo", &[("tool", Some("1.4.0"))], &[]);
+        match manual_install_verdict("packages.cargo.tool@v1.2.3", &actual) {
+            InstallVerdict::AutoAccept { reason } => {
+                assert_eq!(reason, "installed 1.4.0 satisfies 1.2.3")
+            }
+            _ => panic!("caret semantics: 1.4.0 satisfies ^1.2.3"),
+        }
+    }
+
+    #[test]
+    fn a_bare_name_pin_lookup_folds_through_the_planner_identity() {
+        // Case-insensitive managers list the folded identity (`tool`) while
+        // the source may spell the pin `Tool@^14`; the bare name resolves
+        // through the identity mapping the planner recorded for it.
+        let actual = observed(
+            "winget",
+            &[("tool", Some("13.0"))],
+            &[("Tool@^14", "tool@^14"), ("Tool", "tool")],
+        );
+        match manual_install_verdict("packages.winget.Tool@^14", &actual) {
+            InstallVerdict::Conflict { annotation } => {
+                assert_eq!(annotation, "installed 13.0, source wants ^14")
+            }
+            InstallVerdict::AutoAccept { reason } => {
+                panic!("13.0 does not satisfy ^14: {reason}")
+            }
+            InstallVerdict::Undetermined => {
+                panic!("the folded listing must answer for the source's spelling")
+            }
+        }
+    }
+
+    #[test]
+    fn a_control_character_in_a_manager_version_renders_escaped() {
+        // The version string comes from manager output and lands in a
+        // terminal-rendered row summary; a raw escape sequence could repaint
+        // the line the operator acts on.
+        let actual = observed("cargo", &[("tool", Some("13.0\x1b[2K"))], &[]);
+        match manual_install_verdict("packages.cargo.tool@^14", &actual) {
+            InstallVerdict::Conflict { annotation } => {
+                assert_eq!(annotation, "installed 13.0\\x1b[2K, source wants ^14");
+            }
+            _ => panic!("a mismatch stays a conflict"),
+        }
+    }
 }

@@ -3784,3 +3784,144 @@ fn brew_path_dirs_through_trait() {
 // --- GoInstallManager::update is no-op ---
 
 // --- NixManager::update is no-op ---
+
+// --- plan_packages_observed: the versioned enumeration feeds the satisfies-gate ---
+
+/// Mock in the shape of a case-insensitive manager (chocolatey / winget /
+/// scoop): the versioned listing keeps the REGISTERED display case while
+/// `package_identity` folds to lowercase — the exact pair the planner must
+/// reconcile when it derives its diff set from the versioned enumeration.
+struct CiVersionedMockManager;
+
+impl PackageManager for CiVersionedMockManager {
+    fn name(&self) -> &str {
+        "winget"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::from(["tool".to_string(), "fzf".to_string()]))
+    }
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        Ok(vec![
+            cfgd_core::providers::PackageInfo {
+                name: "Tool".into(),
+                version: "14.2.0".into(),
+            },
+            cfgd_core::providers::PackageInfo {
+                name: "Fzf".into(),
+                version: "0.46.1".into(),
+            },
+        ])
+    }
+    fn package_identity(&self, entry: &str) -> String {
+        entry.to_lowercase()
+    }
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn observed_enumeration_threads_manager_versions_into_the_satisfies_gate() {
+    // End-to-end through the production wiring: the planner's OWN versioned
+    // enumeration (no second shell-out) is what the source classification
+    // judges a pinned item against, with names folded through
+    // `package_identity` on both sides.
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    let mock = CiVersionedMockManager;
+    let profile = test_profile(PackagesSpec {
+        winget: vec!["Tool@^14".into(), "Fzf".into()],
+        ..Default::default()
+    });
+    let managers: Vec<&dyn PackageManager> = vec![&mock];
+
+    let (actions, actual) =
+        plan_packages_observed(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
+
+    // The diff still compares the folded identity space: `Fzf` is installed
+    // (as `fzf`), while the pinned entry's identity holds real plan work —
+    // accepting a satisfied pin converges it, never silently skips it.
+    let items = plan_items(actions);
+    assert!(
+        items.iter().any(|i| i.contains("Tool@^14")),
+        "the pinned entry still plans its converging install: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|i| i.contains("Fzf")),
+        "the display-case listing folds onto the installed identity: {items:?}"
+    );
+
+    // The classification consumes that same observation: a satisfied pin
+    // auto-accepts with the manager-reported version in its provenance, and
+    // the verbatim-installed item auto-accepts with its version named.
+    let layer = cfgd_core::config::ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "offered".to_string(),
+        priority: 500,
+        policy: cfgd_core::config::LayerPolicy::Recommended,
+        spec: cfgd_core::config::ProfileSpec {
+            packages: Some(PackagesSpec {
+                winget: vec!["Tool@^14".into(), "Fzf".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    };
+    let delivered = cfgd_core::reconciler::DeliveredItems::from_layers(&[layer]);
+    let review = cfgd_core::reconciler::review_source_policy(
+        &state,
+        "acme",
+        &delivered,
+        &cfgd_core::config::AutoApplyPolicyConfig::default(),
+        &actual,
+    )
+    .unwrap();
+
+    let mut accepted: Vec<(String, String)> = review
+        .auto_accepted
+        .iter()
+        .map(|a| (a.resource.clone(), a.reason.clone()))
+        .collect();
+    accepted.sort();
+    assert_eq!(
+        accepted,
+        vec![
+            (
+                "packages.winget.Fzf".to_string(),
+                "already installed (0.46.1)".to_string()
+            ),
+            (
+                "packages.winget.Tool@^14".to_string(),
+                "installed 14.2.0 satisfies ^14".to_string()
+            ),
+        ],
+        "the production enumeration answers both shapes: {review:?}"
+    );
+    assert!(
+        review.to_mint.is_empty(),
+        "nothing left to ask: {:?}",
+        review.to_mint
+    );
+}

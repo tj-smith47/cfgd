@@ -160,15 +160,29 @@ pub fn plan_packages(
     Ok(plan_packages_observed(profile, modules, managers, cfgd_installed, cx)?.0)
 }
 
+/// The observation's version for one listed package: the version the manager
+/// reported, unless it reported none. `"unknown"` is the
+/// [`PackageManager::installed_packages_with_versions`] contract's sentinel
+/// for "this manager does not know", and an empty string is the same answer.
+fn known_version(pkg: &cfgd_core::providers::PackageInfo) -> Option<String> {
+    let v = pkg.version.trim();
+    if v.is_empty() || v == "unknown" {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
 /// [`plan_packages`] plus what its enumeration observed, for the callers that
 /// also classify source decisions.
 ///
 /// The captured [`ActualPackages`] is the planner's OWN installed-state read —
-/// the same `installed_packages` call and the same `package_identity` mapping
-/// the diff below runs on — so the source-decision auto-accept judges presence
-/// exactly as the plan does, with no second shell-out. Only available managers
-/// are recorded: an unavailable or erroring manager contributes nothing, and
-/// the classification fails closed for its packages.
+/// the single `installed_packages_with_versions` call and the same
+/// `package_identity` mapping the diff below runs on — so the source-decision
+/// auto-accept judges presence (and version satisfaction) exactly as the plan
+/// does, with no second shell-out. Only available managers are recorded: an
+/// unavailable or erroring manager contributes nothing, and the
+/// classification fails closed for its packages.
 pub fn plan_packages_observed(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
@@ -227,17 +241,37 @@ pub fn plan_packages_observed(
         // Only available managers can read installed state to confirm the
         // package is still present before pruning.
         if manager.is_available() {
-            let installed = manager.installed_packages(cx)?;
-            // This enumeration carries no versions — `installed_packages` is
-            // identity-only by contract — so the observation records None and
-            // a version-pinned source item stays pending (fail-closed) rather
-            // than auto-accepting on an unverifiable satisfaction.
+            // ONE enumeration serves both the install/prune diff and the
+            // source-decision observation: `installed_packages_with_versions`
+            // reads the same manager database as `installed_packages` and
+            // additionally carries the version the satisfies-gate judges a
+            // pinned source item against. Names fold through
+            // `package_identity` so the diff below still compares the exact
+            // identity space it always has (a case-insensitive manager's
+            // display-case listing folds to its lowercase identity form).
+            // Managers whose enumeration reports no version record `None`,
+            // and a pinned item under them stays pending (fail-closed).
+            let listed = manager.installed_packages_with_versions(cx)?;
+            let installed: HashSet<String> = listed
+                .iter()
+                .map(|pkg| manager.package_identity(&pkg.name))
+                .collect();
             actual.record_enumeration(
                 manager.name(),
-                installed.iter().map(|pkg| (pkg.clone(), None)),
+                listed
+                    .iter()
+                    .map(|pkg| (manager.package_identity(&pkg.name), known_version(pkg))),
             );
             for entry in &desired {
                 actual.record_identity(manager.name(), entry, &manager.package_identity(entry));
+                // A version-pinned entry is judged by its BARE name; record
+                // that name's identity too, so the classification looks the
+                // pin up in the same folded space the listing above uses.
+                if let Some((bare, _)) = entry.rsplit_once('@')
+                    && !bare.is_empty()
+                {
+                    actual.record_identity(manager.name(), bare, &manager.package_identity(bare));
+                }
             }
 
             // Install before uninstall so a rename (old pkg dropped, new pkg

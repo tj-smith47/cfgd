@@ -21578,6 +21578,45 @@ fn apply_records_an_installed_source_package_as_auto_accepted() {
 
 #[test]
 #[serial_test::serial]
+fn a_declined_apply_records_no_auto_accepted_row() {
+    // Refusing the apply refuses ALL of its store writes — the auto-accepted
+    // resolution included. An operator answering "no" to the prompt must not
+    // find the classification recorded consent behind their back; the next
+    // writing run re-classifies and records it then.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let args = ApplyArgs {
+        yes: false,
+        ..apply_args(false)
+    };
+    super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        output.contains("Aborted"),
+        "the run must actually reach and decline the confirm gate — a run \
+         with nothing to confirm proves nothing:\n{output}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        !state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "a declined run records nothing — not even the auto-acceptance"
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn a_version_conflict_annotates_the_pending_row_in_the_plan_payload() {
     // A version-pinned entry whose installed version cannot be verified stays
     // pending — fail-closed — and the row itself says why, so the `-o json`

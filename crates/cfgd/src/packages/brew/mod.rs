@@ -407,7 +407,15 @@ impl PackageManager for BrewManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
-        let output = run_pkg_cmd("brew", brew_cmd().args(["list", "--versions"]), "list")?;
+        // `--formulae` pins the same population `installed_packages` lists
+        // (`brew list --formulae -1`), so the planner's versioned enumeration
+        // and the identity one can never disagree about what is installed —
+        // casks stay with the separate brew-cask manager either way.
+        let output = run_pkg_cmd(
+            "brew",
+            brew_cmd().args(["list", "--formulae", "--versions"]),
+            "list",
+        )?;
         Ok(parse_brew_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))

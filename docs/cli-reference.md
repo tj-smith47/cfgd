@@ -290,9 +290,13 @@ A `Notify`-tier package the machine **already satisfies** never lands in
 `pendingDecisions` at all: the run's own package enumeration answers the
 question and the item is [auto-accepted](sources.md#edge-cases) — previewed as
 included by `plan`, recorded as a resolved row with resolution `auto-accepted`
-by the writing paths. A version conflict instead stays pending with the
-conflict annotated in the row's `summary` (e.g. `… — installed 13.0, source
-wants ^14`), on the recorded row and the `id: 0` shape alike.
+by the writing paths. "Satisfies" is judged against the version the manager's
+listing reports (an entry with no version spec is satisfied by any installed
+version; `tool@v1.2.3` pins with caret semantics, i.e. `^1.2.3`). A version
+conflict instead stays pending with the conflict annotated in the row's
+`summary` (e.g. `… — installed 13.0, source wants ^14`), on the recorded row
+and the `id: 0` shape alike — a manager whose listing reports no version reads
+`installed (version unknown), source wants ^14`.
 
 In the human render, an unrecorded item keeps the usual ``run `cfgd decide
 accept/reject` `` instruction only where that command could actually record it.
