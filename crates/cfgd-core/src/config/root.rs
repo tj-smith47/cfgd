@@ -30,6 +30,18 @@ pub struct CfgdConfig {
 }
 
 impl CfgdConfig {
+    /// Drain [`Self::deprecations`] through `printer.deprecation()`, the
+    /// always-visible stderr channel. The one shared implementation behind
+    /// every command-boundary drain (`crate::cli::helpers::drain_config_deprecations`
+    /// in the binary crate) and the daemon's own startup / SIGHUP-reload sites,
+    /// which parse config directly in cfgd-core and so cannot reach the
+    /// binary-crate helper.
+    pub fn drain_deprecations(&self, printer: &crate::output::Printer) {
+        for msg in &self.deprecations {
+            printer.deprecation(msg);
+        }
+    }
+
     /// Returns the active profile name, or an error if no profile is configured.
     pub fn active_profile(&self) -> Result<&str> {
         self.spec

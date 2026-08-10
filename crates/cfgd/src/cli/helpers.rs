@@ -61,15 +61,15 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
 
 /// Surface every deprecation message `warn_on_legacy_theme_keys` collected
 /// while parsing `cfg` (legacy `theme.overrides.*` keys today; any future
-/// `parse_config`-time deprecation lands here too). `parse_config` is a core
-/// function reachable from many non-terminal callers, so it cannot log
-/// directly — this is the one drain point every command boundary that reads
-/// the user's real `cfgd.yaml` and owns a `Printer` calls right after a
-/// successful load.
+/// `parse_config`-time deprecation lands here too) — this is the one drain
+/// point every command boundary that reads the user's real `cfgd.yaml` and
+/// owns a `Printer` calls right after a successful load. A thin CLI-scoped
+/// alias over `CfgdConfig::drain_deprecations`, kept so every existing
+/// command-boundary call site can go on spelling this name; the daemon's own
+/// startup / SIGHUP-reload sites call the core method directly, since they
+/// parse config in cfgd-core and cannot reach a binary-crate helper.
 pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &CfgdConfig) {
-    for msg in &cfg.deprecations {
-        printer.deprecation(msg);
-    }
+    cfg.drain_deprecations(printer);
 }
 
 pub(in crate::cli) fn load_config_and_profile(

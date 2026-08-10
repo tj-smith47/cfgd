@@ -621,6 +621,11 @@ pub(super) fn apply_sighup_reload(
     );
     match config::load_config(&ctx.config_path) {
         Ok(new_cfg) => {
+            // Operator-triggered, not timer-driven: a SIGHUP is a discrete
+            // reload the operator asked for, the daemon analog of a fresh CLI
+            // invocation re-reading a changed file, not a periodic tick that
+            // would repeat the same notice on every reconcile interval.
+            new_cfg.drain_deprecations(printer);
             let (new_reconcile, new_sync) = compute_sighup_intervals(&new_cfg);
             let mut changed = Vec::new();
             if let Some(d) = new_reconcile {

@@ -10898,6 +10898,35 @@ mod harness {
         assert_eq!(sync_secs, 300);
     }
 
+    #[test]
+    fn apply_sighup_reload_drains_theme_deprecations() {
+        // An operator-triggered SIGHUP is a discrete reload, not a periodic
+        // tick, so re-showing the notice here is a fresh-invocation echo, not
+        // a repeat spam of the same message every reconcile interval.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1
+kind: Cfgd
+metadata:
+  name: t
+spec:
+  daemon:
+    enabled: true
+  theme:
+    overrides:
+      iconSuccess: green
+",
+        )
+        .unwrap();
+        let (captured, _reconcile_secs, _sync_secs) = run_sighup(&tmp, &config_path);
+        assert!(
+            captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
+            "expected SIGHUP reload to drain the theme deprecation notice; got: {captured:?}"
+        );
+    }
+
     // ----- build_initial_source_status tests -----
 
     #[test]
@@ -12363,6 +12392,59 @@ mod harness {
         assert_eq!(setup.shortest_sync, Duration::from_secs(300));
         // config_dir matches the parent of config_path
         assert_eq!(setup.config_dir, tmp.path());
+    }
+
+    #[test]
+    fn build_pre_loop_setup_drains_theme_deprecations_once_at_startup() {
+        // Startup runs build_pre_loop_setup exactly once per daemon process, so
+        // this is the one place a periodic reconcile tick's own config reload
+        // (which stays silent — see reconcile.rs) would otherwise never surface
+        // the notice at all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1
+kind: Cfgd
+metadata:
+  name: t
+spec:
+  profile: default
+  theme:
+    overrides:
+      iconSuccess: green
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec: {}
+",
+        )
+        .unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        build_pre_loop_setup(
+            &config_path,
+            None,
+            &NoopHooks,
+            crate::Scope::User,
+            &printer,
+            None,
+        )
+        .expect("setup with a deprecated theme key still succeeds");
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
+            "expected startup to drain the theme deprecation notice; got: {captured:?}"
+        );
     }
 
     #[test]

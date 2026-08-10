@@ -636,6 +636,10 @@ pub(super) fn build_pre_loop_setup(
     state_dir: Option<&Path>,
 ) -> Result<PreLoopSetup> {
     let cfg = config::load_config(config_path)?;
+    // Once per process lifetime, not per reconcile tick: the daemon reloads
+    // config on every tick to detect drift, and re-draining there would repeat
+    // the same notice every interval for as long as the daemon runs.
+    cfg.drain_deprecations(printer);
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
         enabled: true,
         reconcile: None,
