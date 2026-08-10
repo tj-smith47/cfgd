@@ -484,11 +484,14 @@ spec:
 `cfgd status` includes a per-module health section:
 
 ```
-Modules:
-  ✓ nvim       3 packages, 12 files, healthy
-  ✓ tmux       1 package, 1 file, healthy
-  ⚠ git        1 package, outdated (git source has new commits)
+Modules
+  ✓ module:nvim — 3 pkgs, 12 files, installed
+  ✓ module:tmux — 1 pkgs, 1 files, installed
+  ⚠ module:git  — 1 pkgs, 0 files, outdated
 ```
+
+Each line is headed by the module's owner token — the same `module:<name>` the
+plan and apply trees head that module's group with.
 
 Each module is tracked independently. cfgd stores a hash of the resolved package list and deployed file tree. When the daemon runs its reconciliation loop, it checks:
 

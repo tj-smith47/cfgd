@@ -2,6 +2,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::reconciler::Owner;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,8 +117,11 @@ pub fn build_fleet_status_doc(
                     // Source attribution renders in `secondary` (pink/magenta)
                     // at end-of-subject; the StatusBuilder API guarantees the
                     // label lands last so the inner SGR reset is never
-                    // followed by outer-role-styled text.
-                    let label_text = format!("[{}]", event.source);
+                    // followed by outer-role-styled text. The token is the
+                    // vocabulary `cfgd sync` and `cfgd source *` head their
+                    // groups with, so a reader carries one spelling across the
+                    // three surfaces that name a source.
+                    let label_text = Owner::source(&event.source).token();
                     s.status_with(Role::Warn, subject, |f| {
                         f.label(Role::Secondary, label_text)
                     })
@@ -200,7 +204,12 @@ pub fn build_fleet_status_doc(
             } else {
                 m.status.clone()
             };
-            s.status(role, format!("{}: {}, {}", m.name, summary, suffix))
+            // Subject is the owner token, exactly as the tree that applied the
+            // module heads its group; the counts and the state are what the
+            // line reports about it.
+            s.status_with(role, Owner::module(&m.name).token(), |f| {
+                f.detail(format!("{summary}, {suffix}"))
+            })
         })
     });
 
@@ -801,10 +810,12 @@ mod tests {
         drop(printer);
 
         let output = buf.lock().unwrap();
-        // The format string adds " [<source>]" only when source != "local".
+        // The label is appended only when source != "local", and it carries the
+        // owner token so the attribution reads the same here as it does over a
+        // `cfgd sync` group.
         assert!(
-            output.contains("[team-config]"),
-            "non-local drift should include bracketed source, got: {output}"
+            output.contains("source:team-config"),
+            "non-local drift should carry the source owner token, got: {output}"
         );
     }
 

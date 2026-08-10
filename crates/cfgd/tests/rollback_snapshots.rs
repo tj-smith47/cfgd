@@ -15,6 +15,7 @@ use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity};
+use cfgd_core::reconciler::PhaseName;
 use pretty_assertions::assert_eq;
 
 use common::{
@@ -26,7 +27,7 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 /// Real `cmd_rollback` against a seeded state DB with file backups — restores
 /// v1 content of one file from apply 2's backup row. Locks the kv prelude,
-/// the Restoring section status, the buffered "Rollback complete" line.
+/// the `Phase: Files` section status, the buffered "Rollback complete" line.
 #[test]
 fn rollback_happy_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
@@ -236,7 +237,7 @@ fn rollback_bridge_one_blank_line() {
         ("File backups to restore".to_string(), "1".to_string()),
     ]);
     {
-        let rb_sec = printer.section("Restoring");
+        let rb_sec = printer.section(PhaseName::Files.section_title());
         rb_sec.status_simple(Role::Ok, "1 file(s) processed");
     }
 

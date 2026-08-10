@@ -3,7 +3,7 @@ Rollback
   File backups to restore  0
   Non-file actions         1
 
-Restoring
+Phase: Files
   ⊙ No files affected
 
 ⚠ 1 non-file action(s) require manual review

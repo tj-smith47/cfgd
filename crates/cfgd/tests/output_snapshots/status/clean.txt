@@ -12,8 +12,8 @@ Drift
   ✓ No drift detected
 
 Modules
-  ✓ base: 5 pkgs, 3 files, installed
-  ✓ dev-tools: 18 pkgs, 12 files, installed
+  ✓ module:base      — 5 pkgs, 3 files, installed
+  ✓ module:dev-tools — 18 pkgs, 12 files, installed
 
 Managed Resources
   Type  Resource   Source

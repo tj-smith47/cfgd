@@ -87,8 +87,14 @@ pub fn cmd_rollback(
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
+    // A rollback restores a file set, so it reports under the phase name file
+    // work carries everywhere else in cfgd.
     let result = {
-        let rb_sec = printer.section("Restoring");
+        let rb_sec = printer.section(cfgd_core::reconciler::PhaseName::Files.section_title());
+        // `restore_file_from_backup` warns through a bare `&Printer`; without
+        // inheritance its warnings would land at column 0, outside the phase
+        // whose files they are about.
+        let _inherit = printer.depth_inheritance();
         let r = reconciler.rollback_apply(apply_id, printer)?;
         let processed = r.files_restored + r.files_removed;
         let (role, msg) = if processed == 0 {
@@ -97,21 +103,20 @@ pub fn cmd_rollback(
             (Role::Ok, format!("{} file(s) processed", processed))
         };
         rb_sec.status_simple(role, msg);
+        if r.files_restored > 0 {
+            rb_sec.status_simple(
+                Role::Ok,
+                format!("{} file(s) restored from backup", r.files_restored),
+            );
+        }
+        if r.files_removed > 0 {
+            rb_sec.status_simple(
+                Role::Ok,
+                format!("{} newly created file(s) removed", r.files_removed),
+            );
+        }
         r
     };
-
-    if result.files_restored > 0 {
-        printer.status_simple(
-            Role::Ok,
-            format!("{} file(s) restored from backup", result.files_restored),
-        );
-    }
-    if result.files_removed > 0 {
-        printer.status_simple(
-            Role::Ok,
-            format!("{} newly created file(s) removed", result.files_removed),
-        );
-    }
 
     if !result.non_file_actions.is_empty() {
         printer.status_simple(

@@ -10,6 +10,6 @@ Drift
   ⚠ git-config   — file changed since apply (~/.gitconfig)
 
 Modules
-  ✓ base       (3 files, 5 pkgs)
-  ✓ dev-tools  (12 files, 18 pkgs)
-  ⚠ shell-config (4 files, 0 pkgs)
+  ✓ module:base         — 3 files, 5 pkgs
+  ✓ module:dev-tools    — 12 files, 18 pkgs
+  ⚠ module:shell-config — 4 files, 0 pkgs
