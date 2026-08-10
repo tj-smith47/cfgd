@@ -14,7 +14,7 @@
 //! write path does. Keeping availability out of the derivation is what makes the
 //! write and read paths agree on the desired set.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config::{ManagedFileSpec, MergedProfile, PackageClaim, desired_packages_for_spec};
@@ -88,11 +88,19 @@ pub struct EffectiveFile {
 ///
 /// Modules override the profile at leaf level, and a later module overrides an
 /// earlier one — consistent with how env and aliases merge.
+///
+/// Ordered, unlike the `HashMap`s it merges: a consumer that ITERATES this map
+/// puts its order into a user-visible artifact — the `checks` array of a
+/// compliance snapshot, which is content-hashed to decide whether the machine
+/// changed, plus that snapshot's `-o json` and its `compliance diff` pairing.
+/// `RandomState` re-seeds per map instance, so two collections in one process
+/// would shuffle a machine that never changed.
 pub fn effective_system_map(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
-) -> HashMap<String, serde_yaml::Value> {
-    let mut system = profile.system.clone();
+) -> BTreeMap<String, serde_yaml::Value> {
+    let mut system: BTreeMap<String, serde_yaml::Value> =
+        profile.system.clone().into_iter().collect();
     for module in modules {
         for (key, value) in &module.system {
             crate::deep_merge_yaml(

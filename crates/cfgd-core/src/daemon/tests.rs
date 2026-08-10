@@ -2286,22 +2286,27 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
         },
         ..Default::default()
     };
-    profile.system.insert(
-        "sysctl".to_string(),
-        serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-    );
-
+    // Four declared configurators, not one: the system checks are the only half
+    // of the array whose order came from map iteration, and a 1-element
+    // permutation is the identity — a single-entry fixture passes this test
+    // whether or not the order is deterministic.
     let mut registry = ProviderRegistry::new();
     registry.file_manager = Some(Box::new(MockFileManager::new()));
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![SystemDrift {
-                key: "vm.swappiness".into(),
-                expected: "10".into(),
-                actual: "60".into(),
-            }],
-        )));
+    for name in ["sysctl", "shell", "kernelModules", "kubelet"] {
+        profile.system.insert(
+            name.to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        registry
+            .system_configurators
+            .push(Box::new(MockSystemConfigurator::new(name).with_drift(
+                vec![SystemDrift {
+                    key: format!("{name}-setting"),
+                    expected: "10".into(),
+                    actual: "60".into(),
+                }],
+            )));
+    }
 
     let printer = crate::test_helpers::test_printer();
     let store = test_state();
@@ -2327,6 +2332,29 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
     // matters depend on how long the collector took.
     second.timestamp = "2099-01-01T00:00:00Z".to_string();
     assert_ne!(first.timestamp, second.timestamp);
+
+    // Pinned directly, not only through the digest: with four configurators a
+    // shuffled order coincides with the sorted one about once in 24 runs, so a
+    // hash compare alone would be a flaky guard rather than a guard.
+    let system_keys = |snapshot: &crate::compliance::ComplianceSnapshot| -> Vec<String> {
+        snapshot
+            .checks
+            .iter()
+            .filter(|c| c.category == "system")
+            .filter_map(|c| c.key.clone())
+            .collect()
+    };
+    assert_eq!(
+        system_keys(&first),
+        vec![
+            "kernelModules.kernelModules-setting".to_string(),
+            "kubelet.kubelet-setting".to_string(),
+            "shell.shell-setting".to_string(),
+            "sysctl.sysctl-setting".to_string(),
+        ],
+        "system checks must be collected in a deterministic (sorted) order"
+    );
+    assert_eq!(system_keys(&first), system_keys(&second));
 
     let (_, first_hash) = crate::compliance::snapshot_content_hash(&first).unwrap();
     let (_, second_hash) = crate::compliance::snapshot_content_hash(&second).unwrap();

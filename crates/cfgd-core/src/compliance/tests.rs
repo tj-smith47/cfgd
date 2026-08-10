@@ -1562,3 +1562,47 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
     assert_eq!(snapshot.summary.warning, 0);
     assert_eq!(snapshot.summary.violation, 2);
 }
+
+#[test]
+fn a_fixed_snapshot_hashes_to_a_pinned_digest() {
+    // The canonical form `snapshot_json_content_hash` normalizes to depends on
+    // `serde_json::Map` being a BTreeMap, which holds only while nothing in the
+    // dependency graph enables `serde_json/preserve_order`. Feature unification
+    // is global, so a dep bump three crates away could flip it and silently
+    // change what every stored `content_hash` means. Pinning one digest turns
+    // that into a failing test instead of one spurious "changed" snapshot.
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-03-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "test-host".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec!["local".into()],
+        checks: vec![ComplianceCheck {
+            category: "system".into(),
+            key: Some("sysctl.vm.swappiness".into()),
+            status: ComplianceStatus::Violation,
+            detail: Some("want 10, have 60".into()),
+            ..Default::default()
+        }],
+        summary: ComplianceSummary {
+            compliant: 0,
+            warning: 0,
+            violation: 1,
+        },
+    };
+
+    let (_, hash) = snapshot_content_hash(&snapshot).unwrap();
+    assert_eq!(
+        hash, "2a1c0cef36205ca80c5ea9b03601d9f79a8a4aec020e3d554d5f741a9ea90094",
+        "the canonical form moved — check whether a dependency enabled \
+         serde_json/preserve_order"
+    );
+
+    // The timestamp is excluded, so restamping the same content cannot move it.
+    let mut later = snapshot.clone();
+    later.timestamp = "2099-12-31T23:59:59Z".into();
+    assert_eq!(snapshot_content_hash(&later).unwrap().1, hash);
+}
