@@ -164,11 +164,12 @@ log_section "Controlled Shell Execution"
 # test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
 # submodules and doc comments).
 # providers/mod.rs only NAMES the type, in SystemContext::run_silent's signature,
-#   and forwards to output/; it constructs and spawns nothing.
+#   and forwards to output/; it constructs and spawns nothing. The exclusion is
+#   anchored to that exact parameter line so any other Command use there is caught.
 check_pattern warn \
     "std::process::Command confined to packages/, secrets/, system/, reconciler/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:|test_helpers\.rs:|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:[0-9]+:[[:space:]]+cmd: &mut std::process::Command,$|test_helpers\.rs:|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
