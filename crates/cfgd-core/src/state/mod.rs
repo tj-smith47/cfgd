@@ -405,6 +405,18 @@ impl StateStore {
         Ok(store)
     }
 
+    /// Remove the `backup_runs` table so the next write to it fails.
+    ///
+    /// The seam for a caller's state-store-failure arm, which in production is
+    /// reached only by a refused write (a full disk, a locked or corrupt DB)
+    /// and is otherwise untestable: the connection is private to this module,
+    /// so a consumer's test cannot break the schema by hand.
+    #[cfg(test)]
+    pub(crate) fn drop_backup_runs_table(&self) -> Result<()> {
+        self.conn.execute("DROP TABLE backup_runs", [])?;
+        Ok(())
+    }
+
     fn run_migrations(&mut self) -> Result<()> {
         // Use EXCLUSIVE transaction to serialize concurrent migration attempts
         // (e.g. parallel cargo test processes sharing the same state DB).

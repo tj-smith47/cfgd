@@ -240,15 +240,12 @@ pub fn run_backup(
         Some(_) => None,
         None => Some(take_snapshot(unit, &source)),
     };
-    // The snapshot's item, from the same value the record is built out of. A
-    // skipped snapshot (`None`) contributes NO item, because no line is
-    // rendered for it either — the rollup counts lines, not intentions.
-    if let Some(result) = &copy {
-        items.push(BackupItem {
-            label: snapshot_subject(result.as_ref().ok().map(|a| a.path.as_path())),
-            ok: result.is_ok(),
-        });
-    }
+    // No snapshot item here: the snapshot's LINE is rendered after this
+    // function returns — by `report_backup_record` on a recorded run, or by
+    // `run_backup_group`'s failure arm when the row could not be written at
+    // all — and the rollup counts lines, not intentions. Minting the item at
+    // the site that emits the line is what keeps the two equal on the arm
+    // where this function returns `Err` after the copy already succeeded.
     let post_error = run_hooks(
         unit,
         &spec.post_backup,
@@ -336,11 +333,23 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
 ///
 /// `namePattern`, the unit name and the source's file name all come from the
 /// spec, and `{timestamp}` is fixed-width (`BACKUP_TIMESTAMP_FORMAT` renders 16
-/// characters for every instant), so the subject is exact ahead of time. The
-/// `{filename}` fallback is [`snapshot_name`]'s own — the unit's name when the
-/// source has no final component — because the empty string a `file_name()`
-/// -only derivation would substitute is narrower than what the run will print,
-/// and narrower is the direction that mis-aligns the column.
+/// characters for every instant), so the subject is exact for every run that
+/// takes the name it rendered. The `{filename}` fallback is [`snapshot_name`]'s
+/// own — the unit's name when the source has no final component — because the
+/// empty string a `file_name()`-only derivation would substitute is narrower
+/// than what the run will print, and narrower is the direction that mis-aligns
+/// the column.
+///
+/// **The one exception is a [`uniquify`] collision.** When the rendered name is
+/// already taken — two runs of one unit inside the same second, or a
+/// `namePattern` carrying no `{timestamp}` — the run publishes `<name>-1`…
+/// `<name>-N` instead, and that line's subject is 2 to 5 characters wider than
+/// the column it was measured for, so its detail sits one step past the other
+/// lines'. Deliberately not budgeted for: reserving the widest suffix would
+/// widen every group in every run for a name that is otherwise never printed,
+/// and the collision announces itself in the name. Whether the collision fires
+/// depends on what is on disk when the copy runs, which is after the column has
+/// to exist, so no prediction can be exact here.
 fn predicted_snapshot_subject(unit: &BackupUnit<'_>) -> String {
     let spec = unit.spec;
     let source = unit.source();
@@ -411,7 +420,7 @@ pub fn run_backup_group(
     let mut report = BackupRunReport::default();
     match run_backup(unit, store, printer, &mut report.items) {
         Ok(record) => {
-            report_backup_record(printer, &record);
+            report.items.push(report_backup_record(printer, &record));
             report.record = Some(record);
         }
         Err(crate::errors::CfgdError::Backup(BackupError::Busy { holder, .. })) => {
@@ -452,7 +461,14 @@ pub fn run_backup_group(
 /// so a `postBackup` failure after a good snapshot carries both. The error
 /// leads because it is what the reader must act on; the size stays because it
 /// is the evidence that the snapshot itself landed.
-pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) {
+///
+/// Returns the [`BackupItem`] for the line it just emitted, so the rollup counts
+/// from the same value the screen was written from. A recorded run always
+/// renders exactly one line here — the run whose `preBackup` hook aborted the
+/// snapshot included, which reports `Fail` against a bare `snapshot` subject —
+/// and the item is `ok` exactly when that line is not a failure.
+#[must_use = "the item is what the rollup counts; push it onto the report"]
+pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> BackupItem {
     let subject = snapshot_subject(record.destination_path.as_deref().map(Path::new));
     let role = if record.is_clean() {
         Role::Ok
@@ -470,9 +486,13 @@ pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) {
     };
     match detail {
         Some(detail) => {
-            printer.status(role, subject).detail(detail);
+            printer.status(role, subject.as_str()).detail(detail);
         }
-        None => printer.status_simple(role, subject),
+        None => printer.status_simple(role, subject.as_str()),
+    }
+    BackupItem {
+        label: subject,
+        ok: role != Role::Fail,
     }
 }
 

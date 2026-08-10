@@ -2645,19 +2645,30 @@ fn backup_hook_continue_on_error_emits_one_line() {
 
 #[test]
 fn backup_pre_hook_failure_reports_the_shortfall() {
-    // A fatal `preBackup` failure skips the copy, so the unit renders one of
-    // the two items it planned and the run says so rather than silently
-    // reporting a smaller total.
+    // A fatal `preBackup` failure aborts the rest of its own hook list, so the
+    // second hook never renders and the run says so rather than silently
+    // reporting a smaller total. The snapshot is NOT the shortfall: the copy is
+    // skipped, but the record still reports it as a failed line.
     let h = Harness::new();
     let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
-    s.pre_backup = vec![hook("exit 7")];
+    s.pre_backup = vec![hook("exit 7"), hook("exit 0")];
 
     let (human, _) = render_backup_run(&h, &[&s]);
 
+    let lines = rendered_item_lines(&human);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the failed hook and the snapshot it cost: {human}"
+    );
     assert!(
         human.contains("⊙ 1 action(s) not attempted"),
-        "the snapshot the failed hook cost the run must be counted: {human}"
+        "the hook the abort never reached must be counted: {human}"
+    );
+    assert!(
+        human.contains("2 action(s) failed"),
+        "both rendered lines are failures: {human}"
     );
 }
 
@@ -2752,4 +2763,77 @@ fn a_busy_unit_renders_inside_its_group_and_moves_no_exit_code() {
         crate::state::ApplyStatus::Success,
         "the one-writer rule working is not a failed run"
     );
+}
+
+#[test]
+fn a_uniquified_snapshot_overhangs_the_column_it_was_predicted_for() {
+    // The documented exception to `predicted_snapshot_subject`'s exactness: a
+    // collision publishes `<name>-N`, which no pre-run prediction can see
+    // because it depends on what is on disk when the copy runs. Dropping
+    // `{timestamp}` makes the collision deterministic — it is the same one two
+    // runs inside a single second produce.
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.name_pattern = "{filename}".to_string();
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    let predicted = crate::with_test_home(&h.root, || {
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        predicted_snapshot_subject(&unit)
+    });
+    assert_eq!(predicted, "snapshot data.db");
+
+    h.run(&s);
+    let (human, _) = render_backup_run(&h, &[&s]);
+
+    let lines = rendered_item_lines(&human);
+    assert_eq!(lines.len(), 1, "one unit, one snapshot line: {human}");
+    assert!(
+        lines[0].contains(&format!("{predicted}-1")),
+        "the collision names itself, past the column it was measured for: {:?}",
+        lines[0]
+    );
+}
+
+#[test]
+fn a_store_failure_counts_only_the_lines_it_rendered() {
+    // The one arm with no record: the snapshot landed, but the row for it
+    // cannot be written. The snapshot's line is never rendered — the reporter
+    // that emits it needs the record — so the failure line stands in its place
+    // and the unit still contributes exactly one item per line.
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.pre_backup = vec![hook("exit 0")];
+    h.store
+        .drop_backup_runs_table()
+        .expect("refuse the run's row");
+
+    let (human, status) = render_backup_run(&h, &[&s]);
+
+    let lines = rendered_item_lines(&human);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the hook's line and the store failure's: {human}"
+    );
+    assert!(
+        lines[1].starts_with("✗ snapshot"),
+        "an unrecordable run has no artifact to name: {:?}",
+        lines[1]
+    );
+    assert!(
+        human.contains("✓ 1 action(s) succeeded"),
+        "only the hook succeeded — the snapshot's line was never rendered: {human}"
+    );
+    assert!(
+        human.contains("1 action(s) failed"),
+        "the store failure is the one failure: {human}"
+    );
+    assert!(
+        !human.contains("not attempted"),
+        "both planned items reached a line, so nothing was skipped: {human}"
+    );
+    assert_eq!(status, crate::state::ApplyStatus::Partial);
 }

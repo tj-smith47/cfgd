@@ -719,10 +719,11 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
 /// alignment column was measured over.
 ///
 /// The two counts are deliberately different sources. A unit whose `preBackup`
-/// hook failed never reached its snapshot, so it emits one line fewer than it
-/// planned, and that difference is the run's `⊙ N action(s) not attempted`. A
-/// `Busy` skip emits no line at all — the unit IS being backed up, just not
-/// here — so it moves no count and no exit code and surfaces only as the
+/// hook list aborted never ran the hooks after the failure, so it emits fewer
+/// lines than it planned, and that difference is the run's
+/// `⊙ N action(s) not attempted`. A `Busy` skip contributes no item at all —
+/// the unit IS being backed up, just not here — so its one `Role::Skipped` line
+/// moves neither count nor exit code and the unit surfaces only as the
 /// shortfall.
 fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) -> RunTally {
     let succeeded = report.items.iter().filter(|item| item.ok).count();
