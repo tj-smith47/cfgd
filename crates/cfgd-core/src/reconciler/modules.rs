@@ -131,13 +131,19 @@ impl<'a> super::Reconciler<'a> {
                             // the generated env file has exactly one writer, and
                             // an out-of-band append would be erased by the next
                             // wholesale rewrite of that file.
-                            if !pm.is_available() && pm.can_bootstrap() {
+                            let was_available = pm.is_available();
+                            if !was_available && pm.can_bootstrap() {
                                 pm.bootstrap(&cx)?;
                                 self.record_bootstrap_path_dirs(pm.as_ref(), printer);
                             }
 
-                            // Update package index before installing
-                            if pm.is_available() {
+                            // The concurrent pre-pass (`Reconciler::
+                            // refresh_package_indexes`) already refreshed
+                            // every manager available before this run
+                            // started; a manager bootstrapped just above has
+                            // never been refreshed, so it still needs this
+                            // one inline update.
+                            if !was_available && pm.is_available() {
                                 pm.update(&cx)?;
                             }
 

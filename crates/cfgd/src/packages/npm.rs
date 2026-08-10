@@ -583,6 +583,10 @@ impl PackageManager for NpmManager {
         Ok(())
     }
 
+    fn update_needs_state(&self) -> bool {
+        true
+    }
+
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // npm view <pkg> version
         let output = run_pkg_query("npm", npm_cmd().args(["view", package, "version"]))?;
@@ -1164,6 +1168,11 @@ mod tests {
         /// other test of that invariant uses a mock manager, which never opens a
         /// window at all — this one drives a REAL manager through a REAL
         /// shell-out, so a window that settles its own line is visible here.
+        /// The plan's only manager is npm, so the concurrent index-refresh
+        /// pre-pass also settles its own collapsed line ahead of the phase;
+        /// that line is excluded before counting, since it is a second line
+        /// for DIFFERENT work (the refresh), not a double-settle of this one
+        /// action.
         #[test]
         #[serial]
         fn a_real_install_shell_out_emits_one_line_under_apply() {
@@ -1221,6 +1230,7 @@ mod tests {
                         .iter()
                         .any(|g| l.starts_with(*g))
                 })
+                .filter(|l| !l.contains("Package indexes updated"))
                 .collect();
             assert_eq!(
                 settled.len(),

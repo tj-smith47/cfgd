@@ -1,3 +1,5 @@
+✓ Package indexes updated — brew, apt
+
 Phase: Packages
   profile:test
     ✓ brew install jq

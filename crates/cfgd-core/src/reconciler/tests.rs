@@ -3828,6 +3828,234 @@ fn apply_multiple_package_actions_all_succeed() {
     assert!(cargo.installed_packages(&cx).unwrap().contains("bat"));
 }
 
+/// A package manager whose `update` fails on demand — for the index-refresh
+/// pre-pass's degraded-line test.
+struct RefreshFailingPackageManager {
+    name: String,
+    fails: bool,
+}
+
+impl PackageManager for RefreshFailingPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        if self.fails {
+            Err(crate::errors::PackageError::CommandFailed {
+                manager: self.name.clone(),
+                source: std::io::Error::other("simulated index refresh failure"),
+            }
+            .into())
+        } else {
+            Ok(())
+        }
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn apply_refreshes_managers_in_play_concurrently_into_one_collapsed_line() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(RefreshFailingPackageManager {
+            name: "apt".to_string(),
+            fails: false,
+        }));
+    registry
+        .package_managers
+        .push(Box::new(RefreshFailingPackageManager {
+            name: "brew".to_string(),
+            fails: false,
+        }));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let pkg_actions = vec![
+        PackageAction::Install {
+            manager: "apt".to_string(),
+            packages: vec!["ripgrep".to_string()],
+            origin: "local".to_string(),
+        },
+        PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string()],
+            origin: "local".to_string(),
+        },
+    ];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            pkg_actions,
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    drop(printer);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let output = crate::output::strip_ansi(&buf.lock().unwrap());
+    let refresh_lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("Package indexes updated"))
+        .collect();
+    assert_eq!(
+        refresh_lines.len(),
+        1,
+        "expected exactly one collapsed refresh line, got: {output}"
+    );
+    let line = refresh_lines[0];
+    assert!(
+        line.starts_with('\u{2713}'),
+        "success refresh must render Role::Ok: {line:?}"
+    );
+    assert!(
+        line.contains("Package indexes updated — apt, brew ("),
+        "managers must appear in the detail slot, in plan order: {line:?}"
+    );
+    assert!(
+        line.trim_end().ends_with("s)"),
+        "elapsed time must land in the duration slot: {line:?}"
+    );
+}
+
+#[test]
+fn apply_refresh_failure_degrades_the_collapsed_line_and_does_not_fail_the_phase() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(RefreshFailingPackageManager {
+            name: "apt".to_string(),
+            fails: true,
+        }));
+    registry
+        .package_managers
+        .push(Box::new(RefreshFailingPackageManager {
+            name: "brew".to_string(),
+            fails: false,
+        }));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let pkg_actions = vec![
+        PackageAction::Install {
+            manager: "apt".to_string(),
+            packages: vec!["ripgrep".to_string()],
+            origin: "local".to_string(),
+        },
+        PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string()],
+            origin: "local".to_string(),
+        },
+    ];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            pkg_actions,
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    drop(printer);
+
+    // A degraded refresh never fails the phase: both package installs still ran.
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(result.succeeded(), 2);
+    assert_eq!(result.failed(), 0);
+
+    let output = crate::output::strip_ansi(&buf.lock().unwrap());
+    let refresh_lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("Package indexes updated"))
+        .collect();
+    assert_eq!(
+        refresh_lines.len(),
+        1,
+        "expected exactly one collapsed refresh line, got: {output}"
+    );
+    let line = refresh_lines[0];
+    assert!(
+        line.starts_with('\u{26A0}'),
+        "degraded refresh must render Role::Warn: {line:?}"
+    );
+    assert!(
+        line.contains("Package indexes updated — apt failed: "),
+        "the failing manager's error must be the status detail: {line:?}"
+    );
+    assert!(
+        line.contains("simulated index refresh failure"),
+        "the collapsed error must be visible: {line:?}"
+    );
+    assert!(
+        !line.contains("brew"),
+        "a successful manager's name must give way to the error, one detail slot: {line:?}"
+    );
+}
+
 #[test]
 fn apply_package_skip_action_succeeds() {
     let state = test_state();
@@ -17343,9 +17571,12 @@ fn action_notes_render_under_the_status_they_belong_to() {
     let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
     let lines = transcript_lines(&out);
 
+    // The concurrent index-refresh pre-pass also emits a leading `\u{2713}`
+    // line ("Package indexes updated — brew"), so the search must target the
+    // install action's own status rather than the first checkmark seen.
     let status = lines
         .iter()
-        .position(|l| l.trim_start().starts_with('\u{2713}'))
+        .position(|l| l.contains("brew install neovim"))
         .expect("the action's status");
     assert_eq!(
         lines[status + 1].trim(),

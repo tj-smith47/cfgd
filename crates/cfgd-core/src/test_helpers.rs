@@ -1034,23 +1034,14 @@ pub fn test_printer() -> crate::output::Printer {
 /// pair every `PackageManager` fixture now needs alongside `test_printer()` /
 /// `test_state()` since `PackageContext` threading replaced the bare
 /// `&Printer` parameter on the state-touching trait methods.
+///
 /// A `PackageStateStore` that remembers nothing — for a fixture whose subject
-/// (`bootstrap`) reaches no state.
-pub struct NullPackageState;
-
-impl crate::providers::PackageStateStore for NullPackageState {
-    fn resolved_prefix(&self, _manager: &str) -> crate::errors::Result<Option<(String, bool)>> {
-        Ok(None)
-    }
-    fn record_resolved_prefix(
-        &self,
-        _manager: &str,
-        _prefix: &str,
-        _is_fallback: bool,
-    ) -> crate::errors::Result<()> {
-        Ok(())
-    }
-}
+/// (`bootstrap`) reaches no state. The same zero-field stub the concurrent
+/// index-refresh pre-pass backs its non-state-touching lanes with in
+/// production (`crate::providers::NoOpPackageState`); re-exported under this
+/// name so existing fixtures keep reading as "the state a bootstrap-only test
+/// doesn't need" rather than reaching across to a production-pre-pass type.
+pub use crate::providers::NoOpPackageState as NullPackageState;
 
 /// A `PackageContext` for a fixture that drives `bootstrap`, which touches no
 /// state — so the fixture needs no `StateStore` of its own.

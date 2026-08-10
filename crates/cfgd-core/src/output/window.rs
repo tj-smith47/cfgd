@@ -176,11 +176,8 @@ impl<'p> OutputWindow<'p> {
     /// emits the action's own status line (the reconciler's tree), a settled
     /// window line would be a second line for one action. The live tail still
     /// renders while the command runs; only the collapse is silent.
-    pub fn finish_silent(mut self) {
-        self.spinner.bar.finish_and_clear();
-        // Suppresses `Spinner`'s Drop-emitted `Status(Info)`: an abandoned
-        // spinner leaves a record, but this one was closed on purpose.
-        self.spinner.finished = true;
+    pub fn finish_silent(self) {
+        self.spinner.finish_silent();
     }
 
     /// Collapse the window into the deepest level of the phase → owner →

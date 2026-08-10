@@ -30,6 +30,31 @@ pub trait PackageStateStore {
     fn record_resolved_prefix(&self, manager: &str, prefix: &str, is_fallback: bool) -> Result<()>;
 }
 
+/// The state handle for a manager whose `update_needs_state()` is `false`.
+///
+/// Zero fields, so it is auto-`Send + Sync` with no `unsafe`, unlike
+/// `&dyn PackageStateStore` backed by a real `StateStore` (whose `rusqlite::
+/// Connection` is `Send` but not `Sync`, and whose trait carries no `Send +
+/// Sync` supertrait to carry through `dyn` erasure regardless). Provably
+/// unreached: every manager left on the default `update_needs_state` never
+/// calls into `cx.state` from `update`.
+pub struct NoOpPackageState;
+
+impl PackageStateStore for NoOpPackageState {
+    fn resolved_prefix(&self, _manager: &str) -> Result<Option<(String, bool)>> {
+        Ok(None)
+    }
+
+    fn record_resolved_prefix(
+        &self,
+        _manager: &str,
+        _prefix: &str,
+        _is_fallback: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageInfo {
     pub name: String,
@@ -278,6 +303,19 @@ pub trait PackageManager: Send + Sync {
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn update(&self, cx: &PackageContext<'_>) -> Result<()>;
+
+    /// Whether `update` reads `cx.state` (the persisted per-manager decision
+    /// store, e.g. npm's resolved global prefix). The concurrent index-refresh
+    /// pre-pass (`Reconciler::refresh_package_indexes`) runs every OTHER
+    /// manager's refresh inside `std::thread::scope`, backed by a no-op
+    /// `PackageStateStore` stub — safe only because `PackageStateStore` carries
+    /// no `Send + Sync` supertrait bound, so `&dyn PackageStateStore` can never
+    /// cross a spawned thread. A manager overriding this to `true` instead
+    /// refreshes sequentially, on the pre-pass's own thread, against the real
+    /// `StateStore`.
+    fn update_needs_state(&self) -> bool {
+        false
+    }
 
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
