@@ -1347,14 +1347,15 @@ fn compliance_snapshot_roundtrip() {
     let store = StateStore::open_in_memory().unwrap();
     let snapshot = make_test_snapshot();
 
-    let json = serde_json::to_string(&snapshot).unwrap();
-    let hash = crate::sha256_hex(json.as_bytes());
+    let (json, hash) = crate::compliance::snapshot_content_hash(&snapshot).unwrap();
 
-    store.store_compliance_snapshot(&snapshot, &hash).unwrap();
+    store.store_compliance_snapshot(&snapshot).unwrap();
 
-    // Retrieve by latest hash
+    // The stored hash is the SHA-256 of the stored JSON — the invariant
+    // migration 14's rehash statement restores for rows written earlier.
     let latest = store.latest_compliance_hash().unwrap().unwrap();
     assert_eq!(latest, hash);
+    assert_eq!(latest, crate::sha256_hex(json.as_bytes()));
 
     // Retrieve full snapshot by history
     let history = store.compliance_history(None, 10).unwrap();
@@ -1383,14 +1384,17 @@ fn compliance_latest_hash_returns_most_recent() {
 
     let mut s1 = make_test_snapshot();
     s1.timestamp = "2026-01-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s1, "hash1").unwrap();
+    store.store_compliance_snapshot(&s1).unwrap();
 
     let mut s2 = make_test_snapshot();
     s2.timestamp = "2026-01-02T00:00:00Z".into();
-    store.store_compliance_snapshot(&s2, "hash2").unwrap();
+    store.store_compliance_snapshot(&s2).unwrap();
 
     let latest = store.latest_compliance_hash().unwrap().unwrap();
-    assert_eq!(latest, "hash2");
+    assert_eq!(
+        latest,
+        crate::compliance::snapshot_content_hash(&s2).unwrap().1
+    );
 }
 
 #[test]
@@ -1399,15 +1403,15 @@ fn compliance_prune_removes_old_snapshots() {
 
     let mut s1 = make_test_snapshot();
     s1.timestamp = "2026-01-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s1, "hash1").unwrap();
+    store.store_compliance_snapshot(&s1).unwrap();
 
     let mut s2 = make_test_snapshot();
     s2.timestamp = "2026-01-15T00:00:00Z".into();
-    store.store_compliance_snapshot(&s2, "hash2").unwrap();
+    store.store_compliance_snapshot(&s2).unwrap();
 
     let mut s3 = make_test_snapshot();
     s3.timestamp = "2026-02-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s3, "hash3").unwrap();
+    store.store_compliance_snapshot(&s3).unwrap();
 
     // Prune everything before Feb
     let deleted = store
@@ -1425,15 +1429,15 @@ fn compliance_history_with_since() {
 
     let mut s1 = make_test_snapshot();
     s1.timestamp = "2026-01-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s1, "h1").unwrap();
+    store.store_compliance_snapshot(&s1).unwrap();
 
     let mut s2 = make_test_snapshot();
     s2.timestamp = "2026-01-10T00:00:00Z".into();
-    store.store_compliance_snapshot(&s2, "h2").unwrap();
+    store.store_compliance_snapshot(&s2).unwrap();
 
     let mut s3 = make_test_snapshot();
     s3.timestamp = "2026-01-20T00:00:00Z".into();
-    store.store_compliance_snapshot(&s3, "h3").unwrap();
+    store.store_compliance_snapshot(&s3).unwrap();
 
     let history = store
         .compliance_history(Some("2026-01-05T00:00:00Z"), 10)
@@ -1697,75 +1701,22 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
     // migration 6, which must (a) preserve the existing row through the table
     // rebuild and (b) leave the FK with ON DELETE CASCADE so removal works.
     //
-    // The hand-built schema must carry EVERY table a migration after 5 touches,
-    // not just the ones migration 6 rebuilds: reopening replays the whole tail,
-    // and a table missing here fails a later migration on a shape no real
-    // version-5 database has.
+    // The fixture REPLAYS the first five migrations rather than declaring the
+    // schema by hand, because reopening replays the entire tail and a later
+    // migration touching a table the hand-written DDL forgot would fail on a
+    // shape no real version-5 database has. Replaying is also what produces the
+    // cascade-less `source_applies` this test is about — migration 6 is the one
+    // that adds ON DELETE CASCADE.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        for migration in &MIGRATIONS[..5] {
+            conn.execute_batch(migration).unwrap();
+        }
         conn.execute_batch(
-            "PRAGMA foreign_keys=ON;
-             CREATE TABLE applies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL, profile TEXT NOT NULL,
-                plan_hash TEXT NOT NULL, status TEXT NOT NULL, summary TEXT);
-             CREATE TABLE config_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE, origin_url TEXT NOT NULL,
-                origin_branch TEXT NOT NULL DEFAULT 'main', last_fetched TEXT,
-                last_commit TEXT, source_version TEXT, pinned_version TEXT,
-                status TEXT NOT NULL DEFAULT 'active');
-             CREATE TABLE source_applies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_id INTEGER NOT NULL, apply_id INTEGER NOT NULL,
-                source_commit TEXT NOT NULL,
-                FOREIGN KEY (source_id) REFERENCES config_sources(id),
-                FOREIGN KEY (apply_id) REFERENCES applies(id));
-             CREATE TABLE drift_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL, resource_type TEXT NOT NULL,
-                resource_id TEXT NOT NULL, expected TEXT, actual TEXT,
-                source TEXT NOT NULL DEFAULT 'local', resolved_by INTEGER,
-                FOREIGN KEY (resolved_by) REFERENCES applies(id));
-             CREATE TABLE file_backups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                apply_id INTEGER NOT NULL, file_path TEXT NOT NULL,
-                content_hash TEXT NOT NULL, content BLOB NOT NULL,
-                permissions INTEGER, was_symlink INTEGER NOT NULL DEFAULT 0,
-                symlink_target TEXT, oversized INTEGER NOT NULL DEFAULT 0,
-                backed_up_at TEXT NOT NULL,
-                FOREIGN KEY (apply_id) REFERENCES applies(id));
-             CREATE TABLE managed_resources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'local', last_hash TEXT,
-                last_applied INTEGER, uninstall_cmd TEXT,
-                UNIQUE(resource_type, resource_id),
-                FOREIGN KEY (last_applied) REFERENCES applies(id));
-             CREATE TABLE module_file_manifest (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                module_name TEXT NOT NULL, file_path TEXT NOT NULL,
-                content_hash TEXT NOT NULL, strategy TEXT NOT NULL,
-                last_applied INTEGER,
-                UNIQUE(module_name, file_path),
-                FOREIGN KEY (last_applied) REFERENCES applies(id));
-             CREATE TABLE apply_journal (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                apply_id INTEGER NOT NULL, action_index INTEGER NOT NULL,
-                phase TEXT NOT NULL, action_type TEXT NOT NULL,
-                resource_id TEXT NOT NULL, pre_state TEXT, post_state TEXT,
-                status TEXT NOT NULL DEFAULT 'pending', error TEXT,
-                started_at TEXT NOT NULL, completed_at TEXT, script_output TEXT,
-                FOREIGN KEY (apply_id) REFERENCES applies(id));
-             CREATE TABLE compliance_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL, content_hash TEXT NOT NULL,
-                snapshot_json TEXT NOT NULL, summary_compliant INTEGER NOT NULL,
-                summary_warning INTEGER NOT NULL, summary_violation INTEGER NOT NULL);
-             CREATE TABLE schema_version (version INTEGER NOT NULL);
-             INSERT INTO schema_version (version) VALUES (5);
+            "UPDATE schema_version SET version = 5;
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
              INSERT INTO applies (id, timestamp, profile, plan_hash, status)
                 VALUES (1, 't', 'default', 'h', 'success');
@@ -2371,7 +2322,7 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         store
             .upsert_managed_resource(
                 "system",
-                "sshKeys.sshKeys.default.exists (missing → present)",
+                "sshKeys.sshKeys.default.exists",
                 "local",
                 None,
                 Some(apply_id),
@@ -2397,9 +2348,24 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             )
             .unwrap();
         store
-            .store_compliance_snapshot(
-                &doubled_prefix_snapshot("apparmor.apparmor.test-profile.file"),
-                "h-doubled",
+            .store_compliance_snapshot(&doubled_prefix_snapshot(
+                "apparmor.apparmor.test-profile.file",
+            ))
+            .unwrap();
+        // A row whose stored hash does not describe its stored JSON — the shape
+        // every snapshot the daemon wrote before the hash derivation was unified
+        // carries, and one the public API can no longer produce.
+        let (stale_json, _) = crate::compliance::snapshot_content_hash(&doubled_prefix_snapshot(
+            "cert.kubelet-client.cert.mode",
+        ))
+        .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO compliance_snapshots (timestamp, content_hash, snapshot_json,
+                    summary_compliant, summary_warning, summary_violation)
+                 VALUES ('2026-01-01T00:00:00Z', 'stale-hash', ?1, 0, 0, 1)",
+                rusqlite::params![stale_json],
             )
             .unwrap();
 
@@ -2465,7 +2431,7 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         .map(|r| r.resource_id)
         .collect();
     assert!(
-        ids.contains(&"sshKeys.default.exists (missing → present)".to_string()),
+        ids.contains(&"sshKeys.default.exists".to_string()),
         "the doubled managed_resources id must be rewritten: {ids:?}"
     );
     assert!(
@@ -2501,13 +2467,42 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         .collect();
     assert_eq!(journal_ids, vec!["kubelet.maxPods".to_string()]);
 
-    let snapshot_id = state.compliance_history(None, 10).unwrap()[0].id;
-    let snapshot = state.get_compliance_snapshot(snapshot_id).unwrap().unwrap();
-    assert_eq!(
-        snapshot.checks[0].key.as_deref(),
-        Some("apparmor.test-profile.file"),
-        "the doubled compliance check key must be rewritten"
+    let rewritten = state
+        .compliance_history(None, 10)
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            let snapshot = state.get_compliance_snapshot(row.id).unwrap().unwrap();
+            snapshot.checks[0].key.clone().unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        rewritten.contains(&"apparmor.test-profile.file".to_string()),
+        "the doubled compliance check key must be rewritten: {rewritten:?}"
     );
+    assert!(
+        rewritten.contains(&"cert.kubelet-client.cert.mode".to_string()),
+        "an undoubled check key must survive verbatim: {rewritten:?}"
+    );
+
+    // Every row's hash must describe the row: the rewritten snapshot because its
+    // JSON moved, and the stale-hash row because nothing else ever repairs it.
+    let hashes: Vec<(String, String)> = state
+        .conn
+        .prepare("SELECT content_hash, snapshot_json FROM compliance_snapshots")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(hashes.len(), 2);
+    for (hash, json) in &hashes {
+        assert_eq!(
+            hash,
+            &crate::sha256_hex(json.as_bytes()),
+            "content_hash must be re-derived from the stored JSON"
+        );
+    }
 
     assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
 }

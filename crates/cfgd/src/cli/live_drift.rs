@@ -143,7 +143,10 @@ pub(super) fn live_drift_results(
                 for d in &drifts {
                     drift.push(VerifyResult {
                         resource_type: "system".to_string(),
-                        resource_id: format!("{}.{}", configurator.name(), d.key),
+                        resource_id: cfgd_core::reconciler::system_resource_key(
+                            configurator.name(),
+                            &d.key,
+                        ),
                         matches: false,
                         expected: d.expected.clone(),
                         actual: d.actual.clone(),

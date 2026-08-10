@@ -14,6 +14,42 @@ use super::types::{
 /// result unmatchable against the action that planned it.
 pub(super) const LIVE_SESSION_RESOURCE_ID: &str = "env:session:refresh";
 
+/// The ONE composition of a system setting's `<configurator>.<key>` identity.
+///
+/// Three surfaces write this string and match it against each other:
+/// [`format_action_description`] mints the `managed_resources` id and the
+/// journal `resource_id`, `cli::live_drift` mints the `drift_events` id that
+/// `resolve_drift` must find, and `compliance::collect_system_checks` mints the
+/// check key `compliance diff` pairs two snapshots on. A byte of divergence
+/// between any two of them means drift that is recorded but never resolved, so
+/// they derive it here rather than each holding its own `format!`.
+///
+/// The debug assertion is the structural half of the same guarantee: a
+/// [`crate::providers::SystemDrift::key`] that opens with its own
+/// configurator's name doubles the name into all three, and because two of them
+/// are persisted, undoing that later costs a state migration. Debug-only
+/// because the string still composes correctly for an id that carries it — the
+/// result is ugly and expensive, not wrong — and a release build must not
+/// panic mid-apply over a naming defect.
+pub fn system_resource_key(configurator: &str, key: &str) -> String {
+    debug_assert_system_key_undoubled(configurator, key);
+    format!("{configurator}.{key}")
+}
+
+/// Debug-only guard that a configurator's drift key does not repeat its name.
+///
+/// Called by [`system_resource_key`] and from the planner, which is where a
+/// configurator's `diff` output first meets its name and so catches every
+/// configurator on every planning run rather than only the ones whose keys a
+/// test pins.
+pub fn debug_assert_system_key_undoubled(configurator: &str, key: &str) {
+    debug_assert!(
+        !key.starts_with(&format!("{configurator}.")),
+        "{configurator}: drift key `{key}` repeats the configurator name; \
+         `system:{configurator}.<key>` is composed around it"
+    );
+}
+
 /// Append source provenance suffix for non-local origins.
 pub(super) fn provenance_suffix(origin: &str) -> String {
     if origin.is_empty() || origin == LOCAL_LAYER {
@@ -86,7 +122,7 @@ pub fn format_action_description(action: &Action) -> String {
         Action::System(sa) => match sa {
             SystemAction::SetValue {
                 configurator, key, ..
-            } => format!("system:{}.{}", configurator, key),
+            } => format!("system:{}", system_resource_key(configurator, key)),
             SystemAction::Skip { configurator, .. } => {
                 format!("system:{}:skip", configurator)
             }

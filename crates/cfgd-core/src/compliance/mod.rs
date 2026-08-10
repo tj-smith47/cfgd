@@ -187,6 +187,24 @@ pub fn compute_summary(checks: &[ComplianceCheck]) -> ComplianceSummary {
 /// serialize to JSON or YAML, and atomically write.
 ///
 /// Returns the path of the written file.
+/// Serialize a snapshot for storage and hash the exact bytes being stored.
+///
+/// The ONE derivation behind `compliance_snapshots`: the returned JSON is what
+/// `StateStore::store_compliance_snapshot` writes to `snapshot_json`, and the
+/// returned digest is what it writes to `content_hash`, so the column pair is
+/// self-consistent by construction. Both writers of a snapshot — the daemon's
+/// reconcile tick and `cfgd compliance` — take the hash from here for their
+/// change-detection compare, so a snapshot cannot hash differently depending on
+/// which of them observed it. They previously did: one hashed
+/// `to_string_pretty` while the other hashed the compact form the store
+/// persists, so a tick following a CLI run always read "changed".
+pub fn snapshot_content_hash(snapshot: &ComplianceSnapshot) -> Result<(String, String)> {
+    let json = serde_json::to_string(snapshot)
+        .map_err(|e| std::io::Error::other(format!("JSON serialization failed: {}", e)))?;
+    let hash = crate::sha256_hex(json.as_bytes());
+    Ok((json, hash))
+}
+
 pub fn export_snapshot_to_file(
     snapshot: &ComplianceSnapshot,
     export: &ComplianceExport,
@@ -560,7 +578,7 @@ pub fn collect_system_checks(
                     for drift in &drifts {
                         checks.push(ComplianceCheck {
                             category: "system".into(),
-                            key: Some(format!("{}.{}", key, drift.key)),
+                            key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
                             status: ComplianceStatus::Violation,
                             detail: Some(format!(
                                 "expected {}, actual {}",

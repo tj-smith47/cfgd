@@ -16401,7 +16401,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+    state.store_compliance_snapshot(&snap1).unwrap();
 
     // Create second snapshot with a different check (curl removed, git added)
     let snap2 = cfgd_core::compliance::ComplianceSnapshot {
@@ -16425,7 +16425,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+    state.store_compliance_snapshot(&snap2).unwrap();
 
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(entries.len(), 2);
@@ -16481,7 +16481,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+    state.store_compliance_snapshot(&snap1).unwrap();
 
     // Same check but status changed from Compliant to Violation
     let snap2 = cfgd_core::compliance::ComplianceSnapshot {
@@ -16506,7 +16506,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
             violation: 1,
         },
     };
-    state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+    state.store_compliance_snapshot(&snap2).unwrap();
 
     let entries = state.compliance_history(None, 10).unwrap();
     let id1 = entries[1].id;
@@ -16555,7 +16555,7 @@ fn cmd_compliance_diff_structured_json_with_changes() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+    state.store_compliance_snapshot(&snap1).unwrap();
 
     let snap2 = cfgd_core::compliance::ComplianceSnapshot {
         timestamp: "2026-01-02T00:00:00Z".into(),
@@ -16586,7 +16586,7 @@ fn cmd_compliance_diff_structured_json_with_changes() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+    state.store_compliance_snapshot(&snap2).unwrap();
 
     let entries = state.compliance_history(None, 10).unwrap();
     let id1 = entries[1].id;

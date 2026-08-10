@@ -240,6 +240,10 @@ impl<'a> super::Reconciler<'a> {
             if let Some(desired) = system.get(configurator.name()) {
                 let drifts = configurator.diff(desired)?;
                 for drift in drifts {
+                    crate::reconciler::debug_assert_system_key_undoubled(
+                        configurator.name(),
+                        &drift.key,
+                    );
                     actions.push(Action::System(SystemAction::SetValue {
                         configurator: configurator.name().to_string(),
                         key: drift.key,

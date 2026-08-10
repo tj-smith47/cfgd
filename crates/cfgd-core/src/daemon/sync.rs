@@ -466,16 +466,15 @@ pub(crate) fn handle_compliance_snapshot(
         }
     };
 
-    // Serialize for hashing and storage
-    let json = match serde_json::to_string_pretty(&snapshot) {
-        Ok(j) => j,
+    // Hash through the store's own derivation, so this comparison is against
+    // the same bytes a CLI-written row hashed.
+    let hash = match crate::compliance::snapshot_content_hash(&snapshot) {
+        Ok((_, h)) => h,
         Err(e) => {
             tracing::error!(error = %e, "compliance: snapshot serialization failed");
             return;
         }
     };
-
-    let hash = crate::sha256_hex(json.as_bytes());
 
     // Only store if state actually changed
     let latest_hash = match store.latest_compliance_hash() {
@@ -492,7 +491,7 @@ pub(crate) fn handle_compliance_snapshot(
     }
 
     // Store the new snapshot
-    if let Err(e) = store.store_compliance_snapshot(&snapshot, &hash) {
+    if let Err(e) = store.store_compliance_snapshot(&snapshot) {
         tracing::error!(error = %e, "compliance: failed to store snapshot");
         return;
     }

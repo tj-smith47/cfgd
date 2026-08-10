@@ -71,9 +71,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
     // `summary.violation`, then recompute the summary over the combined set.
     append_constraint_violation_checks(&mut snapshot, &constraint_violations);
 
-    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-    let hash = cfgd_core::sha256_hex(json.as_bytes());
-    state.store_compliance_snapshot(&snapshot, &hash)?;
+    state.store_compliance_snapshot(&snapshot)?;
 
     Ok((cfg, snapshot))
 }
@@ -491,9 +489,7 @@ mod tests {
 
     fn store_snapshot(state_dir: &std::path::Path, snapshot: &ComplianceSnapshot) {
         let state = open_state_store(Some(state_dir), cfgd_core::Scope::User).unwrap();
-        let json = serde_json::to_string(snapshot).unwrap();
-        let hash = cfgd_core::sha256_hex(json.as_bytes());
-        state.store_compliance_snapshot(snapshot, &hash).unwrap();
+        state.store_compliance_snapshot(snapshot).unwrap();
     }
 
     // --- build_compliance_summary_doc ---

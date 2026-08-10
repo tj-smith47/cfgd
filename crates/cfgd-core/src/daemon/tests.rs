@@ -2174,11 +2174,12 @@ fn compliance_snapshot_skips_when_hash_unchanged() {
         },
     };
 
-    let json = serde_json::to_string_pretty(&snapshot).unwrap();
-    let hash = crate::sha256_hex(json.as_bytes());
+    // Derived through the store's own derivation: a hand-rolled serialization
+    // here would assert the writer against a hash nothing else produces.
+    let (_, hash) = crate::compliance::snapshot_content_hash(&snapshot).unwrap();
 
     // Store first snapshot
-    store.store_compliance_snapshot(&snapshot, &hash).unwrap();
+    store.store_compliance_snapshot(&snapshot).unwrap();
 
     // Latest hash should match — a second store would be skipped
     let latest = store.latest_compliance_hash().unwrap();
@@ -2210,9 +2211,8 @@ fn compliance_snapshot_stores_when_hash_changes() {
         },
     };
 
-    let json1 = serde_json::to_string_pretty(&snapshot1).unwrap();
-    let hash1 = crate::sha256_hex(json1.as_bytes());
-    store.store_compliance_snapshot(&snapshot1, &hash1).unwrap();
+    let (_, hash1) = crate::compliance::snapshot_content_hash(&snapshot1).unwrap();
+    store.store_compliance_snapshot(&snapshot1).unwrap();
 
     // Different snapshot with a violation
     let snapshot2 = crate::compliance::ComplianceSnapshot {
@@ -2236,15 +2236,14 @@ fn compliance_snapshot_stores_when_hash_changes() {
         },
     };
 
-    let json2 = serde_json::to_string_pretty(&snapshot2).unwrap();
-    let hash2 = crate::sha256_hex(json2.as_bytes());
+    let (_, hash2) = crate::compliance::snapshot_content_hash(&snapshot2).unwrap();
 
     // Hashes differ — new snapshot should be stored
     assert_ne!(hash1, hash2);
     let latest = store.latest_compliance_hash().unwrap();
     assert_ne!(latest.as_deref(), Some(hash2.as_str()));
 
-    store.store_compliance_snapshot(&snapshot2, &hash2).unwrap();
+    store.store_compliance_snapshot(&snapshot2).unwrap();
     let latest = store.latest_compliance_hash().unwrap();
     assert_eq!(latest.as_deref(), Some(hash2.as_str()));
 

@@ -354,19 +354,34 @@ const MIGRATIONS: &[&str] = &[
     // instead of REPLACE, which would also rewrite a repeat later in the key.
     // GLOB, not LIKE: LIKE is ASCII-case-insensitive in SQLite, and these
     // prefixes are the configurators' exact-case names.
-    // `UPDATE OR REPLACE` on managed_resources because UNIQUE(resource_type,
-    // resource_id) is reachable if a corrected row was already written by a
-    // newer cfgd against the same store; both name the same resource, and the
-    // rewritten row is the one whose `last_applied` is older, so keeping it
-    // costs nothing the next apply does not refresh.
+    // `UPDATE OR REPLACE` on managed_resources guards UNIQUE(resource_type,
+    // resource_id), which the ordering argues is unreachable: `StateStore::open`
+    // migrates before any write, so a corrected row cannot be written into a
+    // store still below version 14, and the positional gate never replays this
+    // once it is past. It stays because plain UPDATE would abort — and roll back
+    // — the whole migration on a store whose schema_version was hand-edited or
+    // restored from a partial backup, bricking every later open. The row REPLACE
+    // drops is the corrected twin of the one being rewritten; both name the same
+    // resource and the next apply re-derives it.
     // `compliance_snapshots` is included because `compliance diff` matches two
     // snapshots on each check's `key`, so an un-rewritten snapshot would report
     // every affected check as removed-and-re-added across the fix. Only the
     // identifier moves; status/value/detail — the observation itself — are
-    // untouched. The anchor is `"key":"` with no spaces because the writer
-    // serializes compactly, and `content_hash` stays valid because it is a
-    // change-detector hashed from the in-memory (pretty-printed) snapshot, never
-    // re-derived from this column.
+    // untouched. The anchor is `"key":"` with no spaces because
+    // `store_compliance_snapshot` serializes compactly, and serde escapes an
+    // embedded quote as `\"`, so the literal can only match a real member name;
+    // `ComplianceCheck.key` is the only member named `key` in the snapshot.
+    // This arm alone is not scoped by category, unlike the three `system` id
+    // rewrites: the substitution is per-substring rather than per-check, so a
+    // category predicate would not narrow it. Nothing else builds a check `key`
+    // as `<configurator>.<drift key>`, which is what makes the six anchors safe.
+    // The final statement re-derives `content_hash`, which
+    // `store_compliance_snapshot` defines as the SHA-256 of the `snapshot_json`
+    // beside it. Every row is rehashed, not just the rewritten ones: rows
+    // written before that derivation was unified hashed a different
+    // serialization of the same snapshot, so they violate the invariant too, and
+    // the sole consumer (`latest_compliance_hash`, a change detector) is
+    // strictly better served by a hash that actually describes the stored row.
     r#"UPDATE OR REPLACE managed_resources
           SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
         WHERE resource_type = 'system'
@@ -411,8 +426,34 @@ const MIGRATIONS: &[&str] = &[
            OR snapshot_json GLOB '*"key":"seccomp.seccomp.*'
            OR snapshot_json GLOB '*"key":"apparmor.apparmor.*'
            OR snapshot_json GLOB '*"key":"containerd.containerd.*'
-           OR snapshot_json GLOB '*"key":"kubelet.kubelet.*';"#,
+           OR snapshot_json GLOB '*"key":"kubelet.kubelet.*';
+
+      UPDATE compliance_snapshots SET content_hash = cfgd_sha256_hex(snapshot_json);"#,
 ];
+
+/// Make `cfgd_sha256_hex(text)` callable from migration SQL.
+///
+/// A migration that rewrites a stored value whose SHA-256 is stored beside it
+/// has to re-derive that digest, and SQLite has no built-in hash. Registering
+/// [`crate::sha256_hex`] as a scalar function keeps the migration a plain SQL
+/// statement — the alternative is a typed side-channel in the runner, which
+/// would make migration order depend on Rust code rather than on the array.
+///
+/// Deterministic and innocuous: same input, same output, no side effects, so
+/// SQLite may cache and reorder calls freely.
+fn register_sql_functions(conn: &Connection) -> Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "cfgd_sha256_hex",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let value = ctx.get_raw(0).as_str()?;
+            Ok(crate::sha256_hex(value.as_bytes()))
+        },
+    )?;
+    Ok(())
+}
 
 /// SQLite-backed state store for cfgd.
 pub struct StateStore {
@@ -461,6 +502,7 @@ impl StateStore {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        register_sql_functions(&conn)?;
 
         let mut store = Self { conn };
         store.run_migrations()?;
@@ -471,6 +513,7 @@ impl StateStore {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        register_sql_functions(&conn)?;
 
         let mut store = Self { conn };
         store.run_migrations()?;
