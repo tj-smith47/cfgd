@@ -1,5 +1,43 @@
 use super::*;
 
+/// The MCP server serves the store at exactly the directory the run resolved.
+/// `run_mcp_server` resolves through `cli::run_state_dir` — the shared seam
+/// whose `--scope system` cell is pinned beside `open_state_store` — and
+/// `McpServer::new` takes the RESOLVED path with no `Option` fallback, so a
+/// scope-blind `open_default()` is unrepresentable here. This pins the open
+/// half: rows written at the resolved directory are the rows the server sees.
+#[test]
+#[serial_test::serial]
+fn the_server_serves_the_store_at_the_resolved_directory() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp.path());
+    let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _sd = cfgd_core::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
+
+    let resolved = crate::cli::run_state_dir(None, cfgd_core::Scope::User)
+        .expect("the user-scope state dir resolves");
+    assert!(
+        resolved.starts_with(tmp.path()),
+        "the user cell stays under the test home: {resolved:?}"
+    );
+
+    let seed = cfgd_core::state::StateStore::open_in_dir(&resolved).unwrap();
+    seed.upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "s")
+        .unwrap();
+
+    let server = McpServer::new(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        &resolved,
+    )
+    .expect("the server opens the resolved store");
+    assert_eq!(
+        server.state.pending_decisions().unwrap().len(),
+        1,
+        "the server reads the same store the resolution named"
+    );
+}
+
 #[test]
 fn test_json_rpc_request_parsing() {
     let json = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
@@ -72,7 +110,7 @@ fn test_handle_initialize() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -98,7 +136,7 @@ fn test_handle_ping() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -119,7 +157,7 @@ fn test_handle_tools_call_missing_name() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -139,7 +177,7 @@ fn test_handle_tools_call_unknown_tool() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -160,7 +198,7 @@ fn test_handle_tools_call_detect_platform() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -201,7 +239,7 @@ fn test_handle_resources_list() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -222,7 +260,7 @@ fn test_handle_resources_read_missing_uri() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -242,7 +280,7 @@ fn test_handle_resources_read_unknown_uri_returns_error() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -262,7 +300,7 @@ fn test_handle_prompts_list() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -283,7 +321,7 @@ fn test_handle_prompts_get_missing_name() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -303,7 +341,7 @@ fn test_unknown_method_returns_error() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -336,7 +374,7 @@ fn test_id_preserved_across_request_response() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -367,7 +405,7 @@ fn test_mcp_tools_list_returns_all_tools() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -396,7 +434,7 @@ fn test_mcp_tools_call_get_schema() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -418,7 +456,7 @@ fn test_mcp_resources_read_skill() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -440,7 +478,7 @@ fn test_mcp_prompts_get_generate() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -462,7 +500,7 @@ fn test_mcp_full_pipeline_write_module() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
 
@@ -498,7 +536,7 @@ fn test_invalid_jsonrpc_version_returns_error() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -518,7 +556,7 @@ fn test_present_yaml_mcp_returns_formatted_content() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
@@ -554,7 +592,7 @@ fn test_present_yaml_without_cfgd_prefix_also_works() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -590,7 +628,7 @@ fn test_handle_notification_initialized_does_not_panic() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -608,7 +646,7 @@ fn test_handle_notification_cancelled_does_not_panic() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -626,7 +664,7 @@ fn test_handle_notification_unknown_method_does_not_panic() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -650,7 +688,7 @@ fn test_present_yaml_invalid_arguments_returns_invalid_params_error() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -715,7 +753,7 @@ fn test_handle_resources_list_returns_resources_field() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -740,7 +778,7 @@ fn test_handle_prompts_get_unknown_name_still_succeeds_with_empty_messages() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {
@@ -761,7 +799,7 @@ fn test_jsonrpc_invalid_version_2_5_returns_invalid_request() {
     let mut server = McpServer::new(
         tmp.path().to_path_buf(),
         tmp.path().to_path_buf(),
-        Some(tmp.path()),
+        tmp.path(),
     )
     .unwrap();
     let req = JsonRpcRequest {

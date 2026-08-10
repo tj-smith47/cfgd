@@ -346,7 +346,10 @@ fn collect_doctor_output(
         })
         .collect();
 
-    let state_store = match StateStore::open_default() {
+    // Probe the store THIS run's `--state-dir`/`--scope` would open, not the
+    // per-user default — a `--scope system` doctor reporting the user store
+    // accessible would be diagnosing a store the run never uses.
+    let state_store = match super::open_state_store(cli.state_dir.as_deref(), cli.scope()) {
         Ok(_) => DoctorStateStore {
             accessible: true,
             message: None,

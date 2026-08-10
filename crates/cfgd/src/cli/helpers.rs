@@ -665,7 +665,7 @@ pub(in crate::cli) fn module_cache_dir_for(
 /// same reason: a `--scope system` run that locked the system dir while
 /// opening the user store would judge ownership against one store and sweep
 /// another.
-pub(in crate::cli) fn run_state_dir(
+pub(crate) fn run_state_dir(
     state_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {

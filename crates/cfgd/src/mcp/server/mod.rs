@@ -74,15 +74,18 @@ pub struct McpServer {
 }
 
 impl McpServer {
+    /// `state_dir` is the RESOLVED directory for the run's `--state-dir` and
+    /// `--scope` — callers resolve through `cli::run_state_dir`, the
+    /// same seam every command's store open uses, so a `--scope system`
+    /// server serves the machine-wide store. Taking the resolved path (never
+    /// an `Option` with a default fallback) is what keeps a scope-blind open
+    /// unrepresentable here.
     pub fn new(
         repo_root: PathBuf,
         home: PathBuf,
-        state_dir: Option<&std::path::Path>,
+        state_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        let state = match state_dir {
-            Some(dir) => cfgd_core::state::StateStore::open_in_dir(dir)?,
-            None => cfgd_core::state::StateStore::open_default()?,
-        };
+        let state = cfgd_core::state::StateStore::open_in_dir(state_dir)?;
         Ok(Self {
             session: GenerateSession::new(repo_root, env!("CARGO_PKG_VERSION")),
             home,
@@ -318,6 +321,7 @@ impl McpServer {
 pub fn run_mcp_server(
     config_path: &std::path::Path,
     state_dir: Option<&std::path::Path>,
+    scope: cfgd_core::Scope,
 ) -> anyhow::Result<()> {
     let repo_root = config_path
         .parent()
@@ -328,7 +332,8 @@ pub fn run_mcp_server(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
 
-    let mut server = McpServer::new(repo_root, home, state_dir)?;
+    let resolved = crate::cli::run_state_dir(state_dir, scope)?;
+    let mut server = McpServer::new(repo_root, home, &resolved)?;
     server.run()
 }
 

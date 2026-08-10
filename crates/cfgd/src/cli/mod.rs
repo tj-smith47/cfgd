@@ -45,6 +45,7 @@ pub use error::{
     exit_code_for_anyhow,
 };
 pub use helpers::effective_config_file;
+pub(crate) use helpers::run_state_dir;
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
@@ -2395,7 +2396,7 @@ pub fn execute(
             ),
         },
         Command::McpServer => {
-            crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref())
+            crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref(), cli.scope())
         }
         Command::Compliance { command } => match command {
             None => compliance::cmd_compliance_snapshot(cli, printer),
