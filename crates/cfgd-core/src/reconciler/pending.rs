@@ -33,34 +33,18 @@ use super::{Action, Plan, SystemAction, action_resource_info};
 pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
     let mut resources = HashSet::new();
 
+    // The package half walks the SAME enumeration the reconciler plans from
+    // (`manager_names` → `desired_packages_for_spec`), so a manager added to
+    // the planner is covered here by construction — a hand-kept second list is
+    // how six managers minted decisions while the other nine installed a
+    // source's items without one.
     let pkgs = &merged.packages;
-    if let Some(ref brew) = pkgs.brew {
-        for f in &brew.formulae {
-            resources.insert(format!("packages.brew.{}", f));
-        }
-        for c in &brew.casks {
-            resources.insert(format!("packages.brew.{}", c));
-        }
-    }
-    if let Some(ref apt) = pkgs.apt {
-        for p in &apt.packages {
-            resources.insert(format!("packages.apt.{}", p));
-        }
-    }
-    if let Some(ref cargo) = pkgs.cargo {
-        for p in &cargo.packages {
-            resources.insert(format!("packages.cargo.{}", p));
-        }
-    }
-    for p in &pkgs.pipx {
-        resources.insert(format!("packages.pipx.{}", p));
-    }
-    for p in &pkgs.dnf {
-        resources.insert(format!("packages.dnf.{}", p));
-    }
-    if let Some(ref npm) = pkgs.npm {
-        for p in &npm.global {
-            resources.insert(format!("packages.npm.{}", p));
+    for manager in pkgs.manager_names() {
+        let Some(decision_manager) = decision_manager_name(&manager) else {
+            continue;
+        };
+        for pkg in config::desired_packages_for_spec(&manager, pkgs) {
+            resources.insert(format!("packages.{}.{}", decision_manager, pkg));
         }
     }
 
@@ -77,6 +61,33 @@ pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
     }
 
     resources
+}
+
+/// The manager segment a package's decision path carries, from the planner's
+/// manager name.
+///
+/// Casks fold into `brew`: the decision vocabulary cannot tell a cask from a
+/// formula, and [`DecisionExclusions::withholds_package`] already meets the
+/// planner's `brew-cask` batch through the same fold — splitting them now
+/// would orphan every recorded `packages.brew.<cask>` row. Everything else
+/// passes through verbatim, EXCEPT a manager whose own name contains a `.`:
+/// the path grammar splits on the first dot, so such a name cannot round-trip
+/// into [`DecisionExclusions`] and the row it minted could never withhold the
+/// item it names — minting nothing (and saying so) is the arm that cannot lie.
+/// Only a custom manager can carry such a name; every built-in is dot-free.
+fn decision_manager_name(manager: &str) -> Option<&str> {
+    if manager.contains('.') {
+        tracing::warn!(
+            manager,
+            "custom package manager name contains '.', which the decision path grammar cannot carry — its source-delivered packages mint no decisions"
+        );
+        return None;
+    }
+    Some(if manager == "brew-cask" {
+        "brew"
+    } else {
+        manager
+    })
 }
 
 /// What one source actually delivered into a composed profile.
@@ -832,7 +843,7 @@ impl DeliveredItems {
 /// | decision path | what it withholds |
 /// |---|---|
 /// | `files.<target>` | a `File` action on that target, and the same target inside a module's `DeployFiles` batch — profile files and module files are separate surfaces that can name one path, and withholding only the profile one would still write it. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
-/// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. A `Bootstrap` or `Skip` names no package and is never withheld — a bootstrap installs the package MANAGER, which every still-decided package in the batch needs |
+/// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. Every other manager — a brew tap under `brew-tap`, a custom manager under its own name — mints under the exact name its planned batch carries, so the match here is verbatim. A `Bootstrap` or `Skip` names no package and is never withheld — a bootstrap installs the package MANAGER, which every still-decided package in the batch needs |
 /// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the next non-withholding tick plans env unconditionally and converges it) |
 /// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>:<key>` id an individual drift carries |
 ///

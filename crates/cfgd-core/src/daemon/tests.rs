@@ -2439,7 +2439,7 @@ fn compute_config_hash_with_empty_packages() {
     assert_eq!(hash1.len(), 64, "hash should be a valid SHA256 hex string");
 }
 
-// --- declared_decision_paths: brew taps are not included, casks are ---
+// --- declared_decision_paths: casks fold into brew, taps keep their own manager ---
 
 #[test]
 fn extract_source_resources_brew_casks_only() {
@@ -2467,12 +2467,14 @@ fn extract_source_resources_brew_casks_only() {
         resources.contains("packages.brew.visual-studio-code"),
         "casks should appear as brew resources"
     );
-    // Taps are not tracked as individual resources
+    // A tap adds a third-party repository to the machine — ask-before-install
+    // covers it like any other source-delivered item, under its own planner
+    // manager name so the exclusion meets the `brew-tap` batch directly.
     assert!(
-        !resources.contains("packages.brew.homebrew/cask"),
-        "taps should not appear as resources"
+        resources.contains("packages.brew-tap.homebrew/cask"),
+        "taps are source-delivered items and mint decisions under brew-tap"
     );
-    assert_eq!(resources.len(), 2);
+    assert_eq!(resources.len(), 3);
 }
 
 #[test]
@@ -2515,6 +2517,188 @@ fn extract_source_resources_npm_globals() {
     assert!(resources.contains("packages.npm.typescript"));
     assert!(resources.contains("packages.npm.eslint"));
     assert_eq!(resources.len(), 2);
+}
+
+// --- declared_decision_paths: coverage derives from the planner's own manager enumeration ---
+
+#[test]
+fn declared_decision_paths_cover_every_manager_the_reconciler_plans_from() {
+    use crate::config::{
+        AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, FlatpakSpec, MergedProfile, NpmSpec,
+        PackagesSpec, SnapSpec,
+    };
+
+    let mut packages = PackagesSpec {
+        brew: Some(BrewSpec {
+            file: None,
+            taps: vec!["acme/tools".into()],
+            formulae: vec!["jq".into()],
+            casks: vec!["iterm2".into()],
+        }),
+        apt: Some(AptSpec {
+            file: None,
+            packages: vec!["git".into()],
+        }),
+        cargo: Some(CargoSpec {
+            file: None,
+            packages: vec!["bat".into()],
+        }),
+        npm: Some(NpmSpec {
+            file: None,
+            global: vec!["prettier".into()],
+        }),
+        snap: Some(SnapSpec {
+            packages: vec!["hello".into()],
+            classic: vec!["code".into()],
+        }),
+        flatpak: Some(FlatpakSpec {
+            packages: vec!["org.gnome.Maps".into()],
+            remote: None,
+        }),
+        custom: vec![CustomManagerSpec {
+            name: "mymgr".into(),
+            check: "true".into(),
+            list_installed: "true".into(),
+            install: "true".into(),
+            uninstall: "true".into(),
+            update: None,
+            packages: vec!["mypkg".into()],
+        }],
+        ..Default::default()
+    };
+    for manager in [
+        "pipx",
+        "dnf",
+        "apk",
+        "pacman",
+        "zypper",
+        "yum",
+        "pkg",
+        "nix",
+        "go",
+        "winget",
+        "chocolatey",
+        "scoop",
+    ] {
+        packages
+            .simple_list_mut(manager)
+            .expect("simple-list manager")
+            .push(format!("{manager}-pkg"));
+    }
+    // A manager the fixture missed is a manager this test cannot vouch for, so
+    // a manager added to the planner's enumeration fails HERE first and gets a
+    // fixture entry — which the loop below then holds to coverage.
+    for manager in crate::config::ALL_MANAGER_NAMES {
+        assert!(
+            !crate::config::desired_packages_for_spec(manager, &packages).is_empty(),
+            "fixture declares no package for built-in manager {manager}"
+        );
+    }
+
+    let merged = MergedProfile {
+        packages,
+        ..Default::default()
+    };
+    let paths = declared_decision_paths(&merged);
+    for manager in crate::config::ALL_MANAGER_NAMES {
+        // Casks fold into `brew`: the decision vocabulary cannot tell a cask
+        // from a formula, and the exclusion side already meets the
+        // `brew-cask` batch through that fold.
+        let decision_manager = if *manager == "brew-cask" {
+            "brew"
+        } else {
+            manager
+        };
+        for pkg in crate::config::desired_packages_for_spec(manager, &merged.packages) {
+            assert!(
+                paths.contains(&format!("packages.{decision_manager}.{pkg}")),
+                "manager {manager} delivers {pkg} but mints no decision path — it would install without a decision"
+            );
+        }
+    }
+    assert!(
+        paths.contains("packages.mymgr.mypkg"),
+        "a custom manager's packages are source-deliverable too"
+    );
+}
+
+#[test]
+fn a_scoop_item_mints_and_withholds_under_notify_exactly_like_a_brew_item() {
+    use crate::config::{BrewSpec, MergedProfile, PackagesSpec};
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            brew: Some(BrewSpec {
+                file: None,
+                taps: vec![],
+                formulae: vec!["jq".into()],
+                casks: vec![],
+            }),
+            scoop: vec!["wget".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+    )
+    .unwrap();
+    let mut minted: Vec<&str> = review.to_mint.iter().map(|m| m.resource.as_str()).collect();
+    minted.sort_unstable();
+    assert_eq!(
+        minted,
+        vec!["packages.brew.jq", "packages.scoop.wget"],
+        "a scoop item is asked about exactly like a brew item"
+    );
+
+    // The minted paths translate into the plan vocabulary and prune a scoop
+    // batch the same way a brew batch is pruned.
+    let exclusions = DecisionExclusions::from_decision_paths(
+        review.to_mint.iter().map(|m| m.resource.clone()),
+        crate::expand_tilde,
+    );
+    assert!(exclusions.withholds_package("scoop", "wget"));
+    let mut phase = packages_phase_of(vec![install_of("scoop", &["wget", "curl"])]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(
+        installed_batches(&phase),
+        vec![("scoop".to_string(), vec!["curl".to_string()])],
+        "the undecided scoop package leaves the batch; its siblings still apply"
+    );
+}
+
+#[test]
+fn a_locked_tier_scoop_item_still_applies_when_the_policy_accepts_locked() {
+    use crate::config::{MergedProfile, PackagesSpec};
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig {
+        locked_conflict: PolicyAction::Accept,
+        ..Default::default()
+    };
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            scoop: vec!["wget".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Required),
+        &policy,
+    )
+    .unwrap();
+    assert!(
+        review.to_mint.is_empty() && review.declined.is_empty(),
+        "an accepted locked-tier item is neither asked about nor declined — it applies"
+    );
 }
 
 // --- process_source_decisions with Reject policy ---
