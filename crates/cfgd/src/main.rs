@@ -159,6 +159,16 @@ fn main() -> anyhow::Result<()> {
     // derives `profiles/` from the wrong parent.
     cli.config = cfgd_core::config::resolve_config_path(&cli.config);
 
+    // A relative `--config`/`CFGD_CONFIG`/`--config-dir` value stays relative
+    // past this point otherwise: every downstream derivation of the config
+    // directory (`config_dir(cli)`, in turn a script hook's resolution base)
+    // inherits it verbatim, and a script's process `cwd` is the home
+    // directory rather than the config dir — a relative `run:` script then
+    // resolves against the wrong location whenever cfgd itself isn't invoked
+    // from that same directory. Absolutizing once, here, makes every later
+    // reader agree regardless of how `--config` was spelled.
+    cli.config = cfgd_core::absolutize_path(&cli.config);
+
     // A `--config-dir` override also makes the resolved config path
     // user-directed: a missing config there is the user's typo, not a fresh
     // machine. `--scope system` alone does NOT — that repointing is still a

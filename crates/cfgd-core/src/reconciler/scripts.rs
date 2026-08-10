@@ -39,6 +39,35 @@ fn interactive_disposition(interactive: bool, stdin_is_tty: bool) -> Interactive
     }
 }
 
+/// Resolve `run_str`'s leading token (the script/interpreter) against
+/// `script_dir`, when it is a relative path naming an existing file there —
+/// alongside the untouched trailing argument text.
+///
+/// Only the FIRST token is ever tested for existence: a `run: scripts/foo.sh
+/// bar` previously tested the *entire* string (`"scripts/foo.sh bar"`,
+/// space and all) as one path segment, which never exists on disk, so any
+/// `run:` carrying arguments silently fell through to the inline-shell arm
+/// with `cwd` at the script's `working_dir` (the home directory by default)
+/// instead of resolving relative to `script_dir`. The trailing text is
+/// returned verbatim; the caller whitespace-tokenizes it into `Command` argv
+/// entries when the first token resolves to a file — no shell re-parses it,
+/// since the OS's own shebang handling still selects the file's interpreter.
+fn resolve_run_target<'a>(
+    run_str: &'a str,
+    script_dir: &std::path::Path,
+) -> (std::path::PathBuf, &'a str) {
+    let (command, rest) = match run_str.split_once(char::is_whitespace) {
+        Some((cmd, rest)) => (cmd, rest.trim_start()),
+        None => (run_str, ""),
+    };
+    let resolved = if std::path::Path::new(command).is_relative() {
+        script_dir.join(command)
+    } else {
+        std::path::PathBuf::from(command)
+    };
+    (resolved, rest)
+}
+
 /// Prepend PATH directories cfgd recorded when it bootstrapped a package
 /// manager onto a script's process environment.
 ///
@@ -556,13 +585,19 @@ fn execute_script_inner(
         "executing script"
     );
 
-    let effective_timeout = match entry {
+    // Held apart from `effective_timeout` because the interactive `Run` arm
+    // must NOT inherit `default_timeout` — only an author-declared `timeout:`
+    // bounds an interactive step (see the disposition match below).
+    let explicit_timeout = match entry {
         ScriptEntry::Full {
             timeout: Some(t), ..
-        } => crate::parse_duration_str(t)
-            .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
-        _ => default_timeout,
+        } => Some(
+            crate::parse_duration_str(t)
+                .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
+        ),
+        _ => None,
     };
+    let effective_timeout = explicit_timeout.unwrap_or(default_timeout);
     let idle_timeout = match entry {
         ScriptEntry::Full {
             idle_timeout: Some(t),
@@ -580,11 +615,22 @@ fn execute_script_inner(
     };
     let shell = shell_override.unwrap_or(entry_shell);
 
-    let resolved = if std::path::Path::new(run_str).is_relative() {
-        script_dir.join(run_str)
-    } else {
-        std::path::PathBuf::from(run_str)
-    };
+    let interactive = matches!(
+        entry,
+        ScriptEntry::Full {
+            interactive: true,
+            ..
+        }
+    );
+    let disposition = interactive_disposition(interactive, stdin_is_tty);
+    // Every other arm still gets its own process group, so a timeout/idle
+    // kill (`kill_script_child`) can `kill(-pid, …)` the whole subtree
+    // without hitting cfgd itself. The attached-to-terminal `Run` arm is the
+    // one exception: it must share cfgd's own group so the terminal's
+    // foreground group still includes the child (see the `Run` arm below).
+    let set_process_group = !matches!(disposition, InteractiveDisposition::Run);
+
+    let (resolved, run_args) = resolve_run_target(run_str, script_dir);
 
     let cfgd_env_path = cfgd_env_path_for(shell);
 
@@ -625,15 +671,24 @@ fn execute_script_inner(
         }
         let mut c = std::process::Command::new(&resolved);
         c.current_dir(working_dir);
+        if !run_args.is_empty() {
+            c.args(run_args.split_whitespace());
+        }
         #[cfg(unix)]
-        {
+        if set_process_group {
             use std::os::unix::process::CommandExt;
             c.process_group(0);
         }
         c
     } else {
         // Inline command — interpreter selected by shell field
-        build_inline_command(shell, run_str, working_dir, cfgd_env_path.as_deref())
+        build_inline_command(
+            shell,
+            run_str,
+            working_dir,
+            cfgd_env_path.as_deref(),
+            set_process_group,
+        )
     };
 
     // Inject environment variables
@@ -641,25 +696,37 @@ fn execute_script_inner(
         cmd.env(key, value);
     }
 
-    let interactive = matches!(
-        entry,
-        ScriptEntry::Full {
-            interactive: true,
-            ..
-        }
-    );
-    match interactive_disposition(interactive, stdin_is_tty) {
+    match disposition {
         InteractiveDisposition::Run => {
-            // Attach to the controlling terminal so the script can prompt the user
-            // (e.g. `read`). No spinner and no capture — the user drives the pace,
-            // and no idle timeout applies because an interactive step is attended
-            // by definition.
+            // Attach to the controlling terminal so the script can prompt the
+            // user (e.g. `read`, `sudo`, a full-screen TUI). No spinner and
+            // no capture — the user drives the pace.
+            //
+            // The child stays in cfgd's own process group (`set_process_group`
+            // is false for this arm, above): a blanket `process_group(0)` put
+            // every interactive child in a brand-new, non-foreground group,
+            // so the terminal driver never delivered a terminal-generated
+            // Ctrl-C to it, and a background-group terminal read stalls on
+            // SIGTTIN instead of prompting. Sharing cfgd's group restores
+            // both.
+            //
+            // No idle timeout: the user drives the pace and a lull is
+            // expected. No absolute timeout unless the author declares one:
+            // Ctrl-C now reaches the child directly (the escape hatch this
+            // fix restores), so force-killing it by default would risk
+            // SIGKILLing a TUI mid-raw-mode — worse than an unbounded wait.
+            // A script that legitimately needs a ceiling opts in with its
+            // own `timeout:`, honored below.
             cmd.stdin(std::process::Stdio::inherit());
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::inherit());
             // Spawn-then-wait rather than `status()`: identical semantics with
             // stdio already inherited, but it routes through the ETXTBSY retry.
-            let status = spawn_retry_on_busy(&mut cmd)?.wait()?;
+            let mut child = spawn_retry_on_busy(&mut cmd)?;
+            let status = match explicit_timeout {
+                Some(timeout) => wait_interactive_with_timeout(&mut child, timeout, &run_label)?,
+                None => child.wait()?,
+            };
             if !status.success() {
                 let exit_code = status.code().unwrap_or(-1);
                 return Err(CfgdError::Config(ConfigError::Invalid {
@@ -934,11 +1001,7 @@ pub(crate) fn run_filter_script(
 
     ensure_working_dir(run_str, working_dir)?;
 
-    let resolved = if std::path::Path::new(run_str).is_relative() {
-        script_dir.join(run_str)
-    } else {
-        std::path::PathBuf::from(run_str)
-    };
+    let (resolved, run_args) = resolve_run_target(run_str, script_dir);
 
     let mut cmd = if resolved.exists() {
         let meta = std::fs::metadata(&resolved)?;
@@ -957,6 +1020,9 @@ pub(crate) fn run_filter_script(
         }
         let mut c = std::process::Command::new(&resolved);
         c.current_dir(working_dir);
+        if !run_args.is_empty() {
+            c.args(run_args.split_whitespace());
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -964,7 +1030,9 @@ pub(crate) fn run_filter_script(
         }
         c
     } else {
-        build_inline_command(ScriptShell::Auto, run_str, working_dir, None)
+        // A filter script is never interactive — always its own process
+        // group so a timeout kill can reach the whole subtree.
+        build_inline_command(ScriptShell::Auto, run_str, working_dir, None, true)
     };
 
     for (key, value) in env_vars {
@@ -1068,6 +1136,7 @@ fn build_inline_command(
     run_str: &str,
     working_dir: &std::path::Path,
     cfgd_env_path: Option<&std::path::Path>,
+    set_process_group: bool,
 ) -> std::process::Command {
     let mut c = match shell {
         ScriptShell::Auto => {
@@ -1122,7 +1191,7 @@ fn build_inline_command(
     };
     c.current_dir(working_dir);
     #[cfg(unix)]
-    {
+    if set_process_group {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
@@ -1173,7 +1242,9 @@ fn run_guard_command(
     timeout: std::time::Duration,
 ) -> Result<bool> {
     let cfgd_env_path = cfgd_env_path_for(shell);
-    let mut cmd = build_inline_command(shell, cmd_str, working_dir, cfgd_env_path.as_deref());
+    // Guard commands are never interactive — always run in their own process
+    // group so a timeout kill can reach the whole subtree.
+    let mut cmd = build_inline_command(shell, cmd_str, working_dir, cfgd_env_path.as_deref(), true);
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
@@ -1213,6 +1284,60 @@ pub(super) fn kill_script_child(child: &mut std::process::Child, graceful: bool)
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Terminate an interactive script's child directly by PID (SIGTERM, then,
+/// after a grace period, SIGKILL).
+///
+/// Deliberately NOT `kill_script_child`: that helper targets the child's
+/// process GROUP (`kill(-pid, …)`), which only reaches the intended process
+/// when the child is its own group leader. The interactive `Run` arm
+/// intentionally skips `process_group(0)` (see its own doc comment in
+/// `execute_script_inner`) so the child shares cfgd's own foreground group —
+/// `child.id()` is therefore not a process-group leader, and a negative-PID
+/// kill would silently miss it.
+#[cfg(unix)]
+fn kill_interactive_timeout_child(child: &mut std::process::Child) {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn kill_interactive_timeout_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Poll an interactive script's child for exit, force-killing it once
+/// `timeout` elapses. Only reached when the author declared an explicit
+/// `timeout:` on an `interactive: true` entry — see the `Run` arm's doc
+/// comment in `execute_script_inner` for why the default is unbounded.
+fn wait_interactive_with_timeout(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    run_label: &str,
+) -> Result<std::process::ExitStatus> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if start.elapsed() > timeout {
+            kill_interactive_timeout_child(child);
+            return Err(CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "script '{}' timed out after {}s (interactive)",
+                    run_label,
+                    timeout.as_secs()
+                ),
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Default `continue_on_error` behavior per script phase.

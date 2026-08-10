@@ -716,6 +716,8 @@ Set `interactive: true` on a script entry that must prompt the user — for exam
 
 An interactive script requires a TTY. When stdin is **not** a terminal — CI, piped input, or any run by the `cfgd daemon` (the daemon never has a TTY) — the script is **skipped with a warning** instead of hanging on instant EOF, and reports `changed=false`. Interactive steps therefore run only during an attended `cfgd apply`, never under unattended reconcile.
 
+The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all** — force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
+
 ```yaml
 scripts:
   postApply:

@@ -777,6 +777,33 @@ pub(crate) fn home_dir_var() -> Option<String> {
     }
 }
 
+/// Resolve `path` to an absolute path without requiring it to exist.
+///
+/// Prefers `Path::canonicalize` (resolves symlinks and `.`/`..`), but a CLI
+/// entry point (`--config`) is legitimately relative *and* not-yet-created —
+/// a fresh machine before `cfgd init`, or a `--config-dir` naming a directory
+/// with no file inside it yet. `canonicalize` errors on a missing path, which
+/// would otherwise leave a relative value relative; every directory derived
+/// from it downstream (a script hook's resolution base, its `cwd`) would then
+/// depend on the CALLER's own working directory rather than the location the
+/// user actually named. When canonicalization fails, an already-absolute
+/// path is returned unchanged and a relative one is joined onto the process's
+/// current directory instead.
+///
+/// `canonicalize` on Windows prefixes its result with the `\\?\` verbatim
+/// marker; stripped here so the returned value matches the plain form every
+/// other absolute path in cfgd uses.
+pub fn absolutize_path(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = match path.canonicalize() {
+        Ok(canon) => canon,
+        Err(_) if path.is_absolute() => path.to_path_buf(),
+        Err(_) => std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf()),
+    };
+    std::path::PathBuf::from(strip_windows_verbatim(&absolute.to_string_lossy()))
+}
+
 /// Resolve a relative path against a base directory with traversal validation.
 /// Absolute paths are returned as-is. Relative paths are validated with
 /// `validate_no_traversal` and then joined to `base`.

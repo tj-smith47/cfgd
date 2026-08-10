@@ -714,6 +714,7 @@ fn bash_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
+        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -749,6 +750,7 @@ fn zsh_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
+        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -779,7 +781,13 @@ fn sh_inline_ignores_cfgd_env_path() {
     let env_file = tmp.path().join(".cfgd.env");
     std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
 
-    let cmd = build_inline_command(ScriptShell::Sh, "echo hello", tmp.path(), Some(&env_file));
+    let cmd = build_inline_command(
+        ScriptShell::Sh,
+        "echo hello",
+        tmp.path(),
+        Some(&env_file),
+        true,
+    );
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
@@ -800,12 +808,58 @@ fn sh_inline_ignores_cfgd_env_path() {
 fn bash_inline_no_env_file_skips_preamble() {
     let tmp = tempfile::tempdir().unwrap();
 
-    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None);
+    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None, true);
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert_eq!(args, vec!["-c", "echo hello"], "no env file → no preamble");
+}
+
+// set_process_group=true (every non-interactive spawn arm) still puts the
+// child in its OWN new process group — child pgid == child pid — so a
+// timeout/idle kill can `kill(-pid, …)` the whole subtree without hitting
+// cfgd itself. This is the behavior every arm had before the interactive
+// fix, and must stay unchanged.
+#[cfg(unix)]
+#[test]
+fn build_inline_command_default_spawns_own_process_group() {
+    use nix::unistd::{Pid, getpgid};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, true);
+    let mut child = cmd.spawn().expect("spawn must succeed");
+    let child_pid = Pid::from_raw(child.id() as i32);
+    let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
+    assert_eq!(
+        child_pgid, child_pid,
+        "set_process_group=true must make the child its own group leader"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// set_process_group=false (the interactive `Run` arm only) leaves the
+// child in cfgd's OWN process group instead of a new one — the fix that
+// restores terminal Ctrl-C delivery and raw-mode TUI reads to an
+// interactive script (see execute_script_inner's `Run` arm doc comment).
+#[cfg(unix)]
+#[test]
+fn build_inline_command_interactive_shares_callers_process_group() {
+    use nix::unistd::{Pid, getpgid, getpgrp};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let own_pgid = getpgrp();
+    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, false);
+    let mut child = cmd.spawn().expect("spawn must succeed");
+    let child_pid = Pid::from_raw(child.id() as i32);
+    let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
+    assert_eq!(
+        child_pgid, own_pgid,
+        "set_process_group=false must leave the child in the caller's own group"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 // Auto-detection picks the file's shebang-implied interpreter (`sh`),
@@ -1330,6 +1384,56 @@ fn guard_skip_emits_skipped_status_line() {
 // run_str resolution, spawn-failure mapping, exit-code error path
 // -----------------------------------------------------------------------
 
+// A relative `run:` command with no trailing arguments resolves the sole
+// token against `script_dir`; the trailing-args slice is empty. A pure
+// function over its own `script_dir` parameter, so no test-home fixture
+// is needed — it never touches `$HOME`.
+#[test]
+fn resolve_run_target_relative_no_args() {
+    let script_dir = std::path::Path::new("/some/script/dir");
+    let (resolved, rest) = resolve_run_target("scripts/foo.sh", script_dir);
+    assert_eq!(resolved, script_dir.join("scripts/foo.sh"));
+    assert_eq!(rest, "");
+}
+
+// A relative `run:` command's trailing arguments are returned verbatim,
+// untokenized, alongside the same script_dir-joined resolution — the bug
+// this function fixes: the whole string used to be tested for existence
+// as one path segment, so `run: scripts/foo.sh bar` never resolved.
+#[test]
+fn resolve_run_target_relative_with_args() {
+    let script_dir = std::path::Path::new("/some/script/dir");
+    let (resolved, rest) = resolve_run_target("scripts/foo.sh --flag value", script_dir);
+    assert_eq!(resolved, script_dir.join("scripts/foo.sh"));
+    assert_eq!(rest, "--flag value");
+}
+
+// An absolute `run:` command passes through untouched, never joined onto
+// script_dir — the trailing-args slice is empty.
+#[test]
+fn resolve_run_target_absolute_no_args() {
+    let target_dir = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let absolute = target_dir.path().join("run-me");
+    let run_str = absolute.to_str().expect("tempdir path must be utf8");
+    let (resolved, rest) = resolve_run_target(run_str, script_dir.path());
+    assert_eq!(resolved, absolute);
+    assert_eq!(rest, "");
+}
+
+// An absolute `run:` command's trailing arguments are returned verbatim
+// alongside the untouched absolute resolution.
+#[test]
+fn resolve_run_target_absolute_with_args() {
+    let target_dir = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let absolute = target_dir.path().join("run-me");
+    let run_str = format!("{} --flag value", absolute.to_str().unwrap());
+    let (resolved, rest) = resolve_run_target(&run_str, script_dir.path());
+    assert_eq!(resolved, absolute);
+    assert_eq!(rest, "--flag value");
+}
+
 // An absolute `run:` path that exists is executed directly as a file
 // (scripts.rs:306-307, the non-relative branch), NOT joined against
 // script_dir. `/bin/true` exits zero, so the script reports changed=true.
@@ -1364,6 +1468,45 @@ fn execute_script_absolute_run_path_runs_as_file() {
     assert!(
         label.contains(true_bin),
         "label should reference the absolute run path: {label}"
+    );
+}
+
+// End-to-end: a relative `run:` carrying trailing arguments resolves its
+// FIRST token against script_dir and passes the rest as argv — the exact
+// regression `resolve_run_target` fixes (previously the whole string,
+// space and all, was tested for existence as one path and never matched,
+// so the script silently ran inline instead of as a file).
+#[cfg(unix)]
+#[test]
+fn execute_script_relative_run_path_with_args_resolves_against_script_dir() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("greet.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho \"hello $1\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("greet.sh world".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("relative run path with trailing args must resolve against script_dir and run");
+    assert!(changed, "a zero-exit file script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(
+        out.contains("hello world"),
+        "trailing arg must reach the script's argv: {out:?}"
     );
 }
 
@@ -1471,7 +1614,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
 #[test]
 fn pwsh_inline_command_argv_shape() {
     let tmp = tempfile::tempdir().unwrap();
-    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None);
+    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None, true);
     assert_eq!(
         cmd.get_program().to_string_lossy(),
         "pwsh",
