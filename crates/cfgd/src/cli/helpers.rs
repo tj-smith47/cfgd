@@ -261,7 +261,7 @@ pub(in crate::cli) fn empty_resolved_profile(
 ) -> ResolvedProfile {
     ResolvedProfile {
         layers: vec![cfgd_core::config::ProfileLayer {
-            source: "local".to_string(),
+            source: cfgd_core::config::LOCAL_LAYER.to_string(),
             profile_name: profile_name.to_string(),
             priority: 0,
             policy: cfgd_core::config::LayerPolicy::Local,

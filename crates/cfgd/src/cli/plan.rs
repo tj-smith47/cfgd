@@ -160,8 +160,9 @@ pub fn cmd_plan(
     // counts and the payload all describe the set an apply would execute —
     // `apply` prunes with the same set, through the same gate. A preview writes
     // nothing, so an item classified but not yet recorded is withheld and
-    // listed without a row being minted for it; the apply that follows mints.
-    let withheld = plan_ops::withheld_for_run(
+    // listed without a row being minted for it; the row lands when `cfgd
+    // decide` answers it, or once an apply/tick proceeds.
+    let (withheld, _review) = plan_ops::withheld_for_run(
         &state,
         &cfg,
         &effective_resolved,

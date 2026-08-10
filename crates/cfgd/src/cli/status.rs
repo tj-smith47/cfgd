@@ -273,7 +273,7 @@ pub(super) fn cmd_status(
     // Only rows `cfgd decide` can still act on: a decision outliving the source
     // that raised it withholds nothing from a plan, so listing it here would
     // report work awaiting an answer that no answer can release.
-    let pending = reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name))
+    let mut pending = reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name))
         .answerable(state.pending_decisions()?);
     let resources = state.managed_resources()?;
 
@@ -293,6 +293,20 @@ pub(super) fn cmd_status(
     )?;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+
+    // The plan withholds items no run has recorded a row for yet; a dashboard
+    // that hides them contradicts the plan it summarizes. Same classification
+    // source `plan` reads, still read-only — the `id` 0 rows mark items whose
+    // row `cfgd decide` (or the next apply/tick) will mint.
+    let (withheld, _review) = plan_ops::withheld_for_run(
+        &state,
+        &cfg,
+        &resolved,
+        &config_dir,
+        true,
+        plan_ops::DecisionWrites::ReadOnly,
+    )?;
+    pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
 
     let state_map = module_state_map(&state);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules

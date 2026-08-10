@@ -277,12 +277,22 @@ empty — so a structured consumer can tell "in sync" from "waiting on you" from
 }
 ```
 
+An `id` of `0` marks an item classified this run but **not yet recorded** in the
+decision store: `plan` is read-only, so the row is minted later — by `cfgd
+decide` when you answer it, or by the `cfgd apply` / daemon tick that follows.
+Every other field carries the same shape either way, and the item is withheld
+identically; only a recorded row has a real (non-zero) `id`.
+
 Only a source you are still subscribed to can withhold anything: a decision
 whose source has been removed from `spec.sources` is inert, and a real `cfgd
-apply` discards it — unless you pointed that run at a config of your own
-(`--config`, `--config-dir`, `CFGD_CONFIG`) while leaving `--state-dir` at its
-default, in which case the rows are left alone because they belong to another
-config's picture of the machine.
+apply` discards it — unless you pointed that run at a FOREIGN config (a
+`--config`, `--config-dir`, or `CFGD_CONFIG` that resolves somewhere other
+than the default config location) while leaving `--state-dir` at its default,
+in which case the rows are left alone because they belong to another config's
+picture of the machine. Ownership follows the resolved path, not the spelling:
+`--config ~/.config/cfgd/cfgd.yaml` names the machine's own config — the same
+`--config` every installed service unit bakes into its invocation — and still
+discards.
 
 ### `cfgd status`
 

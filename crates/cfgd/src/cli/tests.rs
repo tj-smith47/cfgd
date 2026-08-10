@@ -20336,6 +20336,49 @@ fn plan_payload_omits_pending_decisions_when_there_are_none() {
 
 #[test]
 #[serial_test::serial]
+fn plan_payload_marks_an_unrecorded_decision_with_id_zero() {
+    // `plan` is read-only, so an item it classifies before any run has minted a
+    // row reaches the wire with `id` 0 — the documented "not yet recorded"
+    // discriminator. Every other field carries the recorded row's shape, and
+    // the store itself stays empty.
+    let f = decision_fixture_with(true, NOTIFYING_POLICY);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("an unrecorded classified item still reaches the payload");
+    assert_eq!(pending.len(), 1, "one withheld item: {json}");
+    let row = &pending[0];
+    assert_eq!(
+        row["id"], 0,
+        "id 0 marks a row nothing has recorded yet: {json}"
+    );
+    assert_eq!(row["source"], "acme", "the row names its source: {json}");
+    assert_eq!(
+        row["tier"], "recommended",
+        "the row carries its tier: {json}"
+    );
+    assert_eq!(
+        row["resource"],
+        serde_json::Value::String(f.resource()),
+        "the row names the withheld resource: {json}"
+    );
+    assert!(
+        row["resolution"].is_null(),
+        "an unrecorded row is unresolved: {json}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "the payload row is classification, not a store write"
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn apply_does_not_execute_a_resource_awaiting_a_decision() {
     let f = decision_fixture(false);
     f.with_pending_decision();
@@ -20587,11 +20630,11 @@ fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
 
 #[test]
 #[serial_test::serial]
-fn an_explicit_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
-    // The sweep is skipped only when a `--config` is paired with the DEFAULT
-    // state dir, where the rows belong to whatever config normally owns that
-    // store. Name both and the pairing is the operator's own, so the cleanup
-    // must still run.
+fn a_foreign_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
+    // The sweep is skipped only when a foreign config is paired with the
+    // DEFAULT state dir, where the rows belong to whatever config normally
+    // owns that store. A `--state-dir` of its own makes any config
+    // authoritative over the store it names, so the cleanup must still run.
     let f = decision_fixture(false);
     let state = f.with_pending_decision();
     state
@@ -20604,11 +20647,7 @@ fn an_explicit_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
         )
         .unwrap();
 
-    let cli = Cli {
-        config_explicit: true,
-        ..f.h.cli()
-    };
-    super::apply::cmd_apply(&cli, f.h.printer(), &apply_args(false)).unwrap();
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
 
     assert_eq!(
         state
@@ -20689,6 +20728,49 @@ fn apply_installs_the_item_once_its_freshly_minted_decision_is_accepted() {
 
 #[test]
 #[serial_test::serial]
+fn an_apply_declined_at_the_prompt_records_nothing() {
+    // The mint is a store write like apply's others, so it sits BEHIND the
+    // confirm gate: answering "no" leaves the machine and the store exactly as
+    // they were — no rows minted, no source hash stamped — so declining the
+    // apply really does change nothing, and the daemon's next tick still sees
+    // a changed source and sends its one notification for the items.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let args = ApplyArgs {
+        yes: false,
+        ..apply_args(false)
+    };
+    super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        !f.kept.exists() && !f.withheld.exists(),
+        "a declined apply executed nothing:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions"),
+        "the operator declined AFTER seeing the withheld item:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "declining the run declines its writes — the rows belong to the apply \
+         the operator refused"
+    );
+    assert!(
+        state.source_config_hash("acme").unwrap().is_none(),
+        "no hash is stamped either, or the daemon's next tick would treat the \
+         source as already seen and never notify"
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn plan_withholds_an_unrecorded_item_without_recording_it() {
     // `cfgd plan` is a preview and writes nothing — it consumes the same
     // classification an apply does, so the preview and the apply withhold one
@@ -20717,10 +20799,11 @@ fn plan_withholds_an_unrecorded_item_without_recording_it() {
 
 #[test]
 #[serial_test::serial]
-fn an_explicit_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
+fn a_foreign_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
     // The protective arm of the ownership gate: a `--config` naming someone
-    // else's picture of the machine, with the state dir left at its default,
-    // must not delete rows that config knows nothing about.
+    // else's picture of the machine — any config that is NOT the file at the
+    // default config location — with the state dir left at its default, must
+    // not delete rows that config knows nothing about.
     let f = decision_fixture(false);
     let default_state = super::open_state_store(None).unwrap();
     default_state
@@ -20734,7 +20817,6 @@ fn an_explicit_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
         .unwrap();
 
     let cli = Cli {
-        config_explicit: true,
         state_dir: None,
         ..f.h.cli()
     };
@@ -20749,6 +20831,56 @@ fn an_explicit_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
             .collect::<Vec<_>>(),
         vec!["gone".to_string()],
         "the row belongs to whatever config owns the default store, not to this run"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
+    // Ownership is SEMANTIC: the file at the default config location is the
+    // machine's own config however it was named, and every installed service
+    // unit names it — systemd/launchd/the SCM binPath all bake
+    // `--config <default path>` into the invocation. A gate keyed on the
+    // spelling would turn the sweep off for every installed deployment.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(staging.path());
+    let config_root = cfgd_core::default_config_dir();
+    std::fs::create_dir_all(config_root.join("profiles")).unwrap();
+    std::fs::write(
+        config_root.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_root.join("profiles").join("solo.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec: {}\n",
+    )
+    .unwrap();
+
+    let default_state = super::open_state_store(None).unwrap();
+    default_state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    // `config_explicit: true` mirrors the service-unit invocation — the path
+    // was typed, but it IS the machine's own config, so the run owns the store.
+    let cli = Cli {
+        config_explicit: true,
+        ..test_cli(&config_root)
+    };
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Quiet);
+    super::apply::cmd_apply(&cli, &printer, &apply_args(false)).unwrap();
+
+    assert!(
+        default_state.pending_decisions().unwrap().is_empty(),
+        "the machine's own config owns the default store no matter how it was named"
     );
 }
 
@@ -20815,6 +20947,118 @@ fn decide_lists_only_the_decisions_their_source_can_still_answer() {
         !output.contains("packages.brew.stern"),
         "`cfgd decide` acts against a source — offering a row whose source is \
          gone offers an action that changes nothing:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_answers_an_item_no_run_has_recorded_yet() {
+    // `cfgd plan` names an unrecorded item with the instruction to run
+    // `cfgd decide` — so decide must be able to answer it. It mints the row
+    // through the same machinery apply mints with, then resolves it in one
+    // step; the instruction the plan prints is honoured by the command it
+    // names.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    // A read-only plan classifies the item (and populates the source cache)
+    // without recording anything.
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "the premise: nothing has recorded the item the plan named"
+    );
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Reject,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        output.contains("REJECTED"),
+        "decide answers the unrecorded item instead of denying it exists:\n{output}"
+    );
+
+    // The answer is a real resolved row, and it sticks: the item stays off the
+    // machine on the next apply.
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "the minted row was resolved in the same step"
+    );
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    assert!(f.kept.exists(), "the operator's own file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a rejection recorded by decide excludes the item exactly as one \
+         recorded by the daemon would"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_lists_the_unrecorded_item_without_recording_it() {
+    // The bare listing is a read, like `cfgd plan`: it names the classified
+    // item alongside the recorded rows so the surfaces agree, but mints
+    // nothing until the operator actually answers.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "the item the plan withheld is offered for an answer:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a listing records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_lists_the_unrecorded_item_the_plan_withholds() {
+    // `cfgd status` reads the same classification the plan renders, so an item
+    // the plan names under "Pending Decisions" is corroborated here rather
+    // than denied.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::status::cmd_status(&f.h.cli(), &printer, None, false).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "an item awaiting its first recorded decision is still work awaiting \
+         the operator, and status is where they look for it:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "status is a read path and records nothing"
     );
 }
 

@@ -39,6 +39,22 @@ pub(super) fn cmd_decide(
     let resolution = action.resolution();
     let state = open_state_store(cli.state_dir.as_deref())?;
 
+    // A resolution is inherently a write, so an item `cfgd plan` classified
+    // that nothing has recorded yet becomes a real row HERE, through the same
+    // `mint_decisions` machinery apply mints with — the instruction the plan
+    // prints (``run `cfgd decide accept/reject` ``) is honoured by the command
+    // it names, instead of decide denying the item exists. Gated exactly as
+    // apply's writes are: a foreign config does not write rows into the
+    // default store. The bare listing stays a read, like `cfgd plan`.
+    let resolving = all || source.is_some() || resource.is_some();
+    let writes =
+        if resolving && reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some()) {
+            plan_ops::DecisionWrites::Mint
+        } else {
+            plan_ops::DecisionWrites::ReadOnly
+        };
+    let classification = source_classification(cli, printer, &state, writes);
+
     if all {
         let count = state.resolve_all_decisions(resolution)?;
         printer.emit(build_decide_bulk_doc(resolution, count, None));
@@ -68,9 +84,67 @@ pub(super) fn cmd_decide(
             reconciler::Subscriptions::Unverified
         }
     };
-    let decisions = subscriptions.answerable(state.pending_decisions()?);
+    let mut decisions = subscriptions.answerable(state.pending_decisions()?);
+    // Classified-but-unrecorded items (`id` 0) are offered for an answer
+    // without a row being minted for the offer itself.
+    if let Some((withheld, _)) = classification {
+        decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+    }
     printer.emit(build_decide_list_doc(&decisions));
     Ok(())
+}
+
+/// The shared source-decision classification, built the way `cfgd plan` builds
+/// it but composing cache-only — decide stays offline. `None` when the config
+/// or composition cannot be read: decide must still answer the rows that
+/// already exist, and minting from a broken picture is exactly the guess the
+/// fail-closed rule forbids (nothing is released either way — a row that
+/// exists withholds regardless of what this returns).
+fn source_classification(
+    cli: &Cli,
+    printer: &Printer,
+    state: &cfgd_core::state::StateStore,
+    writes: plan_ops::DecisionWrites,
+) -> Option<(
+    reconciler::WithheldDecisions,
+    reconciler::SourcePolicyReview,
+)> {
+    let (cfg, _profile_name, local_resolved) = match load_config_and_profile(cli) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            tracing::debug!("config load failed, skipping source classification: {e}");
+            return None;
+        }
+    };
+    let desired = match resolve_desired_state(
+        cli,
+        &cfg,
+        &local_resolved,
+        None,
+        printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!("composition failed, skipping source classification: {e}");
+            return None;
+        }
+    };
+    match plan_ops::withheld_for_run(
+        state,
+        &cfg,
+        &desired.resolved,
+        &config_dir(cli),
+        true,
+        writes,
+    ) {
+        Ok(classified) => Some(classified),
+        Err(e) => {
+            tracing::debug!("source classification unreadable: {e}");
+            None
+        }
+    }
 }
 
 /// Pure builder: bulk-resolution Doc (`accept --all` / `accept --source`).

@@ -742,19 +742,6 @@ pub struct DaemonDirOverrides {
     pub state_dir: Option<PathBuf>,
 }
 
-/// The process-level facts a launching CLI knows and the daemon cannot
-/// re-derive from its config path: which directory roots were relocated, and
-/// whether the operator NAMED the config (`--config`, `--config-dir`,
-/// `CFGD_CONFIG`). The second gates the per-tick sweep of dead decision rows
-/// through [`crate::reconciler::owns_decision_store`], exactly as it gates
-/// `cfgd apply`'s — a daemon pointed at someone else's config must not delete
-/// the default store's rows.
-#[derive(Debug, Clone, Default)]
-pub struct DaemonLaunch {
-    pub dirs: DaemonDirOverrides,
-    pub config_explicit: bool,
-}
-
 /// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")` — the
 /// daemon's self-update check and skill-staleness probes compare against the
 /// binary that is actually running, never cfgd-core's own crate version (the
@@ -762,7 +749,7 @@ pub struct DaemonLaunch {
 pub async fn run_daemon(
     config_path: PathBuf,
     profile_override: Option<String>,
-    launch: DaemonLaunch,
+    dirs: DaemonDirOverrides,
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
     scope: crate::Scope,
@@ -773,7 +760,7 @@ pub async fn run_daemon(
         profile_override,
         printer,
         hooks,
-        cli_run_overrides(launch, scope),
+        cli_run_overrides(dirs, scope),
         cfgd_version,
     )
     .await
@@ -785,12 +772,7 @@ pub async fn run_daemon(
 /// daemon (env/default when `None`); the client side resolves identically via
 /// [`resolve_default_ipc_path`].
 ///
-/// [`DaemonLaunch::config_explicit`] rides along rather than being re-derived: the daemon's
-/// per-tick sweep of dead decision rows takes the same store-ownership gate
-/// `cfgd apply` does, and only the process that parsed the flags knows whether
-/// the operator named the config.
-///
-/// `--state-dir` rides the same route: without it the loop falls through to
+/// `--state-dir` rides this route deliberately: without it the loop falls through to
 /// `default_state_dir_for(scope)`, which honors `CFGD_STATE_DIR` but NOT the
 /// flag — so a `cfgd --state-dir X daemon` would write its drift events,
 /// backups, and apply lock somewhere `cfgd --state-dir X status` never looks,
@@ -798,15 +780,13 @@ pub async fn run_daemon(
 ///
 /// Split out of [`run_daemon`] so the flag plumbing is testable without
 /// starting a loop that binds a real socket.
-pub(super) fn cli_run_overrides(launch: DaemonLaunch, scope: crate::Scope) -> DaemonRunOverrides {
-    let DaemonLaunch {
-        dirs,
-        config_explicit,
-    } = launch;
+pub(super) fn cli_run_overrides(
+    dirs: DaemonDirOverrides,
+    scope: crate::Scope,
+) -> DaemonRunOverrides {
     DaemonRunOverrides {
         ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
         state_dir_override: dirs.state_dir,
-        config_explicit,
         scope,
         ..DaemonRunOverrides::default()
     }
@@ -836,10 +816,6 @@ pub(super) fn cli_run_overrides(launch: DaemonLaunch, scope: crate::Scope) -> Da
 pub(super) struct DaemonRunOverrides {
     pub ipc_path: Option<PathBuf>,
     pub state_dir_override: Option<PathBuf>,
-    /// Whether the operator named the daemon's config themselves. Defaults to
-    /// `false` — the daemon of a machine's own config owns that machine's
-    /// decision rows.
-    pub config_explicit: bool,
     pub skip_health_server: bool,
     pub skip_startup_checkin: bool,
     pub(in crate::daemon) external_triggers: Option<DaemonTriggers>,
@@ -851,7 +827,6 @@ impl Default for DaemonRunOverrides {
         Self {
             ipc_path: None,
             state_dir_override: None,
-            config_explicit: false,
             skip_health_server: false,
             skip_startup_checkin: false,
             external_triggers: None,
@@ -1093,7 +1068,6 @@ pub(super) async fn run_daemon_with(
         compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
         state_dir_override: resolved_state_dir.clone(),
-        config_explicit: overrides.config_explicit,
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
         cfgd_version: cfgd_version.to_string(),

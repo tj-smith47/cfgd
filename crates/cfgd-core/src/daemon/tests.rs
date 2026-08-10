@@ -101,7 +101,6 @@ fn quiet_reconcile_ctx<'a>(
         notify_on_drift,
         hooks,
         state_dir_override: Some(state_dir),
-        config_explicit: false,
         printer,
         module_filter: None,
         auto_apply_override: None,
@@ -874,7 +873,14 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
 /// A config naming a profile that declares nothing, plus its profiles dir, so
 /// a reconcile tick runs end-to-end without planning any work.
 fn inert_config_under(root: &std::path::Path) -> PathBuf {
-    let config_path = root.join("other.yaml");
+    inert_config_named(root, "other.yaml")
+}
+
+/// [`inert_config_under`] with a caller-chosen filename, for staging the same
+/// inert config AT the default config location (`cfgd.yaml`).
+fn inert_config_named(root: &std::path::Path, filename: &str) -> PathBuf {
+    std::fs::create_dir_all(root).unwrap();
+    let config_path = root.join(filename);
     std::fs::write(
         &config_path,
         "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
@@ -890,9 +896,10 @@ fn inert_config_under(root: &std::path::Path) -> PathBuf {
     config_path
 }
 
-/// Run one tick against the DEFAULT state store, saying whether the operator
-/// named this daemon's config themselves.
-async fn tick_against_default_store(config_path: PathBuf, config_explicit: bool) {
+/// Run one tick against the DEFAULT state store, from whatever config path the
+/// daemon was pointed at — ownership of the store's decision rows is judged on
+/// that path alone.
+async fn tick_against_default_store(config_path: PathBuf) {
     crate::spawn_blocking_with_test_home(move || {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
@@ -906,7 +913,6 @@ async fn tick_against_default_store(config_path: PathBuf, config_explicit: bool)
                 notify_on_drift: false,
                 hooks: &crate::test_helpers::NoopDaemonHooks,
                 state_dir_override: None,
-                config_explicit,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -926,7 +932,7 @@ async fn tick_against_default_store(config_path: PathBuf, config_explicit: bool)
 /// first tick.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn a_daemon_on_an_operator_named_config_leaves_the_default_stores_rows_alone() {
+async fn a_daemon_on_a_foreign_config_leaves_the_default_stores_rows_alone() {
     let staging = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(staging.path());
     let store = StateStore::open_default().expect("the default store lands under the test home");
@@ -934,7 +940,7 @@ async fn a_daemon_on_an_operator_named_config_leaves_the_default_stores_rows_alo
         .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
         .unwrap();
 
-    tick_against_default_store(inert_config_under(staging.path()), true).await;
+    tick_against_default_store(inert_config_under(staging.path())).await;
 
     assert_eq!(
         store.pending_decisions().unwrap().len(),
@@ -943,11 +949,13 @@ async fn a_daemon_on_an_operator_named_config_leaves_the_default_stores_rows_alo
     );
 }
 
-/// The other arm: the machine's own config sweeps as before, so the gate did
-/// not simply turn the cleanup off.
+/// The other arm, in the exact shape every installed service unit runs:
+/// systemd/launchd/the SCM binPath all bake `--config <default path>` into the
+/// invocation, and a daemon on the machine's own config must sweep no matter
+/// how that config was named. Ownership is the PATH, not the spelling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn a_daemon_on_the_machines_own_config_still_sweeps_dead_decision_rows() {
+async fn a_service_daemon_naming_the_default_config_still_sweeps_dead_decision_rows() {
     let staging = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(staging.path());
     let store = StateStore::open_default().expect("the default store lands under the test home");
@@ -955,7 +963,11 @@ async fn a_daemon_on_the_machines_own_config_still_sweeps_dead_decision_rows() {
         .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
         .unwrap();
 
-    tick_against_default_store(inert_config_under(staging.path()), false).await;
+    // The same file the bare default would resolve, passed the way a generated
+    // service unit passes it: as an explicit path.
+    let config_path =
+        inert_config_named(&crate::default_config_dir(), crate::config::CONFIG_FILENAME);
+    tick_against_default_store(config_path).await;
 
     assert!(
         store.pending_decisions().unwrap().is_empty(),
@@ -7400,7 +7412,6 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 notify_on_drift: false,
                 hooks: &hooks,
                 state_dir_override: Some(&sd),
-                config_explicit: false,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -8063,6 +8074,154 @@ fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
         }
     }
     out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
+    // Fail-closed on the WRITE half too: `mint_decisions` logs and skips a row
+    // the store rejects, so the classified item exists nowhere in the store —
+    // and the unattended tick is the one path with nobody at the screen to
+    // catch it. The item must ride `WithheldDecisions::with_unrecorded` exactly
+    // as it does on `cfgd plan`/`cfgd apply`, or a locked table quietly
+    // installs what nobody was asked about.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    // `acme` delivers `bat` on a recommended layer; the config sets no policy,
+    // so the item falls to `newRecommended`'s `Notify` default and must be
+    // asked about before it installs.
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  packages:\n    cargo:\n      packages:\n        - bat\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    {
+        // Create the schema first, then deny every INSERT into
+        // `pending_decisions` via a trigger: `upsert_pending_decision` fails
+        // while every read (and every other table) keeps working — the exact
+        // shape of a store that rejects the one write minting needs.
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        drop(seed);
+        let conn = rusqlite::Connection::open(state_dir.join(crate::state::STATE_DB_FILENAME))
+            .expect("open the state db directly");
+        conn.execute_batch(
+            "CREATE TRIGGER deny_pending_decision_writes\n             BEFORE INSERT ON pending_decisions\n             BEGIN SELECT RAISE(ABORT, 'pending_decisions rejects writes in this test'); END;",
+        )
+        .expect("install the write-denying trigger");
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        // `ripgrep` is the operator's own and must still install: withholding
+        // the unrecorded item may not turn into skipping the whole tick.
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - ripgrep\n",
+    )
+    .unwrap();
+
+    struct MintDeniedHooks {
+        installed: Arc<Mutex<Vec<String>>>,
+    }
+    impl DaemonHooks for MintDeniedHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers.push(Box::new(RecordingInstallManager {
+                installed: Arc::clone(&self.installed),
+            }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            merged: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            // Plan from the composed profile the tick resolved, so the source's
+            // `bat` is genuinely in the plan the withholding must prune.
+            let packages = merged
+                .packages
+                .cargo
+                .as_ref()
+                .map(|c| c.packages.clone())
+                .unwrap_or_default();
+            Ok(vec![PackageAction::Install {
+                manager: "cargo".into(),
+                packages,
+                origin: "acme".into(),
+            }])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let installed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = MintDeniedHooks {
+        installed: Arc::clone(&installed),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        after.pending_decisions().unwrap().is_empty(),
+        "the fixture's premise: the mint write really failed, so no row exists"
+    );
+    let installed = installed.lock().await;
+    assert!(
+        !installed.contains(&"bat".to_string()),
+        "an item whose decision could not be recorded is still awaiting one — \
+         a failed write must cost the operator the ability to answer, never the \
+         protection; installed: {installed:?}"
+    );
+    assert!(
+        installed.contains(&"ripgrep".to_string()),
+        "the operator's own declaration still installs alongside the withheld \
+         item; installed: {installed:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -9413,7 +9572,6 @@ mod harness {
             compliance_config: compliance,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10191,7 +10349,6 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10277,7 +10434,6 @@ mod harness {
             compliance_config: Some(compliance_cfg),
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10529,7 +10685,6 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10605,7 +10760,6 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10666,7 +10820,6 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -12200,7 +12353,6 @@ mod harness {
         super::super::DaemonRunOverrides {
             ipc_path: Some(tmp.path().join("daemon-test.sock")),
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12486,7 +12638,6 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             skip_health_server: false,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12545,7 +12696,6 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12833,7 +12983,6 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: None,
@@ -13090,7 +13239,6 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -13146,7 +13294,6 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
-            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -14634,7 +14781,6 @@ mod handle_reconcile_extra_branches {
                     notify_on_drift: false,
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
-                    config_explicit: false,
                     printer: &printer,
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),
@@ -14891,12 +15037,9 @@ mod tests_run_daemon_wrapper {
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
         let over = cli_run_overrides(
-            crate::daemon::DaemonLaunch {
-                dirs: DaemonDirOverrides {
-                    runtime_dir: Some(runtime.clone()),
-                    state_dir: Some(state.clone()),
-                },
-                config_explicit: false,
+            DaemonDirOverrides {
+                runtime_dir: Some(runtime.clone()),
+                state_dir: Some(state.clone()),
             },
             crate::Scope::User,
         );
@@ -14930,7 +15073,7 @@ mod tests_run_daemon_wrapper {
     #[test]
     fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
         use crate::daemon::cli_run_overrides;
-        let over = cli_run_overrides(crate::daemon::DaemonLaunch::default(), crate::Scope::User);
+        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User);
         assert!(
             over.state_dir_override.is_none(),
             "no flag → fall through to CFGD_STATE_DIR / the scope default"
@@ -14945,7 +15088,7 @@ mod tests_run_daemon_wrapper {
         let result = run_daemon(
             bogus_path,
             None,
-            crate::daemon::DaemonLaunch::default(),
+            DaemonDirOverrides::default(),
             printer,
             hooks,
             crate::Scope::User,

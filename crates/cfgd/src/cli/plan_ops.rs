@@ -271,6 +271,10 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
 ///   cannot be the window a manual apply installs it in.
 ///
 /// [`DecisionWrites`] says whether this run may record what it classified.
+/// The [`reconciler::SourcePolicyReview`] rides back with the withheld set so
+/// a caller whose writes are DEFERRED — `cfgd apply` mints only after the
+/// operator confirms the run — can hand the same classification to
+/// [`reconciler::mint_decisions`] later instead of classifying twice.
 pub(in crate::cli) fn withheld_for_run(
     state: &cfgd_core::state::StateStore,
     cfg: &cfgd_core::config::CfgdConfig,
@@ -278,7 +282,10 @@ pub(in crate::cli) fn withheld_for_run(
     config_dir: &Path,
     config_parsed: bool,
     writes: DecisionWrites,
-) -> anyhow::Result<reconciler::WithheldDecisions> {
+) -> anyhow::Result<(
+    reconciler::WithheldDecisions,
+    reconciler::SourcePolicyReview,
+)> {
     let mut local = reconciler::local_profile(resolved);
     packages::resolve_manifest_packages(&mut local.packages, config_dir)?;
 
@@ -292,7 +299,10 @@ pub(in crate::cli) fn withheld_for_run(
     // an undecided one must not guess, and the half it would guess wrong is the
     // half that installs.
     if !config_parsed {
-        return Ok(reconciler::WithheldDecisions::read(state, &scope)?);
+        return Ok((
+            reconciler::WithheldDecisions::read(state, &scope)?,
+            reconciler::SourcePolicyReview::default(),
+        ));
     }
     let review = reconciler::review_source_policies(
         state,
@@ -300,25 +310,28 @@ pub(in crate::cli) fn withheld_for_run(
         resolved,
         reconciler::configured_auto_apply(cfg),
     )?;
-    // Minting first is what makes the rows readable below, so an apply names
-    // the same rows `cfgd status` and `cfgd decide` will: the operator can
-    // answer the item the run just refused to install without waiting for the
-    // daemon. It is also why the read comes after — `with_unrecorded` then has
-    // nothing left to add for the items this run recorded.
+    // Minting first is what makes the rows readable below, so a minting run
+    // names the same rows `cfgd status` and `cfgd decide` will. It is also why
+    // the read comes after — `with_unrecorded` then has nothing left to add
+    // for the items this run recorded.
     if matches!(writes, DecisionWrites::Mint) {
         reconciler::mint_decisions(state, &review);
     }
-    Ok(reconciler::WithheldDecisions::read(state, &scope)?
-        .with_policy_declined(review.declined)
-        .with_unrecorded(&review.to_mint, &scope))
+    let withheld = reconciler::WithheldDecisions::read(state, &scope)?
+        .with_policy_declined(review.declined.clone())
+        .with_unrecorded(&review.to_mint, &scope);
+    Ok((withheld, review))
 }
 
-/// Whether a run may record the decisions its policy review classified.
+/// Whether a run may record the decisions its policy review classified NOW.
 ///
 /// `cfgd plan` is a preview and writes nothing, so it withholds a newly
-/// classified item without minting a row for it. `cfgd apply` already owns the
-/// store it opened and mints, so the item it declines to install is answerable
-/// immediately. Both withhold identically — only the record differs.
+/// classified item without minting a row for it. `cfgd decide` is the
+/// answering surface and mints immediately, so an unrecorded-but-classified
+/// item is answerable in the same invocation that named it. `cfgd apply`
+/// passes `ReadOnly` here and mints AFTER the operator confirms the run,
+/// through the review this function returns — declining the prompt must leave
+/// the store untouched. All withhold identically — only the record differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::cli) enum DecisionWrites {
     Mint,

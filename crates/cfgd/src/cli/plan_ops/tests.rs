@@ -2085,7 +2085,7 @@ fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file
         )
         .unwrap();
 
-    let withheld = withheld_for_run(
+    let (withheld, _review) = withheld_for_run(
         &store,
         &config_subscribed_to_acme(),
         &local_resolved("packages:\n  brew:\n    file: Brewfile\n"),
@@ -2118,7 +2118,7 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
         )
         .unwrap();
 
-    let withheld = withheld_for_run(
+    let (withheld, _review) = withheld_for_run(
         &store,
         &cfgd_core::config::minimal_config(),
         &local_resolved("{}\n"),

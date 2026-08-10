@@ -110,11 +110,6 @@ pub(crate) struct ReconcileCtx<'a> {
     pub notify_on_drift: bool,
     pub hooks: &'a dyn DaemonHooks,
     pub state_dir_override: Option<&'a Path>,
-    /// Whether the operator named this daemon's config themselves (`--config`,
-    /// `--config-dir`, `CFGD_CONFIG`). Feeds
-    /// [`crate::reconciler::owns_decision_store`]: a config pointed at the
-    /// default store is not authoritative over its decision rows.
-    pub config_explicit: bool,
     pub printer: &'a crate::output::Printer,
     /// When set, restrict reconcile to actions targeting this module name.
     /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
@@ -184,7 +179,6 @@ pub(crate) fn handle_reconcile(
         notify_on_drift,
         hooks,
         state_dir_override,
-        config_explicit,
         printer,
         module_filter,
         auto_apply_override,
@@ -323,10 +317,12 @@ pub(crate) fn handle_reconcile(
     // `cfgd decide` acts against a source that no longer exists — and dropping
     // the LAST source, or turning auto-apply off, must not be what strands
     // them. The one gate it does take is store ownership, shared with
-    // `cfgd apply`: a daemon started with `--config other.yaml` against the
-    // DEFAULT store would otherwise delete another config's rows.
+    // `cfgd apply`: a daemon started on a FOREIGN config against the DEFAULT
+    // store would otherwise delete another config's rows. Ownership is judged
+    // on the resolved config path itself, so an installed service unit baking
+    // `--config <default path>` still sweeps its own machine's rows.
     let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
-    if crate::reconciler::owns_decision_store(config_explicit, state_dir_override.is_some())
+    if crate::reconciler::owns_decision_store(config_path, state_dir_override.is_some())
         && let Err(e) = store.discard_decisions_not_in(&subscribed)
     {
         tracing::warn!(error = %e, "failed to discard decisions of removed sources");
@@ -365,8 +361,14 @@ pub(crate) fn handle_reconcile(
         subscribed,
         &crate::reconciler::local_profile(&resolved),
     );
+    // `with_unrecorded` closes the write-failure window: a mint the store
+    // rejected has no row for `read` to return, and the unattended tick is the
+    // one path that would install it with nobody watching. For every row that
+    // DID record, it is a no-op — `read` already returned it.
     let withheld = match crate::reconciler::WithheldDecisions::read(&store, &decision_scope) {
-        Ok(w) => w.with_policy_declined(review.declined),
+        Ok(w) => w
+            .with_policy_declined(review.declined)
+            .with_unrecorded(&review.to_mint, &decision_scope),
         Err(e) => {
             tracing::error!(error = %e, "reconcile: cannot read source decisions");
             notifier.notify(
@@ -512,9 +514,13 @@ pub(crate) fn handle_reconcile(
         for phase in &plan.phases {
             for action in phase.actions() {
                 let (rtype, rid) = action_resource_info(action);
-                if let Err(e) =
-                    store.record_drift(&rtype, &rid, None, Some("drift detected"), "local")
-                {
+                if let Err(e) = store.record_drift(
+                    &rtype,
+                    &rid,
+                    None,
+                    Some("drift detected"),
+                    config::LOCAL_LAYER,
+                ) {
                     tracing::warn!(error = %e, "failed to record drift");
                 }
                 current_drift.push((rtype, rid));

@@ -429,12 +429,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     // Parse config/profile from process args.
     // SCM invokes: cfgd.exe daemon service --config "C:\..." [--profile "name"]
     let args: Vec<String> = std::env::args().collect();
-    let mut config_path = crate::default_config_dir().join("config.yaml");
-    // `install_windows_service` bakes `--config` into the binPath only when the
-    // install carried one, so its presence here is the same fact the CLI's
-    // `--config` sets: the operator named this config, and it is not
-    // authoritative over the default store's decision rows.
-    let mut config_explicit = false;
+    let mut config_path = crate::default_config_dir().join(crate::config::CONFIG_FILENAME);
     let mut profile_override: Option<String> = None;
     let mut scope = crate::Scope::User;
     let mut dirs = DaemonDirOverrides::default();
@@ -443,7 +438,6 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         match args[i].as_str() {
             "--config" if i + 1 < args.len() => {
                 config_path = PathBuf::from(&args[i + 1]);
-                config_explicit = true;
                 i += 2;
             }
             "--profile" if i + 1 < args.len() => {
@@ -494,10 +488,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         if let Err(e) = run_daemon(
             config_path,
             profile_override,
-            crate::daemon::DaemonLaunch {
-                dirs,
-                config_explicit,
-            },
+            dirs,
             printer,
             hooks,
             scope,

@@ -55,10 +55,7 @@ pub(super) fn cmd_daemon(
         cfgd_core::daemon::run_daemon(
             config_path,
             profile_override,
-            cfgd_core::daemon::DaemonLaunch {
-                dirs,
-                config_explicit: cli.config_explicit,
-            },
+            dirs,
             daemon_printer,
             hooks,
             cli.scope(),

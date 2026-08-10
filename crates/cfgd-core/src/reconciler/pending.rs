@@ -336,8 +336,9 @@ impl WithheldDecisions {
     /// pending row does, and is rendered beside them.
     ///
     /// A mint whose row this run already read is skipped, so a path that MINTS
-    /// before reading (`cfgd apply`, through [`mint_decisions`]) does not list
-    /// the same item twice. The scope gate applies here too: an item the
+    /// before reading (`cfgd decide` answering an item, through
+    /// [`mint_decisions`]) does not list the same item twice. The scope gate
+    /// applies here too: an item the
     /// operator also declares themselves is theirs, not the source's, and no
     /// classification of the source's copy may withhold it.
     pub fn with_unrecorded(mut self, mints: &[DecisionMint], scope: &DecisionScope) -> Self {
@@ -568,11 +569,11 @@ pub fn review_source_policy(
 /// Record the rows a [`SourcePolicyReview`] asked for, returning how many were
 /// minted per source.
 ///
-/// The WRITE half of the review, shared by the daemon's tick and by
-/// `cfgd apply` so an item is asked about by whichever of them runs first: a
-/// row minted here is answerable by `cfgd decide` immediately, instead of the
-/// item waiting on the next daemon tick while every apply in between is free to
-/// install it. Idempotent by construction — `review_source_policy` only mints
+/// The WRITE half of the review, shared by the daemon's tick, by `cfgd apply`
+/// (after its confirmation — a declined run declines its writes), and by
+/// `cfgd decide` when it answers an item no run has recorded yet, so a row
+/// exists by whichever of them runs first instead of the item waiting on the
+/// next daemon tick. Idempotent by construction — `review_source_policy` only mints
 /// what has never been asked about (or what a changed source re-asks), and the
 /// upsert refreshes an unresolved row rather than duplicating it.
 ///
@@ -617,17 +618,52 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
 
 /// Whether a run may sweep the decision rows out of the store it opened.
 ///
-/// One rule, read by `cfgd apply` and by the daemon's tick. A config the
-/// operator named explicitly (`--config`, `--config-dir`, `CFGD_CONFIG`) is not
-/// authoritative over the DEFAULT store: its subscription list belongs to a
-/// different machine picture, and the rows it would delete are another config's,
-/// unrecoverably. Bringing its own state dir makes it authoritative again,
+/// One rule, read by `cfgd apply` and by the daemon's tick, and it is SEMANTIC:
+/// ownership follows what the resolved config path IS, not how it was spelled
+/// on the command line. The machine's own config — the file at the default
+/// config location, however it was named (`--config
+/// ~/.config/cfgd/cfgd.yaml` is the same file the bare default resolves, and
+/// every installed service unit bakes exactly that `--config` into its
+/// invocation) — owns the default store's rows. A FOREIGN config pointed at
+/// the default store does not: its subscription list belongs to a different
+/// machine picture, and the rows it would delete are another config's,
+/// unrecoverably. Bringing its own state dir makes any config authoritative,
 /// because then the store it sweeps is the one that config owns.
 ///
 /// Withholding is unaffected either way — a row whose source this run does not
 /// subscribe to is inert through [`Subscriptions`], swept or not.
-pub fn owns_decision_store(config_explicit: bool, has_state_dir_override: bool) -> bool {
-    !config_explicit || has_state_dir_override
+pub fn owns_decision_store(config_path: &Path, has_state_dir_override: bool) -> bool {
+    has_state_dir_override || is_machines_own_config(config_path)
+}
+
+/// Whether `config_path` names the machine's own config: a discovery-named
+/// config file (`cfgd.yaml` / `cfgd.toml`) sitting in the default config
+/// directory of EITHER scope. Both scopes are accepted because the store a run
+/// opens is resolved independently of the config flag, so the system daemon's
+/// `/etc/cfgd/cfgd.yaml` is as much "this machine's config" as the per-user
+/// default. Falls back to canonical comparison so a symlinked config root
+/// (macOS `/tmp`, a stow-managed `~/.config`) still matches its own default.
+fn is_machines_own_config(config_path: &Path) -> bool {
+    let named = crate::expand_tilde(config_path);
+    if !named
+        .file_name()
+        .is_some_and(|name| name == config::CONFIG_FILENAME || name == config::CONFIG_FILENAME_TOML)
+    {
+        return false;
+    }
+    let Some(parent) = named.parent() else {
+        return false;
+    };
+    [crate::Scope::User, crate::Scope::System]
+        .into_iter()
+        .any(|scope| {
+            let default_dir = crate::default_config_dir_for(scope);
+            parent == default_dir
+                || matches!(
+                    (parent.canonicalize(), default_dir.canonicalize()),
+                    (Ok(a), Ok(b)) if a == b
+                )
+        })
 }
 
 /// Hash a resource set so a source's delivered items can be compared against

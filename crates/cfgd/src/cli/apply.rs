@@ -335,13 +335,14 @@ pub fn run_apply(
     // nothing, and a module-only fallback knows no subscription list to judge
     // the rows against. The rows are inert either way (the gate below admits
     // only subscribed sources), so this is cleanup, not enforcement.
-    // A config named with `--config` while the state dir stays the default is
-    // not authoritative over that store either: its subscription list belongs
-    // to a different machine picture, and the rows it would delete are another
-    // config's, unrecoverably. Withholding is unaffected — the gate below still
+    // A FOREIGN config while the state dir stays the default is not
+    // authoritative over that store either: its subscription list belongs to a
+    // different machine picture, and the rows it would delete are another
+    // config's, unrecoverably. Ownership follows the resolved path, not the
+    // spelling — `--config` naming the default config file is still the
+    // machine's own config. Withholding is unaffected — the gate below still
     // refuses rows this run has no source for.
-    let owns_the_store =
-        reconciler::owns_decision_store(cli.config_explicit, cli.state_dir.is_some());
+    let owns_the_store = reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some());
     let store_writes = !dry_run && config_parsed && owns_the_store;
     if store_writes {
         let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
@@ -352,22 +353,20 @@ pub fn run_apply(
 
     // A run that owns the store also RECORDS what the policy classified, so an
     // item this apply refuses to install is one `cfgd decide` can answer now
-    // rather than after the daemon's next tick. The same three conditions gate
-    // it as gate the sweep: a dry run changes nothing, a module-only fallback
-    // knows no subscription list, and a `--config` naming someone else's store
-    // does not write rows into it.
-    let writes = if store_writes {
-        plan_ops::DecisionWrites::Mint
-    } else {
-        plan_ops::DecisionWrites::ReadOnly
-    };
-    let withheld = plan_ops::withheld_for_run(
+    // rather than after the daemon's next tick — but only AFTER the operator
+    // lets the run proceed: the mint is a store write like the others, so it
+    // waits behind the confirm gate below (the preview withholds and names the
+    // item either way, through `with_unrecorded`). The same three conditions
+    // gate it as gate the sweep: a dry run changes nothing, a module-only
+    // fallback knows no subscription list, and a foreign config naming someone
+    // else's store does not write rows into it.
+    let (withheld, review) = plan_ops::withheld_for_run(
         &state,
         &cfg,
         &effective_resolved,
         &config_dir,
         config_parsed,
-        writes,
+        plan_ops::DecisionWrites::ReadOnly,
     )?;
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
     let reconciler = Reconciler::new(&registry, &state)
@@ -520,7 +519,15 @@ pub fn run_apply(
         lock_dir: apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?,
         lock: None,
     };
-    let result = match run.execute(printer, confirm, &mut exec)? {
+    let disposition = run.execute(printer, confirm, &mut exec)?;
+    // The operator let the run proceed (or `--yes` did), so apply's deferred
+    // store write lands now: the rows the policy classified are recorded and
+    // `cfgd decide` can answer them without waiting for a daemon tick. A
+    // declined run skips this — refusing the apply refuses its writes.
+    if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
+        reconciler::mint_decisions(&state, &review);
+    }
+    let result = match disposition {
         reconciler::RunDisposition::Applied(result) => result,
         reconciler::RunDisposition::Declined => {
             printer.status_simple(Role::Info, "Aborted");
