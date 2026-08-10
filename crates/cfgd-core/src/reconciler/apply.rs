@@ -21,7 +21,7 @@ use super::types::{
     PhaseFilter, PhaseName, Plan, ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
 use crate::providers::{
-    ActionNote, FileAction, NoOpPackageState, NoteSink, PackageAction, PackageContext,
+    ActionNote, FileAction, IndexRefreshPackageState, NoteSink, PackageAction, PackageContext,
     PackageManager, SecretAction,
 };
 
@@ -411,33 +411,45 @@ impl<'a> super::Reconciler<'a> {
     /// Refresh every manager in play before any phase runs, concurrently
     /// across managers, collapsed into exactly one status line.
     ///
+    /// Every lane runs under `PackageContext::for_index_refresh`: windowless
+    /// (its command executes through `cfgd_core::command_output_with_timeout`
+    /// rather than a live `Printer` window — N overlapping windows would
+    /// render N overlapping bars on a TTY and interleave N streams into a
+    /// non-TTY log) and notes-discarding (a pre-pass note has no action to
+    /// attach under, so `PackageContext::report` settles it on the printer
+    /// immediately instead of misattaching it to whichever action happens to
+    /// run first). Each lane's spinner is the only visible progress
+    /// indicator, per the output brief's "spinners, never windows".
+    ///
     /// Managers whose `update_needs_state()` is `false` (every manager except
     /// npm today) refresh inside one `std::thread::scope`, each against its
-    /// own spinner and a `NoOpPackageState` — safe with no `unsafe`, because
-    /// `PackageStateStore` carries no `Send + Sync` supertrait and so
+    /// own spinner and an `IndexRefreshPackageState` — safe with no `unsafe`,
+    /// because `PackageStateStore` carries no `Send + Sync` supertrait and so
     /// `&dyn PackageStateStore` backed by the real `StateStore` (whose
     /// `rusqlite::Connection` is `Send` but not `Sync`) can never cross a
-    /// spawned thread. A manager overriding `update_needs_state()` to `true`
-    /// refreshes sequentially instead, on THIS thread, against the real
-    /// `self.state` — it contributes its own spinner and its own entry to the
-    /// collapsed line, just not concurrently with the others.
+    /// spawned thread. `IndexRefreshPackageState` fails loudly rather than
+    /// succeeding silently if a stateless-partitioned manager's `update`
+    /// reaches `cx.state` anyway — that manager's `update_needs_state()`
+    /// override is wrong, not the pre-pass. A manager overriding
+    /// `update_needs_state()` to `true` refreshes sequentially instead, on
+    /// THIS thread, against the real `self.state` — it contributes its own
+    /// spinner and its own entry to the collapsed line, just not
+    /// concurrently with the others.
     ///
     /// A manager bootstrapped later in the run is not in scope here at all
     /// (`managers_in_play` only admits an already-available manager): it
     /// refreshes once, inline, immediately after its own bootstrap succeeds
-    /// (`reconciler::modules`), so the pre-pass and the inline site can never
-    /// double-refresh the same manager.
+    /// (the module-package arm in `reconciler::modules`, and the
+    /// profile-package arm in `reconciler::packages`), so the pre-pass and an
+    /// inline site can never double-refresh the same manager.
     ///
     /// Never fails the phase: a refresh failure degrades the one collapsed
-    /// line to `Role::Warn` and the run continues. The shared `notes` sink is
-    /// already `Sync` (its `Vec` lives behind a `Mutex`), so every lane
-    /// reports through the same one passed in, whichever group it ran in.
+    /// line to `Role::Warn` and the run continues.
     fn refresh_package_indexes(
         &self,
         plan: &Plan,
         phase_filter: Option<&PhaseFilter>,
         printer: &Printer,
-        notes: &NoteSink,
     ) {
         let managers = self.managers_in_play(plan, phase_filter);
         if managers.is_empty() {
@@ -455,18 +467,17 @@ impl<'a> super::Reconciler<'a> {
             std::collections::HashMap::new();
 
         if !stateless.is_empty() {
-            let no_op = NoOpPackageState;
+            let refresh_state = IndexRefreshPackageState;
             let results = std::thread::scope(|scope| {
                 let handles: Vec<_> = stateless
                     .iter()
                     .map(|pm| {
-                        let no_op_ref = &no_op;
+                        let refresh_state_ref = &refresh_state;
                         let name = pm.name();
                         let pm = *pm;
                         let handle = scope.spawn(move || {
                             let sp = printer.spinner(name);
-                            let cx = PackageContext::with_notes(printer, no_op_ref, notes)
-                                .caller_owns_status();
+                            let cx = PackageContext::for_index_refresh(printer, refresh_state_ref);
                             let result = pm.update(&cx).map_err(|e| collapse_to_subject_line(&e));
                             sp.finish_silent();
                             result
@@ -489,7 +500,7 @@ impl<'a> super::Reconciler<'a> {
 
         for pm in &stateful {
             let sp = printer.spinner(pm.name());
-            let cx = PackageContext::with_notes(printer, self.state, notes).caller_owns_status();
+            let cx = PackageContext::for_index_refresh(printer, self.state);
             let result = pm.update(&cx).map_err(|e| collapse_to_subject_line(&e));
             sp.finish_silent();
             outcomes.insert(pm.name(), result);
@@ -611,7 +622,7 @@ impl<'a> super::Reconciler<'a> {
         // windows, script windows and every status they collapse into.
         let _inherit = printer.depth_inheritance();
 
-        self.refresh_package_indexes(plan, phase_filter, printer, &notes);
+        self.refresh_package_indexes(plan, phase_filter, printer);
 
         'phases: for phase in &plan.phases {
             // Plan positions of the actions in this phase that survive

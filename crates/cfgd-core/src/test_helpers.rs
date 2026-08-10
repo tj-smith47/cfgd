@@ -1030,17 +1030,14 @@ pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::new(crate::output::Verbosity::Quiet)
 }
 
-/// Build a `PackageContext` from a borrowed `Printer` and `StateStore` — the
-/// pair every `PackageManager` fixture now needs alongside `test_printer()` /
-/// `test_state()` since `PackageContext` threading replaced the bare
-/// `&Printer` parameter on the state-touching trait methods.
-///
 /// A `PackageStateStore` that remembers nothing — for a fixture whose subject
-/// (`bootstrap`) reaches no state. The same zero-field stub the concurrent
-/// index-refresh pre-pass backs its non-state-touching lanes with in
-/// production (`crate::providers::NoOpPackageState`); re-exported under this
-/// name so existing fixtures keep reading as "the state a bootstrap-only test
-/// doesn't need" rather than reaching across to a production-pre-pass type.
+/// (`bootstrap`) reaches no state. A test-fixture stub only: production no
+/// longer constructs `crate::providers::NoOpPackageState` directly — the
+/// concurrent index-refresh pre-pass backs its non-state-touching lanes with
+/// `crate::providers::IndexRefreshPackageState` instead, which fails loudly
+/// on the same trait rather than permissively. Re-exported under this name
+/// so existing fixtures keep reading as "the state a bootstrap-only test
+/// doesn't need."
 pub use crate::providers::NoOpPackageState as NullPackageState;
 
 /// A `PackageContext` for a fixture that drives `bootstrap`, which touches no
@@ -1060,6 +1057,10 @@ pub fn test_bootstrap_context_with_notes<'a>(
     crate::providers::PackageContext::with_notes(printer, &NullPackageState, notes)
 }
 
+/// Build a `PackageContext` from a borrowed `Printer` and `StateStore` — the
+/// pair every `PackageManager` fixture now needs alongside `test_printer()` /
+/// `test_state()` since `PackageContext` threading replaced the bare
+/// `&Printer` parameter on the state-touching trait methods.
 pub fn test_package_context<'a>(
     printer: &'a crate::output::Printer,
     state: &'a crate::state::StateStore,

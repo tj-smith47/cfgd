@@ -4056,6 +4056,118 @@ fn apply_refresh_failure_degrades_the_collapsed_line_and_does_not_fail_the_phase
     );
 }
 
+/// A package manager whose `update` blocks on a shared barrier — proves the
+/// index-refresh pre-pass's stateless lane runs its managers on genuinely
+/// separate threads rather than a sequential loop that would only LOOK
+/// concurrent from the collapsed status line's perspective. A regression to
+/// sequential execution deadlocks here, because only one lane would ever
+/// reach the barrier — which is why the enclosing test bounds the wait with
+/// a timeout instead of hanging the suite.
+struct BarrierSyncedPackageManager {
+    name: String,
+    barrier: std::sync::Arc<std::sync::Barrier>,
+}
+
+impl PackageManager for BarrierSyncedPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        self.barrier.wait();
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn apply_refresh_pre_pass_runs_stateless_managers_truly_concurrently() {
+    const MANAGERS: [&str; 3] = ["apt", "brew", "cargo"];
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(MANAGERS.len()));
+
+    let mut registry = ProviderRegistry::new();
+    for name in MANAGERS {
+        registry
+            .package_managers
+            .push(Box::new(BarrierSyncedPackageManager {
+                name: name.to_string(),
+                barrier: barrier.clone(),
+            }));
+    }
+
+    let pkg_actions: Vec<PackageAction> = MANAGERS
+        .iter()
+        .map(|name| PackageAction::Install {
+            manager: name.to_string(),
+            packages: vec!["placeholder".to_string()],
+            origin: "local".to_string(),
+        })
+        .collect();
+
+    // The whole `apply` call runs on a detached thread rather than
+    // `std::thread::scope`: a scope blocks the test thread joining its
+    // children before returning, which would defeat the timeout below if the
+    // pre-pass ever DID regress to sequential execution and deadlocked on the
+    // barrier.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let state = test_state();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+        let printer = test_printer();
+        let result = reconciler.apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        );
+        let _ = tx.send(result.map(|r| r.status));
+    });
+
+    let status = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect(
+            "apply did not complete within 10s — the index-refresh pre-pass regressed to \
+             sequential execution and deadlocked on the barrier",
+        )
+        .unwrap();
+    assert_eq!(status, ApplyStatus::Success);
+}
+
 #[test]
 fn apply_package_skip_action_succeeds() {
     let state = test_state();

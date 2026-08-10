@@ -63,7 +63,8 @@ impl<'a> super::Reconciler<'a> {
                         // work for some; the action still completes, because
                         // what it promises is an available manager, not an
                         // installation.
-                        if !pm.is_available() {
+                        let was_available = pm.is_available();
+                        if !was_available {
                             pm.bootstrap(&cx)?;
                         }
                         // Profile-level packages reach bootstrap through here
@@ -81,6 +82,14 @@ impl<'a> super::Reconciler<'a> {
                                 message: format!("{} still not available after bootstrap", manager),
                             }
                             .into());
+                        }
+                        // The concurrent pre-pass (`Reconciler::refresh_package_indexes`)
+                        // already refreshed every manager available before this run
+                        // started; a manager bootstrapped just above has never been
+                        // refreshed, so it still needs this one inline update — mirrors
+                        // the module-package bootstrap arm's gate in `reconciler::modules`.
+                        if !was_available && pm.is_available() {
+                            pm.update(&cx)?;
                         }
                         return Ok(format!("package:{}:bootstrap", manager));
                     }

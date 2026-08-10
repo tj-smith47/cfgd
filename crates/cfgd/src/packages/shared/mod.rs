@@ -331,12 +331,28 @@ pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
 /// plan and carrying the phase's alignment column, so a window that settled its
 /// own would render the same install twice; standalone (`cfgd doctor`, a manual
 /// bootstrap) the window IS the only line and must settle.
+///
+/// The concurrent index-refresh pre-pass (`PackageContext::for_index_refresh`)
+/// takes neither branch: `Printer::run`/`run_silent` both open a window
+/// unconditionally, and N managers refreshing on N threads would render N
+/// overlapping bars on a TTY and interleave N streams into a non-TTY log.
+/// Checked first, so a context can never fall through to a window by
+/// accident.
 pub(super) fn pkg_run(
     cx: &PackageContext<'_>,
     cmd: &mut Command,
     label: impl Into<String>,
 ) -> std::io::Result<CommandOutput> {
-    if cx.caller_owns_status {
+    if cx.windowless() {
+        let start = std::time::Instant::now();
+        let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT)?;
+        Ok(CommandOutput {
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            duration: start.elapsed(),
+        })
+    } else if cx.caller_owns_status {
         cx.printer.run_silent(cmd, label)
     } else {
         cx.printer.run(cmd, label)
