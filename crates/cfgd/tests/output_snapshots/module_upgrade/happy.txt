@@ -1,4 +1,4 @@
-Update Module: upmod
+Update module:upmod
 
 Changes
   - (no spec changes)

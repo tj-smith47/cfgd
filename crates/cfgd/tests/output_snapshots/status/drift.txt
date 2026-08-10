@@ -17,7 +17,7 @@ Config Sources
   team-config  synced  3.1.0    2026-05-14T09:00:00Z
 
 Pending Decisions
-  team-config
+  source:team-config
     ⊙ 1 pending item
     ⊙ recommended package/curl — install curl 8.5.0 (install)
 

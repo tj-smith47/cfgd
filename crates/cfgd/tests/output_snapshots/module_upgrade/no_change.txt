@@ -1,2 +1,2 @@
-Update Module: upmod
+Update module:upmod
 ⊙ Module is already at this version

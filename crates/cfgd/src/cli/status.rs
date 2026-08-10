@@ -167,7 +167,9 @@ pub fn build_fleet_status_doc(
             by_source.into_iter().fold(s, |s, (source_name, items)| {
                 let count = items.len();
                 let plural = if count == 1 { "" } else { "s" };
-                s.subsection(source_name.to_string(), |sub| {
+                // The same `source:<name>` token the Drift rows above carry —
+                // one screen must not name one source two ways.
+                s.subsection(Owner::source(source_name).token(), |sub| {
                     let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
                     items.iter().fold(sub, |sub, item| {
                         sub.status(

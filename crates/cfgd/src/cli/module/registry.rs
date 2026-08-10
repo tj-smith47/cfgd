@@ -274,7 +274,10 @@ pub fn cmd_module_upgrade(
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    printer.heading(format!("Update Module: {}", name));
+    printer.heading(format!(
+        "Update {}",
+        cfgd_core::reconciler::Owner::module(name).token()
+    ));
 
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
