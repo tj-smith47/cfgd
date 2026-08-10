@@ -468,7 +468,6 @@ impl SystemConfigurator for GpgKeysConfigurator {
             // action's one line, so a window that settled its own would render
             // the same key generation twice.
             let output = cx
-                .printer
                 .run_silent(
                     &mut cmd,
                     format!("Generating GPG key for {} <{}>", spec.real_name, spec.email),

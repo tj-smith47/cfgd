@@ -368,8 +368,11 @@ impl<'a> super::Reconciler<'a> {
                 Ok(format!("env:inject:{}", crate::to_posix_string(rc_path)))
             }
             EnvAction::RefreshLiveSession { vars } => {
-                let changed = crate::refresh_session_env(vars, printer, notes);
-                if changed == 0 {
+                let refresh = crate::refresh_session_env(vars);
+                for failure in refresh.failures {
+                    notes.report(printer, crate::output::Role::Warn, failure);
+                }
+                if refresh.changed == 0 {
                     return Ok(format!(
                         "{LIVE_SESSION_RESOURCE_ID}{}",
                         super::apply::ENV_SKIPPED_SUFFIX

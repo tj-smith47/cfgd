@@ -307,7 +307,9 @@ impl EnvironmentConfigurator {
     /// live-session layer (also used by the user-scope `spec.env` path).
     fn macos_launchctl_setenv(managed: &BTreeMap<String, String>, cx: &SystemContext<'_>) {
         for (key, value) in managed {
-            cfgd_core::launchctl_setenv(key, value, cx.printer, cx.notes);
+            if let Some(failure) = cfgd_core::launchctl_setenv(key, value).failure() {
+                cx.report(Role::Warn, failure);
+            }
         }
     }
 
@@ -345,7 +347,9 @@ impl EnvironmentConfigurator {
     /// Set a user environment variable via `setx` (persists to registry), via
     /// the shared live-session layer.
     fn windows_set_var(name: &str, value: &str, cx: &SystemContext<'_>) {
-        cfgd_core::windows_setx(name, value, cx.printer, cx.notes);
+        if let Some(failure) = cfgd_core::windows_setx(name, value).failure() {
+            cx.report(Role::Warn, failure);
+        }
     }
 }
 

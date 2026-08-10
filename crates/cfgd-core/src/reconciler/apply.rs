@@ -112,7 +112,12 @@ fn bootstrap_attribution(
 /// The notes a provider produced during one action, under the status that
 /// action just emitted — whoever emitted it. The ONE render path for a note,
 /// package-manager caveat and system-configurator narration alike.
-fn emit_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
+///
+/// Public so a per-configurator snapshot bridge renders its capture through the
+/// same call the reconciler makes: a golden assembled from a test's own
+/// `attached_status` loop would keep passing after this derivation moved, and
+/// would then be pinning a shape cfgd no longer emits.
+pub fn emit_action_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
     for note in notes {
         section.attached_status(note.role, note.body());
     }
@@ -131,7 +136,7 @@ fn emit_action_line(section: &SectionGuard<'_>, outcome: &ActionOutcome) {
         }
         drop(builder);
     }
-    emit_notes(section, &outcome.notes);
+    emit_action_notes(section, &outcome.notes);
 }
 
 /// Identity of one planned action, for correlating the plan-order walk with the
@@ -659,7 +664,7 @@ impl<'a> super::Reconciler<'a> {
                 // Their notes still belong under it.
                 if action_reports_its_own_status(action) {
                     if let Some(section) = owner_section.as_ref() {
-                        emit_notes(section, &drained);
+                        emit_action_notes(section, &drained);
                     }
                 } else {
                     let subject = subjects

@@ -109,16 +109,18 @@ impl<'a> PackageContext<'a> {
     /// it settles on its own, where the manager's output is all the user gets.
     /// A `PackageManager` must never call `cx.printer.status_simple` directly.
     pub fn report(&self, role: Role, manager: &str, message: impl Into<String>) {
-        let message = message.into();
-        if self.caller_owns_status {
-            self.notes.push(ActionNote {
-                tag: Some(manager.to_string()),
-                message,
-                role,
-            });
+        // Which sink, not how a report reaches the user: a manager whose caller
+        // settles no line has nothing to attach to, so it reports into the sink
+        // that has no drain and settles on its own. `NoteSink::report_tagged`
+        // owns the routing for both contexts, so neither can drift — and a
+        // caller-owned context over a discarded sink drops nothing, which a
+        // bare `push` (which returns early when not collecting) would.
+        let sink = if self.caller_owns_status {
+            self.notes
         } else {
-            self.printer.status_simple(role, message);
-        }
+            NoteSink::discarded()
+        };
+        sink.report_tagged(self.printer, role, Some(manager), message);
     }
 }
 
@@ -226,17 +228,39 @@ impl NoteSink {
     }
 
     /// Narrate under whichever action line is open, without the caller having to
-    /// know which one that is: a collecting sink holds the line for the drain
-    /// that will render it attached, while a discarded sink has no drain to
-    /// reach, so the line settles on the printer — standalone, that message is
-    /// the only output the user will get.
-    pub fn report(&self, printer: &Printer, role: Role, message: impl Into<String>) {
+    /// know which one that is — the ONE routing rule, shared by both provider
+    /// contexts so neither re-decides it.
+    ///
+    /// A collecting sink holds the line for the drain that will render it
+    /// attached; a discarded sink has no drain to reach, so the line settles on
+    /// the printer — standalone, that message is the only output the user gets,
+    /// and dropping it is never right. That fallback is why this exists beside
+    /// [`push`](Self::push), which returns early when not collecting.
+    pub fn report_tagged(
+        &self,
+        printer: &Printer,
+        role: Role,
+        tag: Option<&str>,
+        message: impl Into<String>,
+    ) {
         let message = message.into();
         if self.collecting {
-            self.push(ActionNote::untagged(role, message));
+            self.push(ActionNote {
+                tag: tag.map(str::to_string),
+                message,
+                role,
+            });
         } else {
+            // Untagged once it settles: a standalone line has no action line
+            // above it that a `[tag]` prefix would disambiguate it from.
             printer.status_simple(role, message);
         }
+    }
+
+    /// [`report_tagged`](Self::report_tagged) for a producer whose owning action
+    /// line already names it — every `SystemConfigurator`.
+    pub fn report(&self, printer: &Printer, role: Role, message: impl Into<String>) {
+        self.report_tagged(printer, role, None, message);
     }
 
     /// Drain — called by the reconciler once per action, after its status.
@@ -345,17 +369,25 @@ pub struct SystemDrift {
     pub actual: String,
 }
 
-/// The per-call context [`SystemConfigurator::apply`] receives: the printer, for
-/// the command windows a configurator opens, plus the sink its narration goes
-/// into.
+/// The per-call context [`SystemConfigurator::apply`] receives.
 ///
 /// The `SystemConfigurator` counterpart of [`PackageContext`], and deliberately
 /// the same [`NoteSink`] — package notes and system notes are drained and
 /// rendered by one mechanism, so there is exactly one place that decides how a
 /// note attaches to the action that produced it.
+///
+/// Both fields are PRIVATE, and that is the whole enforcement of this task's
+/// invariant: the reconciler settles one `system:<name>.<key>` line per call, so
+/// a configurator reaching a `Printer` could put a second settled line beside it
+/// and step outside the phase tree. The two things a configurator legitimately
+/// needs from a printer — narrating ([`report`](Self::report)) and opening a
+/// command window that does NOT settle ([`run_silent`](Self::run_silent)) — are
+/// exposed as named methods, so the bypass is not expressible rather than merely
+/// discouraged. Never add a `printer()` accessor: it re-opens the hole for every
+/// configurator at once.
 pub struct SystemContext<'a> {
-    pub printer: &'a Printer,
-    pub notes: &'a NoteSink,
+    printer: &'a Printer,
+    notes: &'a NoteSink,
 }
 
 impl<'a> SystemContext<'a> {
@@ -382,12 +414,23 @@ impl<'a> SystemContext<'a> {
     /// fallback taken.
     ///
     /// Under a caller-owned status this becomes a detail line rendered UNDER
-    /// that action's line; standalone it settles on its own. A
-    /// `SystemConfigurator` must never call `cx.printer.status_simple` directly:
-    /// a line printed from inside `apply` lands ABOVE the `system:<name>.<key>`
-    /// line the reconciler is about to settle for the same work.
+    /// that action's line; standalone it settles on its own.
     pub fn report(&self, role: Role, message: impl Into<String>) {
         self.notes.report(self.printer, role, message);
+    }
+
+    /// Run a command with a live output window that collapses WITHOUT settling a
+    /// line.
+    ///
+    /// The one command surface a configurator gets, and deliberately not
+    /// [`Printer::run`]: the reconciler already settles this action's single
+    /// line, so a window that settled its own would render the same work twice.
+    pub fn run_silent(
+        &self,
+        cmd: &mut std::process::Command,
+        label: impl Into<String>,
+    ) -> std::io::Result<crate::output::CommandOutput> {
+        self.printer.run_silent(cmd, label)
     }
 }
 
@@ -406,8 +449,9 @@ pub trait SystemConfigurator: Send + Sync {
     ///
     /// The CALLER owns the action's SETTLED status line: the reconciler emits
     /// one `system:<name>.<key>` line for this call, from the plan. A shell-out
-    /// here therefore goes through [`Printer::run_silent`] — [`Printer::run`]
-    /// settles the window's own line too, rendering the same action twice.
+    /// here therefore goes through [`SystemContext::run_silent`], the only
+    /// command surface the context exposes — a window that settled its own line
+    /// would render the same action twice.
     ///
     /// Narration of a configurator's own goes through
     /// [`SystemContext::report`], which attaches it under that action's line

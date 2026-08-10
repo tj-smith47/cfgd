@@ -358,8 +358,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     mod bridge {
         use super::*;
-        use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-        use cfgd_core::output::{Doc, Printer, Role};
+        use crate::system::tests_snapshot_bridge::{
+            BridgeApply, assert_single_seam, capture_attached_apply,
+        };
+        use cfgd_core::output::Role;
+        use cfgd_core::output::test_capture::assert_snapshot_at;
 
         fn snapshot_dir() -> std::path::PathBuf {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")
@@ -408,30 +411,23 @@ mod tests {
             )
             .unwrap();
 
-            let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator::default();
-            su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
-                .unwrap();
-
             let summary = UnitApplySummary { units_processed: 1 };
-            let doc = Doc::new()
-                .status(Role::Ok, "systemd units applied")
-                .with_data(&summary);
-            printer.emit(doc);
-            drop(printer);
-
-            let raw = strip_ansi(&cap.human());
+            let raw = capture_attached_apply(
+                &BridgeApply {
+                    configurator: &su,
+                    desired: &yaml,
+                    key: "cfgd-snap-test.service.enabled",
+                    current: "true",
+                    target: "false",
+                    summary_role: Role::Ok,
+                    summary: "systemd units applied",
+                },
+                &summary,
+            );
             let captured = normalize_systemctl_errors(&raw);
 
-            assert!(
-                captured.contains("\n\n"),
-                "systemd_unit_clean missing blank line at seam:\n{captured}"
-            );
-            assert!(
-                !captured.contains("\n\n\n"),
-                "systemd_unit_clean has duplicate blank line:\n{captured}"
-            );
-
+            assert_single_seam("systemd_unit_clean", &captured);
             assert_snapshot("systemd_unit_clean.txt", &captured);
         }
 
@@ -446,31 +442,24 @@ mod tests {
             );
             let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
 
-            let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator::default();
-            su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
-                .unwrap();
-
             let summary = UnitApplySummary { units_processed: 1 };
-            let doc = Doc::new()
-                .status(Role::Warn, "systemd units applied with warnings")
-                .with_data(&summary);
-            printer.emit(doc);
-            drop(printer);
-
-            let raw = strip_ansi(&cap.human());
+            let raw = capture_attached_apply(
+                &BridgeApply {
+                    configurator: &su,
+                    desired: &yaml,
+                    key: "cfgd-snap-warn.service.unit-file",
+                    current: "missing",
+                    target: "present",
+                    summary_role: Role::Warn,
+                    summary: "systemd units applied with warnings",
+                },
+                &summary,
+            );
             let path_normalized = normalize_paths(&raw, tmp.path());
             let captured = normalize_systemctl_errors(&path_normalized);
 
-            assert!(
-                captured.contains("\n\n"),
-                "systemd_unit_with_warnings missing blank line at seam:\n{captured}"
-            );
-            assert!(
-                !captured.contains("\n\n\n"),
-                "systemd_unit_with_warnings has duplicate blank line:\n{captured}"
-            );
-
+            assert_single_seam("systemd_unit_with_warnings", &captured);
             assert_snapshot("systemd_unit_with_warnings.txt", &captured);
         }
     }

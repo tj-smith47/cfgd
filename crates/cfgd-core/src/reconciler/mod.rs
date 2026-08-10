@@ -28,7 +28,7 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
-pub use apply::action_matches_phase_filter;
+pub use apply::{action_matches_phase_filter, emit_action_notes};
 pub use env_engine::launchd_env_plist;
 pub use format::{
     DisplaySubject, action_display_subject, bare_script_subject, condense_action_desc_for_display,

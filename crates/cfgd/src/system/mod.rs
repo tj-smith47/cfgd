@@ -181,4 +181,7 @@ pub(crate) fn yaml_value_with_numeric_bools(value: &serde_yaml::Value) -> String
 }
 
 #[cfg(test)]
+mod tests_snapshot_bridge;
+
+#[cfg(test)]
 mod tests;

@@ -4,8 +4,11 @@ use tempfile::TempDir;
 
 mod bridge {
     use super::*;
-    use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use cfgd_core::output::{Doc, Printer, Role};
+    use crate::system::tests_snapshot_bridge::{
+        BridgeApply, assert_single_seam, capture_attached_apply,
+    };
+    use cfgd_core::output::Role;
+    use cfgd_core::output::test_capture::assert_snapshot_at;
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/ssh_keys/snapshots")
@@ -34,36 +37,26 @@ mod bridge {
         let desired =
             make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
-        let (printer, cap) = Printer::for_test_doc();
         let c = SshKeysConfigurator;
-        c.apply(
-            &desired,
-            &cfgd_core::providers::SystemContext::new(&printer),
-        )
-        .unwrap();
-
         let summary = KeyApplySummary {
             name: "default".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Ok, "SSH keys applied")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &c,
+                desired: &desired,
+                key: "sshKeys.default.exists",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Ok,
+                summary: "SSH keys applied",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "ssh_keys_clean missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "ssh_keys_clean has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("ssh_keys_clean", &captured);
         assert_snapshot("ssh_keys_clean.txt", &captured);
     }
 
@@ -82,36 +75,26 @@ mod bridge {
         let desired =
             make_desired_with_perms("default", "ed25519", &key_path.display().to_string(), "600");
 
-        let (printer, cap) = Printer::for_test_doc();
         let c = SshKeysConfigurator;
-        c.apply(
-            &desired,
-            &cfgd_core::providers::SystemContext::new(&printer),
-        )
-        .unwrap();
-
         let summary = KeyApplySummary {
             name: "default".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Warn, "SSH keys applied with warnings")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &c,
+                desired: &desired,
+                key: "sshKeys.default.type",
+                current: "rsa",
+                target: "ed25519",
+                summary_role: Role::Warn,
+                summary: "SSH keys applied with warnings",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "ssh_keys_with_warnings missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "ssh_keys_with_warnings has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("ssh_keys_with_warnings", &captured);
         assert_snapshot("ssh_keys_with_warnings.txt", &captured);
     }
 }

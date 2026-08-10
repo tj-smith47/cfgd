@@ -65,10 +65,17 @@ cx.report(Role::Info, format!("systemctl {action} {name}"));
   ⚠ reload deferred: /proc is read-only
 ```
 
-Both land in one `NoteSink` and render through one path (`reconciler::apply::emit_notes`
-→ `SectionGuard::attached_status`) — never grow a second drain. A context nobody drains
+Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`) and
+render through one path (`cfgd_core::reconciler::emit_action_notes` →
+`SectionGuard::attached_status`) — never grow a second drain. A context nobody drains
 (`SystemContext::new`, `PackageContext::new`, `NoteSink::discarded()`) settles the report
 on the printer instead, so a standalone caller loses nothing.
+
+`SystemContext`'s fields are private: `report` and `run_silent` are the whole surface, so
+`cx.printer.status_simple` is not expressible rather than merely discouraged. Never add a
+`printer()` accessor. A snapshot bridge that drives a configurator directly renders through
+`emit_action_notes` under a real `section_owner`, so its golden pins the attached shape
+production emits rather than one the test assembled.
 
 ## Source-constraint mode (every `compose_with_sources` call site)
 

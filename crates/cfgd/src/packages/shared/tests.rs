@@ -251,7 +251,7 @@ fn strip_arch_suffix_empty_string() {
 }
 
 #[test]
-fn post_install_note_fields() {
+fn action_note_fields() {
     let note = ActionNote::warn("brew", "test message");
     assert_eq!(note.tag.as_deref(), Some("brew"));
     assert_eq!(note.message, "test message");
@@ -477,7 +477,7 @@ fn extract_caveats_brew_caveats_only_blank_lines() {
     let output = test_cmd_output("==> Caveats\n\n\n==> Summary\n", "");
     let notes = extract_caveats("brew", &output);
     // Blank lines are captured, joined, then trimmed — result is empty string
-    // but caveat_lines is non-empty so a ActionNote with empty message is produced
+    // but caveat_lines is non-empty so an ActionNote with empty message is produced
     assert_eq!(notes.len(), 1);
     assert!(
         notes[0].message.is_empty(),

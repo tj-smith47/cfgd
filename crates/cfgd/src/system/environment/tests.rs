@@ -1107,9 +1107,27 @@ TEST_ENV_VAR: "test_value"
     result.expect("apply should succeed on Linux even when /etc paths require root");
 
     let captured = buf.lock().unwrap().clone();
+    assert_managing_count(&captured, 1);
+}
+
+/// Assert the managed-variable narration for exactly `count` variables,
+/// singular or plural as `count` requires.
+///
+/// Matched against the WHOLE line rather than with `contains`: the singular
+/// spelling is a prefix of the plural one, so a substring check for
+/// `"Managing 1 environment variable"` is satisfied by the buggy
+/// `"…variables"` too and pins nothing.
+fn assert_managing_count(captured: &str, count: usize) {
+    let plural = if count == 1 { "" } else { "s" };
+    let expected = format!("Managing {count} environment variable{plural}");
+    let plain = cfgd_core::output::strip_ansi(captured);
+    let found = plain
+        .lines()
+        .find(|line| line.contains("environment variable"))
+        .unwrap_or_else(|| panic!("no managed-variable count line, got: {plain}"));
     assert!(
-        captured.contains("Managing 1 environment variable"),
-        "expected managing message, got: {captured}"
+        found.trim_start().ends_with(&expected),
+        "expected the count line to end {expected:?}, got: {found:?}"
     );
 }
 
@@ -1147,10 +1165,23 @@ fn apply_linux_writes_etc_environment_and_profile_d_with_tempdir() {
     result.expect("apply should succeed on Linux for a single managed var");
 
     let captured = buf.lock().unwrap().clone();
-    assert!(
-        captured.contains("Managing 1 environment variable"),
-        "got: {captured}"
-    );
+    assert_managing_count(&captured, 1);
+}
+
+#[test]
+fn apply_pluralizes_the_managed_variable_count() {
+    use cfgd_core::output::Verbosity;
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+    let ec = EnvironmentConfigurator;
+
+    let yaml: serde_yaml::Value =
+        serde_yaml::from_str("FIRST: \"a\"\nSECOND: \"b\"\nTHIRD: \"c\"\n").unwrap();
+
+    let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    result.expect("apply should succeed for several managed vars");
+
+    let captured = buf.lock().unwrap().clone();
+    assert_managing_count(&captured, 3);
 }
 
 #[test]

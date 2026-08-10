@@ -3408,8 +3408,11 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
 #[cfg(target_os = "linux")]
 mod bridge {
     use super::*;
-    use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use cfgd_core::output::{Doc, Printer, Role};
+    use crate::system::tests_snapshot_bridge::{
+        BridgeApply, assert_single_seam, capture_attached_apply,
+    };
+    use cfgd_core::output::Role;
+    use cfgd_core::output::test_capture::assert_snapshot_at;
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/node/snapshots")
@@ -3453,36 +3456,26 @@ profiles:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
-        sc.apply(
-            &desired,
-            &cfgd_core::providers::SystemContext::new(&printer),
-        )
-        .unwrap();
-
         let summary = NodeApplySummary {
             configurator: "seccomp".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Ok, "seccomp profiles applied")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &sc,
+                desired: &desired,
+                key: "seccomp.default-audit",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Ok,
+                summary: "seccomp profiles applied",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "seccomp_clean missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "seccomp_clean has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("seccomp_clean", &captured);
         assert_snapshot("seccomp_clean.txt", &captured);
     }
 
@@ -3512,36 +3505,26 @@ profiles:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
-        sc.apply(
-            &desired,
-            &cfgd_core::providers::SystemContext::new(&printer),
-        )
-        .unwrap();
-
         let summary = NodeApplySummary {
             configurator: "seccomp".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Warn, "seccomp apply completed with warnings")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &sc,
+                desired: &desired,
+                key: "seccomp.allow-audit",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Warn,
+                summary: "seccomp apply completed with warnings",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "seccomp_with_warnings missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "seccomp_with_warnings has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("seccomp_with_warnings", &captured);
         assert_snapshot("seccomp_with_warnings.txt", &captured);
     }
 
@@ -3580,36 +3563,26 @@ certificates:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
-        cc.apply(
-            &desired,
-            &cfgd_core::providers::SystemContext::new(&printer),
-        )
-        .unwrap();
-
         let summary = NodeApplySummary {
             configurator: "certificates".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Ok, "certificates applied")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &cc,
+                desired: &desired,
+                key: "cert.kubelet-client.cert.mode",
+                current: "0644",
+                target: "0600",
+                summary_role: Role::Ok,
+                summary: "certificates applied",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "certificates_clean missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "certificates_clean has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("certificates_clean", &captured);
         assert_snapshot("certificates_clean.txt", &captured);
     }
 
@@ -3644,36 +3617,26 @@ certificates:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
-        cc.apply(
-            &desired,
-            &cfgd_core::providers::SystemContext::new(&printer),
-        )
-        .unwrap();
-
         let summary = NodeApplySummary {
             configurator: "certificates".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Warn, "certificates apply completed with warnings")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &cc,
+                desired: &desired,
+                key: "cert.kubelet-client.key",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Warn,
+                summary: "certificates apply completed with warnings",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "certificates_with_warnings missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "certificates_with_warnings has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("certificates_with_warnings", &captured);
         assert_snapshot("certificates_with_warnings.txt", &captured);
     }
 }

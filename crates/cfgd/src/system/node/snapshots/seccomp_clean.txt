@@ -1,3 +1,6 @@
-⊙ Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json
+Phase: System
+  profile:snapshot
+    ✓ set seccomp.seccomp.default-audit: missing → present
+      ⊙ Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json
 
 ✓ seccomp profiles applied
