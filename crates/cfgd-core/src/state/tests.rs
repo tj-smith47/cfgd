@@ -1351,11 +1351,14 @@ fn compliance_snapshot_roundtrip() {
 
     store.store_compliance_snapshot(&snapshot).unwrap();
 
-    // The stored hash is the SHA-256 of the stored JSON — the invariant
+    // The stored hash is the content digest of the stored JSON — the invariant
     // migration 14's rehash statement restores for rows written earlier.
     let latest = store.latest_compliance_hash().unwrap().unwrap();
     assert_eq!(latest, hash);
-    assert_eq!(latest, crate::sha256_hex(json.as_bytes()));
+    assert_eq!(
+        latest,
+        crate::compliance::snapshot_json_content_hash(&json).unwrap()
+    );
 
     // Retrieve full snapshot by history
     let history = store.compliance_history(None, 10).unwrap();
@@ -2368,6 +2371,18 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
                 rusqlite::params![stale_json],
             )
             .unwrap();
+        // A snapshot that will not parse: the rehash must leave its hash alone
+        // rather than fail, which inside the runner's EXCLUSIVE transaction
+        // would roll the whole migration back and leave the store unopenable.
+        store
+            .conn
+            .execute(
+                "INSERT INTO compliance_snapshots (timestamp, content_hash, snapshot_json,
+                    summary_compliant, summary_warning, summary_violation)
+                 VALUES ('2026-01-01T00:00:01Z', 'corrupt-row-hash', '{not json', 0, 0, 0)",
+                [],
+            )
+            .unwrap();
 
         // Controls. A configurator whose key prefix merely RESEMBLES its name
         // (`certificates` → `cert.…`) is not doubled; a longer name sharing the
@@ -2471,11 +2486,11 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         .compliance_history(None, 10)
         .unwrap()
         .into_iter()
-        .map(|row| {
-            let snapshot = state.get_compliance_snapshot(row.id).unwrap().unwrap();
-            snapshot.checks[0].key.clone().unwrap()
-        })
+        // The deliberately-corrupt row does not deserialize; every other row must.
+        .filter_map(|row| state.get_compliance_snapshot(row.id).ok().flatten())
+        .map(|snapshot| snapshot.checks[0].key.clone().unwrap())
         .collect::<Vec<_>>();
+    assert_eq!(rewritten.len(), 2);
     assert!(
         rewritten.contains(&"apparmor.test-profile.file".to_string()),
         "the doubled compliance check key must be rewritten: {rewritten:?}"
@@ -2495,13 +2510,18 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(hashes.len(), 2);
+    assert_eq!(hashes.len(), 3);
     for (hash, json) in &hashes {
-        assert_eq!(
-            hash,
-            &crate::sha256_hex(json.as_bytes()),
-            "content_hash must be re-derived from the stored JSON"
-        );
+        match crate::compliance::snapshot_json_content_hash(json) {
+            Ok(derived) => assert_eq!(
+                hash, &derived,
+                "content_hash must be re-derived from the stored JSON"
+            ),
+            Err(_) => assert_eq!(
+                hash, "corrupt-row-hash",
+                "an unparseable snapshot must keep the hash it had"
+            ),
+        }
     }
 
     assert_eq!(state.schema_version() as usize, MIGRATIONS.len());

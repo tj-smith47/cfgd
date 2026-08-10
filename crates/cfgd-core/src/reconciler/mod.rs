@@ -30,11 +30,11 @@ mod tests;
 
 pub use apply::{action_matches_phase_filter, emit_action_notes};
 pub use env_engine::launchd_env_plist;
+pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
     DisplaySubject, action_display_subject, bare_script_subject, condense_action_desc_for_display,
-    debug_assert_system_key_undoubled, format_action_description, format_plan_item,
-    format_plan_items, hook_script_subject, module_script_subject, script_run_subject,
-    system_resource_key,
+    format_action_description, format_plan_item, format_plan_items, hook_script_subject,
+    module_script_subject, script_run_subject, system_key_doubling_error, system_resource_key,
 };
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};

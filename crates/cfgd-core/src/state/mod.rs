@@ -375,13 +375,15 @@ const MIGRATIONS: &[&str] = &[
     // rewrites: the substitution is per-substring rather than per-check, so a
     // category predicate would not narrow it. Nothing else builds a check `key`
     // as `<configurator>.<drift key>`, which is what makes the six anchors safe.
-    // The final statement re-derives `content_hash`, which
-    // `store_compliance_snapshot` defines as the SHA-256 of the `snapshot_json`
-    // beside it. Every row is rehashed, not just the rewritten ones: rows
-    // written before that derivation was unified hashed a different
-    // serialization of the same snapshot, so they violate the invariant too, and
-    // the sole consumer (`latest_compliance_hash`, a change detector) is
-    // strictly better served by a hash that actually describes the stored row.
+    // The final statement re-derives `content_hash` through the write path's own
+    // `snapshot_json_content_hash`, so a migrated row carries exactly the digest
+    // a fresh write of the same content would produce. Every row is rehashed,
+    // not just the rewritten ones: rows written before that derivation was
+    // unified hashed a different serialization — and hashed the collection
+    // timestamp, which the digest now excludes — so they hold a value the write
+    // path can never mint again, and the sole consumer
+    // (`latest_compliance_hash`, a change detector) reads it against a
+    // freshly-derived one.
     r#"UPDATE OR REPLACE managed_resources
           SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
         WHERE resource_type = 'system'
@@ -428,28 +430,40 @@ const MIGRATIONS: &[&str] = &[
            OR snapshot_json GLOB '*"key":"containerd.containerd.*'
            OR snapshot_json GLOB '*"key":"kubelet.kubelet.*';
 
-      UPDATE compliance_snapshots SET content_hash = cfgd_sha256_hex(snapshot_json);"#,
+      UPDATE compliance_snapshots
+          SET content_hash = cfgd_compliance_content_hash(snapshot_json, content_hash);"#,
 ];
 
-/// Make `cfgd_sha256_hex(text)` callable from migration SQL.
+/// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
+/// from migration SQL.
 ///
-/// A migration that rewrites a stored value whose SHA-256 is stored beside it
-/// has to re-derive that digest, and SQLite has no built-in hash. Registering
-/// [`crate::sha256_hex`] as a scalar function keeps the migration a plain SQL
+/// A migration that rewrites a stored snapshot has to re-derive the digest
+/// stored beside it, and that digest is not a hash of the stored bytes: it
+/// ignores the collection timestamp those bytes carry, so that an unchanged
+/// machine hashes equal across collections. SQLite can express neither the
+/// SHA-256 nor the normalization, so the write path's own derivation is
+/// registered as a scalar function and the migration stays a plain SQL
 /// statement — the alternative is a typed side-channel in the runner, which
 /// would make migration order depend on Rust code rather than on the array.
+///
+/// `current_hash` is the passthrough for a `snapshot_json` that will not parse:
+/// a corrupt row keeps the digest it had rather than failing the function,
+/// which inside the runner's EXCLUSIVE transaction would roll back the whole
+/// migration and leave the store unopenable for good.
 ///
 /// Deterministic and innocuous: same input, same output, no side effects, so
 /// SQLite may cache and reorder calls freely.
 fn register_sql_functions(conn: &Connection) -> Result<()> {
     use rusqlite::functions::FunctionFlags;
     conn.create_scalar_function(
-        "cfgd_sha256_hex",
-        1,
+        "cfgd_compliance_content_hash",
+        2,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
-            let value = ctx.get_raw(0).as_str()?;
-            Ok(crate::sha256_hex(value.as_bytes()))
+            let snapshot_json = ctx.get_raw(0).as_str()?;
+            let current_hash = ctx.get_raw(1).as_str()?;
+            Ok(crate::compliance::snapshot_json_content_hash(snapshot_json)
+                .unwrap_or_else(|_| current_hash.to_owned()))
         },
     )?;
     Ok(())

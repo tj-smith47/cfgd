@@ -36,18 +36,35 @@ pub fn system_resource_key(configurator: &str, key: &str) -> String {
     format!("{configurator}.{key}")
 }
 
+/// The diagnostic for a drift key that repeats its own configurator's name, or
+/// `None` when the key is well-formed.
+///
+/// The ONE statement of the rule, so the two enforcement sites cannot drift
+/// apart in what they detect or in what they say: this crate asserts it in
+/// debug builds through [`debug_assert_system_key_undoubled`], and each
+/// configurator's diff test asserts it unconditionally against its own fixture
+/// (`cfgd::system::assert_keys_undoubled`).
+pub fn system_key_doubling_error(configurator: &str, key: &str) -> Option<String> {
+    key.starts_with(&format!("{configurator}.")).then(|| {
+        format!(
+            "{configurator}: drift key `{key}` repeats the configurator name; \
+             `system:{configurator}.<key>` is composed around it"
+        )
+    })
+}
+
 /// Debug-only guard that a configurator's drift key does not repeat its name.
 ///
 /// Called by [`system_resource_key`] and from the planner, which is where a
 /// configurator's `diff` output first meets its name and so catches every
 /// configurator on every planning run rather than only the ones whose keys a
 /// test pins.
-pub fn debug_assert_system_key_undoubled(configurator: &str, key: &str) {
-    debug_assert!(
-        !key.starts_with(&format!("{configurator}.")),
-        "{configurator}: drift key `{key}` repeats the configurator name; \
-         `system:{configurator}.<key>` is composed around it"
-    );
+pub(crate) fn debug_assert_system_key_undoubled(configurator: &str, key: &str) {
+    if cfg!(debug_assertions)
+        && let Some(message) = system_key_doubling_error(configurator, key)
+    {
+        debug_assert!(false, "{message}");
+    }
 }
 
 /// Append source provenance suffix for non-local origins.

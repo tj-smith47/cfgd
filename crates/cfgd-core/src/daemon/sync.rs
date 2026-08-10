@@ -328,6 +328,18 @@ async fn apply_daemon_update(
 
 // --- Compliance Snapshot Handler ---
 
+/// Whether a freshly collected snapshot repeats the stored one, and so must not
+/// be appended.
+///
+/// The whole reason `compliance history` is a record of changes rather than of
+/// ticks. It holds only because the digest on both sides excludes the
+/// collection timestamp (see `compliance::snapshot_content_hash`) — while it
+/// covered the stored bytes verbatim this was never true, and the daemon
+/// appended a row every tick.
+pub(super) fn compliance_snapshot_unchanged(latest_hash: Option<&str>, fresh_hash: &str) -> bool {
+    latest_hash == Some(fresh_hash)
+}
+
 pub(crate) fn handle_compliance_snapshot(
     config_path: &Path,
     profile_override: Option<&str>,
@@ -467,7 +479,7 @@ pub(crate) fn handle_compliance_snapshot(
     };
 
     // Hash through the store's own derivation, so this comparison is against
-    // the same bytes a CLI-written row hashed.
+    // the value a CLI-written row holds.
     let hash = match crate::compliance::snapshot_content_hash(&snapshot) {
         Ok((_, h)) => h,
         Err(e) => {
@@ -485,7 +497,7 @@ pub(crate) fn handle_compliance_snapshot(
         }
     };
 
-    if latest_hash.as_deref() == Some(&hash) {
+    if compliance_snapshot_unchanged(latest_hash.as_deref(), &hash) {
         tracing::debug!("compliance: no state change, skipping snapshot");
         return;
     }

@@ -2253,6 +2253,111 @@ fn compliance_snapshot_stores_when_hash_changes() {
 }
 
 #[test]
+fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_second() {
+    // Ground truth for the change detector: two real collections of one
+    // unchanged machine, taken at different wall-clock times, must hash equal
+    // so `compliance history` records changes rather than ticks. The hash
+    // covered the collection timestamp until it was excluded, which made the
+    // skip branch unreachable and appended a row on every tick.
+    use crate::compliance::collect_snapshot;
+    use crate::config::{ComplianceScope, FilesSpec, ManagedFileSpec};
+    use crate::providers::SystemDrift;
+    use crate::test_helpers::{MockFileManager, MockSystemConfigurator};
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("gitconfig");
+    let target = dir.path().join("deployed-gitconfig");
+    std::fs::write(&source, "same").unwrap();
+    std::fs::write(&target, "same").unwrap();
+
+    let mut profile = MergedProfile {
+        files: FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: source.to_string_lossy().into_owned(),
+                target: target.clone(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    profile.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+    );
+
+    let mut registry = ProviderRegistry::new();
+    registry.file_manager = Some(Box::new(MockFileManager::new()));
+    registry
+        .system_configurators
+        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+            vec![SystemDrift {
+                key: "vm.swappiness".into(),
+                expected: "10".into(),
+                actual: "60".into(),
+            }],
+        )));
+
+    let printer = crate::test_helpers::test_printer();
+    let store = test_state();
+    let collect = |registry: &ProviderRegistry| {
+        collect_snapshot(
+            "default",
+            &profile,
+            &[],
+            dir.path(),
+            registry,
+            &ComplianceScope::default(),
+            &["local".to_string()],
+            &printer,
+            &store,
+        )
+        .unwrap()
+    };
+
+    let first = collect(&registry);
+    let mut second = collect(&registry);
+    // The stamp is second-granularity, so two back-to-back collections can
+    // share one; pin a distinct later value rather than let the case that
+    // matters depend on how long the collector took.
+    second.timestamp = "2099-01-01T00:00:00Z".to_string();
+    assert_ne!(first.timestamp, second.timestamp);
+
+    let (_, first_hash) = crate::compliance::snapshot_content_hash(&first).unwrap();
+    let (_, second_hash) = crate::compliance::snapshot_content_hash(&second).unwrap();
+    assert_eq!(
+        first_hash, second_hash,
+        "an unchanged machine must hash equal across collections"
+    );
+
+    store.store_compliance_snapshot(&first).unwrap();
+    let latest = store.latest_compliance_hash().unwrap();
+    assert!(
+        super::sync::compliance_snapshot_unchanged(latest.as_deref(), &second_hash),
+        "the daemon must skip the second collection of an unchanged machine"
+    );
+
+    // A real state change still moves the digest: the deployed file stops
+    // matching its source, so the file-content check flips.
+    std::fs::write(&target, "drifted").unwrap();
+    let third = collect(&registry);
+    let (_, third_hash) = crate::compliance::snapshot_content_hash(&third).unwrap();
+    assert_ne!(
+        first_hash, third_hash,
+        "a changed machine must not hash equal to the stored snapshot"
+    );
+    assert!(
+        !super::sync::compliance_snapshot_unchanged(latest.as_deref(), &third_hash),
+        "the daemon must store the collection that observed the change"
+    );
+}
+
+#[test]
 fn compliance_timer_not_created_when_disabled() {
     // When compliance is not enabled, compliance_interval should be None
     let config = config::ComplianceConfig {

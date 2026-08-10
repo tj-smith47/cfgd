@@ -198,12 +198,13 @@ pub(crate) fn assert_keys_undoubled(
 ) {
     let name = configurator.name();
     for drift in drifts {
-        assert!(
-            !drift.key.starts_with(&format!("{name}.")),
-            "{name}: drift key `{}` repeats the configurator name; \
-             the reconciler already composes `system:{name}.<key>` around it",
-            drift.key
-        );
+        // The rule and its wording come from the reconciler, which is what
+        // composes the id — a second spelling here could pass a key the
+        // planner's own debug assertion rejects. Unconditional rather than
+        // debug-only so `cargo test --release` still enforces it.
+        if let Some(message) = cfgd_core::reconciler::system_key_doubling_error(name, &drift.key) {
+            panic!("{message}");
+        }
     }
 }
 
