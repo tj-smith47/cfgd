@@ -193,7 +193,15 @@ pub fn build_fleet_status_doc(
 
     doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
         mods.iter().fold(s, |s, m| {
-            let summary = format!("{} pkgs, {} files", m.packages, m.files);
+            // Fixed units, so they agree with their own count: one package is
+            // `1 pkg`, not `1 pkgs`.
+            let summary = format!(
+                "{} pkg{}, {} file{}",
+                m.packages,
+                if m.packages == 1 { "" } else { "s" },
+                m.files,
+                if m.files == 1 { "" } else { "s" }
+            );
             let role = match m.status.as_str() {
                 "installed" => Role::Ok,
                 "not applied" | "not yet applied" => Role::Info,
@@ -554,6 +562,67 @@ mod tests {
             json.get("classificationDegradedCode").is_none()
                 && json.get("classificationDegradedReason").is_none(),
             "a clean payload carries no code or reason field"
+        );
+    }
+
+    /// The module health line's units agree with their own counts: a module
+    /// with one of each reads `1 pkg, 1 file`, and anything else — including
+    /// zero — keeps the plural.
+    #[test]
+    fn module_status_line_units_agree_with_their_counts() {
+        let output = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: vec![
+                ModuleStatusEntry {
+                    name: "tmux".to_string(),
+                    packages: 1,
+                    files: 1,
+                    status: "installed".to_string(),
+                },
+                ModuleStatusEntry {
+                    name: "nvim".to_string(),
+                    packages: 3,
+                    files: 12,
+                    status: "installed".to_string(),
+                },
+                ModuleStatusEntry {
+                    name: "git".to_string(),
+                    packages: 0,
+                    files: 0,
+                    status: "installed".to_string(),
+                },
+            ],
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+        };
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_fleet_status_doc(
+            &output,
+            &[],
+            std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+            "default",
+        ));
+        drop(printer);
+        let out = buf.lock().unwrap().clone();
+
+        assert!(
+            out.contains("1 pkg, 1 file,"),
+            "a single package and file must read singular: {out}"
+        );
+        assert!(
+            out.contains("3 pkgs, 12 files,"),
+            "many must stay plural: {out}"
+        );
+        assert!(
+            out.contains("0 pkgs, 0 files,"),
+            "zero keeps the plural: {out}"
         );
     }
 

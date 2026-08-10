@@ -486,8 +486,8 @@ spec:
 ```
 Modules
   ✓ module:nvim — 3 pkgs, 12 files, installed
-  ✓ module:tmux — 1 pkgs, 1 files, installed
-  ⚠ module:git  — 1 pkgs, 0 files, outdated
+  ✓ module:tmux — 1 pkg, 1 file, installed
+  ⚠ module:git  — 1 pkg, 0 files, outdated
 ```
 
 Each line is headed by the module's owner token — the same `module:<name>` the
