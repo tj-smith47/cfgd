@@ -158,13 +158,16 @@ pub fn cmd_plan(
     // A resource awaiting (or declined by) a source decision is not this run's
     // to plan. Pruned before the scope snapshot below, so the preview, the
     // counts and the payload all describe the set an apply would execute —
-    // `apply` prunes with the same set, through the same gate.
+    // `apply` prunes with the same set, through the same gate. A preview writes
+    // nothing, so an item classified but not yet recorded is withheld and
+    // listed without a row being minted for it; the apply that follows mints.
     let withheld = plan_ops::withheld_for_run(
         &state,
         &cfg,
         &effective_resolved,
         &config_dir,
         config_parsed,
+        plan_ops::DecisionWrites::ReadOnly,
     )?;
     reconciler::withhold_from_plan(
         &mut plan,

@@ -4,10 +4,47 @@ use super::*;
 use super::drift::*;
 use crate::config::{AutoApplyPolicyConfig, PolicyAction};
 use crate::reconciler::{
-    DecisionExclusions, DecisionScope, WithheldDecisions, action_resource_info,
-    declared_decision_paths, hash_resources, infer_item_tier, local_profile, review_source_policy,
+    DecisionExclusions, DecisionScope, DeliveredItems, WithheldDecisions, action_resource_info,
+    declared_decision_paths, hash_resources, local_profile, review_source_policy,
     source_delivered_profile,
 };
+
+/// A merged profile as ONE layer at `policy`'s tier.
+///
+/// The fixtures below describe what a source offers as a `MergedProfile`,
+/// while the policy classifier reads layers — because only a layer carries the
+/// tier. This is the bridge, and the `policy` argument is what lets a test say
+/// "the source offered this in its optional profile" rather than assume.
+fn tiered_items(merged: &MergedProfile, policy: crate::config::LayerPolicy) -> DeliveredItems {
+    DeliveredItems::from_layers(&[tiered_layer(merged, policy)])
+}
+
+/// One layer of `merged` at `policy`'s tier, for a caller composing more than
+/// one tier into a single source's offer.
+fn tiered_layer(
+    merged: &MergedProfile,
+    policy: crate::config::LayerPolicy,
+) -> crate::config::ProfileLayer {
+    crate::config::ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: format!("offered-{policy:?}"),
+        priority: 500,
+        policy,
+        spec: crate::config::ProfileSpec {
+            modules: merged.modules.clone(),
+            env: merged.env.clone(),
+            env_scope: Some(merged.env_scope),
+            aliases: merged.aliases.clone(),
+            packages: Some(merged.packages.clone()),
+            files: Some(merged.files.clone()),
+            system: merged.system.clone(),
+            secrets: merged.secrets.clone(),
+            scripts: Some(merged.scripts.clone()),
+            backups: merged.backups.clone(),
+            ..Default::default()
+        },
+    }
+}
 
 /// The daemon's two halves of one source's auto-apply policy — classify, then
 /// record what the classification asked for — as the single call a tick makes.
@@ -18,7 +55,25 @@ fn process_source_decisions(
     policy: &AutoApplyPolicyConfig,
     notifier: &Notifier,
 ) -> HashSet<String> {
-    let review = review_source_policy(store, source_name, merged, policy)
+    process_tiered_decisions(
+        store,
+        source_name,
+        &tiered_items(merged, crate::config::LayerPolicy::Recommended),
+        policy,
+        notifier,
+    )
+}
+
+/// [`process_source_decisions`] for a caller that has already chosen the tier
+/// its items arrive at.
+fn process_tiered_decisions(
+    store: &StateStore,
+    source_name: &str,
+    delivered: &DeliveredItems,
+    policy: &AutoApplyPolicyConfig,
+    notifier: &Notifier,
+) -> HashSet<String> {
+    let review = review_source_policy(store, source_name, delivered, policy)
         .expect("policy review reads the test store");
     super::reconcile::mint_reviewed_decisions(store, &review, notifier);
     review.declined
@@ -46,6 +101,7 @@ fn quiet_reconcile_ctx<'a>(
         notify_on_drift,
         hooks,
         state_dir_override: Some(state_dir),
+        config_explicit: false,
         printer,
         module_filter: None,
         auto_apply_override: None,
@@ -446,21 +502,6 @@ fn hash_resources_differs_for_different_sets() {
 }
 
 #[test]
-fn infer_item_tier_defaults_to_recommended() {
-    assert_eq!(infer_item_tier("packages.brew.ripgrep"), "recommended");
-    assert_eq!(infer_item_tier("env.EDITOR"), "recommended");
-}
-
-#[test]
-fn infer_item_tier_detects_locked() {
-    assert_eq!(infer_item_tier("files.security-policy.yaml"), "locked");
-    assert_eq!(
-        infer_item_tier("files./home/user/.config/company/security.yaml"),
-        "locked"
-    );
-}
-
-#[test]
 fn process_source_decisions_first_run_records_decisions() {
     use crate::config::PackagesSpec;
     let store = test_state();
@@ -828,6 +869,98 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
         1
     );
     assert_eq!(store.withheld_decisions().unwrap().len(), 1);
+}
+
+/// A config naming a profile that declares nothing, plus its profiles dir, so
+/// a reconcile tick runs end-to-end without planning any work.
+fn inert_config_under(root: &std::path::Path) -> PathBuf {
+    let config_path = root.join("other.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+    )
+    .unwrap();
+    let profiles = root.join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("solo.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec: {}\n",
+    )
+    .unwrap();
+    config_path
+}
+
+/// Run one tick against the DEFAULT state store, saying whether the operator
+/// named this daemon's config themselves.
+async fn tick_against_default_store(config_path: PathBuf, config_explicit: bool) {
+    crate::spawn_blocking_with_test_home(move || {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let printer = test_printer();
+        handle_reconcile(
+            &config_path,
+            None,
+            ReconcileCtx {
+                state: &state,
+                notifier: &notifier,
+                notify_on_drift: false,
+                hooks: &crate::test_helpers::NoopDaemonHooks,
+                state_dir_override: None,
+                config_explicit,
+                printer: &printer,
+                module_filter: None,
+                auto_apply_override: None,
+                drift_policy_override: None,
+                scope: crate::Scope::User,
+                abort: never_abort(),
+            },
+        );
+    })
+    .await
+    .expect("the tick runs to completion");
+}
+
+/// The daemon takes the same store-ownership gate `cfgd apply` does: a daemon
+/// started with `--config other.yaml` against the DEFAULT store would
+/// otherwise delete another config's decision rows, unrecoverably, on its very
+/// first tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_daemon_on_an_operator_named_config_leaves_the_default_stores_rows_alone() {
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let store = StateStore::open_default().expect("the default store lands under the test home");
+    store
+        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .unwrap();
+
+    tick_against_default_store(inert_config_under(staging.path()), true).await;
+
+    assert_eq!(
+        store.pending_decisions().unwrap().len(),
+        1,
+        "a config this daemon was pointed at is not authoritative over another config's rows"
+    );
+}
+
+/// The other arm: the machine's own config sweeps as before, so the gate did
+/// not simply turn the cleanup off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_daemon_on_the_machines_own_config_still_sweeps_dead_decision_rows() {
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let store = StateStore::open_default().expect("the default store lands under the test home");
+    store
+        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .unwrap();
+
+    tick_against_default_store(inert_config_under(staging.path()), false).await;
+
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "a row whose source is not in spec.sources is one nobody can answer"
+    );
 }
 
 /// A `Packages` phase owned by one profile, for the pending-decision prune.
@@ -2064,14 +2197,6 @@ fn process_source_decisions_detects_new_items_on_change() {
     assert!(withheld_paths(&store).contains("packages.cargo.ripgrep"));
 }
 
-// --- infer_item_tier: "policy" keyword ---
-
-#[test]
-fn infer_item_tier_detects_policy_keyword() {
-    assert_eq!(infer_item_tier("files.policy-definitions.yaml"), "locked");
-    assert_eq!(infer_item_tier("system.security-policy"), "locked");
-}
-
 // --- ModuleReconcileStatus serialization ---
 
 #[test]
@@ -2863,33 +2988,6 @@ fn withheld_decisions_with_decisions() {
     assert!(paths.contains("env.EDITOR"));
 }
 
-// --- infer_item_tier: more coverage ---
-
-#[test]
-fn infer_item_tier_locked_keyword() {
-    assert_eq!(infer_item_tier("files.locked-module-config.yaml"), "locked");
-}
-
-#[test]
-fn infer_item_tier_security_in_system() {
-    assert_eq!(infer_item_tier("system.security-baseline"), "locked");
-}
-
-#[test]
-fn infer_item_tier_normal_package() {
-    assert_eq!(infer_item_tier("packages.brew.curl"), "recommended");
-}
-
-#[test]
-fn infer_item_tier_normal_env_var() {
-    assert_eq!(infer_item_tier("env.GOPATH"), "recommended");
-}
-
-#[test]
-fn infer_item_tier_normal_file() {
-    assert_eq!(infer_item_tier("files./home/user/.zshrc"), "recommended");
-}
-
 // --- declared_decision_paths: aliases not included (not tracked) ---
 
 #[test]
@@ -3009,7 +3107,8 @@ fn process_source_decisions_locked_item_notify_policy() {
         ..Default::default()
     };
 
-    // Use a file with "security" in the name to trigger the locked tier
+    // The source offers this on a locked/required layer, so `lockedConflict`
+    // governs it — not `newRecommended`.
     let mut system = std::collections::HashMap::new();
     system.insert("security-baseline".into(), serde_yaml::Value::Null);
 
@@ -3018,11 +3117,15 @@ fn process_source_decisions_locked_item_notify_policy() {
         ..Default::default()
     };
 
-    let declined = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    let declined = process_tiered_decisions(
+        &store,
+        "corp",
+        &tiered_items(&merged, crate::config::LayerPolicy::Required),
+        &policy,
+        &notifier,
+    );
     assert!(declined.is_empty(), "Notify records rather than declines");
 
-    // The "system.security-baseline" item should be inferred as "locked" tier
-    // and with locked_conflict = Notify, it should create a pending decision
     let pending = store.pending_decisions().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "system.security-baseline");
@@ -3295,11 +3398,9 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
         locked_conflict: PolicyAction::Notify,
     };
 
-    // Mix of recommended (cargo packages) and locked (security system setting)
-    let mut system = std::collections::HashMap::new();
-    system.insert("security-policy".into(), serde_yaml::Value::Null);
-
-    let merged = MergedProfile {
+    // One source, two tiers: a recommended layer carrying a package and a
+    // locked layer carrying a system setting.
+    let recommended = MergedProfile {
         packages: PackagesSpec {
             cargo: Some(CargoSpec {
                 file: None,
@@ -3307,11 +3408,20 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
             }),
             ..Default::default()
         },
+        ..Default::default()
+    };
+    let mut system = std::collections::HashMap::new();
+    system.insert("security-policy".into(), serde_yaml::Value::Null);
+    let locked = MergedProfile {
         system,
         ..Default::default()
     };
 
-    let declined = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    let delivered = DeliveredItems::from_layers(&[
+        tiered_layer(&recommended, crate::config::LayerPolicy::Recommended),
+        tiered_layer(&locked, crate::config::LayerPolicy::Required),
+    ]);
+    let declined = process_tiered_decisions(&store, "corp", &delivered, &policy, &notifier);
     assert!(
         declined.is_empty(),
         "neither Accept nor Notify declines an item outright"
@@ -4937,9 +5047,8 @@ fn process_source_decisions_optional_tier_accept() {
         locked_conflict: PolicyAction::Notify,
     };
 
-    // Regular packages trigger "recommended" tier, not "optional".
-    // The current infer_item_tier only returns "recommended" or "locked".
-    // Verify that recommended items still get the Notify treatment.
+    // An item a source offers on a recommended-tier layer is governed by
+    // `newRecommended`, whatever `newOptional` says.
     let merged = MergedProfile {
         packages: crate::config::PackagesSpec {
             cargo: Some(crate::config::CargoSpec {
@@ -4957,6 +5066,141 @@ fn process_source_decisions_optional_tier_accept() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "packages.cargo.bat");
     assert!(withheld_paths(&store).contains("packages.cargo.bat"));
+}
+
+/// `newOptional` governs an item a source offered in an opt-in profile, and
+/// nothing else. The tier comes from the LAYER composition built for that
+/// profile — the only place the fact lives — so the policy key
+/// `docs/sources.md` documents is reachable rather than decorative.
+#[test]
+fn an_optional_tier_item_is_governed_by_the_optional_policy() {
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Notify,
+        new_optional: PolicyAction::Ignore,
+        locked_conflict: PolicyAction::Notify,
+    };
+
+    let merged = MergedProfile {
+        packages: crate::config::PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let declined = process_tiered_decisions(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Optional),
+        &policy,
+        &notifier,
+    );
+    assert!(
+        declined.contains("packages.cargo.bat"),
+        "an opt-in profile's item takes newOptional (Ignore), not newRecommended (Notify): {declined:?}"
+    );
+    assert!(
+        store
+            .pending_decisions()
+            .expect("read decisions")
+            .is_empty(),
+        "an Ignored item records no row"
+    );
+}
+
+/// The `locked`/`required` tiers share one `LayerPolicy`, and `lockedConflict`
+/// is the key that governs both — a source's locked item must not be judged by
+/// `newRecommended` merely because its path reads like an ordinary package.
+#[test]
+fn a_required_tier_item_is_governed_by_the_locked_policy() {
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Reject,
+        new_optional: PolicyAction::Ignore,
+        locked_conflict: PolicyAction::Notify,
+    };
+
+    let merged = MergedProfile {
+        packages: crate::config::PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let declined = process_tiered_decisions(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Required),
+        &policy,
+        &notifier,
+    );
+    assert!(
+        declined.is_empty(),
+        "lockedConflict: Notify asks about the item rather than declining it: {declined:?}"
+    );
+    let pending = store.pending_decisions().expect("read decisions");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].tier, "locked");
+}
+
+/// A path that merely READS as policy-bearing is not a locked item. The tier
+/// is what the source's layer says it is; guessing from the path once sent a
+/// recommended `~/.config/company/security.yaml` to `lockedConflict`.
+#[test]
+fn a_recommended_item_whose_path_reads_like_policy_is_still_recommended() {
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Notify,
+        new_optional: PolicyAction::Ignore,
+        locked_conflict: PolicyAction::Accept,
+    };
+
+    let merged = MergedProfile {
+        files: crate::config::FilesSpec {
+            managed: vec![managed_file_spec("files/security-policy.yaml")],
+            permissions: Default::default(),
+        },
+        ..Default::default()
+    };
+
+    process_tiered_decisions(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &notifier,
+    );
+    let pending = store.pending_decisions().expect("read decisions");
+    assert_eq!(
+        pending.len(),
+        1,
+        "lockedConflict: Accept must not swallow a recommended item"
+    );
+    assert_eq!(pending[0].tier, "recommended");
+}
+
+fn managed_file_spec(target: &str) -> crate::config::ManagedFileSpec {
+    crate::config::ManagedFileSpec {
+        source: "files/x".into(),
+        target: std::path::PathBuf::from(target),
+        strategy: Some(crate::config::FileStrategy::Copy),
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }
 }
 
 // --- process_source_decisions: empty merged profile no decisions ---
@@ -5336,30 +5580,6 @@ fn source_status_camel_case_serialization() {
     assert!(!json.contains("\"last_sync\""));
     assert!(!json.contains("\"last_reconcile\""));
     assert!(!json.contains("\"drift_count\""));
-}
-
-// --- infer_item_tier: boundary cases ---
-
-#[test]
-fn infer_item_tier_empty_string() {
-    assert_eq!(infer_item_tier(""), "recommended");
-}
-
-#[test]
-fn infer_item_tier_case_sensitivity() {
-    // "Security" (uppercase S) does NOT match since contains() is case-sensitive
-    assert_eq!(infer_item_tier("files.Security-settings"), "recommended");
-    // "POLICY" (all caps) does NOT match since contains() is case-sensitive
-    assert_eq!(infer_item_tier("files.POLICY-doc"), "recommended");
-    // Only lowercase matches trigger the "locked" tier
-    assert_eq!(infer_item_tier("files.security-settings"), "locked");
-    assert_eq!(infer_item_tier("files.policy-doc"), "locked");
-}
-
-#[test]
-fn infer_item_tier_partial_keyword_match() {
-    // "insecurity" contains "security"
-    assert_eq!(infer_item_tier("files.insecurity-note"), "locked");
 }
 
 // --- compute_config_hash: uses only packages for hash ---
@@ -7180,6 +7400,7 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 notify_on_drift: false,
                 hooks: &hooks,
                 state_dir_override: Some(&sd),
+                config_explicit: false,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -9085,24 +9306,6 @@ fn notifier_desktop_does_not_panic() {
     notifier.notify("test title", "test body");
 }
 
-// --- infer_item_tier edge cases ---
-
-#[test]
-fn infer_item_tier_detects_policy_keyword_extended() {
-    assert_eq!(infer_item_tier("files./etc/security-policy.conf"), "locked");
-    assert_eq!(infer_item_tier("system.policy_engine"), "locked");
-}
-
-#[test]
-fn infer_item_tier_normal_resources_are_recommended() {
-    assert_eq!(infer_item_tier("packages.npm.typescript"), "recommended");
-    assert_eq!(
-        infer_item_tier("files./home/user/.gitconfig"),
-        "recommended"
-    );
-    assert_eq!(infer_item_tier("env.PATH"), "recommended");
-}
-
 // --- build_webhook_payload ---
 
 #[test]
@@ -9210,6 +9413,7 @@ mod harness {
             compliance_config: compliance,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -9987,6 +10191,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10072,6 +10277,7 @@ mod harness {
             compliance_config: Some(compliance_cfg),
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10323,6 +10529,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10398,6 +10605,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10458,6 +10666,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -11991,6 +12200,7 @@ mod harness {
         super::super::DaemonRunOverrides {
             ipc_path: Some(tmp.path().join("daemon-test.sock")),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12276,6 +12486,7 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             skip_health_server: false,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12334,6 +12545,7 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12621,6 +12833,7 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: None,
@@ -12877,6 +13090,7 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -12932,6 +13146,7 @@ mod harness {
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            config_explicit: false,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -14419,6 +14634,7 @@ mod handle_reconcile_extra_branches {
                     notify_on_drift: false,
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
+                    config_explicit: false,
                     printer: &printer,
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),
@@ -14675,9 +14891,12 @@ mod tests_run_daemon_wrapper {
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
         let over = cli_run_overrides(
-            DaemonDirOverrides {
-                runtime_dir: Some(runtime.clone()),
-                state_dir: Some(state.clone()),
+            crate::daemon::DaemonLaunch {
+                dirs: DaemonDirOverrides {
+                    runtime_dir: Some(runtime.clone()),
+                    state_dir: Some(state.clone()),
+                },
+                config_explicit: false,
             },
             crate::Scope::User,
         );
@@ -14711,7 +14930,7 @@ mod tests_run_daemon_wrapper {
     #[test]
     fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
         use crate::daemon::cli_run_overrides;
-        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User);
+        let over = cli_run_overrides(crate::daemon::DaemonLaunch::default(), crate::Scope::User);
         assert!(
             over.state_dir_override.is_none(),
             "no flag → fall through to CFGD_STATE_DIR / the scope default"
@@ -14726,7 +14945,7 @@ mod tests_run_daemon_wrapper {
         let result = run_daemon(
             bogus_path,
             None,
-            DaemonDirOverrides::default(),
+            crate::daemon::DaemonLaunch::default(),
             printer,
             hooks,
             crate::Scope::User,

@@ -20,7 +20,7 @@ use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::command_available;
-use cfgd_core::config::{MergedProfile, PackagesSpec};
+use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
@@ -224,7 +224,7 @@ pub fn plan_packages(
                 actions.push(PackageAction::Install {
                     manager: manager.name().to_string(),
                     packages: to_install,
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 });
             }
 
@@ -234,7 +234,7 @@ pub fn plan_packages(
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
                     packages: to_uninstall,
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 });
             }
         } else if desired.is_empty() {
@@ -247,12 +247,12 @@ pub fn plan_packages(
             actions.push(PackageAction::Bootstrap {
                 manager: manager.name().to_string(),
                 method: bootstrap_method(*manager).to_string(),
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
         } else if manager
             .name()
@@ -265,7 +265,7 @@ pub fn plan_packages(
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
         } else {
             actions.push(PackageAction::Skip {
@@ -274,7 +274,7 @@ pub fn plan_packages(
                     "'{}' not available — cannot auto-install on this platform",
                     manager.name()
                 ),
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
         }
     }

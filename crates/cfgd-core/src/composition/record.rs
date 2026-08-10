@@ -1,5 +1,5 @@
 use crate::PathDisplayExt;
-use crate::config::{PackagesSpec, PolicyItems};
+use crate::config::{LOCAL_LAYER, PackagesSpec, PolicyItems};
 
 use super::{ConflictResolution, ResolutionType};
 
@@ -114,7 +114,7 @@ pub(super) fn record_rejections(
                         conflicts.push(ConflictResolution {
                             resource_id: name.to_string(),
                             resolution_type: ResolutionType::Rejected,
-                            winning_source: "local".to_string(),
+                            winning_source: LOCAL_LAYER.to_string(),
                             details: format!(
                                 "REJECTED {} <- local rejected {} recommendation",
                                 name, source_name
@@ -132,7 +132,7 @@ pub(super) fn record_rejections(
                                 conflicts.push(ConflictResolution {
                                     resource_id: name.to_string(),
                                     resolution_type: ResolutionType::Rejected,
-                                    winning_source: "local".to_string(),
+                                    winning_source: LOCAL_LAYER.to_string(),
                                     details: format!(
                                         "REJECTED {} <- local rejected {} recommendation",
                                         name, source_name
@@ -156,7 +156,7 @@ pub(super) fn record_rejections(
                 conflicts.push(ConflictResolution {
                     resource_id: format!("module:{}", name),
                     resolution_type: ResolutionType::Rejected,
-                    winning_source: "local".to_string(),
+                    winning_source: LOCAL_LAYER.to_string(),
                     details: format!(
                         "REJECTED module {} <- local rejected {} recommendation",
                         name, source_name

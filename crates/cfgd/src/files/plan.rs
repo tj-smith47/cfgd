@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use similar::TextDiff;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedProfile, PatchSpec};
+use cfgd_core::config::{
+    EncryptionMode, FileStrategy, LOCAL_LAYER, ManagedFileSpec, MergedProfile, PatchSpec,
+};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
 use cfgd_core::output::{Printer, Role};
@@ -95,7 +97,7 @@ impl super::CfgdFileManager {
                 let origin = managed
                     .origin
                     .clone()
-                    .unwrap_or_else(|| "local".to_string());
+                    .unwrap_or_else(|| LOCAL_LAYER.to_string());
                 let outcome = self.evaluate(managed, &target_path, ReconcileContext::Apply)?;
                 // A converged target needs no write, but its declared mode can
                 // still drift, so the permission check below runs either way.
@@ -142,7 +144,7 @@ impl super::CfgdFileManager {
                         origin: managed
                             .origin
                             .clone()
-                            .unwrap_or_else(|| "local".to_string()),
+                            .unwrap_or_else(|| LOCAL_LAYER.to_string()),
                     });
                     continue;
                 }
@@ -179,7 +181,7 @@ impl super::CfgdFileManager {
             let origin = managed
                 .origin
                 .clone()
-                .unwrap_or_else(|| "local".to_string());
+                .unwrap_or_else(|| LOCAL_LAYER.to_string());
 
             // For symlink/hardlink: check if the target is already the correct link
             if matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
@@ -539,7 +541,7 @@ impl super::CfgdFileManager {
                         return Ok(Some(FileAction::SetPermissions {
                             target: target.to_path_buf(),
                             mode: desired_mode,
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
                 } else {
@@ -548,7 +550,7 @@ impl super::CfgdFileManager {
                     return Ok(Some(FileAction::SetPermissions {
                         target: target.to_path_buf(),
                         mode: desired_mode,
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             }

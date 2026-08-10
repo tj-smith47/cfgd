@@ -9,11 +9,11 @@
 //! its modes translate the same rows through the same vocabulary and prune the
 //! same plan shape, so no path can execute an item another path withholds.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    self, AutoApplyPolicyConfig, CfgdConfig, LOCAL_LAYER, MergedProfile, PolicyAction,
+    self, AutoApplyPolicyConfig, CfgdConfig, LOCAL_LAYER, LayerPolicy, MergedProfile, PolicyAction,
     ResolvedProfile,
 };
 use crate::errors::Result;
@@ -95,13 +95,29 @@ pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
 /// the optional profiles), so it is absent here too: an item cfgd will not
 /// apply mints no pending row and adds no noise to a plan.
 pub fn source_delivered_profile(resolved: &ResolvedProfile, source_name: &str) -> MergedProfile {
-    let layers: Vec<config::ProfileLayer> = resolved
+    config::merge_layers(&source_delivered_layers(resolved, source_name))
+}
+
+/// The layers one source contributed to a composed profile.
+///
+/// Kept separate from [`source_delivered_profile`] because merging throws away
+/// the one fact the auto-apply policy needs: which TIER each layer arrived
+/// under. Composition builds a layer per tier
+/// (`<source>/locked`, `<source>/required`, `<source>/recommended`, an opt-in
+/// optional profile, the subscriber's overrides, the source's standard
+/// profiles) and tags each with a [`LayerPolicy`], so the layer that carried an
+/// item is what says whether `newRecommended`, `newOptional` or
+/// `lockedConflict` governs it.
+pub fn source_delivered_layers(
+    resolved: &ResolvedProfile,
+    source_name: &str,
+) -> Vec<config::ProfileLayer> {
+    resolved
         .layers
         .iter()
         .filter(|l| l.source == source_name)
         .cloned()
-        .collect();
-    config::merge_layers(&layers)
+        .collect()
 }
 
 /// What the subscriber's own layers declare, as one merged profile.
@@ -290,7 +306,55 @@ impl WithheldDecisions {
     /// withhold a `Reject`-tier item, and a manual apply cannot launder onto
     /// the machine what the daemon declines.
     pub fn with_policy_declined(mut self, declined: HashSet<String>) -> Self {
+        // A declined item is silent on every rendered surface by contract —
+        // `docs/sources.md` gives `Reject`/`Ignore` no row and no line, because
+        // the instruction is already in the config being read. That leaves no
+        // way to answer "why is this item nowhere", so the paths are named at
+        // debug level: visible to an operator who goes looking, invisible to
+        // the one who did not ask.
+        if !declined.is_empty() && tracing::enabled!(tracing::Level::DEBUG) {
+            let mut paths: Vec<&str> = declined.iter().map(String::as_str).collect();
+            paths.sort_unstable();
+            tracing::debug!(
+                resources = %paths.join(", "),
+                "auto-apply policy declines these source items; they are withheld from the plan and record no decision"
+            );
+        }
         self.declined = declined;
+        self
+    }
+
+    /// Fold in the items a `Notify` policy has classified but no store has
+    /// recorded yet.
+    ///
+    /// The window this closes is the one between a source delivering an item
+    /// and a row existing for it. `Notify` is the DEFAULT tier disposition, so
+    /// without this a `cfgd plan` or `cfgd apply` reaching the item first would
+    /// plan and install it, it would become a managed resource, and the daemon
+    /// would never ask — the standing contract is ask-before-install, on every
+    /// path. An unrecorded mint therefore withholds exactly as a recorded
+    /// pending row does, and is rendered beside them.
+    ///
+    /// A mint whose row this run already read is skipped, so a path that MINTS
+    /// before reading (`cfgd apply`, through [`mint_decisions`]) does not list
+    /// the same item twice. The scope gate applies here too: an item the
+    /// operator also declares themselves is theirs, not the source's, and no
+    /// classification of the source's copy may withhold it.
+    pub fn with_unrecorded(mut self, mints: &[DecisionMint], scope: &DecisionScope) -> Self {
+        for mint in mints {
+            if !scope.withholds(&mint.source, &mint.resource) {
+                continue;
+            }
+            let already_read = self
+                .pending
+                .iter()
+                .chain(self.rejected.iter())
+                .any(|d| d.source == mint.source && d.resource == mint.resource);
+            if already_read {
+                continue;
+            }
+            self.pending.push(mint.as_row());
+        }
         self
     }
 
@@ -331,15 +395,51 @@ pub struct DecisionMint {
     pub tier: &'static str,
 }
 
+impl DecisionMint {
+    /// The `pending_decisions.summary` text the row carries.
+    pub fn summary(&self) -> String {
+        format!("{} {} (from {})", self.tier, self.resource, self.source)
+    }
+
+    /// The row this mint stands for, before anything records it.
+    ///
+    /// A run that classifies an item but does not own the store — `cfgd plan`
+    /// is read-only — still has to WITHHOLD it and name it on the surface the
+    /// operator reads, or a `Notify`-tier item would be installed by whichever
+    /// path reached it before the row existed. The row is real in every field
+    /// the operator sees; `id` is `0` because no store has assigned one yet,
+    /// which is also how a reader of the `-o json` payload tells an
+    /// unanswered-and-unrecorded item from a recorded one.
+    pub fn as_row(&self) -> PendingDecision {
+        PendingDecision {
+            id: 0,
+            source: self.source.clone(),
+            resource: self.resource.clone(),
+            tier: self.tier.to_string(),
+            action: DECISION_ACTION_INSTALL.to_string(),
+            summary: self.summary(),
+            created_at: crate::utc_now_iso8601(),
+            resolved_at: None,
+            resolution: None,
+        }
+    }
+}
+
+/// The `pending_decisions.action` value every minted row carries: the decision
+/// is whether to put the item ON the machine.
+pub const DECISION_ACTION_INSTALL: &str = "install";
+
 /// What the auto-apply policy makes of everything the subscribed sources
 /// currently deliver.
 ///
-/// One classification, two consumers with different rights over it: the daemon
-/// owns the WRITES (it mints [`Self::to_mint`] as rows and stores the hashes),
-/// while `cfgd plan` / `cfgd apply` read [`Self::declined`] alone. Splitting it
-/// this way is what keeps a manual apply from installing the item the daemon
-/// declines — the disposition is computed from the same inputs on both paths
-/// rather than living in whichever one happened to run.
+/// One classification, consumed WHOLE by every path that plans: `declined`
+/// prunes silently, `to_mint` withholds the item and names it as pending. What
+/// differs between the paths is only who may WRITE it — `cfgd apply` and the
+/// daemon own their store and record the rows through [`mint_decisions`],
+/// `cfgd plan` is read-only and rides [`WithheldDecisions::with_unrecorded`]
+/// instead. Computing the disposition from the same inputs on every path is
+/// what keeps a manual apply from installing an item the daemon would have
+/// asked about.
 #[derive(Debug, Default)]
 pub struct SourcePolicyReview {
     /// Resource paths the policy declines outright — `Reject` and `Ignore`.
@@ -379,7 +479,7 @@ pub fn review_source_policies(
         let one = review_source_policy(
             store,
             &source.name,
-            &source_delivered_profile(resolved, &source.name),
+            &DeliveredItems::for_source(resolved, &source.name),
             policy,
         )?;
         review.declined.extend(one.declined);
@@ -392,16 +492,15 @@ pub fn review_source_policies(
 /// Classify what ONE source delivers against the auto-apply policy.
 ///
 /// The per-source half of [`review_source_policies`], for a caller holding a
-/// source's merged profile directly rather than a whole config.
+/// source's delivered items directly rather than a whole config.
 pub fn review_source_policy(
     store: &StateStore,
     source_name: &str,
-    merged: &MergedProfile,
+    delivered: &DeliveredItems,
     policy: &AutoApplyPolicyConfig,
 ) -> Result<SourcePolicyReview> {
     let mut review = SourcePolicyReview::default();
-    let current_resources = declared_decision_paths(merged);
-    let current_hash = hash_resources(&current_resources);
+    let current_hash = delivered.resource_hash();
 
     let previous_hash = store
         .source_config_hash(source_name)?
@@ -421,11 +520,10 @@ pub fn review_source_policy(
         }
     }
 
-    for resource in current_resources.iter().filter(|r| !known.contains(*r)) {
-        let tier = infer_item_tier(resource);
+    for (resource, tier) in delivered.iter().filter(|(r, _)| !known.contains(*r)) {
         let action = match tier {
-            "optional" => &policy.new_optional,
-            "locked" => &policy.locked_conflict,
+            TIER_OPTIONAL => &policy.new_optional,
+            TIER_LOCKED => &policy.locked_conflict,
             _ => &policy.new_recommended,
         };
         match action {
@@ -467,6 +565,71 @@ pub fn review_source_policy(
     Ok(review)
 }
 
+/// Record the rows a [`SourcePolicyReview`] asked for, returning how many were
+/// minted per source.
+///
+/// The WRITE half of the review, shared by the daemon's tick and by
+/// `cfgd apply` so an item is asked about by whichever of them runs first: a
+/// row minted here is answerable by `cfgd decide` immediately, instead of the
+/// item waiting on the next daemon tick while every apply in between is free to
+/// install it. Idempotent by construction — `review_source_policy` only mints
+/// what has never been asked about (or what a changed source re-asks), and the
+/// upsert refreshes an unresolved row rather than duplicating it.
+///
+/// A row that will not record is logged and skipped rather than failing the
+/// run: the caller withholds the item either way (an unrecorded mint still
+/// rides [`WithheldDecisions::with_unrecorded`]), so a store that rejects the
+/// write costs the operator the ability to answer, never the protection.
+///
+/// The hashes are stored AFTER the rows, so a failure between the two re-asks
+/// on the next run instead of marking the source seen for items nobody
+/// recorded.
+pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(String, u32)> {
+    let mut minted_per_source: Vec<(String, u32)> = Vec::new();
+    for mint in &review.to_mint {
+        if let Err(e) = store.upsert_pending_decision(
+            &mint.source,
+            &mint.resource,
+            mint.tier,
+            DECISION_ACTION_INSTALL,
+            &mint.summary(),
+        ) {
+            tracing::warn!(error = %e, "failed to record pending decision");
+            continue;
+        }
+        match minted_per_source
+            .iter_mut()
+            .find(|(s, _)| *s == mint.source)
+        {
+            Some((_, count)) => *count += 1,
+            None => minted_per_source.push((mint.source.clone(), 1)),
+        }
+    }
+
+    for (source_name, hash) in &review.changed_hashes {
+        if let Err(e) = store.set_source_config_hash(source_name, hash) {
+            tracing::warn!(error = %e, "failed to store source config hash");
+        }
+    }
+
+    minted_per_source
+}
+
+/// Whether a run may sweep the decision rows out of the store it opened.
+///
+/// One rule, read by `cfgd apply` and by the daemon's tick. A config the
+/// operator named explicitly (`--config`, `--config-dir`, `CFGD_CONFIG`) is not
+/// authoritative over the DEFAULT store: its subscription list belongs to a
+/// different machine picture, and the rows it would delete are another config's,
+/// unrecoverably. Bringing its own state dir makes it authoritative again,
+/// because then the store it sweeps is the one that config owns.
+///
+/// Withholding is unaffected either way — a row whose source this run does not
+/// subscribe to is inert through [`Subscriptions`], swept or not.
+pub fn owns_decision_store(config_explicit: bool, has_state_dir_override: bool) -> bool {
+    !config_explicit || has_state_dir_override
+}
+
 /// Hash a resource set so a source's delivered items can be compared against
 /// the last run's without storing them.
 pub fn hash_resources(resources: &HashSet<String>) -> String {
@@ -476,16 +639,89 @@ pub fn hash_resources(resources: &HashSet<String>) -> String {
     crate::sha256_hex(combined.as_bytes())
 }
 
-/// Infer the policy tier for a resource based on naming conventions.
+/// The tier a source offered an item at, as the `pending_decisions.tier` column
+/// spells it and as `docs/sources.md` names the policy key that governs it.
+pub const TIER_LOCKED: &str = "locked";
+pub const TIER_RECOMMENDED: &str = "recommended";
+pub const TIER_OPTIONAL: &str = "optional";
+
+/// The tier of the layer an item arrived on.
 ///
-/// A heuristic standing in for the source manifest's own tiers: resources whose
-/// path reads as policy-bearing are treated as locked, everything else as
-/// recommended.
-pub fn infer_item_tier(resource: &str) -> &'static str {
-    if resource.contains("security") || resource.contains("policy") || resource.contains("locked") {
-        "locked"
-    } else {
-        "recommended"
+/// `Required` covers both `policy.locked` and `policy.required` — composition
+/// gives them one [`LayerPolicy`] because they share the enforcement the
+/// subscriber cannot override, and `lockedConflict` is the policy key
+/// `docs/sources.md` gives that enforcement. `Local` cannot appear on a
+/// source's layer; it maps to the recommended default rather than inventing a
+/// fifth disposition.
+fn tier_of(policy: &LayerPolicy) -> &'static str {
+    match policy {
+        LayerPolicy::Required => TIER_LOCKED,
+        LayerPolicy::Optional => TIER_OPTIONAL,
+        LayerPolicy::Recommended | LayerPolicy::Local => TIER_RECOMMENDED,
+    }
+}
+
+/// How strongly a tier is enforced, for the case where one source delivers an
+/// item on more than one layer: the strongest tier decides, because the item
+/// IS locked if any layer locked it.
+fn tier_rank(tier: &str) -> u8 {
+    match tier {
+        TIER_LOCKED => 2,
+        TIER_RECOMMENDED => 1,
+        _ => 0,
+    }
+}
+
+/// Every resource one source delivers, each tagged with its policy tier.
+///
+/// The auto-apply policy has a key per tier (`newRecommended`, `newOptional`,
+/// `lockedConflict`), so the classification cannot read a merged profile alone
+/// — merging erases which layer, and therefore which tier, carried an item.
+/// This is the input [`review_source_policy`] classifies, and it is built from
+/// the source's own layers so `newOptional` governs exactly the items the
+/// subscriber opted into and nothing else.
+#[derive(Debug, Default)]
+pub struct DeliveredItems {
+    tiers: BTreeMap<String, &'static str>,
+}
+
+impl DeliveredItems {
+    /// What `source_name` delivered into a composed profile.
+    pub fn for_source(resolved: &ResolvedProfile, source_name: &str) -> Self {
+        Self::from_layers(&source_delivered_layers(resolved, source_name))
+    }
+
+    /// Tag every resource on `layers` with the tier of the layer carrying it.
+    pub fn from_layers(layers: &[config::ProfileLayer]) -> Self {
+        let mut tiers: BTreeMap<String, &'static str> = BTreeMap::new();
+        for layer in layers {
+            let tier = tier_of(&layer.policy);
+            for resource in
+                declared_decision_paths(&config::merge_layers(std::slice::from_ref(layer)))
+            {
+                match tiers.get(&resource) {
+                    Some(existing) if tier_rank(existing) >= tier_rank(tier) => {}
+                    _ => {
+                        tiers.insert(resource, tier);
+                    }
+                }
+            }
+        }
+        Self { tiers }
+    }
+
+    /// `(resource, tier)` for everything the source delivers, in path order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &'static str)> + '_ {
+        self.tiers.iter().map(|(r, t)| (r, *t))
+    }
+
+    /// The hash the change detector compares against the last run's.
+    pub fn resource_hash(&self) -> String {
+        hash_resources(&self.tiers.keys().cloned().collect())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tiers.is_empty()
     }
 }
 

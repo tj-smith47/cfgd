@@ -110,6 +110,11 @@ pub(crate) struct ReconcileCtx<'a> {
     pub notify_on_drift: bool,
     pub hooks: &'a dyn DaemonHooks,
     pub state_dir_override: Option<&'a Path>,
+    /// Whether the operator named this daemon's config themselves (`--config`,
+    /// `--config-dir`, `CFGD_CONFIG`). Feeds
+    /// [`crate::reconciler::owns_decision_store`]: a config pointed at the
+    /// default store is not authoritative over its decision rows.
+    pub config_explicit: bool,
     pub printer: &'a crate::output::Printer,
     /// When set, restrict reconcile to actions targeting this module name.
     /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
@@ -179,6 +184,7 @@ pub(crate) fn handle_reconcile(
         notify_on_drift,
         hooks,
         state_dir_override,
+        config_explicit,
         printer,
         module_filter,
         auto_apply_override,
@@ -312,12 +318,17 @@ pub(crate) fn handle_reconcile(
         auto_apply_override.unwrap_or_else(|| crate::reconciler::configured_auto_apply(&cfg));
 
     // Discard the decisions of a source the subscriber has dropped: source
-    // gone, items gone. Outside every gate below, because the rows a removed
-    // source leaves are exactly the rows nobody can answer — `cfgd decide` acts
-    // against a source that no longer exists — and dropping the LAST source, or
-    // turning auto-apply off, must not be what strands them.
+    // gone, items gone. Outside every OTHER gate below, because the rows a
+    // removed source leaves are exactly the rows nobody can answer —
+    // `cfgd decide` acts against a source that no longer exists — and dropping
+    // the LAST source, or turning auto-apply off, must not be what strands
+    // them. The one gate it does take is store ownership, shared with
+    // `cfgd apply`: a daemon started with `--config other.yaml` against the
+    // DEFAULT store would otherwise delete another config's rows.
     let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
-    if let Err(e) = store.discard_decisions_not_in(&subscribed) {
+    if crate::reconciler::owns_decision_store(config_explicit, state_dir_override.is_some())
+        && let Err(e) = store.discard_decisions_not_in(&subscribed)
+    {
         tracing::warn!(error = %e, "failed to discard decisions of removed sources");
     }
 
@@ -909,38 +920,17 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 /// Record the rows a [`SourcePolicyReview`] asked for, and notify once per
 /// source.
 ///
-/// The daemon's half of the review: `cfgd plan` and `cfgd apply` read the same
-/// classification but write none of it, so minting stays where the reconcile
-/// loop can notify about it.
+/// The daemon's wrapper over the shared [`crate::reconciler::mint_decisions`]:
+/// `cfgd apply` mints the same rows so an item is never installed before it is
+/// asked about, but only the reconcile loop is unattended enough to need
+/// telling the operator out of band.
 pub(crate) fn mint_reviewed_decisions(
     store: &StateStore,
     review: &crate::reconciler::SourcePolicyReview,
     notifier: &Notifier,
 ) {
-    let mut minted_per_source: Vec<(String, u32)> = Vec::new();
-    for mint in &review.to_mint {
-        let summary = format!("{} {} (from {})", mint.tier, mint.resource, mint.source);
-        if let Err(e) = store.upsert_pending_decision(
-            &mint.source,
-            &mint.resource,
-            mint.tier,
-            "install",
-            &summary,
-        ) {
-            tracing::warn!(error = %e, "failed to record pending decision");
-            continue;
-        }
-        match minted_per_source
-            .iter_mut()
-            .find(|(s, _)| *s == mint.source)
-        {
-            Some((_, count)) => *count += 1,
-            None => minted_per_source.push((mint.source.clone(), 1)),
-        }
-    }
-
     // One notification per source rather than per item.
-    for (source_name, count) in minted_per_source {
+    for (source_name, count) in crate::reconciler::mint_decisions(store, review) {
         notifier.notify(
             "cfgd: pending decisions",
             &format!(
@@ -957,11 +947,5 @@ pub(crate) fn mint_reviewed_decisions(
                 source_name,
             ),
         );
-    }
-
-    for (source_name, hash) in &review.changed_hashes {
-        if let Err(e) = store.set_source_config_hash(source_name, hash) {
-            tracing::warn!(error = %e, "failed to store source config hash");
-        }
     }
 }

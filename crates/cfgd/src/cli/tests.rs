@@ -20622,6 +20622,136 @@ fn an_explicit_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
     );
 }
 
+/// The auto-apply policy block that leaves every tier at its default — which
+/// makes `newRecommended` `Notify`, the disposition an operator gets simply by
+/// turning `autoApply` on.
+const NOTIFYING_POLICY: &str = "  daemon:\n    reconcile:\n      autoApply: true\n";
+
+#[test]
+#[serial_test::serial]
+fn apply_asks_about_a_source_item_no_run_has_seen_yet_instead_of_installing_it() {
+    // The window this closes: a source delivers an item, and until the daemon's
+    // next tick nothing has recorded a decision about it. `Notify` is the
+    // DEFAULT tier disposition, so an apply reaching the item first would
+    // install it, the item would become a managed resource, it would stop
+    // looking new — and the daemon would never ask. Ask-before-install is the
+    // contract on every path, so this run withholds the item AND mints the row
+    // that makes it answerable.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(f.kept.exists(), "the operator's own file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a Notify-tier item is not installed before it is asked about:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions"),
+        "and the item is named rather than silently missing:\n{output}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    let rows = state.pending_decisions().unwrap();
+    assert_eq!(
+        rows.iter().map(|d| d.resource.clone()).collect::<Vec<_>>(),
+        vec![f.resource()],
+        "the row is recorded, so `cfgd decide` can answer it without waiting \
+         for a daemon tick"
+    );
+    assert_eq!(rows[0].source, "acme");
+    assert_eq!(rows[0].tier, "recommended");
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_installs_the_item_once_its_freshly_minted_decision_is_accepted() {
+    // The other half of the same window: the row an apply mints is a real one,
+    // so answering it releases the item on the next apply.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.resolve_decision(&f.resource(), "accepted").unwrap(),
+        "the minted row is resolvable by resource path, exactly as `cfgd decide` resolves it"
+    );
+    drop(state);
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    assert!(
+        f.withheld.exists(),
+        "an accepted item applies on the next run:\n{}",
+        cfgd_core::output::strip_ansi(&f.h.output())
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_withholds_an_unrecorded_item_without_recording_it() {
+    // `cfgd plan` is a preview and writes nothing — it consumes the same
+    // classification an apply does, so the preview and the apply withhold one
+    // set, but the row is left for the apply to mint.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("1 action(s) planned"),
+        "the preview counts what an apply would run — the undecided item is \
+         not part of it:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions"),
+        "the withheld item is named, not silently absent:\n{output}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a preview records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_explicit_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
+    // The protective arm of the ownership gate: a `--config` naming someone
+    // else's picture of the machine, with the state dir left at its default,
+    // must not delete rows that config knows nothing about.
+    let f = decision_fixture(false);
+    let default_state = super::open_state_store(None).unwrap();
+    default_state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    let cli = Cli {
+        config_explicit: true,
+        state_dir: None,
+        ..f.h.cli()
+    };
+    super::apply::cmd_apply(&cli, f.h.printer(), &apply_args(false)).unwrap();
+
+    assert_eq!(
+        default_state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.source)
+            .collect::<Vec<_>>(),
+        vec!["gone".to_string()],
+        "the row belongs to whatever config owns the default store, not to this run"
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn status_lists_only_the_decisions_their_source_can_still_answer() {

@@ -196,7 +196,14 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
 
         // Files: overlay (later layer overrides earlier for same target)
         if let Some(files) = files {
-            for managed in &files.managed {
+            // Destructured for the same reason `ProfileSpec` is: the guard has
+            // to reach the nested specs too, or a field added to `FilesSpec`
+            // is dropped by both merges with nothing failing to compile.
+            let FilesSpec {
+                managed: layer_managed,
+                permissions,
+            } = files;
+            for managed in layer_managed {
                 if let Some(existing) = merged
                     .files
                     .managed
@@ -208,7 +215,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
                     merged.files.managed.push(managed.clone());
                 }
             }
-            for (path, mode) in &files.permissions {
+            for (path, mode) in permissions {
                 merged.files.permissions.insert(path.clone(), mode.clone());
             }
         }
@@ -239,18 +246,23 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
 
         // Scripts: append in order
         if let Some(scripts) = scripts {
-            merged.scripts.pre_apply.extend(scripts.pre_apply.clone());
-            merged.scripts.post_apply.extend(scripts.post_apply.clone());
-            merged
-                .scripts
-                .pre_reconcile
-                .extend(scripts.pre_reconcile.clone());
-            merged
-                .scripts
-                .post_reconcile
-                .extend(scripts.post_reconcile.clone());
-            merged.scripts.on_drift.extend(scripts.on_drift.clone());
-            merged.scripts.on_change.extend(scripts.on_change.clone());
+            // Six hook vectors, and a seventh would otherwise be silently
+            // dropped by both merges — every script a source or a parent
+            // profile declared for the new hook would simply never run.
+            let ScriptSpec {
+                pre_apply,
+                post_apply,
+                pre_reconcile,
+                post_reconcile,
+                on_drift,
+                on_change,
+            } = scripts;
+            merged.scripts.pre_apply.extend(pre_apply.clone());
+            merged.scripts.post_apply.extend(post_apply.clone());
+            merged.scripts.pre_reconcile.extend(pre_reconcile.clone());
+            merged.scripts.post_reconcile.extend(post_reconcile.clone());
+            merged.scripts.on_drift.extend(on_drift.clone());
+            merged.scripts.on_change.extend(on_change.clone());
         }
 
         // Backups: append, deduplicate by name (later layer overrides)

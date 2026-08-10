@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::PathDisplayExt;
-use crate::config::{MergedProfile, ResolvedProfile, ScriptSpec};
+use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -245,7 +245,7 @@ impl<'a> super::Reconciler<'a> {
                         key: drift.key,
                         desired: drift.expected,
                         current: drift.actual,
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             }
@@ -273,7 +273,7 @@ impl<'a> super::Reconciler<'a> {
             actions.push(Action::System(SystemAction::Skip {
                 configurator: key.clone(),
                 reason,
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
                 unknown: !registered,
             }));
         }
@@ -311,7 +311,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             target: crate::expand_tilde(target),
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
 
@@ -321,7 +321,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             envs: secret.envs.clone().unwrap_or_default(),
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
 
@@ -330,14 +330,14 @@ impl<'a> super::Reconciler<'a> {
                         actions.push(Action::Secret(SecretAction::Skip {
                             source: secret.source.clone(),
                             reason: "no target or envs specified".to_string(),
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
                 } else {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
                         reason: format!("provider '{}' not available", provider_name),
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             } else if secret.target.is_some() && has_backend {
@@ -357,14 +357,14 @@ impl<'a> super::Reconciler<'a> {
                         .map(crate::expand_tilde)
                         .unwrap_or_default(),
                     backend: backend_name,
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 }));
 
                 if has_envs {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
                         reason: "env injection requires a secret provider reference; SOPS file targets cannot inject env vars".to_string(),
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             } else if secret.target.is_none() && has_envs && !has_backend {
@@ -373,13 +373,13 @@ impl<'a> super::Reconciler<'a> {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "env injection requires a secret provider reference (e.g. 1password://, vault://)".to_string(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 }));
             } else if !has_backend {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "no secret backend available".to_string(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 }));
             }
         }
@@ -413,7 +413,7 @@ impl<'a> super::Reconciler<'a> {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: pre_phase.clone(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 })
             })
             .collect();
@@ -424,7 +424,7 @@ impl<'a> super::Reconciler<'a> {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: post_phase.clone(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 })
             })
             .collect();

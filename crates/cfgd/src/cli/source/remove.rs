@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 pub fn cmd_source_remove(
@@ -87,7 +88,7 @@ pub fn cmd_source_remove(
                 state.upsert_managed_resource(
                     &r.resource_type,
                     &r.resource_id,
-                    "local",
+                    LOCAL_LAYER,
                     r.last_hash.as_deref(),
                     r.last_applied,
                 )?;
@@ -102,7 +103,7 @@ pub fn cmd_source_remove(
             state.upsert_managed_resource(
                 &r.resource_type,
                 &r.resource_id,
-                "local",
+                LOCAL_LAYER,
                 r.last_hash.as_deref(),
                 r.last_applied,
             )?;

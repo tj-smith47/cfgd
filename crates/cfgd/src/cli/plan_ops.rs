@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::FileStrategy;
+use cfgd_core::config::{FileStrategy, LOCAL_LAYER};
 use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
@@ -204,12 +204,12 @@ pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String>
 /// `Some(source_name)` when a ConfigSource delivered the resource body, `None`
 /// for consumer-local resources (and for action kinds with no provenance, e.g.
 /// system writes / env / locally-authored scripts). Files/packages/secrets/
-/// scripts carry origin as the sentinel `String` `"local"`/`""`; modules carry
+/// scripts carry origin as the sentinel `String` [`LOCAL_LAYER`]/`""`; modules carry
 /// it as `Option<String>`. Both normalize to `None` for local here so the wire
 /// field is omitted exactly when there is no remote provenance to report.
 pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<String> {
     fn norm(origin: &str) -> Option<String> {
-        if origin.is_empty() || origin == "local" {
+        if origin.is_empty() || origin == LOCAL_LAYER {
             None
         } else {
             Some(origin.to_string())
@@ -262,14 +262,22 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
 ///   `brew.file: Brewfile` is a declaration like any other, and a guard reading
 ///   only the layers would leave that whole declaration style unprotected.
 /// - **The auto-apply policy**, whose `Reject` / `Ignore` tiers decline an item
-///   outright. Silently, per `docs/sources.md` — those paths prune the plan but
-///   render nothing, because the instruction is already in the config.
+///   outright (silently, per `docs/sources.md` — those paths prune the plan but
+///   render nothing, because the instruction is already in the config) and
+///   whose `Notify` tier withholds the item until the operator answers for it.
+///   A `Notify` item is withheld from the FIRST run that classifies it, before
+///   any row exists: the contract is ask-before-install on every path, so the
+///   window between a source delivering an item and the daemon's next tick
+///   cannot be the window a manual apply installs it in.
+///
+/// [`DecisionWrites`] says whether this run may record what it classified.
 pub(in crate::cli) fn withheld_for_run(
     state: &cfgd_core::state::StateStore,
     cfg: &cfgd_core::config::CfgdConfig,
     resolved: &cfgd_core::config::ResolvedProfile,
     config_dir: &Path,
     config_parsed: bool,
+    writes: DecisionWrites,
 ) -> anyhow::Result<reconciler::WithheldDecisions> {
     let mut local = reconciler::local_profile(resolved);
     packages::resolve_manifest_packages(&mut local.packages, config_dir)?;
@@ -283,9 +291,8 @@ pub(in crate::cli) fn withheld_for_run(
     // Fail-CLOSED on both reads: a run that cannot tell a decided resource from
     // an undecided one must not guess, and the half it would guess wrong is the
     // half that installs.
-    let withheld = reconciler::WithheldDecisions::read(state, &scope)?;
     if !config_parsed {
-        return Ok(withheld);
+        return Ok(reconciler::WithheldDecisions::read(state, &scope)?);
     }
     let review = reconciler::review_source_policies(
         state,
@@ -293,7 +300,29 @@ pub(in crate::cli) fn withheld_for_run(
         resolved,
         reconciler::configured_auto_apply(cfg),
     )?;
-    Ok(withheld.with_policy_declined(review.declined))
+    // Minting first is what makes the rows readable below, so an apply names
+    // the same rows `cfgd status` and `cfgd decide` will: the operator can
+    // answer the item the run just refused to install without waiting for the
+    // daemon. It is also why the read comes after — `with_unrecorded` then has
+    // nothing left to add for the items this run recorded.
+    if matches!(writes, DecisionWrites::Mint) {
+        reconciler::mint_decisions(state, &review);
+    }
+    Ok(reconciler::WithheldDecisions::read(state, &scope)?
+        .with_policy_declined(review.declined)
+        .with_unrecorded(&review.to_mint, &scope))
+}
+
+/// Whether a run may record the decisions its policy review classified.
+///
+/// `cfgd plan` is a preview and writes nothing, so it withholds a newly
+/// classified item without minting a row for it. `cfgd apply` already owns the
+/// store it opened and mints, so the item it declines to install is answerable
+/// immediately. Both withhold identically — only the record differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cli) enum DecisionWrites {
+    Mint,
+    ReadOnly,
 }
 
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
@@ -960,7 +989,7 @@ pub(in crate::cli) fn apply_backup_choice(
         let origin = match action {
             reconciler::Action::File(FileAction::Create { origin, .. })
             | reconciler::Action::File(FileAction::Update { origin, .. }) => origin.clone(),
-            _ => "local".to_string(),
+            _ => LOCAL_LAYER.to_string(),
         };
         *action = reconciler::Action::File(FileAction::Skip {
             target: target.to_path_buf(),

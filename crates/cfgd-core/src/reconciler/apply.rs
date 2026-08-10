@@ -1,6 +1,6 @@
 use crate::AbortFlag;
 use crate::PathDisplayExt;
-use crate::config::{ResolvedProfile, ScriptShell};
+use crate::config::{LOCAL_LAYER, ResolvedProfile, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject_line};
@@ -1119,7 +1119,7 @@ impl<'a> super::Reconciler<'a> {
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
                                 &rid,
-                                "local",
+                                LOCAL_LAYER,
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
@@ -1141,7 +1141,7 @@ impl<'a> super::Reconciler<'a> {
                 .unwrap_or(&result.description);
             let (rtype, rid) = parse_resource_from_description(description);
             self.state
-                .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
+                .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
         }
         Ok(())

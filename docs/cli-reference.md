@@ -123,7 +123,10 @@ cfgd apply --skip-scripts           # apply without running any hooks
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
 `cfgd decide` is the only command that resolves one. The same holds for an item your
 auto-apply policy declines outright (`newRecommended: Reject`): `plan`, `apply` and the
-daemon read one policy, so a manual apply cannot install what the daemon skips.
+daemon read one policy, so a manual apply cannot install what the daemon skips. A `Notify`
+item — the default — is withheld from the first run that sees it, before any row exists;
+`apply` records the row so `cfgd decide` can answer it without waiting for a daemon tick,
+while `plan` withholds it read-only.
 
 ### `cfgd plan`
 
@@ -276,7 +279,10 @@ empty — so a structured consumer can tell "in sync" from "waiting on you" from
 
 Only a source you are still subscribed to can withhold anything: a decision
 whose source has been removed from `spec.sources` is inert, and a real `cfgd
-apply` discards it.
+apply` discards it — unless you pointed that run at a config of your own
+(`--config`, `--config-dir`, `CFGD_CONFIG`) while leaving `--state-dir` at its
+default, in which case the rows are left alone because they belong to another
+config's picture of the machine.
 
 ### `cfgd status`
 

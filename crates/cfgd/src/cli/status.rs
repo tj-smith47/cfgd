@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
+use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
 
 #[derive(Serialize)]
@@ -93,7 +94,7 @@ pub fn build_fleet_status_doc(
                     event.expected.as_deref().unwrap_or("?"),
                     event.actual.as_deref().unwrap_or("?"),
                 );
-                if event.source != "local" {
+                if event.source != LOCAL_LAYER {
                     // Source attribution renders in `secondary` (pink/magenta)
                     // at end-of-subject; the StatusBuilder API guarantees the
                     // label lands last so the inner SGR reset is never
@@ -353,7 +354,7 @@ pub(super) fn cmd_status(
                 expected: Some(r.expected.clone()),
                 actual: Some(r.actual.clone()),
                 resolved_by: None,
-                source: "local".to_string(),
+                source: LOCAL_LAYER.to_string(),
             });
         }
         drift

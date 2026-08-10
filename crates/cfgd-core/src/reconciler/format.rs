@@ -1,4 +1,5 @@
 use crate::PathDisplayExt;
+use crate::config::LOCAL_LAYER;
 use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
@@ -15,7 +16,7 @@ pub(super) const LIVE_SESSION_RESOURCE_ID: &str = "env:session:refresh";
 
 /// Append source provenance suffix for non-local origins.
 pub(super) fn provenance_suffix(origin: &str) -> String {
-    if origin.is_empty() || origin == "local" {
+    if origin.is_empty() || origin == LOCAL_LAYER {
         String::new()
     } else {
         format!(" <- {origin}")

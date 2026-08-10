@@ -420,7 +420,7 @@ pub(crate) fn handle_compliance_snapshot(
         }
     }
 
-    let source_names: Vec<String> = std::iter::once("local".to_string())
+    let source_names: Vec<String> = std::iter::once(LOCAL_LAYER.to_string())
         .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
         .collect();
 
