@@ -53,6 +53,15 @@ impl PhaseName {
             PhaseName::PostScripts => "Post-Scripts",
         }
     }
+
+    /// The phase's section heading — the ONE spelling of the `Phase: <name>`
+    /// title. Execution (`reconciler::apply`), preview (`reconciler::run`) and
+    /// the drift surfaces (`cfgd diff`, `cfgd rollback`) all head their trees
+    /// with it, so a reader matching a drift report against the plan that would
+    /// fix it is matching identical strings.
+    pub fn section_title(&self) -> String {
+        format!("Phase: {}", self.display_name())
+    }
 }
 
 impl FromStr for PhaseName {
@@ -373,15 +382,28 @@ pub struct OwnerGroup {
 pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
     match action {
         Action::Module(ma) => Owner::module(ma.module_name.clone()),
-        // A `Bootstrap` installs a package *manager*, a prerequisite any owner
-        // may be waiting on, so it belongs to cfgd rather than to the profile
-        // whose planner happened to emit it.
-        Action::Package(PackageAction::Bootstrap { .. }) => Owner::cfgd("managers"),
+        Action::Package(pa) => package_owner(pa, profile),
         // Env surfaces aggregate declarations from the profile *and* every
         // module, so no single user document owns them — cfgd authored the file
         // and cfgd owns it.
         Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd("session"),
         Action::Env(_) => Owner::cfgd("env"),
+        _ => profile.clone(),
+    }
+}
+
+/// Which owner a package action belongs to, under the profile that planned it.
+///
+/// Split out of [`owner_of`] because `cfgd diff` groups bare
+/// [`PackageAction`]s it never wraps in an [`Action`]: without this, the drift
+/// surface would re-derive the rule and could attribute a bootstrap to the
+/// profile while the plan that fixes it attributes the same work to cfgd.
+pub fn package_owner(action: &PackageAction, profile: &Owner) -> Owner {
+    match action {
+        // A `Bootstrap` installs a package *manager*, a prerequisite any owner
+        // may be waiting on, so it belongs to cfgd rather than to the profile
+        // whose planner happened to emit it.
+        PackageAction::Bootstrap { .. } => Owner::cfgd("managers"),
         _ => profile.clone(),
     }
 }

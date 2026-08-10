@@ -485,7 +485,7 @@ impl<'a> super::Reconciler<'a> {
             // Platform-gated skips are the header's `Modules`-row annotation,
             // so the phase holding them opens no block at all.
             let phase_section = (phase.name != PhaseName::Modules)
-                .then(|| printer.section(format!("Phase: {}", phase.name.display_name())));
+                .then(|| printer.section(phase.name.section_title()));
             // The flat dispatch stream converted back to the nested render
             // shape: a new group guard opens whenever the owner changes, and
             // the previous one closes first. Outside `Packages` an owner's

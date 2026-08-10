@@ -172,6 +172,30 @@ impl<'p> SectionGuard<'p> {
         }
     }
 
+    /// [`SectionGuard::section_owner`] for a caller that cannot know whether
+    /// the owner has anything to say until after it has said it.
+    ///
+    /// A plan walks its groups, so every group it opens is non-empty by
+    /// construction ("never empty — an owner with no actions in a phase
+    /// produces no group"). A streaming drift surface opens the group around a
+    /// renderer that decides per file whether to speak, so the same invariant
+    /// has to be enforced at close: the group leaves no trace rather than an
+    /// owner heading over `(none)`.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_owner_or_collapse(&self, label: &super::OwnerLabel) -> SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ false,
+        );
+        SectionGuard {
+            printer: self.printer,
+            renderer: self.renderer.clone(),
+            sink: self.sink.clone(),
+            depth: self.depth + 1,
+        }
+    }
+
     /// Status builder at this section's depth. Commits on Drop.
     pub fn status(
         &self,
@@ -579,6 +603,45 @@ mod tests {
         assert!(
             plain.contains("\n  module:nvim\n"),
             "owner group must sit one level under its phase: {plain:?}"
+        );
+    }
+
+    /// The collapsing variant keeps the "an owner group is never empty"
+    /// invariant for a streaming caller: a group that said nothing leaves no
+    /// heading and no `(none)` placeholder behind, while one that spoke reads
+    /// exactly like `section_owner`.
+    #[test]
+    fn section_owner_or_collapse_leaves_no_trace_when_empty() {
+        use crate::output::OwnerLabel;
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let phase = p.section("Phase: Files");
+            drop(phase.section_owner_or_collapse(&OwnerLabel::new("profile", "tiny")));
+            phase.status_simple(Role::Ok, "No file drift");
+        }
+        p.flush();
+        let plain = strip_ansi(&buf.lock().unwrap().clone());
+        assert!(
+            !plain.contains("profile:tiny"),
+            "a silent owner group must not head itself: {plain:?}"
+        );
+        assert!(
+            !plain.contains("(none)"),
+            "a silent owner group must not leave a placeholder: {plain:?}"
+        );
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let phase = p.section("Phase: Files");
+            let group = phase.section_owner_or_collapse(&OwnerLabel::new("profile", "tiny"));
+            group.status_simple(Role::Info, "~/.gitconfig (new file)");
+        }
+        p.flush();
+        let plain = strip_ansi(&buf.lock().unwrap().clone());
+        assert!(
+            plain.contains("\n  profile:tiny\n"),
+            "a speaking owner group heads itself under its phase: {plain:?}"
         );
     }
 }

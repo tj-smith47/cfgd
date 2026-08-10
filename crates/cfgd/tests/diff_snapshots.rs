@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use cfgd::cli::diff::{build_diff_doc, cmd_diff};
 use cfgd::cli::output_types::{DiffOutput, DiffSummary, PackageDrift, SystemDriftOutput};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 use pretty_assertions::assert_eq;
 
 use common::cli_for;
@@ -297,8 +297,9 @@ fn diff_bridge_one_blank_line() {
 
     printer.heading("Diff");
     {
-        let pkg_sec = printer.section("Packages");
-        pkg_sec
+        let pkg_sec = printer.section("Phase: Packages");
+        let group = pkg_sec.section_owner(&OwnerLabel::new("profile", "tiny"));
+        group
             .status(Role::Warn, "drift-mgr: missing")
             .detail("pkg-a");
     }

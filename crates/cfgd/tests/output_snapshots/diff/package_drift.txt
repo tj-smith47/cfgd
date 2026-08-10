@@ -2,13 +2,14 @@ Diff
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
 
-⊙ Files
-✓ No file drift
+Phase: Files
+  ✓ No file drift
 
-Packages
-  ⚠ drift-mgr: missing — drifted-pkg
+Phase: Packages
+  profile:tiny
+    ⚠ drift-mgr: missing — drifted-pkg
 
-System
+Phase: System
   ✓ No system drift
 
 ⚠ Drift detected

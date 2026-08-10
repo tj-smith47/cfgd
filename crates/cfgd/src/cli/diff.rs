@@ -1,7 +1,8 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
+use cfgd_core::reconciler::{Owner, PhaseName, package_owner};
 
 /// Render one module-deployed file's inline diff and report whether it drifts.
 ///
@@ -47,6 +48,23 @@ fn record_file_drift(
     drifted
 }
 
+/// The owner's group heading, from the one token constructor.
+fn owner_label(owner: &Owner) -> OwnerLabel {
+    OwnerLabel::new(owner.kind.as_str(), owner.name.as_str())
+}
+
+/// Render a file group's status lines as they happen instead of buffering them
+/// until the group closes.
+///
+/// Every file's status line is followed by its own raw content block — a
+/// unified diff or a highlighted body — and the renderer never buffers those.
+/// Buffered statuses would flush at group close, printing every diff body above
+/// the line that names the file it belongs to. Nothing in a file group carries
+/// a trailing field, so the alignment a buffered group would buy is zero.
+fn live_file_group(group: &SectionGuard<'_>) {
+    group.live_column(0);
+}
+
 pub fn cmd_diff(
     cli: &Cli,
     printer: &Printer,
@@ -64,8 +82,11 @@ pub fn cmd_diff(
     let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display_posix()),
-        ("Profile".to_string(), profile_name),
+        ("Profile".to_string(), profile_name.clone()),
     ]);
+    // Drift is reported under the same owner that would be named in the plan
+    // that fixes it, so the two surfaces read as one coordinate system.
+    let profile_owner = Owner::profile(profile_name);
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so `diff` sees the
@@ -90,15 +111,26 @@ pub fn cmd_diff(
     let mut has_system_drift = false;
 
     let has_file_drift = {
-        printer.status_simple(Role::Info, "Files");
+        let files_phase = printer.section(PhaseName::Files.section_title());
+        // The file renderers take a bare `&Printer` and know nothing of the
+        // tree; depth inheritance is what lands their per-file lines inside
+        // the owner group opened around them.
+        let _inherit = printer.depth_inheritance();
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
         let mut drift = false;
-        for record in fm.diff(&resolved.merged, printer)? {
-            drift |= record_file_drift(&mut diff_payload, record);
+        {
+            let group = files_phase.section_owner_or_collapse(&owner_label(&profile_owner));
+            live_file_group(&group);
+            for record in fm.diff(&resolved.merged, printer)? {
+                drift |= record_file_drift(&mut diff_payload, record);
+            }
         }
         // Module-deployed files render the same inline content diff as profile
         // files (module sources carry no tera origin, so pass None).
         for module in &resolved_modules {
+            let group =
+                files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
+            live_file_group(&group);
             for file in &module.files {
                 let record = diff_module_file(&fm, &resolved, module, file, &config_dir, printer)?;
                 if record_file_drift(&mut diff_payload, record) {
@@ -107,15 +139,15 @@ pub fn cmd_diff(
             }
         }
         if drift {
-            printer.status_simple(Role::Warn, "File drift detected");
+            files_phase.status_simple(Role::Warn, "File drift detected");
         } else {
-            printer.status_simple(Role::Ok, "No file drift");
+            files_phase.status_simple(Role::Ok, "No file drift");
         }
         drift
     };
 
     let has_pkg_drift = {
-        let pkg_sec = printer.section("Packages");
+        let pkg_sec = printer.section(PhaseName::Packages.section_title());
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
             .iter()
@@ -133,42 +165,48 @@ pub fn cmd_diff(
             &cfgd_installed,
             &pkg_cx,
         )?;
-        print_package_drift(&pkg_actions, &pkg_sec, &mut diff_payload)
+        print_package_drift(&pkg_actions, &pkg_sec, &profile_owner, &mut diff_payload)
     };
 
     {
-        let sys_sec = printer.section("System");
-        let available_configurators = registry.available_system_configurators();
-        // Combine profile and module system config so module system tweaks
-        // surface in `diff` exactly as they do on the write path.
-        let system =
-            cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
-        for configurator in &available_configurators {
-            let key = configurator.name();
-            let desired = match system.get(key) {
-                Some(v) => v,
-                None => continue,
-            };
-            match configurator.diff(desired) {
-                Ok(drifts) if !drifts.is_empty() => {
-                    has_system_drift = true;
-                    for drift in &drifts {
-                        sys_sec
-                            .status(Role::Warn, format!("{}.{}", key, drift.key))
-                            .detail(format!("want {}, have {}", drift.expected, drift.actual));
-                        diff_payload.system.push(SystemDriftOutput {
-                            key: format!("{}.{}", key, drift.key),
-                            expected: drift.expected.clone(),
-                            actual: drift.actual.clone(),
-                        });
+        let sys_sec = printer.section(PhaseName::System.section_title());
+        // Every system key resolves against the merged profile ⊕ module view,
+        // which is what puts a system action under the profile owner in the
+        // plan too (`owner_of`'s fall-through arm).
+        {
+            let sys_group = sys_sec.section_owner_or_collapse(&owner_label(&profile_owner));
+            let available_configurators = registry.available_system_configurators();
+            // Combine profile and module system config so module system tweaks
+            // surface in `diff` exactly as they do on the write path.
+            let system =
+                cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
+            for configurator in &available_configurators {
+                let key = configurator.name();
+                let desired = match system.get(key) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                match configurator.diff(desired) {
+                    Ok(drifts) if !drifts.is_empty() => {
+                        has_system_drift = true;
+                        for drift in &drifts {
+                            sys_group
+                                .status(Role::Warn, format!("{}.{}", key, drift.key))
+                                .detail(format!("want {}, have {}", drift.expected, drift.actual));
+                            diff_payload.system.push(SystemDriftOutput {
+                                key: format!("{}.{}", key, drift.key),
+                                expected: drift.expected.clone(),
+                                actual: drift.actual.clone(),
+                            });
+                        }
                     }
+                    Err(e) => {
+                        sys_group
+                            .status(Role::Warn, format!("{}: error checking drift", key))
+                            .detail(cfgd_core::output::collapse_to_subject_line(e));
+                    }
+                    _ => {}
                 }
-                Err(e) => {
-                    sys_sec
-                        .status(Role::Warn, format!("{}: error checking drift", key))
-                        .detail(cfgd_core::output::collapse_to_subject_line(e));
-                }
-                _ => {}
             }
         }
         if !has_system_drift {
@@ -235,14 +273,18 @@ fn cmd_diff_module(
     let mut has_pkg_drift = false;
 
     {
-        // Mirror the full `cmd_diff` path: a top-level "Files" line, the shared
-        // per-file inline-diff renderer, then a summary line. Module sources
-        // carry no tera origin (None). `diff_one` emits at top level, so no
-        // section is opened here (matches the full path's structure).
-        printer.status_simple(Role::Info, "Files");
+        // Mirror the full `cmd_diff` path: the `Phase: Files` heading, one
+        // `module:<name>` group per module, the shared per-file inline-diff
+        // renderer, then the phase's summary line. Module sources carry no
+        // tera origin (None).
+        let files_phase = printer.section(PhaseName::Files.section_title());
+        let _inherit = printer.depth_inheritance();
         let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
+            let group =
+                files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
+            live_file_group(&group);
             for file in &module.files {
                 let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
                 if record_file_drift(&mut diff_payload, record) {
@@ -251,21 +293,22 @@ fn cmd_diff_module(
             }
         }
         if has_file_diff {
-            printer.status_simple(Role::Warn, "File drift detected");
+            files_phase.status_simple(Role::Warn, "File drift detected");
         } else {
-            printer.status_simple(Role::Ok, "No file drift");
+            files_phase.status_simple(Role::Ok, "No file drift");
         }
     }
 
     {
-        let pkg_sec = printer.section("Packages");
+        let pkg_sec = printer.section(PhaseName::Packages.section_title());
         let mut emitted = false;
         for module in &resolved_modules {
+            let group = pkg_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
             for pkg in &module.packages {
                 if let Some(drift) = package_missing_drift(pkg, &mgr_map, &pkg_cx) {
                     has_pkg_drift = true;
                     emitted = true;
-                    pkg_sec
+                    group
                         .status(Role::Warn, format!("{}: missing", pkg.manager))
                         .detail(pkg.resolved_name.clone());
                     diff_payload.packages.push(drift);
@@ -319,61 +362,73 @@ fn package_missing_drift(
     })
 }
 
+/// Render the package half of a drift report, one owner group per owner.
+///
+/// Attribution runs through [`package_owner`], the same rule the plan uses, so
+/// a bootstrap reads as `cfgd:managers` here exactly as it does in the plan
+/// that would install it.
 fn print_package_drift(
     pkg_actions: &[PackageAction],
     section: &SectionGuard<'_>,
+    profile: &Owner,
     payload: &mut DiffOutput,
 ) -> bool {
-    let pkg_diffs: Vec<&PackageAction> = pkg_actions
+    let pkg_diffs: Vec<(&PackageAction, Owner)> = pkg_actions
         .iter()
         .filter(|a| !matches!(a, PackageAction::Skip { .. }))
+        .map(|a| (a, package_owner(a, profile)))
         .collect();
     let has_drift = !pkg_diffs.is_empty();
     if pkg_diffs.is_empty() {
         section.status_simple(Role::Ok, "No package drift");
     } else {
-        for action in &pkg_diffs {
-            match action {
-                PackageAction::Bootstrap {
-                    manager, method, ..
-                } => {
-                    section
-                        .status(Role::Warn, format!("{}: not installed", manager))
-                        .detail(format!("can bootstrap via {}", method));
-                    payload.packages.push(PackageDrift {
-                        manager: manager.clone(),
-                        shape: "bootstrap".to_string(),
-                        packages: Vec::new(),
-                        bootstrap_method: Some(method.clone()),
-                    });
+        let mut owners: Vec<Owner> = pkg_diffs.iter().map(|(_, o)| o.clone()).collect();
+        Owner::order(&mut owners);
+        for owner in &owners {
+            let group = section.section_owner(&owner_label(owner));
+            for (action, _) in pkg_diffs.iter().filter(|(_, o)| o == owner) {
+                match action {
+                    PackageAction::Bootstrap {
+                        manager, method, ..
+                    } => {
+                        group
+                            .status(Role::Warn, format!("{}: not installed", manager))
+                            .detail(format!("can bootstrap via {}", method));
+                        payload.packages.push(PackageDrift {
+                            manager: manager.clone(),
+                            shape: "bootstrap".to_string(),
+                            packages: Vec::new(),
+                            bootstrap_method: Some(method.clone()),
+                        });
+                    }
+                    PackageAction::Install {
+                        manager, packages, ..
+                    } => {
+                        group
+                            .status(Role::Warn, format!("{}: missing", manager))
+                            .detail(packages.join(", "));
+                        payload.packages.push(PackageDrift {
+                            manager: manager.clone(),
+                            shape: "missing".to_string(),
+                            packages: packages.clone(),
+                            bootstrap_method: None,
+                        });
+                    }
+                    PackageAction::Uninstall {
+                        manager, packages, ..
+                    } => {
+                        group
+                            .status(Role::Warn, format!("{}: extra", manager))
+                            .detail(packages.join(", "));
+                        payload.packages.push(PackageDrift {
+                            manager: manager.clone(),
+                            shape: "extra".to_string(),
+                            packages: packages.clone(),
+                            bootstrap_method: None,
+                        });
+                    }
+                    PackageAction::Skip { .. } => {}
                 }
-                PackageAction::Install {
-                    manager, packages, ..
-                } => {
-                    section
-                        .status(Role::Warn, format!("{}: missing", manager))
-                        .detail(packages.join(", "));
-                    payload.packages.push(PackageDrift {
-                        manager: manager.clone(),
-                        shape: "missing".to_string(),
-                        packages: packages.clone(),
-                        bootstrap_method: None,
-                    });
-                }
-                PackageAction::Uninstall {
-                    manager, packages, ..
-                } => {
-                    section
-                        .status(Role::Warn, format!("{}: extra", manager))
-                        .detail(packages.join(", "));
-                    payload.packages.push(PackageDrift {
-                        manager: manager.clone(),
-                        shape: "extra".to_string(),
-                        packages: packages.clone(),
-                        bootstrap_method: None,
-                    });
-                }
-                PackageAction::Skip { .. } => {}
             }
         }
     }
@@ -425,8 +480,9 @@ mod tests {
             origin: "profile".into(),
         }];
         {
-            let section = printer.section("Packages");
-            let has_drift = print_package_drift(&actions, &section, &mut payload);
+            let section = printer.section(PhaseName::Packages.section_title());
+            let has_drift =
+                print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
             assert!(!has_drift, "all-skip should report no drift");
         }
         drop(printer);
@@ -503,8 +559,9 @@ mod tests {
             },
         ];
         {
-            let section = printer.section("Packages");
-            let has_drift = print_package_drift(&actions, &section, &mut payload);
+            let section = printer.section(PhaseName::Packages.section_title());
+            let has_drift =
+                print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
             assert!(has_drift, "non-Skip actions count as drift");
         }
         drop(printer);
@@ -535,8 +592,9 @@ mod tests {
             },
         ];
         {
-            let section = printer.section("Packages");
-            let has_drift = print_package_drift(&actions, &section, &mut payload);
+            let section = printer.section(PhaseName::Packages.section_title());
+            let has_drift =
+                print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
             assert!(has_drift, "non-Skip actions should report drift");
         }
         drop(printer);
@@ -553,6 +611,23 @@ mod tests {
         assert!(
             output.contains("pipx: not installed") && output.contains("bootstrap"),
             "should show bootstrap need, got: {output}"
+        );
+        // Attribution is the plan's, not a second rule: a bootstrap installs a
+        // package *manager*, so it belongs to cfgd, and the profile's own
+        // group is the one that precedes it (`Owner::sort_key`).
+        let profile_at = output.find("profile:tiny").unwrap_or_else(|| {
+            panic!("package drift must group under its profile owner, got: {output}")
+        });
+        let cfgd_at = output
+            .find("cfgd:managers")
+            .unwrap_or_else(|| panic!("a bootstrap must group under cfgd:managers, got: {output}"));
+        assert!(
+            profile_at < cfgd_at,
+            "profile precedes cfgd in owner order, got: {output}"
+        );
+        assert!(
+            output.find("pipx: not installed") > Some(cfgd_at),
+            "the bootstrap line belongs inside the cfgd:managers group, got: {output}"
         );
         assert_eq!(payload.packages.len(), 3);
     }
