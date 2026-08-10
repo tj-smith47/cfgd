@@ -12,7 +12,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::config::{self, MergedProfile, ResolvedProfile};
+use crate::config::{
+    self, AutoApplyPolicyConfig, CfgdConfig, LOCAL_LAYER, MergedProfile, PolicyAction,
+    ResolvedProfile,
+};
 use crate::errors::Result;
 use crate::state::{PendingDecision, StateStore};
 use crate::to_posix_string;
@@ -101,8 +104,82 @@ pub fn source_delivered_profile(resolved: &ResolvedProfile, source_name: &str) -
     config::merge_layers(&layers)
 }
 
-/// The layer name composition gives the subscriber's own profile.
-const LOCAL_LAYER: &str = "local";
+/// What the subscriber's own layers declare, as one merged profile.
+///
+/// The local half of [`DecisionScope`], named so every caller reaches the same
+/// layer set. A caller that resolves more than the layers carry — the CLI folds
+/// Brewfile / `package.json` / apt-list entries into a profile's packages after
+/// merging — resolves them into THIS profile before handing it over, or its own
+/// declarations are invisible to the guard.
+pub fn local_profile(resolved: &ResolvedProfile) -> MergedProfile {
+    source_delivered_profile(resolved, LOCAL_LAYER)
+}
+
+/// One spelling for a decision path, whichever side of the guard minted it.
+///
+/// A `files.` path carries whatever spelling its profile declared, and the two
+/// sides of the guard are written by different people: a source may deliver
+/// `files./home/u/.zshrc` while the subscriber declares `files.~/.zshrc`. The
+/// prune already expands `~` to meet the planner's ids, so the guard expands
+/// too — comparing raw strings would admit a decision the operator's own
+/// declaration should have refused, and the exclusion would then match (and
+/// remove) that very declaration's action. No other prefix carries a path.
+fn normalized_decision_path(path: &str) -> String {
+    match path.strip_prefix("files.") {
+        Some(target) if !target.is_empty() => {
+            format!(
+                "files.{}",
+                to_posix_string(crate::expand_tilde(Path::new(target)))
+            )
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// Which sources a run knows the subscriber still has.
+///
+/// The one answer to "can this row still mean anything", shared by everything
+/// that reads a decision: the planning gate ([`DecisionScope`]) requires it
+/// before withholding, and `cfgd status` / `cfgd decide` list rows on it alone.
+/// A row whose source is gone is unanswerable — `cfgd decide` would act against
+/// a source that no longer exists — so no surface should show it and no plan
+/// should obey it.
+#[derive(Debug)]
+pub enum Subscriptions {
+    /// The config parsed, so the list is authoritative and a row naming
+    /// anything outside it is inert.
+    Known(HashSet<String>),
+    /// The config did not parse (`cfgd apply --module x` against a broken
+    /// `cfgd.yaml` falls back to a module-only run). An empty subscription list
+    /// would then be a fabrication that releases every undecided item, so every
+    /// row stands until a run can read the real list.
+    Unverified,
+}
+
+impl Subscriptions {
+    pub fn known<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::Known(names.into_iter().map(Into::into).collect())
+    }
+
+    /// Whether a row raised by `source` can still be answered.
+    pub fn answers(&self, source: &str) -> bool {
+        match self {
+            Self::Known(names) => names.contains(source),
+            Self::Unverified => true,
+        }
+    }
+
+    /// Keep only the rows a read surface should list.
+    pub fn answerable(&self, rows: Vec<PendingDecision>) -> Vec<PendingDecision> {
+        rows.into_iter()
+            .filter(|d| self.answers(&d.source))
+            .collect()
+    }
+}
 
 /// The gate every decision passes before it can withhold anything.
 ///
@@ -123,43 +200,64 @@ const LOCAL_LAYER: &str = "local";
 ///   it because a source offers the same path — the same `~/.zshrc`, the same
 ///   package — would let a decision about the source's copy settle the fate of
 ///   work the operator wrote.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DecisionScope {
-    subscribed: HashSet<String>,
+    subscribed: Subscriptions,
     local: HashSet<String>,
 }
 
 impl DecisionScope {
     /// Build the scope from the currently subscribed source names and the
-    /// composed profile whose local layers say what the operator declares.
-    pub fn new<I, S>(subscribed: I, resolved: &ResolvedProfile) -> Self
+    /// [`local_profile`] saying what the operator declares.
+    pub fn new<I, S>(subscribed: I, local: &MergedProfile) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         Self {
-            subscribed: subscribed.into_iter().map(Into::into).collect(),
-            local: declared_decision_paths(&source_delivered_profile(resolved, LOCAL_LAYER)),
+            subscribed: Subscriptions::known(subscribed),
+            local: Self::local_paths(local),
         }
+    }
+
+    /// The scope for a run that could not read its config, and so cannot say
+    /// which sources are still subscribed. Fail-closed: every row withholds.
+    pub fn unverified(local: &MergedProfile) -> Self {
+        Self {
+            subscribed: Subscriptions::Unverified,
+            local: Self::local_paths(local),
+        }
+    }
+
+    fn local_paths(local: &MergedProfile) -> HashSet<String> {
+        declared_decision_paths(local)
+            .iter()
+            .map(|p| normalized_decision_path(p))
+            .collect()
     }
 
     /// Whether a decision raised by `source` over `resource` still withholds it.
     pub fn withholds(&self, source: &str, resource: &str) -> bool {
-        self.subscribed.contains(source) && !self.local.contains(resource)
+        self.subscribed.answers(source) && !self.local.contains(&normalized_decision_path(resource))
     }
 }
 
 /// The decisions withholding something from this run, split by the state that
 /// withholds them.
 ///
-/// Both halves prune, and both are rendered: a resource missing from a plan is
-/// explained by a row the operator can see, whichever state that row is in.
+/// The two row-backed halves prune AND are rendered: a resource missing from a
+/// plan is explained by a row the operator can see, whichever state that row is
+/// in. The third prunes silently — an auto-apply policy of `Reject`/`Ignore` is
+/// a standing instruction, already written in the config the operator is
+/// reading, so `docs/sources.md` gives it no row and no line.
 #[derive(Debug, Default)]
 pub struct WithheldDecisions {
     /// Rows awaiting `cfgd decide`.
     pub pending: Vec<PendingDecision>,
     /// Rows the operator already declined.
     pub rejected: Vec<PendingDecision>,
+    /// Paths an auto-apply policy declined outright, which record no row.
+    pub declined: HashSet<String>,
 }
 
 impl WithheldDecisions {
@@ -185,19 +283,209 @@ impl WithheldDecisions {
         Ok(out)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.rejected.is_empty()
+    /// Fold in the paths an auto-apply policy declined outright.
+    ///
+    /// Kept on the same value the rows are read into so every consumer prunes
+    /// from one list: the daemon's tick and `cfgd plan` / `cfgd apply` all
+    /// withhold a `Reject`-tier item, and a manual apply cannot launder onto
+    /// the machine what the daemon declines.
+    pub fn with_policy_declined(mut self, declined: HashSet<String>) -> Self {
+        self.declined = declined;
+        self
     }
 
-    /// The resource path of every withholding row, in decision vocabulary.
-    ///
-    /// For a caller that must fold its own paths in beside them — the daemon
-    /// adds the items a policy declined outright, which record no row.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.rejected.is_empty() && self.declined.is_empty()
+    }
+
+    /// The resource path of everything this run withholds, in decision
+    /// vocabulary — the rows and the policy-declined paths that have none.
     pub fn resource_paths(&self) -> impl Iterator<Item = String> + '_ {
         self.pending
             .iter()
             .chain(self.rejected.iter())
             .map(|d| d.resource.clone())
+            .chain(self.declined.iter().cloned())
+    }
+}
+
+/// The auto-apply setting a run honours, straight from the config.
+///
+/// The daemon may override it from its own flags; every other path reads it
+/// here so a policy that declines an item in the daemon declines it in
+/// `cfgd plan` and `cfgd apply` too.
+pub fn configured_auto_apply(cfg: &CfgdConfig) -> bool {
+    cfg.spec
+        .daemon
+        .as_ref()
+        .and_then(|d| d.reconcile.as_ref())
+        .map(|r| r.auto_apply)
+        .unwrap_or(false)
+}
+
+/// A row an auto-apply policy wants minted for review.
+#[derive(Debug, Clone)]
+pub struct DecisionMint {
+    pub source: String,
+    pub resource: String,
+    pub tier: &'static str,
+}
+
+/// What the auto-apply policy makes of everything the subscribed sources
+/// currently deliver.
+///
+/// One classification, two consumers with different rights over it: the daemon
+/// owns the WRITES (it mints [`Self::to_mint`] as rows and stores the hashes),
+/// while `cfgd plan` / `cfgd apply` read [`Self::declined`] alone. Splitting it
+/// this way is what keeps a manual apply from installing the item the daemon
+/// declines — the disposition is computed from the same inputs on both paths
+/// rather than living in whichever one happened to run.
+#[derive(Debug, Default)]
+pub struct SourcePolicyReview {
+    /// Resource paths the policy declines outright — `Reject` and `Ignore`.
+    pub declined: HashSet<String>,
+    /// Rows to record for the operator to answer.
+    pub to_mint: Vec<DecisionMint>,
+    /// `(source, hash)` for every source whose delivered set changed.
+    pub changed_hashes: Vec<(String, String)>,
+}
+
+/// Classify what every subscribed source delivers against the auto-apply policy.
+///
+/// Writes nothing. `auto_apply` is the effective setting — off, the policy has
+/// no say at all (`docs/sources.md`: with `autoApply: false` no row is ever
+/// created and source items simply apply), so nothing is declined and nothing
+/// is minted.
+pub fn review_source_policies(
+    store: &StateStore,
+    cfg: &CfgdConfig,
+    resolved: &ResolvedProfile,
+    auto_apply: bool,
+) -> Result<SourcePolicyReview> {
+    let mut review = SourcePolicyReview::default();
+    if !auto_apply || cfg.spec.sources.is_empty() {
+        return Ok(review);
+    }
+    let default_policy = AutoApplyPolicyConfig::default();
+    let policy = cfg
+        .spec
+        .daemon
+        .as_ref()
+        .and_then(|d| d.reconcile.as_ref())
+        .and_then(|r| r.policy.as_ref())
+        .unwrap_or(&default_policy);
+
+    for source in &cfg.spec.sources {
+        let one = review_source_policy(
+            store,
+            &source.name,
+            &source_delivered_profile(resolved, &source.name),
+            policy,
+        )?;
+        review.declined.extend(one.declined);
+        review.to_mint.extend(one.to_mint);
+        review.changed_hashes.extend(one.changed_hashes);
+    }
+    Ok(review)
+}
+
+/// Classify what ONE source delivers against the auto-apply policy.
+///
+/// The per-source half of [`review_source_policies`], for a caller holding a
+/// source's merged profile directly rather than a whole config.
+pub fn review_source_policy(
+    store: &StateStore,
+    source_name: &str,
+    merged: &MergedProfile,
+    policy: &AutoApplyPolicyConfig,
+) -> Result<SourcePolicyReview> {
+    let mut review = SourcePolicyReview::default();
+    let current_resources = declared_decision_paths(merged);
+    let current_hash = hash_resources(&current_resources);
+
+    let previous_hash = store
+        .source_config_hash(source_name)?
+        .map(|h| h.config_hash);
+    let config_changed = previous_hash.as_deref() != Some(&current_hash);
+
+    // The old resource set is not stored, only its hash — so what the machine
+    // already knows about this source stands in for it: what it installed, plus
+    // what it is still being asked about.
+    let mut known: HashSet<String> = HashSet::new();
+    if previous_hash.is_some() {
+        for r in store.managed_resources_by_source(source_name)? {
+            known.insert(format!("{}.{}", r.resource_type, r.resource_id));
+        }
+        for d in store.pending_decisions_for_source(source_name)? {
+            known.insert(d.resource);
+        }
+    }
+
+    for resource in current_resources.iter().filter(|r| !known.contains(*r)) {
+        let tier = infer_item_tier(resource);
+        let action = match tier {
+            "optional" => &policy.new_optional,
+            "locked" => &policy.locked_conflict,
+            _ => &policy.new_recommended,
+        };
+        match action {
+            // Included in the plan normally.
+            PolicyAction::Accept => {}
+            PolicyAction::Reject | PolicyAction::Ignore => {
+                // The ITEM is skipped, not merely the decision about it: the
+                // four policy actions are one series of dispositions, and "skip
+                // silently" next to "don't apply" and "automatically apply" can
+                // only mean the item does not reach the machine. Recomputed on
+                // every run — declining records nothing, so there is no row to
+                // carry the disposition to the next one.
+                review.declined.insert(resource.clone());
+            }
+            // Minted when the source's delivered set changed OR when this item
+            // has never been asked about. The second half is what makes a
+            // policy flip work: an item a `Reject` policy declined has no row,
+            // so flipping to `Notify` must ask about it even though the source
+            // itself has not moved. Any row — including a rejection — still
+            // suppresses re-minting until the source changes, so an answer is
+            // not re-asked every tick.
+            PolicyAction::Notify => {
+                if config_changed || !store.has_decision(source_name, resource)? {
+                    review.to_mint.push(DecisionMint {
+                        source: source_name.to_string(),
+                        resource: resource.clone(),
+                        tier,
+                    });
+                }
+            }
+        }
+    }
+
+    if config_changed {
+        review
+            .changed_hashes
+            .push((source_name.to_string(), current_hash));
+    }
+    Ok(review)
+}
+
+/// Hash a resource set so a source's delivered items can be compared against
+/// the last run's without storing them.
+pub fn hash_resources(resources: &HashSet<String>) -> String {
+    let mut sorted: Vec<&String> = resources.iter().collect();
+    sorted.sort();
+    let combined: String = sorted.iter().map(|r| format!("{}\n", r)).collect();
+    crate::sha256_hex(combined.as_bytes())
+}
+
+/// Infer the policy tier for a resource based on naming conventions.
+///
+/// A heuristic standing in for the source manifest's own tiers: resources whose
+/// path reads as policy-bearing are treated as locked, everything else as
+/// recommended.
+pub fn infer_item_tier(resource: &str) -> &'static str {
+    if resource.contains("security") || resource.contains("policy") || resource.contains("locked") {
+        "locked"
+    } else {
+        "recommended"
     }
 }
 

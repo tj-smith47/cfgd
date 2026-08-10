@@ -191,21 +191,28 @@ pub fn run_apply(
     // final — it states the phase and action counts — so the profile label is
     // carried down rather than printed here. A module-only run resolved no
     // profile, so it carries none and the header omits the row.
-    let (cfg, resolved, profile_label) = if let Some(mod_name) = module_filter {
+    let (cfg, resolved, profile_label, config_parsed) = if let Some(mod_name) = module_filter {
         match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name)),
+            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name), true),
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
-                let cfg =
-                    config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
+                // `minimal_config()` subscribes to nothing, and that fabricated
+                // empty list must never reach the decision sweep below: it
+                // would read as "no source is subscribed any more" and delete
+                // every decision row on the machine, turning "awaiting your
+                // answer" into "applies silently" with nothing to recover from.
+                let (cfg, config_parsed) = match config::load_config(&cli.config) {
+                    Ok(c) => (c, true),
+                    Err(_) => (config::minimal_config(), false),
+                };
                 let resolved =
                     empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                (cfg, resolved, None)
+                (cfg, resolved, None, config_parsed)
             }
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        (cfg, resolved, Some(profile_name))
+        (cfg, resolved, Some(profile_name), true)
     };
 
     // Open state only after config discovery so a missing config (or an
@@ -324,24 +331,30 @@ pub fn run_apply(
     // an undecided variable reaching the machine through the regeneration.
     // Source gone, items gone: a decision the operator can no longer answer is
     // dropped rather than left to sit in `cfgd status` forever. Only a real
-    // apply sweeps — a dry run reports and writes nothing, including here. The
-    // rows are inert either way (the scope below admits only subscribed
-    // sources), so this is cleanup, not enforcement.
-    if !dry_run {
+    // apply whose config actually parsed sweeps — a dry run reports and writes
+    // nothing, and a module-only fallback knows no subscription list to judge
+    // the rows against. The rows are inert either way (the gate below admits
+    // only subscribed sources), so this is cleanup, not enforcement.
+    // A config named with `--config` while the state dir stays the default is
+    // not authoritative over that store either: its subscription list belongs
+    // to a different machine picture, and the rows it would delete are another
+    // config's, unrecoverably. Withholding is unaffected — the gate below still
+    // refuses rows this run has no source for.
+    let owns_the_store = !cli.config_explicit || cli.state_dir.is_some();
+    if !dry_run && config_parsed && owns_the_store {
         let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
         if let Err(e) = state.discard_decisions_not_in(&subscribed) {
             tracing::warn!(error = %e, "failed to discard decisions of removed sources");
         }
     }
 
-    // The read is fail-CLOSED: an unreadable state store cannot tell a decided
-    // resource from an undecided one, and an apply is the path that would go on
-    // to install the ones it guessed about.
-    let decision_scope = reconciler::DecisionScope::new(
-        cfg.spec.sources.iter().map(|s| s.name.as_str()),
+    let withheld = plan_ops::withheld_for_run(
+        &state,
+        &cfg,
         &effective_resolved,
-    );
-    let withheld = reconciler::WithheldDecisions::read(&state, &decision_scope)?;
+        &config_dir,
+        config_parsed,
+    )?;
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
     let reconciler = Reconciler::new(&registry, &state)
         .withholding_env_surface(exclusions.withholds_env_surface());

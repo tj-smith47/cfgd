@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::{
-    EnvVar, ProfileLayer, ResolvedProfile, validate_backup_specs, validate_managed_file_specs,
-    validate_secret_specs,
+    EnvVar, LOCAL_LAYER, ProfileLayer, ResolvedProfile, validate_backup_specs,
+    validate_managed_file_specs, validate_secret_specs,
 };
 use crate::errors::{CfgdError, CompositionError, Result};
 
@@ -105,7 +105,7 @@ pub fn compose(
     // Build a HashMap<target, source> respecting layer priority order (higher priority wins).
     let mut file_origins: HashMap<PathBuf, String> = HashMap::new();
     for layer in &all_layers {
-        if layer.source != "local"
+        if layer.source != LOCAL_LAYER
             && let Some(ref files) = layer.spec.files
         {
             for managed in &files.managed {

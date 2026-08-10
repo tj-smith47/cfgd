@@ -5694,12 +5694,12 @@ fn cmd_decide_accept_all_empty() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
@@ -5722,12 +5722,12 @@ fn cmd_decide_reject_all_empty() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         None,
         true,
-        Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
@@ -5754,12 +5754,12 @@ fn cmd_decide_accept_specific_resource() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("packages.brew.curl"),
         None,
         false,
-        Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
@@ -5785,12 +5785,12 @@ fn cmd_decide_reject_by_source() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("acme"),
         false,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -10300,12 +10300,12 @@ fn cmd_decide_no_args_shows_pending() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -10335,12 +10335,12 @@ fn cmd_decide_with_pending_decision() {
         .unwrap();
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("packages.brew.curl"),
         None,
         false,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -10383,12 +10383,12 @@ fn cmd_decide_accept_all_with_pending() {
         .unwrap();
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -10428,12 +10428,12 @@ fn cmd_decide_reject_by_source_with_pending() {
         .unwrap();
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("team"),
         false,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -17473,12 +17473,12 @@ fn cmd_decide_no_args_no_pending_shows_info() {
 
     // With no resource, no source, and all=false, should show pending list
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17506,12 +17506,12 @@ fn cmd_decide_no_args_with_pending_shows_list() {
 
     // No resource/source/all — should display pending decisions
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17566,12 +17566,12 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         Some("packages.brew.jq"),
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17606,12 +17606,12 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("file/bashrc"),
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17638,12 +17638,12 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("no.such.resource"),
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17679,12 +17679,12 @@ fn cmd_decide_accept_all_reports_count() {
     }
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17725,12 +17725,12 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("alpha"),
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17768,12 +17768,12 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("nonexistent-source"),
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17801,12 +17801,12 @@ fn cmd_decide_accept_single_item_singular_message() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -20080,6 +20080,12 @@ impl DecisionFixture {
 /// Build the fixture. `output_json` selects the harness printer's format, so a
 /// payload test and a human-render test share one staging shape.
 fn decision_fixture(output_json: bool) -> DecisionFixture {
+    decision_fixture_with(output_json, "")
+}
+
+/// The fixture with `extra_spec` appended to the config's `spec:` block — for a
+/// test that needs a daemon auto-apply policy on the same staging shape.
+fn decision_fixture_with(output_json: bool, extra_spec: &str) -> DecisionFixture {
     let allow_local = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
     let staging = tempfile::tempdir().unwrap();
     let home = cfgd_core::with_test_home_guard(staging.path());
@@ -20115,7 +20121,7 @@ fn decision_fixture(output_json: bool) -> DecisionFixture {
         kept.posix(),
     );
     let config = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n{extra_spec}",
         remote.url(),
         remote.head_branch(),
     );
@@ -20387,12 +20393,12 @@ fn apply_executes_a_resource_once_its_decision_is_accepted() {
     let state = f.with_pending_decision();
 
     super::decide::cmd_decide(
+        &f.h.cli(),
         f.h.printer(),
         super::DecideAction::Accept,
         Some(&f.resource()),
         None,
         false,
-        Some(f.h.state_path()),
     )
     .unwrap();
 
@@ -20416,12 +20422,12 @@ fn apply_never_executes_a_resource_whose_decision_was_rejected() {
     let state = f.with_pending_decision();
 
     super::decide::cmd_decide(
+        &f.h.cli(),
         f.h.printer(),
         super::DecideAction::Reject,
         Some(&f.resource()),
         None,
         false,
-        Some(f.h.state_path()),
     )
     .unwrap();
 
@@ -20492,6 +20498,193 @@ fn a_decision_whose_source_is_not_subscribed_withholds_nothing() {
         f.withheld.exists(),
         "a decision naming a source this machine no longer subscribes to must \
          not keep withholding its resource"
+    );
+}
+
+/// The auto-apply policy block that declines every newly recommended item.
+const REJECTING_POLICY: &str = "  daemon:\n    reconcile:\n      autoApply: true\n      policy:\n        newRecommended: Reject\n";
+
+#[test]
+#[serial_test::serial]
+fn apply_withholds_the_item_a_rejecting_policy_declines() {
+    // `newRecommended: Reject` is a standing answer, and a standing answer that
+    // only the daemon honoured would make `cfgd apply` the way to launder a
+    // declined item onto the machine — after which it is managed, stops looking
+    // new, and the daemon never declines it again.
+    let f = decision_fixture_with(false, REJECTING_POLICY);
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(f.kept.exists(), "the operator's own file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a manual apply must not install what the policy declines:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "declining is silent — it records no row for the operator to answer"
+    );
+    assert!(
+        !output.contains("Decisions (not included in this plan)"),
+        "and it renders no block: the instruction is already in the config:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_withholds_the_item_a_rejecting_policy_declines() {
+    let f = decision_fixture_with(false, REJECTING_POLICY);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("1 action(s) planned"),
+        "the preview counts what an apply would run — the declined item is not \
+         part of it:\n{output}"
+    );
+    assert!(
+        !output.contains("withheld.txt"),
+        "a declined item is absent from the plan, not listed in it:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
+    // `--module x` falls back to `minimal_config()` when the config will not
+    // parse, and that config subscribes to nothing. Read as an authoritative
+    // subscription list it would sweep the whole decision table — turning
+    // "awaiting your answer" into "applies silently", with nothing to recover
+    // from and no row left to explain it.
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    std::fs::write(
+        f.h.config_path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nspec: [this is not a config]\n",
+    )
+    .unwrap();
+
+    let args = ApplyArgs {
+        module: Some("nonexistent".into()),
+        ..apply_args(false)
+    };
+    let _ = super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &args);
+
+    assert_eq!(
+        state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect::<Vec<_>>(),
+        vec![f.resource()],
+        "a config cfgd could not read is not evidence that a source was dropped"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_explicit_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
+    // The sweep is skipped only when a `--config` is paired with the DEFAULT
+    // state dir, where the rows belong to whatever config normally owns that
+    // store. Name both and the pairing is the operator's own, so the cleanup
+    // must still run.
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    let cli = Cli {
+        config_explicit: true,
+        ..f.h.cli()
+    };
+    super::apply::cmd_apply(&cli, f.h.printer(), &apply_args(false)).unwrap();
+
+    assert_eq!(
+        state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.source)
+            .collect::<Vec<_>>(),
+        vec!["acme".to_string()],
+        "the dropped source's row is discarded, the subscribed one's is kept"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_lists_only_the_decisions_their_source_can_still_answer() {
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "the subscribed source's decision is still awaiting an answer:\n{output}"
+    );
+    assert!(
+        !output.contains("packages.brew.stern"),
+        "a row whose source is gone withholds nothing, so reporting it as work \
+         awaiting review is reporting work no answer can release:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_lists_only_the_decisions_their_source_can_still_answer() {
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "the answerable decision is listed:\n{output}"
+    );
+    assert!(
+        !output.contains("packages.brew.stern"),
+        "`cfgd decide` acts against a source — offering a row whose source is \
+         gone offers an action that changes nothing:\n{output}"
     );
 }
 

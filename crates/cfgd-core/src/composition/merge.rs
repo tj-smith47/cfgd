@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::PathDisplayExt;
-use crate::config::{LayerPolicy, MergedProfile, ProfileLayer};
+use crate::config::{LOCAL_LAYER, LayerPolicy, MergedProfile, ProfileLayer, ProfileSpec};
 use crate::errors::CompositionError;
 use crate::{deep_merge_yaml, union_extend};
 
@@ -20,30 +20,48 @@ pub(super) fn merge_with_policy(
     let mut file_owners: HashMap<std::path::PathBuf, FileOwner> = HashMap::new();
 
     for layer in layers {
-        let spec = &layer.spec;
+        // Destructured with no `..`: a field added to `ProfileSpec` must fail
+        // to compile here (and in `config::merge_layers`) until someone says
+        // what it merges to. Dropping one silently is not a theoretical risk —
+        // `env_scope` was missing from this merge and every machine with a
+        // subscription lost the scope it declared.
+        let ProfileSpec {
+            // Resolved into the layer list before composition sees it.
+            inherits: _,
+            modules,
+            env,
+            env_scope,
+            aliases,
+            packages,
+            files,
+            system,
+            secrets,
+            scripts,
+            backups,
+        } = &layer.spec;
 
         // Env: later overrides earlier by name (respecting priority ordering)
-        crate::merge_env(&mut merged.env, &spec.env);
+        crate::merge_env(&mut merged.env, env);
 
         // EnvScope: last layer that *specifies* it wins, exactly as the
         // local-only merge resolves it. Composing sources must not change how
         // far the operator's own `envScope` reaches — dropping it here left
         // every machine with a subscription on the `All` default, writing the
         // live session for a profile that asked for login files only.
-        if let Some(scope) = spec.env_scope {
-            merged.env_scope = scope;
+        if let Some(scope) = env_scope {
+            merged.env_scope = *scope;
         }
 
         // Aliases: later overrides earlier by name
-        crate::merge_aliases(&mut merged.aliases, &spec.aliases);
+        crate::merge_aliases(&mut merged.aliases, aliases);
 
         // Packages: union
-        if let Some(ref pkgs) = spec.packages {
+        if let Some(pkgs) = packages {
             merge_packages(&mut merged.packages, pkgs);
         }
 
         // Files: overlay with conflict and required-resource checking
-        if let Some(ref files) = spec.files {
+        if let Some(files) = files {
             for managed in &files.managed {
                 // Check Required-tier protection (bidirectional):
                 // 1. If a Required source already owns this file, no other source can override it.
@@ -64,8 +82,8 @@ pub(super) fn merge_with_policy(
                         });
                     }
                     // Detect conflict between two non-local sources
-                    if owner.source != "local"
-                        && layer.source != "local"
+                    if owner.source != LOCAL_LAYER
+                        && layer.source != LOCAL_LAYER
                         && owner.source != layer.source
                     {
                         // Same priority = unresolvable (no deterministic winner)
@@ -117,7 +135,7 @@ pub(super) fn merge_with_policy(
         }
 
         // System: deep merge at leaf level
-        for (key, value) in &spec.system {
+        for (key, value) in system {
             deep_merge_yaml(
                 merged
                     .system
@@ -128,7 +146,7 @@ pub(super) fn merge_with_policy(
         }
 
         // Secrets: append, deduplicate by source
-        for secret in &spec.secrets {
+        for secret in secrets {
             if let Some(existing) = merged
                 .secrets
                 .iter_mut()
@@ -141,7 +159,7 @@ pub(super) fn merge_with_policy(
         }
 
         // Scripts: append in order
-        if let Some(ref scripts) = spec.scripts {
+        if let Some(scripts) = scripts {
             merged.scripts.pre_apply.extend(scripts.pre_apply.clone());
             merged.scripts.post_apply.extend(scripts.post_apply.clone());
             merged
@@ -157,10 +175,10 @@ pub(super) fn merge_with_policy(
         }
 
         // Backups: append, deduplicate by name (higher-priority layer overrides)
-        crate::merge_backups(&mut merged.backups, &spec.backups);
+        crate::merge_backups(&mut merged.backups, backups);
 
         // Modules: union (deduplicated)
-        union_extend(&mut merged.modules, &spec.modules);
+        union_extend(&mut merged.modules, modules);
     }
 
     Ok(merged)

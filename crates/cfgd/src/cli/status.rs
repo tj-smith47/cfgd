@@ -269,7 +269,11 @@ pub(super) fn cmd_status(
     } else {
         vec![]
     };
-    let pending = state.pending_decisions()?;
+    // Only rows `cfgd decide` can still act on: a decision outliving the source
+    // that raised it withholds nothing from a plan, so listing it here would
+    // report work awaiting an answer that no answer can release.
+    let pending = reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name))
+        .answerable(state.pending_decisions()?);
     let resources = state.managed_resources()?;
 
     let config_dir = config_dir(cli);

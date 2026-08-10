@@ -247,6 +247,55 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
     }
 }
 
+/// Everything a run must withhold because of a source decision.
+///
+/// The ONE decision gate `cfgd plan` and `cfgd apply` share, so a preview and
+/// the apply it precedes withhold the same set — and so a manual apply cannot
+/// install the item the daemon's policy declines. Three inputs decide it:
+///
+/// - **The subscribed sources**, which say whose rows still mean anything. A
+///   run whose config did not parse has no authoritative list, so it withholds
+///   everything rather than treating a fabricated empty list as "no source
+///   objects to anything".
+/// - **The operator's own declarations**, which a source's decision may never
+///   settle. Manifest files are resolved into the local view first: a
+///   `brew.file: Brewfile` is a declaration like any other, and a guard reading
+///   only the layers would leave that whole declaration style unprotected.
+/// - **The auto-apply policy**, whose `Reject` / `Ignore` tiers decline an item
+///   outright. Silently, per `docs/sources.md` — those paths prune the plan but
+///   render nothing, because the instruction is already in the config.
+pub(in crate::cli) fn withheld_for_run(
+    state: &cfgd_core::state::StateStore,
+    cfg: &cfgd_core::config::CfgdConfig,
+    resolved: &cfgd_core::config::ResolvedProfile,
+    config_dir: &Path,
+    config_parsed: bool,
+) -> anyhow::Result<reconciler::WithheldDecisions> {
+    let mut local = reconciler::local_profile(resolved);
+    packages::resolve_manifest_packages(&mut local.packages, config_dir)?;
+
+    let scope = if config_parsed {
+        reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)
+    } else {
+        reconciler::DecisionScope::unverified(&local)
+    };
+
+    // Fail-CLOSED on both reads: a run that cannot tell a decided resource from
+    // an undecided one must not guess, and the half it would guess wrong is the
+    // half that installs.
+    let withheld = reconciler::WithheldDecisions::read(state, &scope)?;
+    if !config_parsed {
+        return Ok(withheld);
+    }
+    let review = reconciler::review_source_policies(
+        state,
+        cfg,
+        resolved,
+        reconciler::configured_auto_apply(cfg),
+    )?;
+    Ok(withheld.with_policy_declined(review.declined))
+}
+
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
 ///
 /// The phase/owner/action walk is the reconciler's own

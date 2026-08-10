@@ -2039,3 +2039,96 @@ fn platform_skip_survives_in_the_plan_payload() {
         "the skip keeps its module owner group"
     );
 }
+
+/// A resolved profile whose one local layer declares `spec` as YAML.
+fn local_resolved(spec_yaml: &str) -> cfgd_core::config::ResolvedProfile {
+    use cfgd_core::config::{LOCAL_LAYER, LayerPolicy, ProfileLayer, ProfileSpec, merge_layers};
+    let spec: ProfileSpec = serde_yaml::from_str(spec_yaml).expect("profile spec parses");
+    let layers = vec![ProfileLayer {
+        source: LOCAL_LAYER.to_string(),
+        profile_name: "p".to_string(),
+        priority: 1000,
+        policy: LayerPolicy::Local,
+        spec,
+    }];
+    let merged = merge_layers(&layers);
+    cfgd_core::config::ResolvedProfile { layers, merged }
+}
+
+/// A config subscribed to one source named `acme`.
+fn config_subscribed_to_acme() -> cfgd_core::config::CfgdConfig {
+    serde_yaml::from_str(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: p\n  \
+         sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n",
+    )
+    .expect("config parses")
+}
+
+#[test]
+fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file() {
+    // `brew.file: Brewfile` is a declaration like any other — it just resolves
+    // later, into the merged package set rather than into a layer. A guard
+    // reading only the layers leaves that entire declaration style unprotected:
+    // a source's decision over the same package name withholds the operator's
+    // own install from every plan.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Brewfile"), "brew \"ripgrep\"\n").unwrap();
+
+    let store = cfgd_core::test_helpers::test_state();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.ripgrep",
+            "recommended",
+            "install",
+            "recommended ripgrep (from acme)",
+        )
+        .unwrap();
+
+    let withheld = withheld_for_run(
+        &store,
+        &config_subscribed_to_acme(),
+        &local_resolved("packages:\n  brew:\n    file: Brewfile\n"),
+        dir.path(),
+        true,
+    )
+    .expect("the decision gate reads a healthy store");
+
+    assert!(
+        withheld.is_empty(),
+        "the operator's manifest-declared package outranks a source's decision \
+         over the same name, got {withheld:?}"
+    );
+}
+
+#[test]
+fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
+    // The fail-closed half: with no authoritative subscription list, a row must
+    // keep withholding rather than be released by a fabricated empty list.
+    let dir = tempfile::tempdir().unwrap();
+    let store = cfgd_core::test_helpers::test_state();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.ripgrep",
+            "recommended",
+            "install",
+            "recommended ripgrep (from acme)",
+        )
+        .unwrap();
+
+    let withheld = withheld_for_run(
+        &store,
+        &cfgd_core::config::minimal_config(),
+        &local_resolved("{}\n"),
+        dir.path(),
+        false,
+    )
+    .expect("the decision gate reads a healthy store");
+
+    assert_eq!(
+        withheld.pending.len(),
+        1,
+        "an unparsed config is not evidence that the source was dropped"
+    );
+}

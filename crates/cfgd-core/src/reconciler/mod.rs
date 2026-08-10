@@ -38,7 +38,9 @@ pub use format::{
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use pending::{
-    DecisionExclusions, DecisionScope, WithheldDecisions, declared_decision_paths,
+    DecisionExclusions, DecisionMint, DecisionScope, SourcePolicyReview, Subscriptions,
+    WithheldDecisions, configured_auto_apply, declared_decision_paths, hash_resources,
+    infer_item_tier, local_profile, review_source_policies, review_source_policy,
     source_delivered_profile, withhold_from_plan,
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};

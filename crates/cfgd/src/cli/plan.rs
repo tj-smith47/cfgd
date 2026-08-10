@@ -41,21 +41,27 @@ pub fn cmd_plan(
     // rows belong to is rendered once the plan is final, so the profile label
     // is carried down rather than printed here. A module-only run resolved no
     // profile, so it carries none and the header omits the row.
-    let (cfg, resolved, profile_label) = if let Some(mod_name) = module_filter {
+    let (cfg, resolved, profile_label, config_parsed) = if let Some(mod_name) = module_filter {
         match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name)),
+            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name), true),
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
-                let cfg =
-                    config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
+                // `minimal_config()` subscribes to nothing, and a fabricated
+                // empty subscription list must never be mistaken for the real
+                // one — it is what the decision scope reads to decide which
+                // rows are inert.
+                let (cfg, config_parsed) = match config::load_config(&cli.config) {
+                    Ok(c) => (c, true),
+                    Err(_) => (config::minimal_config(), false),
+                };
                 let resolved =
                     empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                (cfg, resolved, None)
+                (cfg, resolved, None, config_parsed)
             }
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        (cfg, resolved, Some(profile_name))
+        (cfg, resolved, Some(profile_name), true)
     };
 
     let mut registry = build_registry_with_config(Some(&cfg));
@@ -152,15 +158,14 @@ pub fn cmd_plan(
     // A resource awaiting (or declined by) a source decision is not this run's
     // to plan. Pruned before the scope snapshot below, so the preview, the
     // counts and the payload all describe the set an apply would execute —
-    // `apply` prunes with the same set, from the same rows. The read is
-    // fail-CLOSED: a state store that cannot be read is a run that cannot tell
-    // a decided resource from an undecided one, and previewing every one of
-    // them as work to do is the wrong half to guess at.
-    let decision_scope = reconciler::DecisionScope::new(
-        cfg.spec.sources.iter().map(|s| s.name.as_str()),
+    // `apply` prunes with the same set, through the same gate.
+    let withheld = plan_ops::withheld_for_run(
+        &state,
+        &cfg,
         &effective_resolved,
-    );
-    let withheld = reconciler::WithheldDecisions::read(&state, &decision_scope)?;
+        &config_dir,
+        config_parsed,
+    )?;
     reconciler::withhold_from_plan(
         &mut plan,
         &reconciler::DecisionExclusions::from_withheld(&withheld),

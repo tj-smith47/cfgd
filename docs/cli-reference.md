@@ -121,7 +121,9 @@ cfgd apply --skip-scripts           # apply without running any hooks
 
 `apply` reconciles exactly what `plan` previews, so a [source item awaiting a
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
-`cfgd decide` is the only command that resolves one.
+`cfgd decide` is the only command that resolves one. The same holds for an item your
+auto-apply policy declines outright (`newRecommended: Reject`): `plan`, `apply` and the
+daemon read one policy, so a manual apply cannot install what the daemon skips.
 
 ### `cfgd plan`
 
@@ -849,6 +851,11 @@ cfgd decide reject packages.brew.stern     # reject one item
 cfgd decide accept --source acme-corp      # accept all from source
 cfgd decide accept --all                   # accept everything
 ```
+
+Bare `cfgd decide` lists the decisions still awaiting you. Only rows whose source is
+still in `spec.sources` are listed: a decision outliving its subscription can no longer
+withhold anything, so there is nothing left to accept or reject. `cfgd status` reports
+the same filtered set.
 
 ## Backup Commands
 

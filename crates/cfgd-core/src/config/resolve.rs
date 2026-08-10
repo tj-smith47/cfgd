@@ -22,6 +22,13 @@ pub enum LayerPolicy {
     Optional,
 }
 
+/// The `ProfileLayer::source` value every layer of the subscriber's OWN profile
+/// carries. Composition tags a source's layers with the source name, so this is
+/// what distinguishes "the operator wrote it" from "a subscription delivered
+/// it" — one definition, because a mismatched literal silently reclassifies a
+/// layer's owner.
+pub const LOCAL_LAYER: &str = "local";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileLayer {
     pub source: String,
@@ -73,7 +80,7 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
     let layers: Vec<ProfileLayer> = resolution_order
         .into_iter()
         .map(|(name, doc)| ProfileLayer {
-            source: "local".to_string(),
+            source: LOCAL_LAYER.to_string(),
             profile_name: name,
             priority: 1000,
             policy: LayerPolicy::Local,
@@ -145,30 +152,50 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     let mut merged = MergedProfile::default();
 
     for layer in layers {
-        let spec = &layer.spec;
+        // Destructured with no `..`: a field added to `ProfileSpec` must fail
+        // to compile here (and in `composition::merge_with_policy`) until
+        // someone says what it merges to. Dropping one silently is not a
+        // theoretical risk — `env_scope` was missing from the composing merge
+        // and every machine with a subscription lost the scope it declared.
+        let ProfileSpec {
+            // Consumed by `resolve_inheritance_order` to BUILD the layer list;
+            // by the time a layer exists its parents are already layers of
+            // their own, so merging it again would be double-counting.
+            inherits: _,
+            modules,
+            env,
+            env_scope,
+            aliases,
+            packages,
+            files,
+            system,
+            secrets,
+            scripts,
+            backups,
+        } = &layer.spec;
 
         // Modules: union
-        union_extend(&mut merged.modules, &spec.modules);
+        union_extend(&mut merged.modules, modules);
 
         // Env: later layer overrides earlier by name
-        crate::merge_env(&mut merged.env, &spec.env);
+        crate::merge_env(&mut merged.env, env);
 
         // EnvScope: last layer that *specifies* it wins; an omitting layer
         // inherits the value resolved so far (defaults to All if none set it).
-        if let Some(scope) = spec.env_scope {
-            merged.env_scope = scope;
+        if let Some(scope) = env_scope {
+            merged.env_scope = *scope;
         }
 
         // Aliases: later layer overrides earlier by name
-        crate::merge_aliases(&mut merged.aliases, &spec.aliases);
+        crate::merge_aliases(&mut merged.aliases, aliases);
 
         // Packages: union (delegated to composition::merge_packages)
-        if let Some(ref pkgs) = spec.packages {
+        if let Some(pkgs) = packages {
             crate::composition::merge_packages(&mut merged.packages, pkgs);
         }
 
         // Files: overlay (later layer overrides earlier for same target)
-        if let Some(ref files) = spec.files {
+        if let Some(files) = files {
             for managed in &files.managed {
                 if let Some(existing) = merged
                     .files
@@ -187,7 +214,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         }
 
         // System: deep merge at leaf level
-        for (key, value) in &spec.system {
+        for (key, value) in system {
             deep_merge_yaml(
                 merged
                     .system
@@ -198,7 +225,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         }
 
         // Secrets: append, deduplicate by source (later layer overrides)
-        for secret in &spec.secrets {
+        for secret in secrets {
             if let Some(existing) = merged
                 .secrets
                 .iter_mut()
@@ -211,7 +238,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         }
 
         // Scripts: append in order
-        if let Some(ref scripts) = spec.scripts {
+        if let Some(scripts) = scripts {
             merged.scripts.pre_apply.extend(scripts.pre_apply.clone());
             merged.scripts.post_apply.extend(scripts.post_apply.clone());
             merged
@@ -227,7 +254,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         }
 
         // Backups: append, deduplicate by name (later layer overrides)
-        crate::merge_backups(&mut merged.backups, &spec.backups);
+        crate::merge_backups(&mut merged.backups, backups);
     }
 
     merged

@@ -29,15 +29,15 @@ pub(super) struct DecideListOutput {
 }
 
 pub(super) fn cmd_decide(
+    cli: &Cli,
     printer: &Printer,
     action: DecideAction,
     resource: Option<&str>,
     source: Option<&str>,
     all: bool,
-    state_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let resolution = action.resolution();
-    let state = open_state_store(state_dir)?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     if all {
         let count = state.resolve_all_decisions(resolution)?;
@@ -57,7 +57,18 @@ pub(super) fn cmd_decide(
         return Ok(());
     }
 
-    let decisions = state.pending_decisions()?;
+    // Only rows this machine can still act on. A config that will not parse
+    // says nothing about which sources are subscribed, so the listing shows
+    // everything rather than hiding a row on a guess — listing one is harmless,
+    // hiding the one the operator came to answer is not.
+    let subscriptions = match config::load_config(&cli.config) {
+        Ok(cfg) => reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name)),
+        Err(e) => {
+            tracing::debug!("config load failed, listing every decision: {}", e);
+            reconciler::Subscriptions::Unverified
+        }
+    };
+    let decisions = subscriptions.answerable(state.pending_decisions()?);
     printer.emit(build_decide_list_doc(&decisions));
     Ok(())
 }

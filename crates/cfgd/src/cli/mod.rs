@@ -2304,12 +2304,12 @@ pub fn execute(
             source,
             all,
         } => decide::cmd_decide(
+            cli,
             printer,
             *action,
             resource.as_deref(),
             source.as_deref(),
             *all,
-            cli.state_dir.as_deref(),
         ),
         Command::Config { command } => match command {
             ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),

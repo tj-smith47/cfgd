@@ -152,6 +152,21 @@ impl StateStore {
         Ok(deleted)
     }
 
+    /// Whether `(source, resource)` has ever been asked about, in any state.
+    ///
+    /// The idempotence guard on minting: a `Notify` policy asks once and then
+    /// respects whatever answer the row carries, so an item is re-asked only
+    /// when the source's delivered set actually changed. Resolved rows count —
+    /// a rejection must not be re-minted the tick after it is recorded.
+    pub fn has_decision(&self, source: &str, resource: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM pending_decisions WHERE source = ?1 AND resource = ?2",
+            params![source, resource],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Get pending decisions for a specific source.
     pub fn pending_decisions_for_source(&self, source: &str) -> Result<Vec<PendingDecision>> {
         let mut stmt = self.conn.prepare(&format!(

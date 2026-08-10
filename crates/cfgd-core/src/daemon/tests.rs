@@ -2,10 +2,27 @@ use super::*;
 // Drift helpers are reached via fully-qualified `super::drift::` paths in
 // production; tests use the bare names (e.g. `record_file_drift_to`).
 use super::drift::*;
+use crate::config::{AutoApplyPolicyConfig, PolicyAction};
 use crate::reconciler::{
     DecisionExclusions, DecisionScope, WithheldDecisions, action_resource_info,
-    declared_decision_paths, source_delivered_profile,
+    declared_decision_paths, hash_resources, infer_item_tier, local_profile, review_source_policy,
+    source_delivered_profile,
 };
+
+/// The daemon's two halves of one source's auto-apply policy — classify, then
+/// record what the classification asked for — as the single call a tick makes.
+fn process_source_decisions(
+    store: &StateStore,
+    source_name: &str,
+    merged: &MergedProfile,
+    policy: &AutoApplyPolicyConfig,
+    notifier: &Notifier,
+) -> HashSet<String> {
+    let review = review_source_policy(store, source_name, merged, policy)
+        .expect("policy review reads the test store");
+    super::reconcile::mint_reviewed_decisions(store, &review, notifier);
+    review.declined
+}
 use crate::test_helpers::{test_printer, test_state};
 
 /// A never-raised abort flag with a `'static` lifetime, so a `ReconcileCtx`
@@ -632,7 +649,7 @@ fn only_what_the_source_delivered_is_minted_as_a_decision() {
     // Feeding the whole composed profile instead would mint the subscriber's own
     // declaration as if a source had sent it — and now that a pending row
     // withholds its resource, that row would block the operator's own package.
-    let scope = DecisionScope::new(["acme"], &composed.resolved);
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
     let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
     let exclusions = DecisionExclusions::from_withheld(&withheld);
     assert!(exclusions.withholds_package("brew", "k9s"));
@@ -677,7 +694,7 @@ fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
         .resolve_decision("packages.cargo.bat", "rejected")
         .unwrap();
 
-    let scope = DecisionScope::new(["acme"], &composed.resolved);
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
     let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
     assert!(
         withheld.is_empty(),
@@ -688,6 +705,75 @@ fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
         !DecisionExclusions::from_withheld(&withheld).withholds_package("cargo", "bat"),
         "declining a source's offer must not uninstall what the operator asked for"
     );
+}
+
+/// A resolved profile whose only local layer declares one managed file.
+fn local_profile_declaring_file(target: &str) -> crate::config::ResolvedProfile {
+    use crate::config::*;
+    let files = FilesSpec {
+        managed: vec![ManagedFileSpec {
+            source: "files/zshrc".into(),
+            target: std::path::PathBuf::from(target),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        }],
+        ..Default::default()
+    };
+    ResolvedProfile {
+        layers: vec![ProfileLayer {
+            source: LOCAL_LAYER.into(),
+            profile_name: "default".into(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec {
+                files: Some(files.clone()),
+                ..Default::default()
+            },
+        }],
+        merged: MergedProfile {
+            files,
+            ..Default::default()
+        },
+    }
+}
+
+/// The two spellings of one home-relative path, in both orders. A source and a
+/// subscriber write their own manifests, so the guard cannot assume they agree
+/// on `~` — and the prune expands, so a raw string comparison would admit the
+/// row and then delete the operator's own action with it.
+#[test]
+#[serial_test::serial]
+fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
+    let _home = crate::with_test_home_guard(std::path::Path::new("/home/decision-guard"));
+    let expanded = crate::to_posix_string(crate::expand_tilde(std::path::Path::new("~/.zshrc")));
+
+    for (declared, decided) in [
+        ("~/.zshrc", format!("files.{expanded}")),
+        (expanded.as_str(), "files.~/.zshrc".to_string()),
+    ] {
+        let local = local_profile_declaring_file(declared);
+        let store = test_state();
+        store
+            .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc")
+            .unwrap();
+
+        let scope = DecisionScope::new(["acme"], &local_profile(&local));
+        let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+        assert!(
+            withheld.is_empty(),
+            "a decision spelled `{decided}` must not withhold the operator's own \
+             `{declared}` declaration"
+        );
+        assert!(
+            !DecisionExclusions::from_withheld(&withheld)
+                .withholds_file(&crate::expand_tilde(std::path::Path::new(declared))),
+            "and the prune must leave the operator's file action in the plan"
+        );
+    }
 }
 
 #[test]
@@ -721,7 +807,7 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
         .resolve_decision("packages.brew.stern", "rejected")
         .unwrap();
 
-    let scope = DecisionScope::new(["acme"], &composed.resolved);
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
     let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
     assert_eq!(
         withheld
@@ -2277,6 +2363,96 @@ fn process_source_decisions_reject_policy_silently_skips() {
     );
 }
 
+/// One merged profile declaring a single cargo package.
+fn merged_declaring_cargo(package: &str) -> MergedProfile {
+    use crate::config::{CargoSpec, PackagesSpec};
+    MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec![package.into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn flipping_a_rejecting_policy_to_notify_asks_about_the_item() {
+    // A `Reject` policy records nothing, so nothing carries the disposition
+    // forward — and the source has not changed, so a mint gated on the source's
+    // hash would mint nothing and the item would install unattended. The
+    // documented promise ("re-run with Notify if you want to be asked") is only
+    // true if the absence of a row is itself enough to ask.
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let merged = merged_declaring_cargo("bat");
+
+    let declined = process_source_decisions(
+        &store,
+        "acme",
+        &merged,
+        &AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Reject,
+            ..Default::default()
+        },
+        &notifier,
+    );
+    assert!(declined.contains("packages.cargo.bat"));
+    assert!(store.pending_decisions().unwrap().is_empty());
+
+    let declined = process_source_decisions(
+        &store,
+        "acme",
+        &merged,
+        &AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Notify,
+            ..Default::default()
+        },
+        &notifier,
+    );
+    assert!(
+        declined.is_empty(),
+        "the flipped policy no longer declines the item"
+    );
+    assert_eq!(
+        store
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat".to_string()],
+        "so it must be asked about rather than applied unattended"
+    );
+}
+
+#[test]
+fn an_answered_decision_is_not_re_minted_while_its_source_stands_still() {
+    // The other half of minting on an absent row: a row that EXISTS is an
+    // answer, and re-minting over it every tick would re-ask a question the
+    // operator already closed.
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let merged = merged_declaring_cargo("bat");
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Notify,
+        ..Default::default()
+    };
+
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "a rejection stands until the source itself changes"
+    );
+}
+
 // --- find_server_url with duplicate server origins picks first ---
 
 #[test]
@@ -2650,17 +2826,17 @@ fn reconcile_task_per_module() {
     assert!(task.last_reconciled.is_some());
 }
 
-// --- withheld_decision_paths ---
+// --- withheld_decisions ---
 
 #[test]
-fn withheld_decision_paths_empty_store() {
+fn withheld_decisions_empty_store() {
     let store = test_state();
     let paths = withheld_paths(&store);
     assert!(paths.is_empty());
 }
 
 #[test]
-fn withheld_decision_paths_with_decisions() {
+fn withheld_decisions_with_decisions() {
     let store = test_state();
     store
         .upsert_pending_decision(
@@ -8269,10 +8445,10 @@ fn discover_managed_paths_with_profile_override() {
     assert_eq!(paths[0], PathBuf::from("/home/user/.bashrc"));
 }
 
-// --- withheld_decision_paths ---
+// --- withheld_decisions ---
 
 #[test]
-fn withheld_decision_paths_returns_empty_for_no_decisions() {
+fn withheld_decisions_returns_empty_for_no_decisions() {
     let store = test_state();
     let paths = withheld_paths(&store);
     assert!(paths.is_empty());
@@ -12792,7 +12968,7 @@ mod harness {
 // daemon/reconcile.rs — extra branch coverage:
 //   * Plural-message branch fires when count > 1 new pending decisions in
 //     one call (singular path is already covered by *_detects_new_items_on_change)
-//   * withheld_decision_paths direct read-back contract — empty / multi-decision
+//   * withheld_decisions direct read-back contract — empty / multi-decision
 //     / post-resolution-empty
 // ---------------------------------------------------------------------------
 
@@ -12841,7 +13017,7 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
 }
 
 #[test]
-fn withheld_decision_paths_returns_decision_resources_as_set() {
+fn withheld_decisions_returns_decision_resources_as_set() {
     let store = test_state();
     // Empty store → empty set
     let empty = withheld_paths(&store);

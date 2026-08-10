@@ -25,10 +25,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::config::{
-    self, AutoApplyPolicyConfig, CfgdConfig, MergedProfile, NotifyMethod, OriginType, PolicyAction,
-    ResolvedProfile,
-};
+use crate::config::{self, CfgdConfig, MergedProfile, NotifyMethod, OriginType, ResolvedProfile};
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Role};
 use crate::providers::{
