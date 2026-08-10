@@ -198,6 +198,15 @@ fn collect_doctor_output(
             if !custom.packages.is_empty() {
                 declared.push(custom.name.clone());
             }
+            if custom.name.contains('.') {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run — rename it to be asked about them",
+                        custom.name
+                    ),
+                );
+            }
         }
         declared
     } else {

@@ -17531,6 +17531,10 @@ spec:
   packages:
     custom:
       - name: my-tool
+        check: my-tool --version
+        listInstalled: my-tool list
+        install: my-tool install
+        uninstall: my-tool uninstall
         packages:
           - my-pkg
 "#;
@@ -17548,6 +17552,29 @@ fn cmd_doctor_with_custom_package_manager_declared_exercises_custom_branch() {
     assert!(
         output.contains("Doctor"),
         "should show Doctor header with custom package manager, got: {output}"
+    );
+    assert!(
+        !output.contains("cannot carry decisions"),
+        "a dot-free custom manager raises no grammar note: {output}"
+    );
+}
+
+#[test]
+fn cmd_doctor_notes_the_decision_grammar_limit_of_a_dotted_custom_manager() {
+    let h = CliTestHarness::builder()
+        .config(CUSTOM_PKG_CONFIG_YAML)
+        .profile(
+            "default",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    custom:\n      - name: pip3.11\n        check: pip3.11 --version\n        listInstalled: pip3.11 list\n        install: pip3.11 install\n        uninstall: pip3.11 uninstall\n        packages:\n          - my-pkg\n",
+        )
+        .build();
+
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+
+    let output = h.output();
+    assert!(
+        output.contains("pip3.11") && output.contains("cannot carry decisions"),
+        "doctor points at the source-decision limitation of a dotted manager name: {output}"
     );
 }
 
@@ -20205,6 +20232,9 @@ struct DecisionShape<'a> {
     extra_profile_spec: &'a str,
     /// The source delivers `sibling.txt` alongside `withheld.txt`.
     sibling: bool,
+    /// YAML appended to the SOURCE's team profile `spec:` block (two-space
+    /// indent), for a source that delivers more than the managed file.
+    extra_team_spec: &'a str,
 }
 
 impl Default for DecisionShape<'_> {
@@ -20215,6 +20245,7 @@ impl Default for DecisionShape<'_> {
             local_file: true,
             extra_profile_spec: "",
             sibling: false,
+            extra_team_spec: "",
         }
     }
 }
@@ -20242,6 +20273,7 @@ fn decision_fixture_shaped(shape: DecisionShape<'_>) -> DecisionFixture {
             sibling.posix(),
         ));
     }
+    team.push_str(shape.extra_team_spec);
     let remote = cfgd_core::test_helpers::BareGitRepo::builder()
         .commit(
             "acme source",
@@ -21352,6 +21384,95 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
     assert!(
         output.contains("run `cfgd decide accept/reject`"),
         "a recorded row is answerable everywhere:\n{output}"
+    );
+}
+
+/// A source-delivered custom manager whose name carries a `.` — a name the
+/// decision path grammar cannot round-trip, so no row can ever be minted for
+/// its packages.
+const DOTTED_MANAGER_TEAM_SPEC: &str = "  packages:\n    custom:\n      - name: pip3.11\n        check: pip3.11 --version\n        listInstalled: pip3.11 list\n        install: pip3.11 install\n        uninstall: pip3.11 uninstall\n        packages:\n          - requests\n";
+
+#[test]
+#[serial_test::serial]
+fn a_source_batch_under_a_dotted_custom_manager_is_withheld_fail_closed() {
+    // No decision can carry `packages.pip3.11.requests` — the grammar splits
+    // on the first dot — so the batch must be withheld, not installed
+    // undecided: ask-before-install holds on every path, dotted manager or
+    // not. The payload's `warnings` explains the absence to a `-o json`
+    // consumer.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("the payload names the undecidable batch in warnings");
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.contains("pip3.11") && w.contains("'.'"))),
+        "the warning names the manager and the grammar limitation: {json}"
+    );
+    let action_text = json["phases"].to_string();
+    assert!(
+        !action_text.contains("requests"),
+        "the undecidable source package must not be planned: {action_text}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_dotted_manager_withholding_warns_on_the_plan_the_operator_reads() {
+    // The human half of the same contract: the warning lands in the run
+    // header the preview renders, not in a tracing stream nobody has enabled.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("pip3.11") && output.contains("'.'"),
+        "the operator-visible plan names the withheld manager and why:\n{output}"
+    );
+    // The package's one appearance is the warning naming it as withheld — the
+    // phase tree below must not plan it.
+    let tree = output
+        .split_once("Phase:")
+        .map(|(_, tree)| tree)
+        .unwrap_or_default();
+    assert!(
+        !tree.contains("requests"),
+        "the undecidable source package must not be planned:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_local_declaration_under_a_dotted_manager_still_applies() {
+    // The fail-closed withhold is for the SOURCE's items only: the operator's
+    // own declaration under the same dotted manager is theirs, and local
+    // declarations are never suppressed.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+    assert!(
+        json.get("warnings").is_none(),
+        "a locally declared dotted manager raises no undecidable warning: {json}"
     );
 }
 

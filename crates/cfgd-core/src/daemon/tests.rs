@@ -2856,6 +2856,112 @@ fn a_locked_tier_scoop_item_still_applies_when_the_policy_accepts_locked() {
     );
 }
 
+/// A tap decision round-trips like the scoop one above: `brew-tap` mints under
+/// its own name — tap names carry a `/`, which the path grammar tolerates
+/// after the manager segment — and the minted path meets the planner's
+/// `brew-tap` batch verbatim.
+#[test]
+fn a_brew_tap_decision_prunes_the_tap_batch_it_names() {
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.brew-tap.homebrew/cask-fonts".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(exclusions.withholds_package("brew-tap", "homebrew/cask-fonts"));
+    let mut phase = packages_phase_of(vec![install_of(
+        "brew-tap",
+        &["homebrew/cask-fonts", "acme/tools"],
+    )]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(
+        installed_batches(&phase),
+        vec![("brew-tap".to_string(), vec!["acme/tools".to_string()])],
+        "the undecided tap leaves the batch; its sibling still applies"
+    );
+}
+
+/// The manager the grammar cannot carry: a `.` in a custom manager's own name
+/// splits the decision path, so no row can name its packages. The batch is
+/// withheld fail-closed — through the review, like every other withhold — and
+/// the run's warnings say why, while the operator's own declaration under the
+/// same manager stays in the plan.
+#[test]
+fn a_dotted_custom_manager_source_batch_is_withheld_fail_closed_with_a_warning() {
+    use crate::config::{
+        CustomManagerSpec, LayerPolicy, MergedProfile, PackagesSpec, ResolvedProfile,
+    };
+
+    let custom = |packages: Vec<String>| PackagesSpec {
+        custom: vec![CustomManagerSpec {
+            name: "pip3.11".into(),
+            check: "pip3.11 --version".into(),
+            list_installed: "pip3.11 list".into(),
+            install: "pip3.11 install".into(),
+            uninstall: "pip3.11 uninstall".into(),
+            update: None,
+            packages,
+        }],
+        ..Default::default()
+    };
+
+    let mut local_layer = tiered_layer(
+        &MergedProfile {
+            packages: custom(vec!["shared".into()]),
+            ..Default::default()
+        },
+        LayerPolicy::Local,
+    );
+    local_layer.source = crate::config::LOCAL_LAYER.to_string();
+    let source_layer = tiered_layer(
+        &MergedProfile {
+            packages: custom(vec!["requests".into(), "shared".into()]),
+            ..Default::default()
+        },
+        LayerPolicy::Recommended,
+    );
+    let resolved = ResolvedProfile {
+        layers: vec![local_layer, source_layer],
+        merged: MergedProfile {
+            packages: custom(vec!["requests".into(), "shared".into()]),
+            ..Default::default()
+        },
+    };
+
+    let batches = crate::reconciler::undecidable_source_batches(&resolved, ["acme"]);
+    assert_eq!(
+        batches,
+        vec![crate::reconciler::UndecidableBatch {
+            source: "acme".to_string(),
+            manager: "pip3.11".to_string(),
+            packages: vec!["requests".to_string()],
+        }],
+        "the source's package is undecidable; the locally declared one is the operator's"
+    );
+
+    let withheld = WithheldDecisions::default().with_undecidable(batches);
+    let exclusions = DecisionExclusions::from_withheld(&withheld);
+    let mut plan = crate::reconciler::Plan {
+        phases: vec![packages_phase_of(vec![install_of(
+            "pip3.11",
+            &["requests", "shared"],
+        )])],
+        warnings: Vec::new(),
+    };
+    let pruned = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+    assert_eq!(pruned, 0, "the batch survives with one fewer entry");
+    assert_eq!(
+        installed_batches(&plan.phases[0]),
+        vec![("pip3.11".to_string(), vec!["shared".to_string()])],
+        "the source's undecidable package leaves the batch; the local one applies"
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("pip3.11") && w.contains("'.'") && w.contains("requests")),
+        "the plan's warnings name the manager, the grammar limitation and the packages: {:?}",
+        plan.warnings
+    );
+}
+
 // --- process_source_decisions with Reject policy ---
 
 #[test]

@@ -73,14 +73,12 @@ pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
 /// passes through verbatim, EXCEPT a manager whose own name contains a `.`:
 /// the path grammar splits on the first dot, so such a name cannot round-trip
 /// into [`DecisionExclusions`] and the row it minted could never withhold the
-/// item it names — minting nothing (and saying so) is the arm that cannot lie.
-/// Only a custom manager can carry such a name; every built-in is dot-free.
+/// item it names. Minting nothing keeps the grammar honest, and the contract
+/// holds anyway: [`undecidable_source_batches`] withholds the manager's
+/// source-delivered packages fail-closed, no row required. Only a custom
+/// manager can carry such a name; every built-in is dot-free.
 fn decision_manager_name(manager: &str) -> Option<&str> {
     if manager.contains('.') {
-        tracing::warn!(
-            manager,
-            "custom package manager name contains '.', which the decision path grammar cannot carry — its source-delivered packages mint no decisions"
-        );
         return None;
     }
     Some(if manager == "brew-cask" {
@@ -88,6 +86,73 @@ fn decision_manager_name(manager: &str) -> Option<&str> {
     } else {
         manager
     })
+}
+
+/// A source-delivered package batch no decision row can ever name: the custom
+/// manager's own name contains a `.`, which the decision path grammar splits
+/// on. Ask-before-install still holds — the batch is withheld from the plan
+/// fail-closed — but there is nothing `cfgd decide` could record, so the run
+/// warns instead of listing a row, and the way out is renaming the manager.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndecidableBatch {
+    pub source: String,
+    pub manager: String,
+    pub packages: Vec<String>,
+}
+
+impl UndecidableBatch {
+    /// The warning line the run header renders and the `-o json` payload's
+    /// `warnings` carries — the same surface the withheld rows are named on.
+    pub fn warning(&self) -> String {
+        format!(
+            "custom manager '{}' cannot carry source decisions — its name contains '.', which the decision path grammar splits on. Withheld from this run until the manager is renamed: {} (from {})",
+            self.manager,
+            self.packages.join(", "),
+            self.source
+        )
+    }
+}
+
+/// The batches [`UndecidableBatch`] describes, for every subscribed source.
+///
+/// A package the operator ALSO declares locally under the same manager is
+/// theirs, not the source's — it stays in the plan, mirroring the
+/// [`DecisionScope`] guard that keeps local declarations out of every other
+/// withhold.
+pub fn undecidable_source_batches<'a, I>(
+    resolved: &ResolvedProfile,
+    sources: I,
+) -> Vec<UndecidableBatch>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let local = local_profile(resolved);
+    let mut out = Vec::new();
+    for source in sources {
+        let delivered = source_delivered_profile(resolved, source);
+        for manager in delivered.packages.manager_names() {
+            if !manager.contains('.') {
+                continue;
+            }
+            let local_pkgs: HashSet<String> =
+                config::desired_packages_for_spec(&manager, &local.packages)
+                    .into_iter()
+                    .collect();
+            let packages: Vec<String> =
+                config::desired_packages_for_spec(&manager, &delivered.packages)
+                    .into_iter()
+                    .filter(|p| !local_pkgs.contains(p))
+                    .collect();
+            if !packages.is_empty() {
+                out.push(UndecidableBatch {
+                    source: source.to_string(),
+                    manager,
+                    packages,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// What one source actually delivered into a composed profile.
@@ -285,6 +350,9 @@ pub struct WithheldDecisions {
     pub rejected: Vec<PendingDecision>,
     /// Paths an auto-apply policy declined outright, which record no row.
     pub declined: HashSet<String>,
+    /// Source batches no row can name (dotted custom manager) — withheld
+    /// fail-closed and warned about on the run header instead of listed.
+    pub undecidable: Vec<UndecidableBatch>,
 }
 
 impl WithheldDecisions {
@@ -352,6 +420,14 @@ impl WithheldDecisions {
     /// applies here too: an item the
     /// operator also declares themselves is theirs, not the source's, and no
     /// classification of the source's copy may withhold it.
+    /// Fold in the batches no decision can name — see [`UndecidableBatch`].
+    /// They ride the same value the rows do so every consumer prunes (and
+    /// warns) from one list, exactly like the policy-declined paths.
+    pub fn with_undecidable(mut self, batches: Vec<UndecidableBatch>) -> Self {
+        self.undecidable = batches;
+        self
+    }
+
     pub fn with_unrecorded(mut self, mints: &[DecisionMint], scope: &DecisionScope) -> Self {
         for mint in mints {
             if !scope.withholds(&mint.source, &mint.resource) {
@@ -371,7 +447,10 @@ impl WithheldDecisions {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.rejected.is_empty() && self.declined.is_empty()
+        self.pending.is_empty()
+            && self.rejected.is_empty()
+            && self.declined.is_empty()
+            && self.undecidable.is_empty()
     }
 
     /// The resource path of everything this run withholds, in decision
@@ -460,6 +539,9 @@ pub struct SourcePolicyReview {
     pub to_mint: Vec<DecisionMint>,
     /// `(source, hash)` for every source whose delivered set changed.
     pub changed_hashes: Vec<(String, String)>,
+    /// Batches no decision can name (dotted custom manager) — withheld
+    /// fail-closed, warned about, never minted and never hashed.
+    pub undecidable: Vec<UndecidableBatch>,
 }
 
 impl SourcePolicyReview {
@@ -482,6 +564,9 @@ impl SourcePolicyReview {
                 .cloned()
                 .collect(),
             changed_hashes: Vec::new(),
+            // Nothing recordable: no row can name these batches, so an
+            // answering run has nothing to narrow to.
+            undecidable: Vec::new(),
         }
     }
 }
@@ -546,6 +631,12 @@ pub fn review_source_policies(
         review.to_mint.extend(one.to_mint);
         review.changed_hashes.extend(one.changed_hashes);
     }
+    // Computed with the review rather than beside it so every surface that
+    // classifies (plan, apply, the daemon's tick) inherits the batches — and
+    // their fail-closed withhold — under exactly the conditions the
+    // classification itself runs.
+    review.undecidable =
+        undecidable_source_batches(resolved, cfg.spec.sources.iter().map(|s| s.name.as_str()));
     Ok(review)
 }
 
@@ -870,6 +961,10 @@ pub struct DecisionExclusions {
     packages: HashMap<String, HashSet<String>>,
     env: HashSet<String>,
     system: HashSet<String>,
+    /// One line per [`UndecidableBatch`] folded in — pushed onto the plan's
+    /// warnings by [`withhold_from_plan`], so the surface naming the absence
+    /// is the same one the prune runs through.
+    warnings: Vec<String>,
 }
 
 impl DecisionExclusions {
@@ -941,7 +1036,27 @@ impl DecisionExclusions {
     /// `files/plan.rs` and `modules/resolve.rs` mint their targets with, and
     /// the one a test home guard redirects.
     pub fn from_withheld(withheld: &WithheldDecisions) -> Self {
-        Self::from_decision_paths(withheld.resource_paths(), crate::expand_tilde)
+        Self::from_withheld_with(withheld, crate::expand_tilde)
+    }
+
+    /// [`Self::from_withheld`] with the caller's own `~` expansion — the
+    /// daemon passes its hooks' injectable one. Also the ONE place the
+    /// undecidable batches enter the exclusion set: their manager names never
+    /// fit a decision path, so they ride the [`WithheldDecisions`] value
+    /// directly and fold into the package map (and the warning list) here.
+    pub fn from_withheld_with<E>(withheld: &WithheldDecisions, expand: E) -> Self
+    where
+        E: Fn(&Path) -> PathBuf,
+    {
+        let mut out = Self::from_decision_paths(withheld.resource_paths(), expand);
+        for batch in &withheld.undecidable {
+            out.packages
+                .entry(batch.manager.clone())
+                .or_default()
+                .extend(batch.packages.iter().cloned());
+            out.warnings.push(batch.warning());
+        }
+        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -949,6 +1064,7 @@ impl DecisionExclusions {
             && self.packages.is_empty()
             && self.env.is_empty()
             && self.system.is_empty()
+            && self.warnings.is_empty()
     }
 
     /// Whether the whole action is withheld. A batching action never is — its
@@ -1023,6 +1139,11 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
     if exclusions.is_empty() {
         return 0;
     }
+    // An undecidable batch has no row to explain its absence, so the warning
+    // lands on the plan itself: the run header renders `plan.warnings` and
+    // the `-o json` payload carries them, which is exactly where the operator
+    // reads why something they declared is not in the run.
+    plan.warnings.extend(exclusions.warnings.iter().cloned());
     let before = plan.total_actions();
     for phase in &mut plan.phases {
         phase.retain_actions_and_batches(

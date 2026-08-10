@@ -386,7 +386,8 @@ pub(crate) fn handle_reconcile(
     let withheld = match crate::reconciler::WithheldDecisions::read(&store, &decision_scope) {
         Ok(w) => w
             .with_policy_declined(review.declined)
-            .with_unrecorded(&review.to_mint, &decision_scope),
+            .with_unrecorded(&review.to_mint, &decision_scope)
+            .with_undecidable(review.undecidable),
         Err(e) => {
             tracing::error!(error = %e, "reconcile: cannot read source decisions");
             notifier.notify(
@@ -399,9 +400,7 @@ pub(crate) fn handle_reconcile(
         }
     };
     let pending_exclusions =
-        DecisionExclusions::from_decision_paths(withheld.resource_paths(), |p| {
-            hooks.expand_tilde(p)
-        });
+        DecisionExclusions::from_withheld_with(&withheld, |p| hooks.expand_tilde(p));
 
     // The env arm withholds the surface as a unit, and apply rebuilds that
     // surface after the phases run from the declared set rather than from the

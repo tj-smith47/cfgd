@@ -322,7 +322,8 @@ pub(in crate::cli) fn withheld_for_run(
     }
     let withheld = reconciler::WithheldDecisions::read(state, &scope)?
         .with_policy_declined(review.declined.clone())
-        .with_unrecorded(&review.to_mint, &scope);
+        .with_unrecorded(&review.to_mint, &scope)
+        .with_undecidable(review.undecidable.clone());
     Ok((withheld, review))
 }
 

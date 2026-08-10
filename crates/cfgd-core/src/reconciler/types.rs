@@ -596,7 +596,10 @@ impl Phase {
 #[derive(Debug, Serialize)]
 pub struct Plan {
     pub phases: Vec<Phase>,
-    /// Warnings about shell rc conflicts (env/alias defined before cfgd source line).
+    /// Run-level warnings the header renders and the `-o json` payload
+    /// carries: shell rc conflicts (env/alias defined before the cfgd source
+    /// line) and source batches withheld without a row
+    /// (`UndecidableBatch::warning`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
