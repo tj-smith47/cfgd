@@ -246,7 +246,7 @@ golden_doc!(regression, worked_example_status, |p, cap| {
                 sf.detail("18 pkgs, 12 files, installed")
             })
             .status_with(Role::Warn, "module:shell-config", |sf| {
-                sf.detail("0 pkgs, 4 files, drifted")
+                sf.detail("0 pkgs, 4 files, error")
             })
         });
     p.emit(doc);

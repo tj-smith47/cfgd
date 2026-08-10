@@ -1172,7 +1172,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), and a `cfgd backup restore` whose overlay or hooks failed. | Any command whose `Result` resolves to a non-config error. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` whose overlay or hooks failed, and `cfgd diff --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` on a failed configurator check. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
@@ -1182,7 +1182,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
 
-Codes `130` / `143` follow the POSIX `128 + signal` convention and are not cfgd-specific. See [Graceful Interruption](safety.md#graceful-interruption-sigint--sigterm) for the abort semantics. The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present.
+Codes `130` / `143` follow the POSIX `128 + signal` convention and are not cfgd-specific. See [Graceful Interruption](safety.md#graceful-interruption-sigint--sigterm) for the abort semantics. The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present — except `cfgd diff --exit-code`, which exits `1` instead when a system configurator check itself failed, since an unknown state outranks a known one for a script deciding whether to apply.
 
 External-process passthrough (e.g. `kubectl exec` invoked by the `kubectl cfgd` plugin) forwards the inner tool's exit code unchanged — those codes are not part of the cfgd taxonomy.
 

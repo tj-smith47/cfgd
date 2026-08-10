@@ -12,4 +12,4 @@ Drift
 Modules
   ✓ module:base         — 5 pkgs, 3 files, installed
   ✓ module:dev-tools    — 18 pkgs, 12 files, installed
-  ⚠ module:shell-config — 0 pkgs, 4 files, drifted
+  ⚠ module:shell-config — 0 pkgs, 4 files, error
