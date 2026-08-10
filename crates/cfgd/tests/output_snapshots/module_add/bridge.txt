@@ -4,7 +4,7 @@ Add Remote Module
 Commit     <COMMIT_SHA>
 Integrity  sha256:516f5495fa6ff3a4552d414b42565a523f3473abe558054719ae5bb9df53b0db
 
-Module: bridgemod
+module:bridgemod
   (none)
 
 ⊙ Tag 'v1.0.0' is unsigned

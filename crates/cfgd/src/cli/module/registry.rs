@@ -522,7 +522,9 @@ pub(super) fn print_module_review_summary(
     commit: &str,
     integrity: &str,
 ) {
-    let mod_sec = printer.section(format!("Module: {}", module_name));
+    // The review heads the module with the same token its actions carry in an
+    // apply tree, so the thing being approved is named once, one way.
+    let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", module_name));
 
     if !module.spec.depends.is_empty() {
         mod_sec.kv("Dependencies", module.spec.depends.join(", "));

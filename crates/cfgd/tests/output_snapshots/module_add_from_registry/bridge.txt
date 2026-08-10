@@ -6,7 +6,7 @@ Add Remote Module
 Commit     <COMMIT_SHA>
 Integrity  sha256:f985ba1cbee0471b1ae5f1587c1fd5135017f58e90555db572c592cbc25d91cf
 
-Module: alpha
+module:alpha
   (none)
 
 ⊙ Tag 'alpha/v1.0.0' is unsigned

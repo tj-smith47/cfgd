@@ -4651,7 +4651,10 @@ fn print_module_review_summary_emits_subheader_and_commit_integrity() {
     );
     drop(printer);
     let out = buf.lock().unwrap().clone();
-    assert!(out.contains("Module: vim-config"), "subheader: {out}");
+    assert!(
+        out.contains("module:vim-config"),
+        "the review heads the module with its owner token: {out}"
+    );
     assert!(out.contains("Commit"), "commit kv missing: {out}");
     assert!(out.contains("abc123"), "commit value missing: {out}");
     assert!(out.contains("Integrity"), "integrity kv missing: {out}");

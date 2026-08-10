@@ -35,7 +35,11 @@ pub fn cmd_source_override(
                 Doc::new()
                     .status(
                         Role::Ok,
-                        format!("Rejected '{}' from '{}'", path, source_name),
+                        format!(
+                            "Rejected '{}' from {}",
+                            path,
+                            cfgd_core::reconciler::Owner::source(source_name).token()
+                        ),
                     )
                     .with_data(serde_json::json!({
                         "sourceName": source_name,
@@ -61,7 +65,12 @@ pub fn cmd_source_override(
                 Doc::new()
                     .status(
                         Role::Ok,
-                        format!("Override set: {} = {} for '{}'", path, val, source_name),
+                        format!(
+                            "Override set: {} = {} for {}",
+                            path,
+                            val,
+                            cfgd_core::reconciler::Owner::source(source_name).token()
+                        ),
                     )
                     .with_data(serde_json::json!({
                         "sourceName": source_name,

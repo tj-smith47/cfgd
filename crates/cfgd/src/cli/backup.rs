@@ -385,8 +385,9 @@ pub fn run_backup_restore(
         Role::Fail
     };
     let subject = format!(
-        "backup '{}' restored from {}",
-        outcome.name, outcome.snapshot
+        "{} restored from {}",
+        cfgd_core::reconciler::Owner::backup(&outcome.name).token(),
+        outcome.snapshot
     );
     // `outcome.restored_to`, not the requested target: a symlinked source is
     // followed, and the operator needs to be told where the bytes actually went.

@@ -50,12 +50,14 @@ pub fn cmd_source_priority(
 
             printer.emit(
                 Doc::new()
-                    .status(
+                    .status_with(
                         Role::Ok,
-                        format!(
-                            "Source '{}' priority updated: {} -> {}",
-                            name, old_priority, new_priority
-                        ),
+                        cfgd_core::reconciler::Owner::source(name).token(),
+                        |f| {
+                            f.detail(format!(
+                                "priority updated: {old_priority} -> {new_priority}"
+                            ))
+                        },
                     )
                     .with_data(serde_json::json!({
                         "name": name,
