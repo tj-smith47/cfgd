@@ -17393,3 +17393,40 @@ impl PackageManager for NotePushingManager {
         Ok(None)
     }
 }
+
+#[test]
+fn decision_store_ownership_matches_only_the_runs_own_scope() {
+    // The store a run opens is resolved from ITS scope, so only that scope's
+    // default config speaks for it: judged cross-scope, `cfgd --config
+    // /etc/cfgd/cfgd.yaml apply` (a user-scope run) would sweep the per-user
+    // store with the system picture's subscription list.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let user_cfg = crate::default_config_dir_for(crate::Scope::User).join("cfgd.yaml");
+    let system_cfg = crate::default_config_dir_for(crate::Scope::System).join("cfgd.yaml");
+
+    assert!(
+        owns_decision_store(&user_cfg, false, crate::Scope::User),
+        "the user scope's own default config owns the user store"
+    );
+    assert!(
+        !owns_decision_store(&system_cfg, false, crate::Scope::User),
+        "the system config is a different machine picture to the user store"
+    );
+    assert!(
+        owns_decision_store(&system_cfg, false, crate::Scope::System),
+        "the system scope's own default config owns the system store"
+    );
+    assert!(
+        !owns_decision_store(&user_cfg, false, crate::Scope::System),
+        "and the user config does not own the system store"
+    );
+    assert!(
+        owns_decision_store(
+            Path::new("/somewhere/else/cfgd.yaml"),
+            true,
+            crate::Scope::User
+        ),
+        "a --state-dir override grants ownership regardless: the swept store is the one the config was aimed at"
+    );
+}

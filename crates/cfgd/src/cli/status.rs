@@ -297,16 +297,32 @@ pub(super) fn cmd_status(
     // The plan withholds items no run has recorded a row for yet; a dashboard
     // that hides them contradicts the plan it summarizes. Same classification
     // source `plan` reads, still read-only — the `id` 0 rows mark items whose
-    // row `cfgd decide` (or the next apply/tick) will mint.
-    let (withheld, _review) = plan_ops::withheld_for_run(
-        &state,
-        &cfg,
-        &resolved,
-        &config_dir,
-        true,
-        plan_ops::DecisionWrites::ReadOnly,
-    )?;
-    pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+    // row `cfgd decide` (or the next apply/tick) will mint. Unlike the gate in
+    // plan/apply, a dashboard DEGRADES rather than dying: a classification
+    // failure (a malformed package manifest, say) costs the unrecorded rows
+    // and says so, never the whole status surface. And with no sources there
+    // is nothing to classify, so none of the classification's work runs.
+    if !cfg.spec.sources.is_empty() {
+        match plan_ops::withheld_for_run(
+            &state,
+            &cfg,
+            &resolved,
+            &config_dir,
+            true,
+            plan_ops::DecisionWrites::ReadOnly,
+        ) {
+            Ok((withheld, _review)) => {
+                pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+            }
+            Err(e) => printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Source decisions not classified: {}",
+                    cfgd_core::output::collapse_to_subject_line(format!("{e:#}"))
+                ),
+            ),
+        }
+    }
 
     let state_map = module_state_map(&state);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules

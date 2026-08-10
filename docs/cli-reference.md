@@ -281,7 +281,17 @@ An `id` of `0` marks an item classified this run but **not yet recorded** in the
 decision store: `plan` is read-only, so the row is minted later — by `cfgd
 decide` when you answer it, or by the `cfgd apply` / daemon tick that follows.
 Every other field carries the same shape either way, and the item is withheld
-identically; only a recorded row has a real (non-zero) `id`.
+identically; only a recorded row has a real (non-zero) `id`. The same
+discriminator reaches the other two read surfaces: `cfgd status -o json`
+(`pendingDecisions`) and the bare `cfgd decide -o json` listing (`decisions`)
+fold in the same classified-but-unrecorded rows, `id: 0` included.
+
+In the human render, an unrecorded item keeps the usual ``run `cfgd decide
+accept/reject` `` instruction only where that command could actually record it.
+On a config that cannot mint the row — a foreign `--config` without
+`--state-dir` — the suffix says so instead (*not yet recorded; decide from the
+machine's own config, or with `--state-dir`*); a recorded row resolves without
+a mint, so its instruction holds on every config.
 
 Only a source you are still subscribed to can withhold anything: a decision
 whose source has been removed from `spec.sources` is inert, and a real `cfgd
@@ -292,7 +302,10 @@ in which case the rows are left alone because they belong to another config's
 picture of the machine. Ownership follows the resolved path, not the spelling:
 `--config ~/.config/cfgd/cfgd.yaml` names the machine's own config — the same
 `--config` every installed service unit bakes into its invocation — and still
-discards.
+discards. The default location is the **run's scope's**: a user-scope run does
+not treat `/etc/cfgd/cfgd.yaml` as its own config, because the store it opened
+is the per-user one and the system picture's subscription list must not sweep
+it (and vice versa for a system-scope run).
 
 ### `cfgd status`
 
@@ -304,6 +317,12 @@ cfgd status -o json                         # full status as JSON
 cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 ```
+
+`pendingDecisions` lists the same rows `cfgd decide` offers, including
+classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).
+The dashboard degrades rather than failing on that classification: if it cannot
+be built (a malformed package manifest, say), status still renders everything
+else and prints a warning naming what it could not read.
 
 ### `cfgd diff`
 
@@ -872,6 +891,16 @@ Bare `cfgd decide` lists the decisions still awaiting you. Only rows whose sourc
 still in `spec.sources` are listed: a decision outliving its subscription can no longer
 withhold anything, so there is nothing left to accept or reject. `cfgd status` reports
 the same filtered set.
+
+Answering an item **records only that item**: an item `cfgd plan` classified but nothing
+has recorded yet is minted and resolved in the same step, and no source hash is stamped
+— so the daemon's notification for the source's *other* new items is preserved. If the
+classification needed to see unrecorded items cannot be built (an unreadable config or
+composition), a resolving `cfgd decide` refuses with the reason instead of reporting the
+decision as not found; already-recorded rows still resolve, and the bare listing shows
+them with a warning that the unrecorded ones could not be read. The refusal only applies
+where unrecorded items could exist: with no config file, or a config with no
+`spec.sources`, decide answers from the store alone and never runs the classification.
 
 ## Backup Commands
 

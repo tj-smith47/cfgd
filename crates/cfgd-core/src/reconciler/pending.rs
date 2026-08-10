@@ -451,6 +451,54 @@ pub struct SourcePolicyReview {
     pub changed_hashes: Vec<(String, String)>,
 }
 
+impl SourcePolicyReview {
+    /// The subset of this review an ANSWERING run may record: rows for exactly
+    /// the items it is answering, and NO source hashes.
+    ///
+    /// A hash stamp marks the source's whole delivered set as seen, so the
+    /// daemon's next tick would find the source "unchanged" and never send the
+    /// notification still owed for the items this run did not touch. Leaving
+    /// the hash unstamped is safe on the other side too:
+    /// [`review_source_policy`] re-asks an answered item only on a real hash
+    /// change, never on the first stamped observation.
+    pub fn narrowed_to(&self, targets: &DecisionTargets<'_>) -> SourcePolicyReview {
+        SourcePolicyReview {
+            declined: HashSet::new(),
+            to_mint: self
+                .to_mint
+                .iter()
+                .filter(|m| targets.covers(m))
+                .cloned()
+                .collect(),
+            changed_hashes: Vec::new(),
+        }
+    }
+}
+
+/// Which classified items an answering run is recording — `cfgd decide`'s
+/// narrowing over a [`SourcePolicyReview`]. The daemon and `cfgd apply` record
+/// the whole review; an answer records only what it answers, through
+/// [`SourcePolicyReview::narrowed_to`].
+#[derive(Debug, Clone, Copy)]
+pub enum DecisionTargets<'a> {
+    /// `decide accept --all`: every item the listing surfaces offer.
+    All,
+    /// `decide accept --source <name>`: the named source's items.
+    Source(&'a str),
+    /// `decide accept <resource>`: the one item the plan's instruction names.
+    Resource(&'a str),
+}
+
+impl DecisionTargets<'_> {
+    fn covers(&self, mint: &DecisionMint) -> bool {
+        match self {
+            Self::All => true,
+            Self::Source(name) => mint.source == *name,
+            Self::Resource(path) => mint.resource == *path,
+        }
+    }
+}
+
 /// Classify what every subscribed source delivers against the auto-apply policy.
 ///
 /// Writes nothing. `auto_apply` is the effective setting — off, the policy has
@@ -507,6 +555,11 @@ pub fn review_source_policy(
         .source_config_hash(source_name)?
         .map(|h| h.config_hash);
     let config_changed = previous_hash.as_deref() != Some(&current_hash);
+    // A change is a PREVIOUS observation disagreeing; the first observation is
+    // not one. Rows can exist before any hash does — `cfgd decide` records the
+    // item it answers and stamps nothing — and treating None → Some as "the
+    // source moved" would re-mint, and so re-ask, the very item just answered.
+    let source_changed = previous_hash.is_some() && config_changed;
 
     // The old resource set is not stored, only its hash — so what the machine
     // already knows about this source stands in for it: what it installed, plus
@@ -547,7 +600,7 @@ pub fn review_source_policy(
             // suppresses re-minting until the source changes, so an answer is
             // not re-asked every tick.
             PolicyAction::Notify => {
-                if config_changed || !store.has_decision(source_name, resource)? {
+                if source_changed || !store.has_decision(source_name, resource)? {
                     review.to_mint.push(DecisionMint {
                         source: source_name.to_string(),
                         resource: resource.clone(),
@@ -571,8 +624,10 @@ pub fn review_source_policy(
 ///
 /// The WRITE half of the review, shared by the daemon's tick, by `cfgd apply`
 /// (after its confirmation — a declined run declines its writes), and by
-/// `cfgd decide` when it answers an item no run has recorded yet, so a row
-/// exists by whichever of them runs first instead of the item waiting on the
+/// `cfgd decide` when it answers an item no run has recorded yet — decide
+/// hands over [`SourcePolicyReview::narrowed_to`] its targets, an answer
+/// recording only what it answers — so a row exists by whichever of them runs
+/// first instead of the item waiting on the
 /// next daemon tick. Idempotent by construction — `review_source_policy` only mints
 /// what has never been asked about (or what a changed source re-asks), and the
 /// upsert refreshes an unresolved row rather than duplicating it.
@@ -630,20 +685,28 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
 /// unrecoverably. Bringing its own state dir makes any config authoritative,
 /// because then the store it sweeps is the one that config owns.
 ///
+/// `scope` is the RUN'S OWN scope, and it bounds which default location
+/// counts: the store a run opens is resolved from that same scope, so only
+/// that scope's default config speaks for it. Accepting the other scope's
+/// default would let `cfgd --config /etc/cfgd/cfgd.yaml apply` — a user-scope
+/// run — sweep the per-user store with the system picture's subscription list.
+///
 /// Withholding is unaffected either way — a row whose source this run does not
 /// subscribe to is inert through [`Subscriptions`], swept or not.
-pub fn owns_decision_store(config_path: &Path, has_state_dir_override: bool) -> bool {
-    has_state_dir_override || is_machines_own_config(config_path)
+pub fn owns_decision_store(
+    config_path: &Path,
+    has_state_dir_override: bool,
+    scope: crate::Scope,
+) -> bool {
+    has_state_dir_override || is_machines_own_config(config_path, scope)
 }
 
-/// Whether `config_path` names the machine's own config: a discovery-named
-/// config file (`cfgd.yaml` / `cfgd.toml`) sitting in the default config
-/// directory of EITHER scope. Both scopes are accepted because the store a run
-/// opens is resolved independently of the config flag, so the system daemon's
-/// `/etc/cfgd/cfgd.yaml` is as much "this machine's config" as the per-user
-/// default. Falls back to canonical comparison so a symlinked config root
-/// (macOS `/tmp`, a stow-managed `~/.config`) still matches its own default.
-fn is_machines_own_config(config_path: &Path) -> bool {
+/// Whether `config_path` names the machine's own config for a run at `scope`:
+/// a discovery-named config file (`cfgd.yaml` / `cfgd.toml`) sitting in that
+/// scope's default config directory. Falls back to canonical comparison so a
+/// symlinked config root (macOS `/tmp`, a stow-managed `~/.config`) still
+/// matches its own default.
+fn is_machines_own_config(config_path: &Path, scope: crate::Scope) -> bool {
     let named = crate::expand_tilde(config_path);
     if !named
         .file_name()
@@ -654,16 +717,12 @@ fn is_machines_own_config(config_path: &Path) -> bool {
     let Some(parent) = named.parent() else {
         return false;
     };
-    [crate::Scope::User, crate::Scope::System]
-        .into_iter()
-        .any(|scope| {
-            let default_dir = crate::default_config_dir_for(scope);
-            parent == default_dir
-                || matches!(
-                    (parent.canonicalize(), default_dir.canonicalize()),
-                    (Ok(a), Ok(b)) if a == b
-                )
-        })
+    let default_dir = crate::default_config_dir_for(scope);
+    parent == default_dir
+        || matches!(
+            (parent.canonicalize(), default_dir.canonicalize()),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 /// Hash a resource set so a source's delivered items can be compared against

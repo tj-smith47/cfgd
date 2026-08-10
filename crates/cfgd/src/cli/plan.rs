@@ -209,6 +209,11 @@ pub fn cmd_plan(
     )
     .with_filter(phase_filter.as_ref())
     .with_withheld(&withheld)
+    .decisions_answerable(reconciler::owns_decision_store(
+        &cli.config,
+        cli.state_dir.is_some(),
+        cli.scope(),
+    ))
     .preview_only();
 
     display_plan_preview(

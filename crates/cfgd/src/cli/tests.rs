@@ -20042,6 +20042,9 @@ struct DecisionFixture {
     kept: PathBuf,
     /// The file `acme` delivers — the one a decision covers.
     withheld: PathBuf,
+    /// A second `acme`-delivered file, present when the shape asked for one —
+    /// for tests proving an answer about `withheld` leaves this one untouched.
+    sibling: PathBuf,
     /// The staging root both targets live under. Bound for the fixture's
     /// lifetime rather than leaked, so the directory is reaped with the test.
     _staging: tempfile::TempDir,
@@ -20058,6 +20061,11 @@ impl DecisionFixture {
     /// The decision path covering the source-delivered file.
     fn resource(&self) -> String {
         format!("files.{}", self.withheld.posix())
+    }
+
+    /// The decision path covering the second source-delivered file.
+    fn sibling_resource(&self) -> String {
+        format!("files.{}", self.sibling.posix())
     }
 
     /// The store, with the row `acme` would mint for its own file already in
@@ -20086,6 +20094,41 @@ fn decision_fixture(output_json: bool) -> DecisionFixture {
 /// The fixture with `extra_spec` appended to the config's `spec:` block — for a
 /// test that needs a daemon auto-apply policy on the same staging shape.
 fn decision_fixture_with(output_json: bool, extra_spec: &str) -> DecisionFixture {
+    decision_fixture_shaped(DecisionShape {
+        output_json,
+        extra_spec,
+        ..Default::default()
+    })
+}
+
+/// Knobs on the decision fixture's staging shape. `..Default::default()` is the
+/// classic shape: one locally declared file, one source-delivered file, no
+/// auto-apply policy.
+struct DecisionShape<'a> {
+    output_json: bool,
+    /// Appended to the config's `spec:` block.
+    extra_spec: &'a str,
+    /// The operator's own profile declares `kept.txt`.
+    local_file: bool,
+    /// YAML appended to the local profile's `spec:` block (two-space indent).
+    extra_profile_spec: &'a str,
+    /// The source delivers `sibling.txt` alongside `withheld.txt`.
+    sibling: bool,
+}
+
+impl Default for DecisionShape<'_> {
+    fn default() -> Self {
+        Self {
+            output_json: false,
+            extra_spec: "",
+            local_file: true,
+            extra_profile_spec: "",
+            sibling: false,
+        }
+    }
+}
+
+fn decision_fixture_shaped(shape: DecisionShape<'_>) -> DecisionFixture {
     let allow_local = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
     let staging = tempfile::tempdir().unwrap();
     let home = cfgd_core::with_test_home_guard(staging.path());
@@ -20093,10 +20136,21 @@ fn decision_fixture_with(output_json: bool, extra_spec: &str) -> DecisionFixture
     std::fs::create_dir_all(&out).unwrap();
     let kept = out.join("kept.txt");
     let withheld = out.join("withheld.txt");
+    let sibling = out.join("sibling.txt");
 
     // A source-declared `source:` path resolves against the SUBSCRIBER's config
     // directory, so both bodies are written there and only the declaration
     // moves into the source.
+    let mut team = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  files:\n    managed:\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
+        withheld.posix(),
+    );
+    if shape.sibling {
+        team.push_str(&format!(
+            "      - source: files/sibling.txt\n        target: {}\n        strategy: Copy\n",
+            sibling.posix(),
+        ));
+    }
     let remote = cfgd_core::test_helpers::BareGitRepo::builder()
         .commit(
             "acme source",
@@ -20105,30 +20159,33 @@ fn decision_fixture_with(output_json: bool, extra_spec: &str) -> DecisionFixture
                     "cfgd-source.yaml",
                     "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\nspec:\n  provides:\n    profiles:\n      - team\n",
                 ),
-                (
-                    "profiles/team.yaml",
-                    &format!(
-                        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  files:\n    managed:\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
-                        withheld.posix(),
-                    ),
-                ),
+                ("profiles/team.yaml", &team),
             ],
         )
         .build();
 
+    let local_files = if shape.local_file {
+        format!(
+            "  files:\n    managed:\n      - source: files/kept.txt\n        target: {}\n        strategy: Copy\n",
+            kept.posix(),
+        )
+    } else {
+        String::new()
+    };
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/kept.txt\n        target: {}\n        strategy: Copy\n",
-        kept.posix(),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  inherits: []\n  modules: []\n{local_files}{}",
+        shape.extra_profile_spec,
     );
     let config = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n{extra_spec}",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n{}",
         remote.url(),
         remote.head_branch(),
+        shape.extra_spec,
     );
     let mut builder = CliTestHarness::builder()
         .config(&config)
         .profile("sourced", &profile);
-    if output_json {
+    if shape.output_json {
         builder = builder.json();
     }
     let h = builder.build();
@@ -20137,11 +20194,13 @@ fn decision_fixture_with(output_json: bool, extra_spec: &str) -> DecisionFixture
     std::fs::create_dir_all(&files_dir).unwrap();
     std::fs::write(files_dir.join("kept.txt"), "kept body").unwrap();
     std::fs::write(files_dir.join("withheld.txt"), "withheld body").unwrap();
+    std::fs::write(files_dir.join("sibling.txt"), "sibling body").unwrap();
 
     DecisionFixture {
         h,
         kept,
         withheld,
+        sibling,
         _staging: staging,
         _remote: remote,
         _allow_local: allow_local,
@@ -21059,6 +21118,443 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
     assert!(
         state.pending_decisions().unwrap().is_empty(),
         "status is a read path and records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_answers_one_item_without_consuming_the_other_items_notification() {
+    // `cfgd decide reject <resource>` answers ONE item. Recording the whole
+    // classification alongside it would mint rows the operator never asked for
+    // and stamp the source hash — after which the daemon's next tick sees an
+    // "unchanged" source and never sends the notification still owed for the
+    // sibling item.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        sibling: true,
+        ..Default::default()
+    });
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Reject,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.has_decision("acme", &f.resource()).unwrap(),
+        "the answered item's row was minted and resolved"
+    );
+    assert!(
+        !state.has_decision("acme", &f.sibling_resource()).unwrap(),
+        "the sibling was never answered, so no row speaks for it"
+    );
+    assert!(
+        state.source_config_hash("acme").unwrap().is_none(),
+        "no hash is stamped — the source's delivered set was not reviewed, one \
+         item of it was answered — so the daemon's next tick still notifies"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_apply_with_nothing_else_to_do_still_records_the_withheld_item() {
+    // A converged machine is the common case once a fleet settles, and it is
+    // exactly where `docs/sources.md`'s "apply records once you let the run
+    // proceed" must still be true: the run named the withheld item in its
+    // header and ran to completion, so the item is recorded even though the
+    // plan held no other action.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        local_file: false,
+        ..Default::default()
+    });
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("Pending Decisions"),
+        "the item is named even when nothing else is planned:\n{output}"
+    );
+    assert!(!f.withheld.exists(), "the item itself is still withheld");
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert_eq!(
+        state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect::<Vec<_>>(),
+        vec![f.resource()],
+        "a nothing-else-to-do apply still mints the row `cfgd decide` answers:\n{output}"
+    );
+    assert!(
+        state.source_config_hash("acme").unwrap().is_some(),
+        "and stamps the hash, exactly as an apply with actions does"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() {
+    // On a config that is not the machine's own (and with no `--state-dir`),
+    // `cfgd decide` cannot record an unrecorded item — so the withheld block
+    // must not advise a command it knows will answer "No pending decision
+    // found". It says what is true instead.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    let cli = Cli {
+        state_dir: None,
+        ..f.h.cli()
+    };
+
+    super::plan::cmd_plan(&cli, f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("Pending Decisions"),
+        "the item is still withheld and named:\n{output}"
+    );
+    assert!(
+        !output.contains("run `cfgd decide accept/reject`"),
+        "no instruction naming a command that will refuse:\n{output}"
+    );
+    assert!(
+        output.contains("machine's own config"),
+        "the suffix says where the item CAN be decided:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
+    // Resolving a recorded row is not a mint, so `cfgd decide` answers it on
+    // any config — the instruction holds even where an unrecorded item's would
+    // not.
+    let f = decision_fixture(false);
+    let default_state = super::open_state_store(None).unwrap();
+    default_state
+        .upsert_pending_decision(
+            "acme",
+            &f.resource(),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    let cli = Cli {
+        state_dir: None,
+        ..f.h.cli()
+    };
+    super::plan::cmd_plan(&cli, f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("run `cfgd decide accept/reject`"),
+        "a recorded row is answerable everywhere:\n{output}"
+    );
+}
+
+/// A cargo manifest reference whose file the tests below write as invalid TOML,
+/// so the shared source classification fails while the config itself parses.
+const BROKEN_MANIFEST_SPEC: &str =
+    "  packages:\n    cargo:\n      file: manifests/Cargo.toml\n      packages: []\n";
+
+fn write_broken_manifest(h: &CliTestHarness) {
+    let dir = h.config_path().join("manifests");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), "not [ toml").unwrap();
+}
+
+#[test]
+#[serial_test::serial]
+fn status_still_renders_when_the_source_classification_is_unreadable() {
+    // `cfgd status` is a dashboard: a malformed package manifest costs it the
+    // unrecorded-item rows (with a warning saying so), never the whole surface.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::status::cmd_status(&f.h.cli(), &printer, None, false)
+        .expect("a read-only dashboard renders through a classification failure");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("Status"),
+        "the dashboard itself still renders:\n{output}"
+    );
+    assert!(
+        output.contains("not classified") && output.contains("Cargo.toml"),
+        "the degradation is noted, naming the unreadable input:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_sourceless_status_skips_source_classification_entirely() {
+    // With no sources there is nothing to classify, so none of the
+    // classification's work runs — the broken manifest it would have read is
+    // never consulted.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(staging.path());
+    let h = CliTestHarness::builder()
+        .config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+        )
+        .profile(
+            "solo",
+            &format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec:\n  inherits: []\n  modules: []\n{BROKEN_MANIFEST_SPEC}"
+            ),
+        )
+        .build();
+    write_broken_manifest(&h);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::status::cmd_status(&h.cli(), &printer, None, false)
+        .expect("no sources, no classification, no failure");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        !output.contains("not classified"),
+        "nothing was skipped, because nothing needed classifying:\n{output}"
+    );
+}
+
+#[test]
+fn a_sourceless_decide_answers_the_store_without_classifying() {
+    // With no sources an unrecorded item cannot exist, so the classification —
+    // and the broken manifest it would have read — never runs, and decide
+    // answers from the store alone instead of refusing.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(staging.path());
+    let h = CliTestHarness::builder()
+        .config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+        )
+        .profile(
+            "solo",
+            &format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec:\n  inherits: []\n  modules: []\n{BROKEN_MANIFEST_SPEC}"
+            ),
+        )
+        .build();
+    write_broken_manifest(&h);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        Some("no.such.resource"),
+        None,
+        false,
+    )
+    .expect("no sources, no classification, no refusal");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("No pending decision found"),
+        "the store's truthful answer, not a refusal:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_decide_refuses_rather_than_denying_the_decision_exists() {
+    // With the classification unreadable, "No pending decision found" would be
+    // indistinguishable from an empty store — on the one command whose job is
+    // to answer. Decide refuses instead, naming the input it could not read.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .expect_err("an unanswerable resolve refuses instead of reporting not-found");
+    let msg = format!("{err:#}");
+
+    assert!(
+        msg.contains("Cargo.toml"),
+        "the refusal names the unreadable input: {msg}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "nothing was minted from the broken picture"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_decide_listing_still_shows_the_recorded_rows() {
+    // A listing is a dashboard, not an answer: with the classification
+    // unreadable it degrades to the rows the store holds, warning that the
+    // unrecorded ones could not be read, instead of refusing like a resolve.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+    f.with_pending_decision();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .expect("a degraded listing renders, it does not refuse");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains(&f.resource()),
+        "the recorded row still lists:\n{output}"
+    );
+    assert!(
+        output.contains("Unrecorded source items not listed") && output.contains("Cargo.toml"),
+        "the degradation is named, with the input it could not read:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
+    // The refusal is only for the case decide cannot see: a row that already
+    // exists is answerable however broken the classification is.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+    f.with_pending_decision();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("ACCEPTED"),
+        "an existing row resolves regardless of the classification:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
+    // The same discriminator `plan` puts on the wire: `cfgd status -o json`
+    // reads the same classification, so its `pendingDecisions` carries the
+    // synthetic row with `id` 0 and the store stays untouched.
+    let f = decision_fixture_with(true, NOTIFYING_POLICY);
+    let (plan_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let json = f.h.json_output();
+
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("the unrecorded item reaches the status payload");
+    assert_eq!(pending.len(), 1, "one unrecorded item: {json}");
+    assert_eq!(
+        pending[0]["id"], 0,
+        "id 0 marks a row nothing has recorded yet: {json}"
+    );
+    assert_eq!(
+        pending[0]["resource"],
+        serde_json::Value::String(f.resource()),
+        "the row names the withheld resource: {json}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "status is a read path and records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_listing_payload_marks_the_unrecorded_item_with_id_zero() {
+    // And the third surface: the bare `cfgd decide -o json` listing carries
+    // the same `id` 0 discriminator for an item it offers but has not minted.
+    let f = decision_fixture_with(true, NOTIFYING_POLICY);
+    let (plan_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let json = f.h.json_output();
+
+    let decisions = json["decisions"]
+        .as_array()
+        .expect("the unrecorded item reaches the listing payload");
+    assert_eq!(decisions.len(), 1, "one unrecorded item: {json}");
+    assert_eq!(
+        decisions[0]["id"], 0,
+        "id 0 marks a row nothing has recorded yet: {json}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path())).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a listing records nothing"
     );
 }
 

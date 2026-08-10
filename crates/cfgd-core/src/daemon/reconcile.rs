@@ -322,7 +322,7 @@ pub(crate) fn handle_reconcile(
     // on the resolved config path itself, so an installed service unit baking
     // `--config <default path>` still sweeps its own machine's rows.
     let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
-    if crate::reconciler::owns_decision_store(config_path, state_dir_override.is_some())
+    if crate::reconciler::owns_decision_store(config_path, state_dir_override.is_some(), scope)
         && let Err(e) = store.discard_decisions_not_in(&subscribed)
     {
         tracing::warn!(error = %e, "failed to discard decisions of removed sources");

@@ -38,10 +38,10 @@ pub use format::{
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use pending::{
-    DECISION_ACTION_INSTALL, DecisionExclusions, DecisionMint, DecisionScope, DeliveredItems,
-    SourcePolicyReview, Subscriptions, TIER_LOCKED, TIER_OPTIONAL, TIER_RECOMMENDED,
-    WithheldDecisions, configured_auto_apply, declared_decision_paths, hash_resources,
-    local_profile, mint_decisions, owns_decision_store, review_source_policies,
+    DECISION_ACTION_INSTALL, DecisionExclusions, DecisionMint, DecisionScope, DecisionTargets,
+    DeliveredItems, SourcePolicyReview, Subscriptions, TIER_LOCKED, TIER_OPTIONAL,
+    TIER_RECOMMENDED, WithheldDecisions, configured_auto_apply, declared_decision_paths,
+    hash_resources, local_profile, mint_decisions, owns_decision_store, review_source_policies,
     review_source_policy, source_delivered_layers, source_delivered_profile, withhold_from_plan,
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};

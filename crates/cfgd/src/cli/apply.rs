@@ -342,7 +342,8 @@ pub fn run_apply(
     // spelling — `--config` naming the default config file is still the
     // machine's own config. Withholding is unaffected — the gate below still
     // refuses rows this run has no source for.
-    let owns_the_store = reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some());
+    let owns_the_store =
+        reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some(), cli.scope());
     let store_writes = !dry_run && config_parsed && owns_the_store;
     if store_writes {
         let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
@@ -420,6 +421,7 @@ pub fn run_apply(
         let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Plan), &plan)
             .with_filter(phase_filter.as_ref())
             .with_withheld(&withheld)
+            .decisions_answerable(owns_the_store)
             .preview_only();
         display_plan_preview(
             &run,
@@ -479,10 +481,19 @@ pub fn run_apply(
     // the cadence "every apply" promises.
     let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Apply), &plan)
         .with_filter(phase_filter.as_ref())
-        .with_withheld(&withheld);
+        .with_withheld(&withheld)
+        .decisions_answerable(owns_the_store);
 
     if !has_actions && pending_backups.is_empty() {
         run.header(printer);
+        // The header above NAMED any withheld items, and this run proceeded —
+        // there was just nothing else for it to do. It still records what the
+        // policy classified, or a converged machine (the common case once a
+        // fleet settles) could never mint the rows its own plan keeps naming.
+        // No confirm gate exists on this path: nothing destructive follows.
+        if store_writes {
+            reconciler::mint_decisions(&state, &review);
+        }
         report_plan_verdict(printer, 0, Some(&scope));
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());

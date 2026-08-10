@@ -1,4 +1,6 @@
 use super::*;
+use anyhow::Context;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::state::PendingDecision;
 
@@ -43,32 +45,64 @@ pub(super) fn cmd_decide(
     // that nothing has recorded yet becomes a real row HERE, through the same
     // `mint_decisions` machinery apply mints with — the instruction the plan
     // prints (``run `cfgd decide accept/reject` ``) is honoured by the command
-    // it names, instead of decide denying the item exists. Gated exactly as
+    // it names, instead of decide denying the item exists. The mint is
+    // narrowed to the target(s) being ANSWERED, and stamps no source hashes:
+    // recording the rest of the classification would consume the daemon's one
+    // notification for items the operator never touched. Gated exactly as
     // apply's writes are: a foreign config does not write rows into the
     // default store. The bare listing stays a read, like `cfgd plan`.
-    let resolving = all || source.is_some() || resource.is_some();
-    let writes =
-        if resolving && reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some()) {
-            plan_ops::DecisionWrites::Mint
-        } else {
-            plan_ops::DecisionWrites::ReadOnly
-        };
+    let targets = if all {
+        Some(reconciler::DecisionTargets::All)
+    } else if let Some(name) = source {
+        Some(reconciler::DecisionTargets::Source(name))
+    } else {
+        resource.map(reconciler::DecisionTargets::Resource)
+    };
+    let writes = match targets {
+        Some(t)
+            if reconciler::owns_decision_store(
+                &cli.config,
+                cli.state_dir.is_some(),
+                cli.scope(),
+            ) =>
+        {
+            plan_ops::DecisionWrites::Mint(t)
+        }
+        _ => plan_ops::DecisionWrites::ReadOnly,
+    };
     let classification = source_classification(cli, printer, &state, writes);
 
     if all {
         let count = state.resolve_all_decisions(resolution)?;
+        if count == 0
+            && let Err(e) = classification
+        {
+            return Err(e.context("no recorded decisions, and the unrecorded items could not be classified to answer them"));
+        }
         printer.emit(build_decide_bulk_doc(resolution, count, None));
         return Ok(());
     }
 
     if let Some(source_name) = source {
         let count = state.resolve_decisions_for_source(source_name, resolution)?;
+        if count == 0
+            && let Err(e) = classification
+        {
+            return Err(e.context(format!(
+                "no recorded decisions for source '{source_name}', and its unrecorded items could not be classified to answer them"
+            )));
+        }
         printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
         return Ok(());
     }
 
     if let Some(resource_path) = resource {
         let resolved = state.resolve_decision(resource_path, resolution)?;
+        if !resolved && let Err(e) = classification {
+            return Err(e.context(format!(
+                "no recorded decision matches '{resource_path}', and the unrecorded items could not be classified to answer it"
+            )));
+        }
         printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
         return Ok(());
     }
@@ -86,65 +120,80 @@ pub(super) fn cmd_decide(
     };
     let mut decisions = subscriptions.answerable(state.pending_decisions()?);
     // Classified-but-unrecorded items (`id` 0) are offered for an answer
-    // without a row being minted for the offer itself.
-    if let Some((withheld, _)) = classification {
-        decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+    // without a row being minted for the offer itself. A listing is a
+    // dashboard, not an answer, so a broken classification degrades it — the
+    // recorded rows still list, with a warning that the unrecorded ones could
+    // not be read — where a resolving invocation above refuses outright.
+    match classification {
+        Ok((withheld, _)) => {
+            decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+        }
+        Err(e) => printer.status_simple(
+            Role::Warn,
+            format!(
+                "Unrecorded source items not listed: {}",
+                cfgd_core::output::collapse_to_subject_line(format!("{e:#}"))
+            ),
+        ),
     }
     printer.emit(build_decide_list_doc(&decisions));
     Ok(())
 }
 
 /// The shared source-decision classification, built the way `cfgd plan` builds
-/// it but composing cache-only — decide stays offline. `None` when the config
-/// or composition cannot be read: decide must still answer the rows that
-/// already exist, and minting from a broken picture is exactly the guess the
-/// fail-closed rule forbids (nothing is released either way — a row that
-/// exists withholds regardless of what this returns).
+/// it but composing cache-only — decide stays offline — and in `Report` mode,
+/// with the other classification reads: decide's own write is a row in the
+/// decision store, never a change to the machine, and `Enforce` would disable
+/// answering exactly when a source violates a constraint.
+///
+/// The error carries WHICH input was unreadable. A resolving decide refuses on
+/// it rather than answering "no pending decision found" — indistinguishable
+/// from an empty store — while the bare listing degrades to recorded rows
+/// with a warning. Nothing is minted from a broken picture either way, and a
+/// row that exists withholds (and resolves) regardless of what this returns.
+///
+/// Classification only applies where sources exist to classify: a config file
+/// that does not exist cannot have subscribed this machine to anything (its
+/// runs never load, so nothing was ever offered from it), and a readable
+/// config with zero sources has no source items either way — both answer
+/// "nothing unrecorded" instead of running composition, so a local manifest
+/// typo on a sourceless machine cannot disable answering the store's rows.
 fn source_classification(
     cli: &Cli,
     printer: &Printer,
     state: &cfgd_core::state::StateStore,
-    writes: plan_ops::DecisionWrites,
-) -> Option<(
+    writes: plan_ops::DecisionWrites<'_>,
+) -> anyhow::Result<(
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
 )> {
-    let (cfg, _profile_name, local_resolved) = match load_config_and_profile(cli) {
-        Ok(loaded) => loaded,
-        Err(e) => {
-            tracing::debug!("config load failed, skipping source classification: {e}");
-            return None;
-        }
-    };
-    let desired = match resolve_desired_state(
+    if !cli.config.exists() {
+        return Ok(Default::default());
+    }
+    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)
+        .with_context(|| format!("config {} is unreadable", cli.config.posix()))?;
+    if cfg.spec.sources.is_empty() {
+        return Ok(Default::default());
+    }
+    let desired = resolve_desired_state(
         cli,
         &cfg,
         &local_resolved,
         None,
         printer,
         false,
-        composition::ConstraintMode::Enforce,
-    ) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::debug!("composition failed, skipping source classification: {e}");
-            return None;
-        }
-    };
-    match plan_ops::withheld_for_run(
+        composition::ConstraintMode::Report,
+    )
+    .context("source composition failed")?;
+    plan_ops::withheld_for_run(
         state,
         &cfg,
         &desired.resolved,
         &config_dir(cli),
         true,
         writes,
-    ) {
-        Ok(classified) => Some(classified),
-        Err(e) => {
-            tracing::debug!("source classification unreadable: {e}");
-            None
-        }
-    }
+    )
+    .context("source classification failed")
 }
 
 /// Pure builder: bulk-resolution Doc (`accept --all` / `accept --source`).

@@ -281,7 +281,7 @@ pub(in crate::cli) fn withheld_for_run(
     resolved: &cfgd_core::config::ResolvedProfile,
     config_dir: &Path,
     config_parsed: bool,
-    writes: DecisionWrites,
+    writes: DecisionWrites<'_>,
 ) -> anyhow::Result<(
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
@@ -313,9 +313,12 @@ pub(in crate::cli) fn withheld_for_run(
     // Minting first is what makes the rows readable below, so a minting run
     // names the same rows `cfgd status` and `cfgd decide` will. It is also why
     // the read comes after — `with_unrecorded` then has nothing left to add
-    // for the items this run recorded.
-    if matches!(writes, DecisionWrites::Mint) {
-        reconciler::mint_decisions(state, &review);
+    // for the items this run recorded. The mint is NARROWED to the items the
+    // answering run actually names: recording the rest of the classification
+    // (or any source hash) would consume the daemon's one notification for
+    // items the operator never touched.
+    if let DecisionWrites::Mint(targets) = writes {
+        reconciler::mint_decisions(state, &review.narrowed_to(&targets));
     }
     let withheld = reconciler::WithheldDecisions::read(state, &scope)?
         .with_policy_declined(review.declined.clone())
@@ -327,14 +330,17 @@ pub(in crate::cli) fn withheld_for_run(
 ///
 /// `cfgd plan` is a preview and writes nothing, so it withholds a newly
 /// classified item without minting a row for it. `cfgd decide` is the
-/// answering surface and mints immediately, so an unrecorded-but-classified
-/// item is answerable in the same invocation that named it. `cfgd apply`
-/// passes `ReadOnly` here and mints AFTER the operator confirms the run,
-/// through the review this function returns — declining the prompt must leave
-/// the store untouched. All withhold identically — only the record differs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::cli) enum DecisionWrites {
-    Mint,
+/// answering surface and mints immediately — narrowed to the item(s) it is
+/// answering, and stamping no source hashes — so an unrecorded-but-classified
+/// item is answerable in the same invocation that named it while everything
+/// it did not name stays unrecorded and still owed its notification. `cfgd
+/// apply` passes `ReadOnly` here and mints AFTER the operator confirms the
+/// run, through the review this function returns — declining the prompt must
+/// leave the store untouched. All withhold identically — only the record
+/// differs.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cli) enum DecisionWrites<'a> {
+    Mint(reconciler::DecisionTargets<'a>),
     ReadOnly,
 }
 

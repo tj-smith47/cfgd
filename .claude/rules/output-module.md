@@ -50,7 +50,7 @@ See Hard Rule #1 in `hard-rules.md`.
 
 | Mode | Commands |
 |---|---|
-| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin` — anything whose whole job is to describe state |
+| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin`, `decide` — anything whose whole job is to describe state (`decide`'s composition is a classification READ; its write is a decision-store row, never a change to the machine, and `Enforce` would disable answering exactly when a source violates a constraint) |
 | `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `backup restore`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
 
 `Report` is not "skip the check": `compose` still warns per violation, and any script surface a

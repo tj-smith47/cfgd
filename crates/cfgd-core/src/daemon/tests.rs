@@ -546,6 +546,64 @@ fn process_source_decisions_first_run_records_decisions() {
     );
 }
 
+#[test]
+fn first_observation_of_a_source_reasks_nothing_already_answered() {
+    use crate::config::PackagesSpec;
+    // Rows can exist before any hash does: `cfgd decide` records the one item
+    // it answers and stamps nothing, so the daemon's first stamped observation
+    // arrives with an answered row already present. "No previous hash" must
+    // not read as "the source changed" for that item — re-minting it would
+    // supersede the answer the operator just gave — while the sibling, never
+    // asked about, is still minted: the notification decide left unconsumed.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into(), "eza".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+    )
+    .unwrap();
+
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.eza"],
+        "only the never-asked item is minted; the answered one stands"
+    );
+    assert!(
+        !review.changed_hashes.is_empty(),
+        "the observation itself is still recorded once a run may write it"
+    );
+}
+
 /// Every withholding decision's resource path, straight from the store — the
 /// read [`DecisionScope`] then filters down to what a run may still withhold.
 fn withheld_paths(store: &StateStore) -> HashSet<String> {

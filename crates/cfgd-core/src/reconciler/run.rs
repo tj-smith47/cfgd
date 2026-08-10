@@ -194,6 +194,7 @@ pub struct ApplyRun<'a> {
     preview_only: bool,
     backups: Option<PendingBackups<'a>>,
     withheld: Option<&'a super::WithheldDecisions>,
+    decide_answerable: bool,
 }
 
 impl<'a> ApplyRun<'a> {
@@ -205,6 +206,7 @@ impl<'a> ApplyRun<'a> {
             preview_only: false,
             backups: None,
             withheld: None,
+            decide_answerable: true,
         }
     }
 
@@ -218,6 +220,16 @@ impl<'a> ApplyRun<'a> {
     /// them here.
     pub fn with_withheld(mut self, withheld: &'a super::WithheldDecisions) -> Self {
         self.withheld = Some(withheld);
+        self
+    }
+
+    /// Whether `cfgd decide` on this run's config can record an answer for a
+    /// classified-but-unrecorded item — false when the config does not own the
+    /// decision store ([`super::owns_decision_store`]). Only the `id == 0`
+    /// rows change their instruction on it: resolving a RECORDED row is not a
+    /// mint, so its instruction holds on every config.
+    pub fn decisions_answerable(mut self, answerable: bool) -> Self {
+        self.decide_answerable = answerable;
         self
     }
 
@@ -247,6 +259,7 @@ impl<'a> ApplyRun<'a> {
             preview_only: false,
             backups: Some(PendingBackups { units, store }),
             withheld: None,
+            decide_answerable: true,
         }
     }
 
@@ -382,7 +395,17 @@ impl<'a> ApplyRun<'a> {
         if !withheld.pending.is_empty() {
             let section = printer.section("Pending Decisions (not included in this plan)");
             for d in &withheld.pending {
-                section.status_simple(Role::Info, row(d, "run `cfgd decide accept/reject`"));
+                // An unrecorded item (`id` 0) is answerable only where `cfgd
+                // decide` can mint its row. On a run whose config does not own
+                // the store, the usual instruction names a command that will
+                // refuse — so say what is true instead. Recorded rows resolve
+                // without a mint and keep the instruction everywhere.
+                let suffix = if d.id == 0 && !self.decide_answerable {
+                    "not yet recorded; decide from the machine's own config, or with --state-dir"
+                } else {
+                    "run `cfgd decide accept/reject`"
+                };
+                section.status_simple(Role::Info, row(d, suffix));
             }
         }
         if !withheld.rejected.is_empty() {
