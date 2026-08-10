@@ -49,22 +49,42 @@ A failed or unclean unit downgrades the apply's overall status from `success` to
 exits nonzero (`ExitCode::ApplyFailed`, code `7`) the same way a failed reconciler action would —
 see [Exit Codes](cli-reference.md#exit-codes).
 
+A backup run is a run like any other: a `Backup` header, a `Backups` phase with one
+`backup:<name>` group per unit, and a rollup. Each unit's group carries one line per `preBackup` /
+`postBackup` hook and one for the snapshot itself, so the rollup's counts are the lines on screen.
+
 ```console
 $ cfgd backup run
-Run Backups
+Backup
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  4 planned
 
-✓ backup 'openlist-db'
+Backups
+  backup:openlist-db
+    ✓ preBackup: systemctl stop openlist   (0.2s)
+    ✓ postBackup: systemctl start openlist (0.3s)
+    ✓ snapshot data.db.20260801T231502Z    — 4.1 MB
+  backup:weekly
+    ✓ snapshot home.20260801T231502Z       — 128 MB
 
-✓ backup 'weekly'
+✓ Backup complete — 4 action(s) succeeded (3.1s)
 
 $ cfgd backup run openlist-db
-Run Backups
+Backup
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  3 planned
 
-✓ backup 'openlist-db'
+Backups
+  backup:openlist-db
+    ✓ preBackup: systemctl stop openlist   (0.2s)
+    ✓ postBackup: systemctl start openlist (0.3s)
+    ✓ snapshot data.db.20260801T231502Z    — 4.1 MB
+
+✓ Backup complete — 3 action(s) succeeded (1.4s)
 
 $ cfgd backup run missing-name
-Run Backups
-
 ✗ Backup 'missing-name' not found
 
 → valid backups: openlist-db, weekly
@@ -402,12 +422,24 @@ same unit is firing is refused rather than interleaved:
 
 ```console
 $ cfgd backup run openlist-db
-Run Backups
+Backup
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  3 planned
 
-— backup 'openlist-db' — already running (pid 4127)
+Backups
+  backup:openlist-db
+    — snapshot                             — already running (pid 4127)
+
+✓ Backup complete — 0 action(s) succeeded
+⊙ 3 action(s) not attempted (0.0s)
 $ echo $?
 1
 ```
+
+The skip is one line in the unit's own group — the heading already names the unit, so the line
+names only what did not happen. Nothing it planned ran, so all three items are `not attempted`
+rather than failed.
 
 Every surface renders the collision the same way — a **skip**, because the unit *is* being backed
 up, just not by the caller. Only the exit code differs: `cfgd backup run` exits `1` (you asked for a
@@ -435,9 +467,28 @@ Starting cfgd daemon...
 
 Daemon running — press Ctrl+C to stop
  INFO scheduled backup tick backup=openlist-db
+Backup
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  workstation
+  Trigger  schedule
+  Actions  3 planned
 
-✓ backup 'openlist-db'
+Backups
+  backup:openlist-db
+    ✓ preBackup: systemctl stop openlist   (0.2s)
+    ✓ postBackup: systemctl start openlist (0.3s)
+    ✓ snapshot data.db.20260801T231502Z    — 4.1 MB
+
+✓ Backup complete — 3 action(s) succeeded (1.4s)
+ INFO scheduled backup completed backup=openlist-db
 ```
+
+A scheduled fire renders the same group a hand-run does — one shared renderer, so the journal a
+background run leaves behind is what you would have seen on the terminal. Each unit also gets one
+`tracing` line naming its own outcome (`completed`, `completed with errors`, or
+`skipped: the unit is already running elsewhere` **with the holder**), taken from that unit's own
+result rather than from a read-back of the store, which would report the previous run's row for a
+unit that was skipped here.
 
 Timer behaviour:
 
@@ -523,7 +574,7 @@ Restore Backup
 
 Restore 'openlist-db' from snapshot data.db.20260801T231502Z into /var/lib/openlist/data.db? [y/N] y
 
-✓ backup 'openlist-db' restored from data.db.20260801T231502Z — into /var/lib/openlist/data.db
+✓ backup:openlist-db restored from data.db.20260801T231502Z — into /var/lib/openlist/data.db
 
 → previous contents saved to /home/me/.local/state/cfgd/backups/openlist-db/data.db.20260802T044026Z
 ```

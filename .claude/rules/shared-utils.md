@@ -159,6 +159,14 @@ A PowerShell function-wrapper alias must carry its command as a quoted string bu
 
 - `is_file_encrypted(path, backend)` — sops (YAML/JSON `sops.mac` + `lastmodified`) or age (header byte check)
 
+## Snapshot normalizers
+
+Plain `cfgd_core::*` exports from `util/paths.rs` (not feature-gated) that make a captured render host-stable before it is compared against a golden. Every snapshot test reaches them through `normalize_for_snapshot`; call one directly only when a capture needs a single fold.
+
+- `normalize_for_snapshot(captured, &[(path, label)])` — the composed entry point: folds `\`→`/`, CRLF→LF, and substitutes each `path` with its `label`
+- `normalize_cfgd_version(s, version)` — substitute the EXACT running crate version with `<VERSION>`; a wrong version still fails to match, so real version bugs are not masked
+- `normalize_snapshot_durations(raw)` — replace every ` (N.Ns)` elapsed-time suffix with ` (XXs)`. The renderer formats durations as `{:.1}s`, so the span is digits, one dot, exactly one digit, `s`, `)`; anything else in parentheses (a package version, an exit code, a byte size) is left alone. Shared by `tests/apply_snapshots.rs` and the backup-run goldens — never re-implement the scan, or two suites disagree about which parenthesised values are timing
+
 ## Test guards
 
 Reached via `cfgd_core::test_helpers::*` (the `test_helpers` module is gated behind the `test-helpers` Cargo feature, enabled in dev/test builds — not bare `cfgd_core::*` like the `util/` helpers above). Pair every consumer with `serial_test::serial` because env-var mutation is process-global.
