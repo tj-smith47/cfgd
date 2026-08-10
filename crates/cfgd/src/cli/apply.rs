@@ -322,7 +322,27 @@ pub fn run_apply(
     // apply rebuilds that surface from the DECLARED set after the phases run,
     // so the reconciler carries the flag as well — pruning alone would leave
     // an undecided variable reaching the machine through the regeneration.
-    let exclusions = reconciler::DecisionExclusions::from_store(&state);
+    // Source gone, items gone: a decision the operator can no longer answer is
+    // dropped rather than left to sit in `cfgd status` forever. Only a real
+    // apply sweeps — a dry run reports and writes nothing, including here. The
+    // rows are inert either way (the scope below admits only subscribed
+    // sources), so this is cleanup, not enforcement.
+    if !dry_run {
+        let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
+        if let Err(e) = state.discard_decisions_not_in(&subscribed) {
+            tracing::warn!(error = %e, "failed to discard decisions of removed sources");
+        }
+    }
+
+    // The read is fail-CLOSED: an unreadable state store cannot tell a decided
+    // resource from an undecided one, and an apply is the path that would go on
+    // to install the ones it guessed about.
+    let decision_scope = reconciler::DecisionScope::new(
+        cfg.spec.sources.iter().map(|s| s.name.as_str()),
+        &effective_resolved,
+    );
+    let withheld = reconciler::WithheldDecisions::read(&state, &decision_scope)?;
+    let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
     let reconciler = Reconciler::new(&registry, &state)
         .withholding_env_surface(exclusions.withholds_env_surface());
     let mut plan = reconciler.plan(
@@ -373,18 +393,19 @@ pub fn run_apply(
     if dry_run {
         let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Plan), &plan)
             .with_filter(phase_filter.as_ref())
+            .with_withheld(&withheld)
             .preview_only();
         display_plan_preview(
             &run,
             &plan,
             printer,
-            &state,
             &PlanPreviewArgs {
                 context: &args.context,
                 phase_filter: phase_filter.as_ref(),
                 dry_run_fm: dry_run_fm.as_ref(),
                 scope: &scope,
                 pending_backups: &pending_backups,
+                withheld: &withheld,
             },
         );
         // Preview orphaned custom-manager packages a real apply would prune
@@ -431,7 +452,8 @@ pub fn run_apply(
     // must not short-circuit here — that would silently starve backups of
     // the cadence "every apply" promises.
     let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Apply), &plan)
-        .with_filter(phase_filter.as_ref());
+        .with_filter(phase_filter.as_ref())
+        .with_withheld(&withheld);
 
     if !has_actions && pending_backups.is_empty() {
         run.header(printer);

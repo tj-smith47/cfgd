@@ -12,10 +12,194 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::state::StateStore;
+use crate::config::{self, MergedProfile, ResolvedProfile};
+use crate::errors::Result;
+use crate::state::{PendingDecision, StateStore};
 use crate::to_posix_string;
 
 use super::{Action, Plan, SystemAction, action_resource_info};
+
+/// Every resource a merged profile declares, in decision vocabulary.
+///
+/// The one derivation of the dot-notation paths the source-decision workflow
+/// mints (`packages.<mgr>.<pkg>`, `files.<target>`, `env.<NAME>`,
+/// `system.<key>`). Both halves of the workflow read it: the daemon hashes a
+/// source's paths to notice what it newly delivers, and [`DecisionScope`] reads
+/// the LOCAL layer's paths so a decision about a source's item can never
+/// withhold the operator's own declaration of the same resource.
+pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
+    let mut resources = HashSet::new();
+
+    let pkgs = &merged.packages;
+    if let Some(ref brew) = pkgs.brew {
+        for f in &brew.formulae {
+            resources.insert(format!("packages.brew.{}", f));
+        }
+        for c in &brew.casks {
+            resources.insert(format!("packages.brew.{}", c));
+        }
+    }
+    if let Some(ref apt) = pkgs.apt {
+        for p in &apt.packages {
+            resources.insert(format!("packages.apt.{}", p));
+        }
+    }
+    if let Some(ref cargo) = pkgs.cargo {
+        for p in &cargo.packages {
+            resources.insert(format!("packages.cargo.{}", p));
+        }
+    }
+    for p in &pkgs.pipx {
+        resources.insert(format!("packages.pipx.{}", p));
+    }
+    for p in &pkgs.dnf {
+        resources.insert(format!("packages.dnf.{}", p));
+    }
+    if let Some(ref npm) = pkgs.npm {
+        for p in &npm.global {
+            resources.insert(format!("packages.npm.{}", p));
+        }
+    }
+
+    for file in &merged.files.managed {
+        resources.insert(format!("files.{}", to_posix_string(&file.target)));
+    }
+
+    for ev in &merged.env {
+        resources.insert(format!("env.{}", ev.name));
+    }
+
+    for k in merged.system.keys() {
+        resources.insert(format!("system.{}", k));
+    }
+
+    resources
+}
+
+/// What one source actually delivered into a composed profile.
+///
+/// The decision workflow's question is "which resources did source X put in
+/// front of me", and only the COMPOSED profile can answer it: composition tags
+/// every layer it builds with the source that supplied it, so the source's own
+/// layers merge back into the same shape a profile resolution produces. Reading
+/// the local profile instead answers a different question entirely — it names
+/// the subscriber's own declarations, so no source-delivered item is ever
+/// reachable by a decision and every local one is minted as if a source had
+/// sent it.
+///
+/// A tier the subscriber has not opted into never becomes a layer
+/// (`accept_recommended: false` keeps the recommended tier out, `opt_in` gates
+/// the optional profiles), so it is absent here too: an item cfgd will not
+/// apply mints no pending row and adds no noise to a plan.
+pub fn source_delivered_profile(resolved: &ResolvedProfile, source_name: &str) -> MergedProfile {
+    let layers: Vec<config::ProfileLayer> = resolved
+        .layers
+        .iter()
+        .filter(|l| l.source == source_name)
+        .cloned()
+        .collect();
+    config::merge_layers(&layers)
+}
+
+/// The layer name composition gives the subscriber's own profile.
+const LOCAL_LAYER: &str = "local";
+
+/// The gate every decision passes before it can withhold anything.
+///
+/// A decision row names a source and a resource path, and nothing more. Two
+/// facts about the run decide whether that row may still take a resource off
+/// the machine, and neither of them is in the row:
+///
+/// - **The source must still be subscribed.** A source the operator has dropped
+///   leaves rows nobody can answer — `cfgd decide` names a source that is gone
+///   — so its decisions, pending or rejected and however old, withhold nothing.
+///   That is what stops a rejection becoming a permanent invisible block on a
+///   path, and it makes the rows earlier versions auto-resolved as `rejected`
+///   on removal inert again without a migration. Subscription is read from the
+///   config rather than from what composition actually merged, so a transient
+///   cache miss cannot un-withhold an undecided item for a run.
+/// - **The operator must not declare it themselves.** A local declaration is
+///   the operator's own intent, at composition's highest priority. Withholding
+///   it because a source offers the same path — the same `~/.zshrc`, the same
+///   package — would let a decision about the source's copy settle the fate of
+///   work the operator wrote.
+#[derive(Debug, Default)]
+pub struct DecisionScope {
+    subscribed: HashSet<String>,
+    local: HashSet<String>,
+}
+
+impl DecisionScope {
+    /// Build the scope from the currently subscribed source names and the
+    /// composed profile whose local layers say what the operator declares.
+    pub fn new<I, S>(subscribed: I, resolved: &ResolvedProfile) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            subscribed: subscribed.into_iter().map(Into::into).collect(),
+            local: declared_decision_paths(&source_delivered_profile(resolved, LOCAL_LAYER)),
+        }
+    }
+
+    /// Whether a decision raised by `source` over `resource` still withholds it.
+    pub fn withholds(&self, source: &str, resource: &str) -> bool {
+        self.subscribed.contains(source) && !self.local.contains(resource)
+    }
+}
+
+/// The decisions withholding something from this run, split by the state that
+/// withholds them.
+///
+/// Both halves prune, and both are rendered: a resource missing from a plan is
+/// explained by a row the operator can see, whichever state that row is in.
+#[derive(Debug, Default)]
+pub struct WithheldDecisions {
+    /// Rows awaiting `cfgd decide`.
+    pub pending: Vec<PendingDecision>,
+    /// Rows the operator already declined.
+    pub rejected: Vec<PendingDecision>,
+}
+
+impl WithheldDecisions {
+    /// Read the withholding rows from `store` and keep the ones `scope` still
+    /// admits.
+    ///
+    /// Fails rather than degrading: this is the gate deciding what reaches the
+    /// machine, so a store that cannot be read must stop the run. Treating the
+    /// error as "nothing is withheld" would apply every undecided item on a
+    /// locked or corrupt database, silently.
+    pub fn read(store: &StateStore, scope: &DecisionScope) -> Result<Self> {
+        let mut out = Self::default();
+        for decision in store.withheld_decisions()? {
+            if !scope.withholds(&decision.source, &decision.resource) {
+                continue;
+            }
+            if decision.resolved_at.is_some() {
+                out.rejected.push(decision);
+            } else {
+                out.pending.push(decision);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.rejected.is_empty()
+    }
+
+    /// The resource path of every withholding row, in decision vocabulary.
+    ///
+    /// For a caller that must fold its own paths in beside them — the daemon
+    /// adds the items a policy declined outright, which record no row.
+    pub fn resource_paths(&self) -> impl Iterator<Item = String> + '_ {
+        self.pending
+            .iter()
+            .chain(self.rejected.iter())
+            .map(|d| d.resource.clone())
+    }
+}
 
 /// The resources a source decision withholds, in the plan's own vocabulary.
 ///
@@ -113,18 +297,19 @@ impl DecisionExclusions {
         out
     }
 
-    /// Every withholding decision in `store`, in the action vocabulary.
+    /// Every withholding decision, in the action vocabulary.
     ///
     /// Unresolved and `rejected` rows both withhold — see
-    /// [`StateStore::withheld_decision_paths`] for why one query answers both —
-    /// so a caller reaching for this never has to ask which state a row is in.
+    /// [`StateStore::withheld_decisions`] for why one query answers both — so a
+    /// caller reaching for this never has to ask which state a row is in. It
+    /// takes the same [`WithheldDecisions`] the preview renders, so the rows
+    /// naming what is missing and the rows removing it are one list.
     ///
-    /// The read every planning path shares. `~` is expanded through the free
-    /// [`crate::expand_tilde`] — the same one `files/plan.rs` and
-    /// `modules/resolve.rs` mint their targets with, and the one a test home
-    /// guard redirects.
-    pub fn from_store(store: &StateStore) -> Self {
-        Self::from_decision_paths(withheld_decision_paths(store), crate::expand_tilde)
+    /// `~` is expanded through the free [`crate::expand_tilde`] — the same one
+    /// `files/plan.rs` and `modules/resolve.rs` mint their targets with, and
+    /// the one a test home guard redirects.
+    pub fn from_withheld(withheld: &WithheldDecisions) -> Self {
+        Self::from_decision_paths(withheld.resource_paths(), crate::expand_tilde)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -185,18 +370,6 @@ impl DecisionExclusions {
             .get(manager)
             .is_some_and(|packages| packages.contains(package))
     }
-}
-
-/// Every resource path a decision withholds, as a set.
-///
-/// Decision vocabulary, not action vocabulary: the caller translates the set
-/// once through [`DecisionExclusions`] before matching it against a plan.
-pub(crate) fn withheld_decision_paths(store: &StateStore) -> HashSet<String> {
-    store
-        .withheld_decision_paths()
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
 }
 
 /// Prune every action `exclusions` withholds out of `plan`, returning how many

@@ -3,9 +3,6 @@ Plan
   Profile  tiny
   Phases   Files
 
-Pending Decisions (not included in this plan)
-  ⊙ permission packages.brew.ripgrep — add by team-config (run `cfgd decide accept/reject`)
-
 Phase: Files
   profile:tiny
     - create <TARGET>

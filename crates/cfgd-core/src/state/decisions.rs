@@ -4,6 +4,26 @@ use super::StateStore;
 use super::types::PendingDecision;
 use crate::errors::Result;
 
+/// The column list every decision query selects, in the order
+/// [`decision_from_row`] reads them. One constant so a query cannot select a
+/// different shape than the mapper expects.
+const DECISION_COLUMNS: &str =
+    "id, source, resource, tier, action, summary, created_at, resolved_at, resolution";
+
+fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingDecision> {
+    Ok(PendingDecision {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        resource: row.get(2)?,
+        tier: row.get(3)?,
+        action: row.get(4)?,
+        summary: row.get(5)?,
+        created_at: row.get(6)?,
+        resolved_at: row.get(7)?,
+        resolution: row.get(8)?,
+    })
+}
+
 impl StateStore {
     /// Upsert a pending decision. If an unresolved decision already exists for this
     /// (source, resource) pair, updates the summary and resets the timestamp.
@@ -45,41 +65,30 @@ impl StateStore {
 
     /// Get all unresolved pending decisions.
     pub fn pending_decisions(&self) -> Result<Vec<PendingDecision>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, source, resource, tier, action, summary, created_at, resolved_at, resolution
-                 FROM pending_decisions WHERE resolved_at IS NULL ORDER BY created_at DESC",
-            )
-            ?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {DECISION_COLUMNS} FROM pending_decisions
+                 WHERE resolved_at IS NULL ORDER BY created_at DESC"
+        ))?;
 
         let rows = stmt
-            .query_map([], |row| {
-                Ok(PendingDecision {
-                    id: row.get(0)?,
-                    source: row.get(1)?,
-                    resource: row.get(2)?,
-                    tier: row.get(3)?,
-                    action: row.get(4)?,
-                    summary: row.get(5)?,
-                    created_at: row.get(6)?,
-                    resolved_at: row.get(7)?,
-                    resolution: row.get(8)?,
-                })
-            })?
+            .query_map([], decision_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(rows)
     }
 
-    /// Every resource path a decision currently withholds from reconciliation.
+    /// Every decision that currently withholds its resource from reconciliation.
     ///
     /// Two decision states withhold, and the plan cannot tell them apart: an
     /// unresolved row is awaiting the operator's answer, and a `rejected` row
     /// already has it. `docs/sources.md` gives both the same effect — "awaiting
     /// user action" is not applied, "user declined" is "excluded from
     /// reconciliation" — so one query answers "may this resource be planned",
-    /// and `accepted` is the only resolution that releases it.
+    /// and `accepted` is the only resolution that releases it. The whole row is
+    /// returned rather than the path alone because every withheld resource must
+    /// also be NAMED on the surface the operator reads; a caller that renders
+    /// and a caller that prunes have to work from one list or the plan will
+    /// hide a resource nothing explains.
     ///
     /// Only the NEWEST row per `(source, resource)` is consulted. A rejection
     /// does not persist across source versions: an update to the item mints a
@@ -87,17 +96,43 @@ impl StateStore {
     /// decision is the operator's current intent. Reading every row instead
     /// would let a stale rejection quietly overrule the acceptance that
     /// replaced it.
-    pub fn withheld_decision_paths(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT resource FROM pending_decisions AS d
+    pub fn withheld_decisions(&self) -> Result<Vec<PendingDecision>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {DECISION_COLUMNS} FROM pending_decisions AS d
                  WHERE (resolved_at IS NULL OR resolution = 'rejected')
                    AND id = (SELECT MAX(id) FROM pending_decisions AS newer
-                             WHERE newer.source = d.source AND newer.resource = d.resource)",
-        )?;
+                             WHERE newer.source = d.source AND newer.resource = d.resource)
+                 ORDER BY created_at DESC"
+        ))?;
         let rows = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<String>, _>>()?;
+            .query_map([], decision_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Drop every decision belonging to a source that is no longer subscribed.
+    ///
+    /// Runs on every reconcile, not only when auto-apply is on and a source
+    /// remains: a decision outliving its subscription is a row the operator can
+    /// never answer, because `cfgd decide` acts against a source that is gone.
+    /// An empty `subscribed` therefore clears the table rather than being a
+    /// no-op — dropping the last source is exactly the case that leaves rows
+    /// behind.
+    pub fn discard_decisions_not_in(&self, subscribed: &[String]) -> Result<usize> {
+        if subscribed.is_empty() {
+            let deleted = self.conn.execute("DELETE FROM pending_decisions", [])?;
+            return Ok(deleted);
+        }
+        let placeholders = (1..=subscribed.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let params = rusqlite::params_from_iter(subscribed.iter());
+        let deleted = self.conn.execute(
+            &format!("DELETE FROM pending_decisions WHERE source NOT IN ({placeholders})"),
+            params,
+        )?;
+        Ok(deleted)
     }
 
     /// Drop every decision belonging to `source`, resolved or not.
@@ -119,28 +154,13 @@ impl StateStore {
 
     /// Get pending decisions for a specific source.
     pub fn pending_decisions_for_source(&self, source: &str) -> Result<Vec<PendingDecision>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, source, resource, tier, action, summary, created_at, resolved_at, resolution
-                 FROM pending_decisions WHERE source = ?1 AND resolved_at IS NULL ORDER BY created_at DESC",
-            )
-            ?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {DECISION_COLUMNS} FROM pending_decisions
+                 WHERE source = ?1 AND resolved_at IS NULL ORDER BY created_at DESC"
+        ))?;
 
         let rows = stmt
-            .query_map(params![source], |row| {
-                Ok(PendingDecision {
-                    id: row.get(0)?,
-                    source: row.get(1)?,
-                    resource: row.get(2)?,
-                    tier: row.get(3)?,
-                    action: row.get(4)?,
-                    summary: row.get(5)?,
-                    created_at: row.get(6)?,
-                    resolved_at: row.get(7)?,
-                    resolution: row.get(8)?,
-                })
-            })?
+            .query_map(params![source], decision_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(rows)

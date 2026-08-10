@@ -194,9 +194,23 @@ pub struct PlanOutput {
     /// block: under `-o json` that block is suppressed with every other human
     /// row, so without this key a consumer would see a smaller plan with
     /// nothing to explain it. Empty (and omitted from the wire) when no
-    /// decision is outstanding.
+    /// decision is outstanding. Every entry is unresolved by construction, so
+    /// its `resolvedAt` / `resolution` are null — the answered rows are in
+    /// `rejectedDecisions` below.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
+    /// The source decisions the operator DECLINED, whose resources are
+    /// withheld from `phases[]` and from `totalActions` just as an awaiting
+    /// one's are.
+    ///
+    /// Separate from `pendingDecisions` because the two ask for different
+    /// things — one wants an answer, the other already has one and would need
+    /// reversing — but reported for the same reason: a resource absent from
+    /// `phases[]` must always be explained by a decision the consumer can see.
+    /// Every entry carries a populated `resolvedAt` / `resolution`. Empty (and
+    /// omitted from the wire) when nothing this run declares was declined.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_decisions: Vec<cfgd_core::state::PendingDecision>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1043,6 +1057,7 @@ mod tests {
             warnings: vec![],
             pending_backups: vec![],
             pending_decisions: vec![],
+            rejected_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -1072,6 +1087,7 @@ mod tests {
             warnings: vec!["missing tool".to_string()],
             pending_backups: vec![],
             pending_decisions: vec![],
+            rejected_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
@@ -1086,6 +1102,7 @@ mod tests {
             warnings: vec![],
             pending_backups: vec!["photos".to_string()],
             pending_decisions: vec![],
+            rejected_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["pendingBackups"], json!(["photos"]));

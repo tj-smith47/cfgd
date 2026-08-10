@@ -658,6 +658,16 @@ fn upsert_config_source_updates_on_conflict() {
 
 // --- Pending decision tests ---
 
+/// The resource path of every withholding decision, in row order.
+fn withheld_resources(store: &StateStore) -> Vec<String> {
+    store
+        .withheld_decisions()
+        .expect("read withholding decisions")
+        .into_iter()
+        .map(|d| d.resource)
+        .collect()
+}
+
 #[test]
 fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
     let store = StateStore::open_in_memory().unwrap();
@@ -683,7 +693,7 @@ fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
         .resolve_decision("files.~/.zshrc", "accepted")
         .unwrap();
 
-    let mut withheld = store.withheld_decision_paths().unwrap();
+    let mut withheld = withheld_resources(&store);
     withheld.sort();
     assert_eq!(
         withheld,
@@ -713,7 +723,7 @@ fn accepting_a_resource_that_was_once_rejected_releases_it() {
         .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v2")
         .unwrap();
     assert_eq!(
-        store.withheld_decision_paths().unwrap(),
+        withheld_resources(&store),
         vec!["packages.brew.k9s".to_string()],
         "the fresh decision withholds while it is unanswered"
     );
@@ -722,7 +732,7 @@ fn accepting_a_resource_that_was_once_rejected_releases_it() {
         .resolve_decision("packages.brew.k9s", "accepted")
         .unwrap();
     assert!(
-        store.withheld_decision_paths().unwrap().is_empty(),
+        withheld_resources(&store).is_empty(),
         "the stale rejection must not outlive the answer that replaced it"
     );
 }
@@ -745,7 +755,7 @@ fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
 
     assert_eq!(store.discard_decisions_for_source("acme").unwrap(), 1);
     assert_eq!(
-        store.withheld_decision_paths().unwrap(),
+        withheld_resources(&store),
         vec!["packages.brew.bat".to_string()],
         "an unsubscribed source stops withholding the paths it named"
     );

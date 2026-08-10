@@ -232,11 +232,13 @@ owner rather than a `module`/`section` key on the phase:
 
 A [source](sources.md#automatic-apply-decisions) item still awaiting `cfgd decide` — or one
 you rejected — is withheld from the plan: it is absent from the phases, from
-`totalActions`, and from what `apply` executes (with or without `--yes`). The
-human render lists those items under **Pending Decisions (not included in this
-plan)**; the payload carries the same rows as `pendingDecisions`, omitted when
-there are none, so a structured consumer can tell "in sync" from "waiting on
-you":
+`totalActions`, and from what `apply` executes (with `--yes` or with the
+confirmation prompt). Both states are named rather than silently missing: the
+human render lists them under **Pending Decisions (not included in this plan)**
+and **Declined Decisions (not included in this plan)**, and the payload carries
+the same rows as `pendingDecisions` and `rejectedDecisions`, each omitted when
+empty — so a structured consumer can tell "in sync" from "waiting on you" from
+"you said no":
 
 ```jsonc
 {
@@ -253,9 +255,26 @@ you":
       "resolvedAt": null,
       "resolution": null
     }
+  ],
+  "rejectedDecisions": [
+    {
+      "id": 2,
+      "source": "acme-corp",
+      "resource": "packages.brew.stern",
+      "tier": "recommended",
+      "action": "install",
+      "summary": "recommended packages.brew.stern (from acme-corp)",
+      "createdAt": "2026-08-09T17:04:11Z",
+      "resolvedAt": "2026-08-09T17:09:52Z",
+      "resolution": "rejected"
+    }
   ]
 }
 ```
+
+Only a source you are still subscribed to can withhold anything: a decision
+whose source has been removed from `spec.sources` is inert, and a real `cfgd
+apply` discards it.
 
 ### `cfgd status`
 

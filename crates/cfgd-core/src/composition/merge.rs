@@ -25,6 +25,15 @@ pub(super) fn merge_with_policy(
         // Env: later overrides earlier by name (respecting priority ordering)
         crate::merge_env(&mut merged.env, &spec.env);
 
+        // EnvScope: last layer that *specifies* it wins, exactly as the
+        // local-only merge resolves it. Composing sources must not change how
+        // far the operator's own `envScope` reaches — dropping it here left
+        // every machine with a subscription on the `All` default, writing the
+        // live session for a profile that asked for login files only.
+        if let Some(scope) = spec.env_scope {
+            merged.env_scope = scope;
+        }
+
         // Aliases: later overrides earlier by name
         crate::merge_aliases(&mut merged.aliases, &spec.aliases);
 

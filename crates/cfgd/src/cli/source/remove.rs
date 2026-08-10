@@ -322,8 +322,8 @@ mod tests {
         let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
         assert!(
             state
-                .withheld_decision_paths()
-                .expect("read withheld paths")
+                .withheld_decisions()
+                .expect("read withholding decisions")
                 .is_empty(),
             "no decision of a removed source may keep withholding its resource"
         );

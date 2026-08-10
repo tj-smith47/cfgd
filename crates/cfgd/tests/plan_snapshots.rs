@@ -15,9 +15,9 @@
 //!     empty-profile fixture.
 //!   - `plan/module_only.txt`    — `--module` filter with no profile loaded
 //!     (the module-only fallback kv lines).
-//!   - `plan/with_pending.txt`   — pending-decisions section: the state DB
-//!     is pre-populated with an unresolved decision so
-//!     `display_plan_preview` renders the "Pending Decisions" section.
+//!   - `plan/with_inert_decision.txt` — a decision row belonging to a source
+//!     the config does not subscribe to: it withholds nothing and is named
+//!     nowhere, so the render is byte-identical to the plain plan.
 
 mod common;
 
@@ -60,6 +60,7 @@ fn happy_plan_output() -> PlanOutput {
         warnings: vec![],
         pending_backups: vec![],
         pending_decisions: vec![],
+        rejected_decisions: vec![],
     }
 }
 
@@ -96,6 +97,7 @@ fn owner_groups_plan_output() -> PlanOutput {
         warnings: vec![],
         pending_backups: vec![],
         pending_decisions: vec![],
+        rejected_decisions: vec![],
     }
 }
 
@@ -238,10 +240,16 @@ fn plan_module_only_human() {
 }
 
 #[test]
-fn plan_with_pending_human() {
-    // Pre-populated state DB with one unresolved pending decision.
-    // `display_plan_preview` renders the "Pending Decisions" section
-    // ahead of the plan table.
+fn plan_with_a_decision_from_an_unsubscribed_source_human() {
+    // A decision row whose source the config no longer lists withholds
+    // nothing and is named nowhere: it is a row the operator cannot answer —
+    // `cfgd decide` would act against a source that is gone — so the plan
+    // renders exactly as it would with no decision at all. The block for a row
+    // that IS live is asserted in `cli/tests.rs`
+    // (`plan_preview_excludes_the_resource_its_pending_block_names` and
+    // `plan_preview_names_the_decision_that_declined_a_resource`), where the
+    // fixture can subscribe to a real source without a git clone's timing
+    // landing in a golden.
     let (config_dir, state_dir, target) = state_with_pending_decision_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -254,7 +262,11 @@ fn plan_with_pending_human() {
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/with_pending.txt", &stripped);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/with_inert_decision.txt",
+        &stripped
+    );
 }
 
 // ─────────────────────────────────────────────────────

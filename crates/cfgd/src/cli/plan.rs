@@ -152,10 +152,18 @@ pub fn cmd_plan(
     // A resource awaiting (or declined by) a source decision is not this run's
     // to plan. Pruned before the scope snapshot below, so the preview, the
     // counts and the payload all describe the set an apply would execute —
-    // `apply` prunes with the same set, from the same rows.
+    // `apply` prunes with the same set, from the same rows. The read is
+    // fail-CLOSED: a state store that cannot be read is a run that cannot tell
+    // a decided resource from an undecided one, and previewing every one of
+    // them as work to do is the wrong half to guess at.
+    let decision_scope = reconciler::DecisionScope::new(
+        cfg.spec.sources.iter().map(|s| s.name.as_str()),
+        &effective_resolved,
+    );
+    let withheld = reconciler::WithheldDecisions::read(&state, &decision_scope)?;
     reconciler::withhold_from_plan(
         &mut plan,
-        &reconciler::DecisionExclusions::from_store(&state),
+        &reconciler::DecisionExclusions::from_withheld(&withheld),
     );
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
@@ -191,19 +199,20 @@ pub fn cmd_plan(
         &plan,
     )
     .with_filter(phase_filter.as_ref())
+    .with_withheld(&withheld)
     .preview_only();
 
     display_plan_preview(
         &run,
         &plan,
         printer,
-        &state,
         &PlanPreviewArgs {
             context: &args.context,
             phase_filter: phase_filter.as_ref(),
             dry_run_fm: dry_run_fm.as_ref(),
             scope: &scope,
             pending_backups: &pending_backups,
+            withheld: &withheld,
         },
     );
 

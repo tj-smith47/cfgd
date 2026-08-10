@@ -112,6 +112,43 @@ fn compose_with_no_sources() {
 }
 
 #[test]
+fn compose_keeps_the_env_scope_the_operator_declared() {
+    // Composition merges the layers itself rather than deferring to
+    // `merge_layers`, and it used to drop `envScope` on the way through: the
+    // moment a machine subscribed to any source, a profile asking for login
+    // files only silently became the `All` default and wrote the live session.
+    let mut local = make_local_profile();
+    local.layers[0].spec.env_scope = Some(EnvScope::Login);
+    local.merged.env_scope = EnvScope::Login;
+
+    let with_source = compose(
+        &local,
+        &[make_source_input("acme", 500)],
+        ConstraintMode::Enforce,
+    )
+    .unwrap();
+    assert_eq!(
+        with_source.resolved.merged.env_scope,
+        EnvScope::Login,
+        "a source subscription must not widen the operator's env scope"
+    );
+
+    // And a source that DOES declare one still resolves by priority, exactly as
+    // an inheriting local layer would.
+    let mut scoped_source = make_source_input("acme", 500);
+    scoped_source.layers = vec![source_layer(ProfileSpec {
+        env_scope: Some(EnvScope::Interactive),
+        ..Default::default()
+    })];
+    let overridden = compose(&local, &[scoped_source], ConstraintMode::Enforce).unwrap();
+    assert_eq!(
+        overridden.resolved.merged.env_scope,
+        EnvScope::Login,
+        "the higher-priority local layer still wins"
+    );
+}
+
+#[test]
 fn compose_applies_required_packages() {
     let local = make_local_profile();
     let input = make_source_input("acme", 500);

@@ -123,6 +123,7 @@ fn plan_output_roundtrips_through_emit() {
         warnings: vec!["module 'foo' has no provider".into()],
         pending_backups: vec!["photos".into()],
         pending_decisions: vec![],
+        rejected_decisions: vec![],
     };
 
     let actual = emit_and_parse(&payload);

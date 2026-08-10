@@ -265,7 +265,7 @@ daemon:
 
 - `Notify`: record a pending decision, send notification, don't apply
 - `Accept`: automatically apply without prompting
-- `Reject`/`Ignore`: skip silently
+- `Reject`/`Ignore`: skip silently — the item is withheld from the plan and no decision row is recorded, because a rejecting policy is a standing answer rather than a question for you. Re-run with `Notify` if you want to be asked.
 
 Resolve pending decisions with `cfgd decide`:
 
@@ -288,7 +288,7 @@ Pending decisions have three states:
 | **Accepted** | User approved; item included in next reconcile |
 | **Rejected** | User declined; item excluded from reconciliation |
 
-Only **Accepted** puts the item on your machine. `cfgd plan`, `cfgd apply` and the daemon all read the same decisions and withhold the resource identically — a Pending or Rejected item is absent from the plan preview, from the action counts, and from the `-o json` payload, and `cfgd apply --yes` will not install it either. `cfgd plan` lists the pending items under **Pending Decisions** (and `-o json` carries them as `pendingDecisions`) so an item missing from the plan is always explained by a decision you can see:
+Only **Accepted** puts the item on your machine. `cfgd plan`, `cfgd apply` and the daemon all read the same decisions and withhold the resource identically — a Pending or Rejected item is absent from the plan preview, from the action counts, and from the `-o json` payload, and neither `cfgd apply --yes` nor a `cfgd apply` you confirm at the prompt will install it. Both states are named on the surface you read: **Pending Decisions** lists the items awaiting you and **Declined Decisions** the ones you already answered (`-o json` carries them as `pendingDecisions` and `rejectedDecisions`), so an item missing from the plan is always explained by a decision you can see:
 
 ```sh
 $ cfgd plan
@@ -317,9 +317,10 @@ Notifications fire once per new pending decision, not on every reconcile cycle. 
 
 ### Edge Cases
 
-- **Source removed while decisions pending** — every decision belonging to that source is discarded, resolved ones included (source gone = items gone). They are dropped rather than rejected because a rejection keeps excluding the resource path it names, and a source you no longer subscribe to must not go on withholding a file or package you later declare yourself. Re-subscribing asks again.
+- **Source removed while decisions pending** — every decision belonging to that source is discarded, resolved ones included (source gone = items gone). They are dropped rather than rejected because a rejection keeps excluding the resource path it names, and a source you no longer subscribe to must not go on withholding a file or package you later declare yourself. A row that outlives the sweep is inert anyway: only a source listed in `spec.sources` can withhold anything, so a decision left behind by an older cfgd cannot block a path you have no source left to `cfgd decide` against. Re-subscribing asks again.
+- **A decision names something you declare yourself** — a decision covers the *source's* offer of a resource, never your own declaration of it. If you declare `~/.zshrc` in your profile and a source offers a `~/.zshrc` too, declining the source's item leaves yours applying exactly as before.
 - **User manually installs a pending package** — on the next reconcile, cfgd detects the package is already present and auto-accepts the decision (desired state already matches actual state).
-- **Policies only apply when `autoApply` is enabled** — they decide what the unattended daemon does with a *new* item. With `autoApply: false` no policy runs, so nothing new is auto-accepted or auto-rejected for you.
+- **Policies only apply when `autoApply` is enabled** — they decide what the unattended daemon does with a *new* item. With `autoApply: false` no policy runs and no decision row is ever created, so every source item simply applies; decisions are a feature of unattended reconciliation, not a review gate on manual `cfgd apply`. Rows already in the store are still honoured whatever the mode — turning `autoApply` off does not release an item you left pending.
 - **Rejection doesn't persist across source versions** — if you reject an item and the source later updates it (new version, changed description), a fresh pending decision is created. This prevents stale rejections from silently blocking items the team considers important.
 
 ## Source Constraints

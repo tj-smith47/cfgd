@@ -193,6 +193,7 @@ pub struct ApplyRun<'a> {
     filter: Option<&'a PhaseFilter>,
     preview_only: bool,
     backups: Option<PendingBackups<'a>>,
+    withheld: Option<&'a super::WithheldDecisions>,
 }
 
 impl<'a> ApplyRun<'a> {
@@ -203,11 +204,20 @@ impl<'a> ApplyRun<'a> {
             filter: None,
             preview_only: false,
             backups: None,
+            withheld: None,
         }
     }
 
     pub fn with_filter(mut self, f: Option<&'a PhaseFilter>) -> Self {
         self.filter = f;
+        self
+    }
+
+    /// The source decisions this run's plan was pruned with, so the header can
+    /// name what is missing from it. Every path that prunes with them passes
+    /// them here.
+    pub fn with_withheld(mut self, withheld: &'a super::WithheldDecisions) -> Self {
+        self.withheld = Some(withheld);
         self
     }
 
@@ -236,6 +246,7 @@ impl<'a> ApplyRun<'a> {
             filter: None,
             preview_only: false,
             backups: Some(PendingBackups { units, store }),
+            withheld: None,
         }
     }
 
@@ -329,15 +340,59 @@ impl<'a> ApplyRun<'a> {
         let warnings: &[String] = self.plan.map_or(&[], |p| p.warnings.as_slice());
         if rows.is_empty() && warnings.is_empty() {
             printer.heading(self.ctx.title.as_str());
-            return;
+        } else {
+            // One section rather than a heading plus a top-level kv block: the
+            // warnings belong to the header block and have to land at the same
+            // indent as the rows they follow, which only a section's depth
+            // gives.
+            let head = printer.section(self.ctx.title.as_str());
+            head.kv_block(rows);
+            for warning in warnings {
+                head.status_simple(Role::Warn, warning);
+            }
         }
-        // One section rather than a heading plus a top-level kv block: the
-        // warnings belong to the header block and have to land at the same
-        // indent as the rows they follow, which only a section's depth gives.
-        let head = printer.section(self.ctx.title.as_str());
-        head.kv_block(rows);
-        for warning in warnings {
-            head.status_simple(Role::Warn, warning);
+        self.render_withheld(printer);
+    }
+
+    /// The decisions that took resources out of this run, named directly under
+    /// the header.
+    ///
+    /// `docs/sources.md` promises that an item missing from a plan is always
+    /// explained by a decision the operator can see, and both withholding
+    /// states have to keep it: a row still awaiting an answer and a row already
+    /// declined remove work identically, so a plan that named only the first
+    /// would leave the second as an unexplained absence. They are separate
+    /// blocks because the answer differs — one wants a decision, the other
+    /// already has one and would need reversing.
+    ///
+    /// It renders from the header rather than from the preview so every path
+    /// that shows a run shows it in the same place: the tree below, the
+    /// confirmation prompt an interactive apply raises, and the `-o json`
+    /// payload's `pendingDecisions` / `rejectedDecisions` all describe one set.
+    fn render_withheld(&self, printer: &Printer) {
+        let Some(withheld) = self.withheld else {
+            return;
+        };
+        let row = |d: &crate::state::PendingDecision, suffix: &str| {
+            format!(
+                "{} {} — {} by {} ({suffix})",
+                d.tier, d.resource, d.action, d.source
+            )
+        };
+        if !withheld.pending.is_empty() {
+            let section = printer.section("Pending Decisions (not included in this plan)");
+            for d in &withheld.pending {
+                section.status_simple(Role::Info, row(d, "run `cfgd decide accept/reject`"));
+            }
+        }
+        if !withheld.rejected.is_empty() {
+            let section = printer.section("Declined Decisions (not included in this plan)");
+            for d in &withheld.rejected {
+                section.status_simple(
+                    Role::Skipped,
+                    row(d, "declined; run `cfgd decide accept` to include"),
+                );
+            }
         }
     }
 

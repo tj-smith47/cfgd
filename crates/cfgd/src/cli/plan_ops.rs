@@ -260,7 +260,7 @@ pub(in crate::cli) fn build_plan_output(
     context_name: &str,
     phase_filter: Option<&PhaseFilter>,
     pending_backups: &[String],
-    pending_decisions: &[cfgd_core::state::PendingDecision],
+    withheld: &reconciler::WithheldDecisions,
 ) -> PlanOutput {
     let phases: Vec<PlanPhaseOutput> =
         reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete)
@@ -297,7 +297,8 @@ pub(in crate::cli) fn build_plan_output(
         total_actions,
         warnings: plan.warnings.clone(),
         pending_backups: pending_backups.to_vec(),
-        pending_decisions: pending_decisions.to_vec(),
+        pending_decisions: withheld.pending.clone(),
+        rejected_decisions: withheld.rejected.clone(),
     }
 }
 
@@ -462,13 +463,16 @@ pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub dry_run_fm: Option<&'a CfgdFileManager>,
     pub scope: &'a ScopeReport,
     pub pending_backups: &'a [String],
+    /// The decisions this preview's plan was pruned with. The same value the
+    /// run carries, so the block naming what is missing and the payload keys
+    /// reporting it cannot describe different sets.
+    pub withheld: &'a reconciler::WithheldDecisions,
 }
 
 pub(in crate::cli) fn display_plan_preview(
     run: &reconciler::ApplyRun<'_>,
     plan: &reconciler::Plan,
     printer: &Printer,
-    state: &cfgd_core::state::StateStore,
     args: &PlanPreviewArgs<'_>,
 ) {
     let PlanPreviewArgs {
@@ -477,33 +481,16 @@ pub(in crate::cli) fn display_plan_preview(
         dry_run_fm,
         scope,
         pending_backups,
+        withheld,
     } = *args;
 
     // The run's own rows and warnings, before anything this command adds: the
-    // header is what states the scope every block below is read against.
+    // header is what states the scope every block below is read against, and
+    // it is also what names the decisions the plan was pruned with.
     run.header(printer);
 
-    // The decisions awaiting the operator. The heading is literal: `plan` was
-    // pruned of these resources before it reached here, by the same
-    // `DecisionExclusions` the daemon and a real apply prune with, so this
-    // block names exactly what is missing from the tree below rather than
-    // labelling work the run would go on to do.
-    let pending = state.pending_decisions().unwrap_or_default();
-    if !pending.is_empty() {
-        let section = printer.section("Pending Decisions (not included in this plan)");
-        for d in &pending {
-            section.status_simple(
-                Role::Info,
-                format!(
-                    "{} {} — {} by {} (run `cfgd decide accept/reject`)",
-                    d.tier, d.resource, d.action, d.source,
-                ),
-            );
-        }
-    }
-
     // Build structured output
-    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups, &pending);
+    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups, withheld);
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
     // doc's data payload and skip the human render.

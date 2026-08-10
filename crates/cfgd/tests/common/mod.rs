@@ -168,8 +168,8 @@ pub fn empty_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 
 /// Like `tiny_profile_setup` but pre-records an unresolved pending decision in
-/// the state DB so `display_plan_preview` renders the pending-decisions
-/// section.
+/// the state DB. The config subscribes to no source, so the row is inert —
+/// only a source still listed in `spec.sources` can withhold anything.
 ///
 /// Returns `(config_dir, state_dir, target)`.
 pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {

@@ -2,7 +2,10 @@ use super::*;
 // Drift helpers are reached via fully-qualified `super::drift::` paths in
 // production; tests use the bare names (e.g. `record_file_drift_to`).
 use super::drift::*;
-use crate::reconciler::{DecisionExclusions, action_resource_info, withheld_decision_paths};
+use crate::reconciler::{
+    DecisionExclusions, DecisionScope, WithheldDecisions, action_resource_info,
+    declared_decision_paths, source_delivered_profile,
+};
 use crate::test_helpers::{test_printer, test_state};
 
 /// A never-raised abort flag with a `'static` lifetime, so a `ReconcileCtx`
@@ -397,7 +400,7 @@ fn extract_source_resources_from_merged_profile() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.brew.ripgrep"));
     assert!(resources.contains("packages.brew.fd"));
     assert!(resources.contains("packages.brew.firefox"));
@@ -458,7 +461,11 @@ fn process_source_decisions_first_run_records_decisions() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    assert!(
+        declined.is_empty(),
+        "Notify records the item for review rather than declining it outright"
+    );
 
     // First run: all items are new, policy is Notify → pending decisions created
     let pending = store.pending_decisions().unwrap();
@@ -467,7 +474,8 @@ fn process_source_decisions_first_run_records_decisions() {
 
     // The decision path is not the plan's vocabulary: translated, it withholds
     // `bat` from a cargo batch and leaves every unrelated package alone.
-    let exclusions = DecisionExclusions::from_decision_paths(excluded, crate::expand_tilde);
+    let exclusions =
+        DecisionExclusions::from_decision_paths(withheld_paths(&store), crate::expand_tilde);
     assert!(exclusions.withholds_package("cargo", "bat"));
     assert!(!exclusions.withholds_package("cargo", "ripgrep"));
     assert!(!exclusions.withholds_package("npm", "bat"));
@@ -479,6 +487,17 @@ fn process_source_decisions_first_run_records_decisions() {
         vec![("cargo".to_string(), vec!["ripgrep".to_string()])],
         "the undecided package leaves the batch; its siblings still apply"
     );
+}
+
+/// Every withholding decision's resource path, straight from the store — the
+/// read [`DecisionScope`] then filters down to what a run may still withhold.
+fn withheld_paths(store: &StateStore) -> HashSet<String> {
+    store
+        .withheld_decisions()
+        .expect("read withholding decisions")
+        .into_iter()
+        .map(|d| d.resource)
+        .collect()
 }
 
 /// A local profile declaring one cargo package of the subscriber's own.
@@ -550,14 +569,14 @@ fn a_recommended_item_the_subscriber_declined_to_accept_is_never_asked_about() {
 
     let delivered = source_delivered_profile(&composed.resolved, "acme");
     assert!(
-        extract_source_resources(&delivered).is_empty(),
+        declared_decision_paths(&delivered).is_empty(),
         "an unaccepted recommended tier never becomes a layer, so the source \
          delivered nothing to decide about"
     );
 
     let store = test_state();
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
-    let excluded = process_source_decisions(
+    let declined = process_source_decisions(
         &store,
         "acme",
         &delivered,
@@ -566,8 +585,8 @@ fn a_recommended_item_the_subscriber_declined_to_accept_is_never_asked_about() {
     );
 
     assert!(
-        excluded.is_empty(),
-        "nothing was delivered, so nothing is withheld"
+        declined.is_empty(),
+        "nothing was delivered, so there is nothing to decline"
     );
     assert!(
         store.pending_decisions().unwrap().is_empty(),
@@ -589,7 +608,7 @@ fn only_what_the_source_delivered_is_minted_as_a_decision() {
     let delivered = source_delivered_profile(&composed.resolved, "acme");
     let store = test_state();
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
-    let excluded = process_source_decisions(
+    process_source_decisions(
         &store,
         "acme",
         &delivered,
@@ -613,12 +632,116 @@ fn only_what_the_source_delivered_is_minted_as_a_decision() {
     // Feeding the whole composed profile instead would mint the subscriber's own
     // declaration as if a source had sent it — and now that a pending row
     // withholds its resource, that row would block the operator's own package.
-    let exclusions = DecisionExclusions::from_decision_paths(excluded, crate::expand_tilde);
+    let scope = DecisionScope::new(["acme"], &composed.resolved);
+    let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+    let exclusions = DecisionExclusions::from_withheld(&withheld);
     assert!(exclusions.withholds_package("brew", "k9s"));
     assert!(
         !exclusions.withholds_package("cargo", "bat"),
         "a local declaration is not a source decision"
     );
+}
+
+#[test]
+fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
+    // The decision names a path, and a path is not an owner: the subscriber
+    // declares `bat` in their own profile while the source offers it too, so a
+    // row about the source's copy must not be what removes the operator's.
+    let local = local_profile_declaring_bat();
+    let mut source = source_recommending_k9s(true);
+    source.policy.recommended.packages = Some(crate::config::PackagesSpec {
+        cargo: Some(crate::config::CargoSpec {
+            file: None,
+            packages: vec!["bat".into()],
+        }),
+        ..Default::default()
+    });
+    let composed = crate::composition::compose(
+        &local,
+        &[source],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let store = test_state();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "bat",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+
+    let scope = DecisionScope::new(["acme"], &composed.resolved);
+    let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+    assert!(
+        withheld.is_empty(),
+        "the operator's own declaration outranks a source's decision over the \
+         same path"
+    );
+    assert!(
+        !DecisionExclusions::from_withheld(&withheld).withholds_package("cargo", "bat"),
+        "declining a source's offer must not uninstall what the operator asked for"
+    );
+}
+
+#[test]
+fn a_decision_stops_withholding_once_its_source_is_gone() {
+    // The rows a dropped source leaves are the rows nobody can answer, so they
+    // must go inert the moment it stops delivering — including a rejection,
+    // which would otherwise be a permanent block on a path with no source left
+    // to `cfgd decide` against.
+    let local = local_profile_declaring_bat();
+    let composed = crate::composition::compose(
+        &local,
+        &[source_recommending_k9s(true)],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let store = test_state();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "stern",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.brew.stern", "rejected")
+        .unwrap();
+
+    let scope = DecisionScope::new(["acme"], &composed.resolved);
+    let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+    assert_eq!(
+        withheld
+            .resource_paths()
+            .collect::<Vec<_>>()
+            .as_slice()
+            .to_vec(),
+        vec!["packages.brew.k9s".to_string()],
+        "only the subscribed source's decision still withholds"
+    );
+
+    // The rows themselves are cleaned up by the reconcile sweep, which is what
+    // stops `cfgd status` offering a decision the operator cannot act on.
+    assert_eq!(
+        store
+            .discard_decisions_not_in(&["acme".to_string()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(store.withheld_decisions().unwrap().len(), 1);
 }
 
 /// A `Packages` phase owned by one profile, for the pending-decision prune.
@@ -807,7 +930,7 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
 
 #[test]
 fn pending_brew_decision_reaches_a_cask_installed_by_brew_cask() {
-    // `extract_source_resources` mints a cask as `packages.brew.<name>`, but the
+    // `declared_decision_paths` mints a cask as `packages.brew.<name>`, but the
     // planner installs it through the `brew-cask` manager.
     let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.brew.firefox".to_string()],
@@ -1049,7 +1172,7 @@ fn pending_decision_in_no_known_vocabulary_withholds_nothing() {
 
 #[test]
 fn pending_decisions_never_withhold_a_secret_script_or_module_action() {
-    // `extract_source_resources` mints four prefixes and no others, so no
+    // `declared_decision_paths` mints four prefixes and no others, so no
     // pending row can name one of these.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind, ScriptAction, ScriptPhase};
 
@@ -1107,12 +1230,12 @@ fn process_source_decisions_accept_policy_no_pending() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
-    // Accept policy: no pending decisions, not excluded from plan
+    // Accept policy: no pending decisions, nothing declined — the item applies
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(!excluded.contains("packages.cargo.bat"));
+    assert!(!declined.contains("packages.cargo.bat"));
 }
 
 // --- Compliance snapshot-on-change logic ---
@@ -1717,7 +1840,7 @@ fn action_resource_info_env_inject() {
     assert_eq!(rid, "/home/user/.bashrc");
 }
 
-// --- extract_source_resources with more package managers ---
+// --- declared_decision_paths with more package managers ---
 
 #[test]
 fn extract_source_resources_apt_dnf_pipx_npm() {
@@ -1740,7 +1863,7 @@ fn extract_source_resources_apt_dnf_pipx_npm() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.apt.git"));
     assert!(resources.contains("packages.apt.tmux"));
     assert!(resources.contains("packages.dnf.vim"));
@@ -1761,7 +1884,7 @@ fn extract_source_resources_system_keys() {
         .system
         .insert("kernelModules".into(), serde_yaml::Value::Null);
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("system.sysctl"));
     assert!(resources.contains("system.kernelModules"));
     assert_eq!(resources.len(), 2);
@@ -1770,7 +1893,7 @@ fn extract_source_resources_system_keys() {
 #[test]
 fn extract_source_resources_empty_profile() {
     let merged = crate::config::MergedProfile::default();
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.is_empty());
 }
 
@@ -1801,12 +1924,12 @@ fn process_source_decisions_no_change_on_second_call() {
     let _ = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
     // Second call with same profile: hash matches, no new decisions
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
     // No pending decisions since policy is Accept
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(excluded.is_empty());
+    assert!(declined.is_empty());
 }
 
 #[test]
@@ -1845,14 +1968,14 @@ fn process_source_decisions_detects_new_items_on_change() {
         },
         ..Default::default()
     };
-    let excluded = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
+    process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
 
     // Should have a pending decision for ripgrep (new item)
     let pending = store.pending_decisions().unwrap();
     assert!(!pending.is_empty());
     let resource_names: Vec<&str> = pending.iter().map(|d| d.resource.as_str()).collect();
     assert!(resource_names.contains(&"packages.cargo.ripgrep"));
-    assert!(excluded.contains("packages.cargo.ripgrep"));
+    assert!(withheld_paths(&store).contains("packages.cargo.ripgrep"));
 }
 
 // --- infer_item_tier: "policy" keyword ---
@@ -2035,7 +2158,7 @@ fn compute_config_hash_with_empty_packages() {
     assert_eq!(hash1.len(), 64, "hash should be a valid SHA256 hex string");
 }
 
-// --- extract_source_resources: brew taps are not included, casks are ---
+// --- declared_decision_paths: brew taps are not included, casks are ---
 
 #[test]
 fn extract_source_resources_brew_casks_only() {
@@ -2054,7 +2177,7 @@ fn extract_source_resources_brew_casks_only() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(
         resources.contains("packages.brew.iterm2"),
         "casks should appear as brew resources"
@@ -2086,7 +2209,7 @@ fn extract_source_resources_cargo_packages_only() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.cargo.cargo-watch"));
     assert!(resources.contains("packages.cargo.cargo-expand"));
     assert_eq!(resources.len(), 2);
@@ -2107,7 +2230,7 @@ fn extract_source_resources_npm_globals() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.npm.typescript"));
     assert!(resources.contains("packages.npm.eslint"));
     assert_eq!(resources.len(), 2);
@@ -2136,17 +2259,21 @@ fn process_source_decisions_reject_policy_silently_skips() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
-    // Reject policy: no pending decisions, items pass through silently
+    // "Skip silently" is a disposition of the ITEM, in one series with
+    // "don't apply" (Notify) and "automatically apply" (Accept): the package
+    // does not reach the machine, and nothing is recorded to say so — a
+    // rejecting policy is a standing answer, not a question for the operator.
     let pending = store.pending_decisions().unwrap();
     assert!(
         pending.is_empty(),
         "reject policy should not create pending decisions"
     );
-    assert!(
-        excluded.is_empty(),
-        "reject policy does not create pending records so nothing is excluded"
+    assert_eq!(
+        declined.iter().collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "a rejected item is withheld from the plan, not installed silently"
     );
 }
 
@@ -2253,7 +2380,7 @@ fn compute_config_hash_empty_vs_nonempty_differ() {
 // --- process_source_decisions with Ignore policy ---
 
 #[test]
-fn process_source_decisions_ignore_policy_no_pending_no_excluded() {
+fn process_source_decisions_ignore_policy_declines_the_item_without_a_row() {
     use crate::config::{CargoSpec, PackagesSpec};
     let store = test_state();
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
@@ -2273,17 +2400,19 @@ fn process_source_decisions_ignore_policy_no_pending_no_excluded() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
-    // Ignore policy: silently skipped, no pending decisions, nothing excluded
+    // `Ignore` sits beside `Reject` in the same "skip silently" row of the
+    // policy table, so it declines the item on the same terms.
     let pending = store.pending_decisions().unwrap();
     assert!(
         pending.is_empty(),
         "ignore policy should not create pending decisions"
     );
-    assert!(
-        excluded.is_empty(),
-        "ignore policy does not create pending records so nothing is excluded"
+    assert_eq!(
+        declined.iter().collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "an ignored item is withheld from the plan, not installed silently"
     );
 }
 
@@ -2526,7 +2655,7 @@ fn reconcile_task_per_module() {
 #[test]
 fn withheld_decision_paths_empty_store() {
     let store = test_state();
-    let paths = withheld_decision_paths(&store);
+    let paths = withheld_paths(&store);
     assert!(paths.is_empty());
 }
 
@@ -2552,7 +2681,7 @@ fn withheld_decision_paths_with_decisions() {
         )
         .unwrap();
 
-    let paths = withheld_decision_paths(&store);
+    let paths = withheld_paths(&store);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains("packages.cargo.bat"));
     assert!(paths.contains("env.EDITOR"));
@@ -2585,7 +2714,7 @@ fn infer_item_tier_normal_file() {
     assert_eq!(infer_item_tier("files./home/user/.zshrc"), "recommended");
 }
 
-// --- extract_source_resources: aliases not included (not tracked) ---
+// --- declared_decision_paths: aliases not included (not tracked) ---
 
 #[test]
 fn extract_source_resources_aliases_not_tracked() {
@@ -2605,7 +2734,7 @@ fn extract_source_resources_aliases_not_tracked() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     // Aliases are not tracked as individual resources
     assert!(
         resources.is_empty(),
@@ -2613,7 +2742,7 @@ fn extract_source_resources_aliases_not_tracked() {
     );
 }
 
-// --- extract_source_resources: mixed profile with everything ---
+// --- declared_decision_paths: mixed profile with everything ---
 
 #[test]
 fn extract_source_resources_full_profile() {
@@ -2675,7 +2804,7 @@ fn extract_source_resources_full_profile() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     // Verify all expected resources are present
     assert!(resources.contains("packages.brew.ripgrep"));
     assert!(resources.contains("packages.brew.firefox"));
@@ -2713,14 +2842,15 @@ fn process_source_decisions_locked_item_notify_policy() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    assert!(declined.is_empty(), "Notify records rather than declines");
 
     // The "system.security-baseline" item should be inferred as "locked" tier
     // and with locked_conflict = Notify, it should create a pending decision
     let pending = store.pending_decisions().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "system.security-baseline");
-    assert!(excluded.contains("system.security-baseline"));
+    assert!(withheld_paths(&store).contains("system.security-baseline"));
 }
 
 // --- process_source_decisions: multiple sources ---
@@ -2757,12 +2887,12 @@ fn process_source_decisions_different_sources_independent() {
         ..Default::default()
     };
 
-    let excluded_a = process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
-    let excluded_b = process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
+    let declined_a = process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
+    let declined_b = process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
 
-    // Accept policy: both sources processed, nothing excluded
-    assert!(excluded_a.is_empty());
-    assert!(excluded_b.is_empty());
+    // Accept policy: both sources processed, nothing declined
+    assert!(declined_a.is_empty());
+    assert!(declined_b.is_empty());
 }
 
 // --- process_source_decisions: items removed from source ---
@@ -2801,12 +2931,12 @@ fn process_source_decisions_removed_items_update_hash() {
         },
         ..Default::default()
     };
-    let excluded = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
 
     // Hash changed, but Accept policy means no pending decisions
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(excluded.is_empty());
+    assert!(declined.is_empty());
 }
 
 // --- SourceStatus: field defaults ---
@@ -3005,16 +3135,21 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    assert!(
+        declined.is_empty(),
+        "neither Accept nor Notify declines an item outright"
+    );
 
     let pending = store.pending_decisions().unwrap();
     // Only the locked item should be pending (security-policy)
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "system.security-policy");
-    // bat should not be excluded (Accept policy for recommended)
-    assert!(!excluded.contains("packages.cargo.bat"));
-    // security-policy should be excluded (pending)
-    assert!(excluded.contains("system.security-policy"));
+    let withheld = withheld_paths(&store);
+    // bat is accepted by policy, so it stays in the plan
+    assert!(!withheld.contains("packages.cargo.bat"));
+    // security-policy awaits the operator, so it is withheld
+    assert!(withheld.contains("system.security-policy"));
 }
 
 // --- generate_device_id: always hex ---
@@ -3030,7 +3165,7 @@ fn generate_device_id_hex_format() {
     );
 }
 
-// --- extract_source_resources: multiple files ---
+// --- declared_decision_paths: multiple files ---
 
 #[test]
 fn extract_source_resources_multiple_files() {
@@ -3075,14 +3210,14 @@ fn extract_source_resources_multiple_files() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert_eq!(resources.len(), 3);
     assert!(resources.contains("files./home/user/.zshrc"));
     assert!(resources.contains("files./home/user/.vimrc"));
     assert!(resources.contains("files./home/user/.gitconfig"));
 }
 
-// --- extract_source_resources: multiple env vars ---
+// --- declared_decision_paths: multiple env vars ---
 
 #[test]
 fn extract_source_resources_multiple_env_vars() {
@@ -3106,14 +3241,14 @@ fn extract_source_resources_multiple_env_vars() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert_eq!(resources.len(), 3);
     assert!(resources.contains("env.PATH"));
     assert!(resources.contains("env.EDITOR"));
     assert!(resources.contains("env.GOPATH"));
 }
 
-// --- extract_source_resources: multiple system keys ---
+// --- declared_decision_paths: multiple system keys ---
 
 #[test]
 fn extract_source_resources_multiple_system_keys() {
@@ -3129,7 +3264,7 @@ fn extract_source_resources_multiple_system_keys() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert_eq!(resources.len(), 3);
     assert!(resources.contains("system.sysctl"));
     assert!(resources.contains("system.kernelModules"));
@@ -4640,12 +4775,12 @@ fn process_source_decisions_optional_tier_accept() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
     let pending = store.pending_decisions().unwrap();
     // "bat" is recommended tier -> Notify policy -> creates pending decision
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "packages.cargo.bat");
-    assert!(excluded.contains("packages.cargo.bat"));
+    assert!(withheld_paths(&store).contains("packages.cargo.bat"));
 }
 
 // --- process_source_decisions: empty merged profile no decisions ---
@@ -4658,10 +4793,10 @@ fn process_source_decisions_empty_profile_no_decisions() {
 
     let merged = MergedProfile::default();
 
-    let excluded = process_source_decisions(&store, "empty", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "empty", &merged, &policy, &notifier);
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(excluded.is_empty());
+    assert!(declined.is_empty());
 }
 
 // --- DaemonStatusResponse: deserialization with all optional fields ---
@@ -7301,7 +7436,10 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // A configured source with an empty cache is a benign cache-miss: the tick
-    // reconciles local-only and still runs the source-decision workflow.
+    // reconciles local-only and still runs the source-decision workflow. It is
+    // also the reason the withhold is scoped to the SUBSCRIPTION rather than to
+    // what composition merged — a source that delivered nothing this run must
+    // not be a source whose undecided items suddenly apply.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
     let _cache =
@@ -7341,7 +7479,10 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(
         profiles_dir.join("default.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - bat\n        - ripgrep\n",
+        // Only `ripgrep` is the operator's own; `bat` is the source's offer, so
+        // the seeded decision is about a resource the local profile does not
+        // declare.
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - ripgrep\n",
     )
     .unwrap();
 
@@ -7562,10 +7703,17 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
     // names the variable" cannot be satisfied by the declaring profile itself.
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
-    let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+    // `acme` really delivers TEAM_TOKEN: the decision is about a source's
+    // variable, not about one the operator declared for themselves.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
     let _cache =
         crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  env:\n    - name: TEAM_TOKEN\n      value: from-acme\n",
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -7596,7 +7744,7 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
         // `envScope: Login` keeps the surface to files: the live-session arm is
         // not redirectable by a test home, so a test that does not mean to reach
         // the operator's session pins the scope instead.
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Login\n  env:\n    - name: TEAM_TOKEN\n      value: from-acme\n  secrets:\n    - source: \"vault://kv/token\"\n      envs:\n        - SECRET_TOKEN\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Login\n  secrets:\n    - source: \"vault://kv/token\"\n      envs:\n        - SECRET_TOKEN\n",
     )
     .unwrap();
 
@@ -8126,7 +8274,7 @@ fn discover_managed_paths_with_profile_override() {
 #[test]
 fn withheld_decision_paths_returns_empty_for_no_decisions() {
     let store = test_state();
-    let paths = withheld_decision_paths(&store);
+    let paths = withheld_paths(&store);
     assert!(paths.is_empty());
 }
 
@@ -8670,7 +8818,7 @@ fn module_reconcile_status_round_trips_extended() {
     assert_eq!(parsed.drift_policy, "Auto");
 }
 
-// --- extract_source_resources edge cases ---
+// --- declared_decision_paths edge cases ---
 
 #[test]
 fn extract_source_resources_includes_npm_and_pipx_and_dnf() {
@@ -8689,7 +8837,7 @@ fn extract_source_resources_includes_npm_and_pipx_and_dnf() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.npm.typescript"));
     assert!(resources.contains("packages.npm.eslint"));
     assert!(resources.contains("packages.pipx.black"));
@@ -8713,7 +8861,7 @@ fn extract_source_resources_includes_apt() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.apt.vim"));
     assert!(resources.contains("packages.apt.git"));
     assert_eq!(resources.len(), 2);
@@ -8733,7 +8881,7 @@ fn extract_source_resources_includes_system_keys() {
         serde_yaml::Value::Mapping(Default::default()),
     );
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("system.shell"));
     assert!(resources.contains("system.macos_defaults"));
     assert_eq!(resources.len(), 2);
@@ -12656,7 +12804,7 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
     // inside `notifier.notify(...)` rendering when new_pending_count > 1.
     // We can't inspect the formatted body directly via Stdout notifier, but
     // we CAN pin the precondition: a single call must register all three
-    // items as pending in the store + the excluded set. That's exactly the
+    // items as pending in the store, all of which then withhold. That's the
     // shape that would trigger the plural message in the notifier body.
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
     let policy = AutoApplyPolicyConfig::default(); // Notify
@@ -12672,7 +12820,7 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
     let pending = store.pending_decisions().unwrap();
     assert_eq!(
@@ -12681,9 +12829,9 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
         "all three new cargo items must produce pending decisions on the first call"
     );
     assert_eq!(
-        excluded.len(),
+        withheld_paths(&store).len(),
         3,
-        "all three pending items must appear in the excluded set"
+        "all three pending items must withhold their resource"
     );
     let names: std::collections::HashSet<&str> =
         pending.iter().map(|d| d.resource.as_str()).collect();
@@ -12696,7 +12844,7 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
 fn withheld_decision_paths_returns_decision_resources_as_set() {
     let store = test_state();
     // Empty store → empty set
-    let empty = withheld_decision_paths(&store);
+    let empty = withheld_paths(&store);
     assert!(empty.is_empty(), "no decisions → empty set");
 
     // Two distinct decisions
@@ -12719,7 +12867,7 @@ fn withheld_decision_paths_returns_decision_resources_as_set() {
         )
         .unwrap();
 
-    let paths = withheld_decision_paths(&store);
+    let paths = withheld_paths(&store);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains("packages.cargo.bat"));
     assert!(paths.contains("files.security/rules.yaml"));
@@ -12728,7 +12876,7 @@ fn withheld_decision_paths_returns_decision_resources_as_set() {
     store
         .resolve_decisions_for_source("acme", "accepted")
         .unwrap();
-    let after = withheld_decision_paths(&store);
+    let after = withheld_paths(&store);
     assert!(
         after.is_empty(),
         "resolving all decisions empties the pending-resource set"
@@ -13044,29 +13192,42 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
 // SKIPS the tick (no prune, no uninstall, last_reconcile untouched, alert
 // raised), while a benign never-synced cache-miss still reconciles local-only.
 
-/// Stage a cached source under `<xdg_data>/cfgd/sources/<name>` whose `team`
-/// profile carries a `preApply` script. The source's policy keeps the default
-/// `noScripts: true` constraint, so composition of the subscribed `team` profile
-/// fails with `ScriptsNotAllowed` — a realistic "cached manifest went bad"
-/// error. Returns nothing; `cache_root` is the unified cfgd cache root
-/// (`<home>/.cache/cfgd`) under which the source cache lives.
-fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
+/// Stage a cached source under `<cache_root>/sources/<name>` providing a single
+/// `team` profile whose `spec:` body is `team_spec` (already indented two
+/// spaces). `cache_root` is the unified cfgd cache root (`<home>/.cache/cfgd`)
+/// the daemon resolves its sources under. The source keeps the default policy,
+/// so `constraints.noScripts` is on.
+fn stage_cached_source(cache_root: &Path, name: &str, team_spec: &str) {
     let src_dir = cache_root.join("sources").join(name);
     std::fs::create_dir_all(src_dir.join("profiles")).unwrap();
-    // Default policy → constraints.noScripts = true.
     std::fs::write(
         src_dir.join("cfgd-source.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - team\n",
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {name}\nspec:\n  provides:\n    profiles:\n      - team\n"
+        ),
     )
     .unwrap();
-    // The subscribed profile ships a script → violates noScripts → compose Err.
     std::fs::write(
         src_dir.join("profiles").join("team.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  scripts:\n    preApply:\n      - run: echo hi\n",
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n{team_spec}"
+        ),
     )
     .unwrap();
     // Make it a git repo with a commit so head_commit resolves like a real cache.
     crate::test_helpers::init_test_git_repo(&src_dir);
+}
+
+/// Stage a cached source whose `team` profile carries a `preApply` script.
+/// The source's policy keeps the default `noScripts: true` constraint, so
+/// composition of the subscribed `team` profile fails with `ScriptsNotAllowed`
+/// — a realistic "cached manifest went bad" error.
+fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
+    stage_cached_source(
+        cache_root,
+        name,
+        "  scripts:\n    preApply:\n      - run: echo hi\n",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -15324,16 +15485,23 @@ mod backup_timers {
     /// degraded: the exact state the adopt branch runs in. (A source that was
     /// never fetched is only WARNED about, not an error, so it cannot produce
     /// this state.)
+    ///
+    /// Returns the guard pinning `CFGD_CACHE_DIR` at the staged root alongside
+    /// the config path: the cache root is otherwise derived from the home, and
+    /// a concurrent test setting that variable would move it out from under
+    /// this one — the cache would then look absent, composition would succeed,
+    /// and the degraded state under test would never be reached. Every caller
+    /// is `serial` for the same reason.
     fn write_config_with_broken_source_cache(
         tmp: &tempfile::TempDir,
         backups_yaml: &str,
-    ) -> PathBuf {
-        let cache = tmp
-            .path()
-            .join(".cache")
-            .join("cfgd")
-            .join("sources")
-            .join("team");
+    ) -> (PathBuf, crate::test_helpers::EnvVarGuard) {
+        let cache_root = tmp.path().join(".cache").join("cfgd");
+        let guard = crate::test_helpers::EnvVarGuard::set(
+            "CFGD_CACHE_DIR",
+            cache_root.to_str().expect("utf-8 cache root"),
+        );
+        let cache = cache_root.join("sources").join("team");
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(
             cache.join(crate::sources::SOURCE_MANIFEST_FILE),
@@ -15354,10 +15522,11 @@ mod backup_timers {
             ),
         )
         .unwrap();
-        config_path
+        (config_path, guard)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
     async fn a_retry_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // The recovery path the startup retry opens: booted on a broken
         // profile (0 timers), profile since fixed, sources still unavailable.
@@ -15370,13 +15539,14 @@ mod backup_timers {
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
         let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
-        ctx.config_path = write_config_with_broken_source_cache(
+        let (broken_config, _cache) = write_config_with_broken_source_cache(
             &tmp,
             &format!(
                 "    - name: db\n      source: {}\n      schedule: 1h\n",
                 crate::to_posix_string(&source)
             ),
         );
+        ctx.config_path = broken_config;
 
         let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
         assert!(set.retry_due(Instant::now()));
@@ -15408,6 +15578,7 @@ mod backup_timers {
     }
 
     #[test]
+    #[serial_test::serial]
     fn a_sighup_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // Same state, reached the other way: a SIGHUP arriving while nothing is
         // running adopts rather than refusing (there is nothing to protect), so
@@ -15416,7 +15587,7 @@ mod backup_timers {
         let _g = crate::with_test_home_guard(tmp.path());
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
-        let config_path = write_config_with_broken_source_cache(
+        let (config_path, _cache) = write_config_with_broken_source_cache(
             &tmp,
             &format!(
                 "    - name: db\n      source: {}\n      schedule: 1h\n",

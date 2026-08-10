@@ -1,9 +1,9 @@
 use super::*;
 use crate::PathDisplayExt;
 use crate::reconciler::{
-    DecisionExclusions, action_resource_info, withheld_decision_paths, withhold_from_plan,
+    DecisionExclusions, action_resource_info, declared_decision_paths, source_delivered_profile,
+    withhold_from_plan,
 };
-use crate::to_posix_string;
 
 // --- File Watcher ---
 
@@ -320,57 +320,59 @@ pub(crate) fn handle_reconcile(
             .unwrap_or(false)
     });
 
-    // Source-decision processing is profile-wide; skip it when we're scoped to
-    // a single module so a per-module tick doesn't accidentally
-    // accept/reject items from sources unrelated to the patched module.
-    let pending_exclusions =
-        if module_filter.is_none() && auto_apply && !cfg.spec.sources.is_empty() {
-            let default_policy = AutoApplyPolicyConfig::default();
-            let policy = cfg
-                .spec
-                .daemon
-                .as_ref()
-                .and_then(|d| d.reconcile.as_ref())
-                .and_then(|r| r.policy.as_ref())
-                .unwrap_or(&default_policy);
+    // Discard the decisions of a source the subscriber has dropped: source
+    // gone, items gone. Outside every gate below, because the rows a removed
+    // source leaves are exactly the rows nobody can answer — `cfgd decide` acts
+    // against a source that no longer exists — and dropping the LAST source, or
+    // turning auto-apply off, must not be what strands them.
+    let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
+    if let Err(e) = store.discard_decisions_not_in(&subscribed) {
+        tracing::warn!(error = %e, "failed to discard decisions of removed sources");
+    }
 
-            let mut all_excluded = HashSet::new();
-            for source_spec in &cfg.spec.sources {
-                let excluded = process_source_decisions(
-                    &store,
-                    &source_spec.name,
-                    &source_delivered_profile(&resolved, &source_spec.name),
-                    policy,
-                    notifier,
-                );
-                all_excluded.extend(excluded);
-            }
+    // Minting is profile-wide; skip it when we're scoped to a single module so
+    // a per-module tick doesn't accidentally accept/reject items from sources
+    // unrelated to the patched module. `Reject`/`Ignore` decline the ITEM
+    // (`docs/sources.md`: "skip silently"), and record nothing to decline it
+    // with, so the paths come back as a set rather than as rows.
+    let mut policy_declined = HashSet::new();
+    if module_filter.is_none() && auto_apply && !cfg.spec.sources.is_empty() {
+        let default_policy = AutoApplyPolicyConfig::default();
+        let policy = cfg
+            .spec
+            .daemon
+            .as_ref()
+            .and_then(|d| d.reconcile.as_ref())
+            .and_then(|r| r.policy.as_ref())
+            .unwrap_or(&default_policy);
 
-            // Discard the decisions of a source the subscriber has dropped:
-            // source gone, items gone. Deleting rather than resolving them
-            // matters now that a `rejected` row withholds its resource from
-            // every plan — an unsubscribed source must not keep excluding the
-            // paths it once named.
-            let source_names: HashSet<&str> =
-                cfg.spec.sources.iter().map(|s| s.name.as_str()).collect();
-            if let Ok(all_pending) = store.pending_decisions() {
-                for decision in &all_pending {
-                    if !source_names.contains(decision.source.as_str())
-                        && let Err(e) = store.discard_decisions_for_source(&decision.source)
-                    {
-                        tracing::warn!(
-                            source = %decision.source,
-                            error = %e,
-                            "failed to discard decisions for removed source"
-                        );
-                    }
-                }
-            }
+        for source_spec in &cfg.spec.sources {
+            policy_declined.extend(process_source_decisions(
+                &store,
+                &source_spec.name,
+                &source_delivered_profile(&resolved, &source_spec.name),
+                policy,
+                notifier,
+            ));
+        }
+    }
 
-            DecisionExclusions::from_decision_paths(all_excluded, |p| hooks.expand_tilde(p))
-        } else {
-            DecisionExclusions::default()
-        };
+    // The rows are read whatever the mode: minting a decision is an auto-apply
+    // behaviour, but honouring one that already exists is not. A tick that read
+    // them only under auto-apply would report drift for a resource `cfgd plan`
+    // hides, on the same machine and the same rows.
+    let decision_scope = crate::reconciler::DecisionScope::new(subscribed, &resolved);
+    let withheld = match crate::reconciler::WithheldDecisions::read(&store, &decision_scope) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: cannot read source decisions");
+            return;
+        }
+    };
+    let pending_exclusions = DecisionExclusions::from_decision_paths(
+        withheld.resource_paths().chain(policy_declined),
+        |p| hooks.expand_tilde(p),
+    );
 
     // The env arm withholds the surface as a unit, and apply rebuilds that
     // surface after the phases run from the declared set rather than from the
@@ -906,85 +908,6 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 
 // --- Auto-apply decision handling ---
 
-/// What one source actually delivered into a composed profile.
-///
-/// The decision workflow's question is "which resources did source X put in
-/// front of me", and only the COMPOSED profile can answer it: composition tags
-/// every layer it builds with the source that supplied it, so the source's own
-/// layers merge back into the same shape a profile resolution produces. Reading
-/// the local profile instead answers a different question entirely — it names
-/// the subscriber's own declarations, so no source-delivered item is ever
-/// reachable by a decision and every local one is minted as if a source had
-/// sent it.
-///
-/// A tier the subscriber has not opted into never becomes a layer
-/// (`accept_recommended: false` keeps the recommended tier out, `opt_in` gates
-/// the optional profiles), so it is absent here too: an item cfgd will not
-/// apply mints no pending row and adds no noise to a plan.
-pub(crate) fn source_delivered_profile(
-    resolved: &ResolvedProfile,
-    source_name: &str,
-) -> MergedProfile {
-    let layers: Vec<config::ProfileLayer> = resolved
-        .layers
-        .iter()
-        .filter(|l| l.source == source_name)
-        .cloned()
-        .collect();
-    config::merge_layers(&layers)
-}
-
-/// Extract resource identifiers from a merged profile for change detection.
-/// Returns a set of dot-notation resource paths (e.g. "packages.brew.ripgrep").
-pub(crate) fn extract_source_resources(merged: &MergedProfile) -> HashSet<String> {
-    let mut resources = HashSet::new();
-
-    let pkgs = &merged.packages;
-    if let Some(ref brew) = pkgs.brew {
-        for f in &brew.formulae {
-            resources.insert(format!("packages.brew.{}", f));
-        }
-        for c in &brew.casks {
-            resources.insert(format!("packages.brew.{}", c));
-        }
-    }
-    if let Some(ref apt) = pkgs.apt {
-        for p in &apt.packages {
-            resources.insert(format!("packages.apt.{}", p));
-        }
-    }
-    if let Some(ref cargo) = pkgs.cargo {
-        for p in &cargo.packages {
-            resources.insert(format!("packages.cargo.{}", p));
-        }
-    }
-    for p in &pkgs.pipx {
-        resources.insert(format!("packages.pipx.{}", p));
-    }
-    for p in &pkgs.dnf {
-        resources.insert(format!("packages.dnf.{}", p));
-    }
-    if let Some(ref npm) = pkgs.npm {
-        for p in &npm.global {
-            resources.insert(format!("packages.npm.{}", p));
-        }
-    }
-
-    for file in &merged.files.managed {
-        resources.insert(format!("files.{}", to_posix_string(&file.target)));
-    }
-
-    for ev in &merged.env {
-        resources.insert(format!("env.{}", ev.name));
-    }
-
-    for k in merged.system.keys() {
-        resources.insert(format!("system.{}", k));
-    }
-
-    resources
-}
-
 /// Compute a hash of the resource set for change detection.
 pub(crate) fn hash_resources(resources: &HashSet<String>) -> String {
     let mut sorted: Vec<&String> = resources.iter().collect();
@@ -993,8 +916,17 @@ pub(crate) fn hash_resources(resources: &HashSet<String>) -> String {
     crate::sha256_hex(combined.as_bytes())
 }
 
-/// Process auto-apply decisions for source items. Returns the set of resource paths
-/// that should be excluded from the plan (pending decisions).
+/// Apply the auto-apply policy to what one source delivers.
+///
+/// Returns the resource paths the policy DECLINED — the items
+/// `docs/sources.md` says a `Reject`/`Ignore` policy "skips silently". They
+/// come back as paths rather than as rows because declining silently is the
+/// whole point: nothing is recorded, so there is nothing for `cfgd decide` to
+/// act on and nothing to render. A `Notify` item records a row instead, and the
+/// caller reads those back through
+/// [`WithheldDecisions`](crate::reconciler::WithheldDecisions) — one list for
+/// everything that has a row, one set for the things that deliberately have
+/// none.
 pub(crate) fn process_source_decisions(
     store: &StateStore,
     source_name: &str,
@@ -1002,7 +934,7 @@ pub(crate) fn process_source_decisions(
     policy: &AutoApplyPolicyConfig,
     notifier: &Notifier,
 ) -> HashSet<String> {
-    let current_resources = extract_source_resources(merged);
+    let current_resources = declared_decision_paths(merged);
     let current_hash = hash_resources(&current_resources);
 
     // Check if the source config has changed since last merge
@@ -1011,16 +943,11 @@ pub(crate) fn process_source_decisions(
         .ok()
         .flatten()
         .map(|h| h.config_hash);
+    let config_changed = previous_hash.as_deref() != Some(&current_hash);
 
-    if previous_hash.as_deref() == Some(&current_hash) {
-        // No change — check for existing pending decisions to exclude
-        return withheld_decision_paths(store);
-    }
-
-    // Config changed — detect new items
+    // We don't store the old resource set, only the hash. So we use the
+    // pending decisions + managed resources as a proxy for "known items".
     let previous_resources: HashSet<String> = if previous_hash.is_some() {
-        // We don't store the old resource set, only the hash. So we use the
-        // pending decisions + managed resources as a proxy for "known items".
         let mut known = HashSet::new();
         if let Ok(managed) = store.managed_resources_by_source(source_name) {
             for r in &managed {
@@ -1045,6 +972,7 @@ pub(crate) fn process_source_decisions(
         .collect();
 
     let mut new_pending_count = 0u32;
+    let mut declined = HashSet::new();
 
     for resource in &new_items {
         // Determine the tier: check if it's in recommended, optional, or locked
@@ -1064,9 +992,15 @@ pub(crate) fn process_source_decisions(
                 // Include in plan normally — no action needed
             }
             PolicyAction::Reject | PolicyAction::Ignore => {
-                // Skip silently — no record, no notification
+                // The ITEM is skipped, not merely the decision about it: the
+                // three policy actions are one series of dispositions, and
+                // "skip silently" next to "don't apply" and "automatically
+                // apply" can only mean the item does not reach the machine.
+                // Recomputed on every tick — declining records nothing, so
+                // there is no row to carry the disposition to the next one.
+                declined.insert((*resource).clone());
             }
-            PolicyAction::Notify => {
+            PolicyAction::Notify if config_changed => {
                 let summary = format!("{} {} (from {})", tier, resource, source_name);
                 if let Err(e) =
                     store.upsert_pending_decision(source_name, resource, tier, "install", &summary)
@@ -1076,6 +1010,7 @@ pub(crate) fn process_source_decisions(
                     new_pending_count += 1;
                 }
             }
+            PolicyAction::Notify => {}
         }
     }
 
@@ -1100,12 +1035,11 @@ pub(crate) fn process_source_decisions(
     }
 
     // Update the stored hash
-    if let Err(e) = store.set_source_config_hash(source_name, &current_hash) {
+    if config_changed && let Err(e) = store.set_source_config_hash(source_name, &current_hash) {
         tracing::warn!(error = %e, "failed to store source config hash");
     }
 
-    // Return resources that are pending and should be excluded from the plan
-    withheld_decision_paths(store)
+    declined
 }
 
 /// Infer the policy tier for a resource based on naming conventions.
