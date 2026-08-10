@@ -20,7 +20,7 @@ use super::types::{
     Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, Owner, OwnerKind,
     PhaseFilter, PhaseName, Plan, ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
-use crate::providers::{FileAction, NoteSink, PackageAction, PostInstallNote, SecretAction};
+use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAction};
 
 /// One action's line in the execution tree, resolved where the outcome is known
 /// and written either immediately (a streaming phase) or at phase close
@@ -36,7 +36,7 @@ struct ActionOutcome {
     /// error never does — it is the thing the reader has to act on.
     detail_muted: bool,
     duration: Option<std::time::Duration>,
-    notes: Vec<PostInstallNote>,
+    notes: Vec<ActionNote>,
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -109,12 +109,12 @@ fn bootstrap_attribution(
     (!tokens.is_empty()).then(|| format!("for {}", tokens.join(", ")))
 }
 
-/// Write one action's line, then the notes its manager produced under it.
-/// The notes a manager produced during one action, under the status that
-/// action just emitted — whoever emitted it.
-fn emit_notes(section: &SectionGuard<'_>, notes: &[PostInstallNote]) {
+/// The notes a provider produced during one action, under the status that
+/// action just emitted — whoever emitted it. The ONE render path for a note,
+/// package-manager caveat and system-configurator narration alike.
+fn emit_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
     for note in notes {
-        section.attached_status(note.role, format!("[{}] {}", note.manager, note.message));
+        section.attached_status(note.role, note.body());
     }
 }
 
@@ -858,7 +858,10 @@ impl<'a> super::Reconciler<'a> {
             );
             for env_action in &env_actions {
                 if let Action::Env(ea) = env_action {
-                    match Self::apply_env_action(ea, printer) {
+                    // No phase section is open here and nothing will drain a
+                    // sink, so a session-refresh warning settles on its own line
+                    // — beside the failure line below it, which does the same.
+                    match Self::apply_env_action(ea, printer, NoteSink::discarded()) {
                         Ok(desc) => {
                             let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
                             merge_env_result(&mut results, desc, changed);
@@ -1164,7 +1167,7 @@ impl<'a> super::Reconciler<'a> {
     ) -> Result<(String, bool, Option<String>)> {
         match action {
             Action::System(sys) => self
-                .apply_system_action(sys, &resolved.merged, module_actions, printer)
+                .apply_system_action(sys, &resolved.merged, module_actions, printer, notes)
                 .map(|d| (d, true, None)),
             Action::Package(pkg) => self
                 .apply_package_action(pkg, printer, notes)
@@ -1198,7 +1201,7 @@ impl<'a> super::Reconciler<'a> {
                     notes,
                 )
                 .map(|(d, c)| (d, c, None)),
-            Action::Env(env) => Self::apply_env_action(env, printer).map(|d| {
+            Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
                 let changed = !d.contains(ENV_SKIPPED_SUFFIX);
                 (d, changed, None)
             }),

@@ -711,7 +711,10 @@ fn apply_non_sequence_is_noop() {
     let c = GpgKeysConfigurator;
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let desired = serde_yaml::Value::String("not a sequence".into());
-    let result = c.apply(&desired, &printer);
+    let result = c.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
     assert!(
         result.is_ok(),
         "apply with non-sequence should succeed as no-op"
@@ -723,7 +726,10 @@ fn apply_empty_sequence_is_noop() {
     let c = GpgKeysConfigurator;
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let desired = serde_yaml::Value::Sequence(Vec::new());
-    let result = c.apply(&desired, &printer);
+    let result = c.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
     assert!(
         result.is_ok(),
         "apply with empty sequence should succeed as no-op"
@@ -740,7 +746,10 @@ fn apply_unparseable_entries_skipped() {
 "#,
     )
     .unwrap();
-    let result = c.apply(&desired, &printer);
+    let result = c.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
     assert!(result.is_ok(), "apply should skip unparseable entries");
 }
 
@@ -872,7 +881,9 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         )
         .unwrap();
 
-        GpgKeysConfigurator.apply(&desired, &p).expect("Ok");
+        GpgKeysConfigurator
+            .apply(&desired, &cfgd_core::providers::SystemContext::new(&p))
+            .expect("Ok");
 
         let argv = s.argv_log();
         assert!(
@@ -909,7 +920,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         .unwrap();
 
         let err = GpgKeysConfigurator
-            .apply(&desired, &p)
+            .apply(&desired, &cfgd_core::providers::SystemContext::new(&p))
             .expect_err("expected gpg failure to surface");
         let msg = err.to_string();
         assert!(

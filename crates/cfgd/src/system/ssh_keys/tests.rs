@@ -36,7 +36,11 @@ mod bridge {
 
         let (printer, cap) = Printer::for_test_doc();
         let c = SshKeysConfigurator;
-        c.apply(&desired, &printer).unwrap();
+        c.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
 
         let summary = KeyApplySummary {
             name: "default".to_string(),
@@ -80,7 +84,11 @@ mod bridge {
 
         let (printer, cap) = Printer::for_test_doc();
         let c = SshKeysConfigurator;
-        c.apply(&desired, &printer).unwrap();
+        c.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
 
         let summary = KeyApplySummary {
             name: "default".to_string(),
@@ -274,7 +282,11 @@ fn apply_generates_key() {
 
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let c = SshKeysConfigurator;
-    c.apply(&desired, &printer).unwrap();
+    c.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     assert!(key_path.exists(), "private key file was not generated");
     assert!(
@@ -296,7 +308,11 @@ fn apply_creates_parent_dir_with_700() {
 
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let c = SshKeysConfigurator;
-    c.apply(&desired, &printer).unwrap();
+    c.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     let meta = fs::metadata(&ssh_dir).unwrap();
     let mode = meta.permissions().mode() & 0o777;

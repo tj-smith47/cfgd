@@ -2188,7 +2188,11 @@ fn seccomp_apply_writes_profiles() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     let written = fs::read_to_string(profiles_dir.join("test-audit.json")).unwrap();
     assert_eq!(written, r#"{"defaultAction":"SCMP_ACT_LOG"}"#);
@@ -2200,7 +2204,11 @@ fn seccomp_apply_no_profiles_key_is_noop() {
     let sc = SeccompConfigurator;
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should not error even with no profiles key
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2258,7 +2266,11 @@ fn seccomp_apply_skips_missing_fields() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     // profiles_dir should be created but no profiles written (all incomplete)
     assert!(profiles_dir.exists());
@@ -2302,7 +2314,11 @@ fn seccomp_apply_path_traversal_skipped() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     // The traversal path file should NOT have been written
     let etc_passwd = dir.path().join("etc/passwd");
@@ -2358,7 +2374,11 @@ fn seccomp_apply_multiple_profiles() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     assert_eq!(
         fs::read_to_string(profiles_dir.join("audit.json")).unwrap(),
@@ -2386,7 +2406,11 @@ fn certificate_apply_creates_ca_cert_dir() {
     );
     // No certificates key — should only create the dir
     let desired = serde_yaml::Value::Mapping(m);
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
     assert!(ca_dir.exists());
 }
 
@@ -2396,7 +2420,11 @@ fn certificate_apply_no_certificates_is_noop() {
     let cc = CertificateConfigurator;
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should not error with no caCertDir or certificates
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2447,7 +2475,11 @@ fn certificate_apply_sets_permissions_on_existing_files() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     #[cfg(unix)]
     {
@@ -2491,7 +2523,11 @@ fn certificate_apply_warns_for_missing_files() {
 
     let desired = serde_yaml::Value::Mapping(m);
     // Should not error — just warns about missing files
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2518,7 +2554,11 @@ fn certificate_apply_skips_cert_without_name() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2562,7 +2602,11 @@ fn certificate_apply_correct_permissions_no_change() {
 
     let desired = serde_yaml::Value::Mapping(m);
     // Should not error and should detect permissions are already correct
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     #[cfg(unix)]
     {
@@ -2590,7 +2634,10 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     // Empty profiles list - should still try to create dir but won't error
     // because we catch the permission error at fs::create_dir_all
     // Actually, let's verify this specific case doesn't panic
-    let result = sc.apply(&desired, &printer);
+    let result = sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
     // On CI/test machines this may fail due to permissions, which is expected
     // The important thing is it doesn't panic
     let _ = result;
@@ -2609,7 +2656,7 @@ fn kernel_modules_apply_with_non_sequence_value_emits_no_output_and_does_not_cal
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     km.apply(
         &serde_yaml::Value::String("not-a-sequence".into()),
-        &printer,
+        &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("non-sequence value is a no-op");
     let captured = buf.lock().unwrap().clone();
@@ -2629,8 +2676,11 @@ fn kernel_modules_apply_with_empty_sequence_emits_no_modprobe_line() {
     let km = KernelModuleConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    km.apply(&serde_yaml::Value::Sequence(Vec::new()), &printer)
-        .expect("empty sequence must Ok");
+    km.apply(
+        &serde_yaml::Value::Sequence(Vec::new()),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("empty sequence must Ok");
     let captured = buf.lock().unwrap().clone();
     assert!(
         !captured.contains("modprobe"),
@@ -2650,7 +2700,7 @@ fn apparmor_apply_with_no_profiles_field_emits_no_output_and_loads_nothing() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     ac.apply(
         &serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-        &printer,
+        &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("missing profiles key is a no-op");
     let captured = buf.lock().unwrap().clone();
@@ -2682,8 +2732,11 @@ fn apparmor_apply_skips_profile_entries_with_path_traversal() {
         serde_yaml::Value::String("profiles".into()),
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
     );
-    ac.apply(&serde_yaml::Value::Mapping(desired), &printer)
-        .expect("traversal-skip path must Ok");
+    ac.apply(
+        &serde_yaml::Value::Mapping(desired),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("traversal-skip path must Ok");
     let output = buf.lock().unwrap();
     assert!(
         output.contains("path traversal"),
@@ -2718,8 +2771,11 @@ fn apparmor_apply_skips_a_profile_path_that_names_no_file() {
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
     );
 
-    ac.apply(&serde_yaml::Value::Mapping(desired), &printer)
-        .expect("a skipped entry must not fail apply");
+    ac.apply(
+        &serde_yaml::Value::Mapping(desired),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("a skipped entry must not fail apply");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2757,8 +2813,11 @@ fn seccomp_apply_skips_a_file_name_that_resolves_to_the_profiles_dir() {
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
     );
 
-    sc.apply(&serde_yaml::Value::Mapping(desired), &printer)
-        .expect("a skipped entry must not fail apply");
+    sc.apply(
+        &serde_yaml::Value::Mapping(desired),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("a skipped entry must not fail apply");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2785,8 +2844,11 @@ fn containerd_apply_with_no_settings_field_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let cc = ContainerdConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    cc.apply(&desired, &printer)
-        .expect("missing settings is no-op");
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("missing settings is no-op");
     assert!(!config.exists());
 }
 
@@ -2806,8 +2868,11 @@ fn containerd_apply_with_empty_settings_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let cc = ContainerdConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    cc.apply(&desired, &printer)
-        .expect("empty settings is no-op");
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("empty settings is no-op");
     assert!(!config.exists());
 }
 
@@ -2839,7 +2904,10 @@ fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     // return Ok; on CI/dev boxes without containerd it returns Err. Either
     // way, the merge + serialize + atomic_write path on lines 105-152 must
     // have executed — verifiable via the config file contents on disk.
-    let _ = cc.apply(&desired, &printer);
+    let _ = cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
     assert!(
         config.exists(),
         "atomic_write must have run before restart fires"
@@ -2885,7 +2953,10 @@ fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemc
     let cc = ContainerdConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = cc.apply(&desired, &printer);
+    let result = cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     if result.is_err() {
@@ -2926,8 +2997,11 @@ fn kubelet_apply_with_no_settings_field_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let kc = KubeletConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    kc.apply(&desired, &printer)
-        .expect("missing settings must be Ok(no-op)");
+    kc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("missing settings must be Ok(no-op)");
     assert!(!config.exists(), "no-op must not create the config file");
 }
 
@@ -2948,8 +3022,11 @@ fn kubelet_apply_with_empty_settings_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let kc = KubeletConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    kc.apply(&desired, &printer)
-        .expect("empty settings must be Ok(no-op)");
+    kc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("empty settings must be Ok(no-op)");
     assert!(
         !config.exists(),
         "empty-settings no-op must not write the config"
@@ -2985,7 +3062,10 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     let kc = KubeletConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let err = kc
-        .apply(&desired, &printer)
+        .apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
         .expect_err("systemctl restart should fail in CI/tests");
     assert!(
         config.exists(),
@@ -3038,7 +3118,10 @@ fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_
     let kc = KubeletConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = kc.apply(&desired, &printer);
+    let _ = kc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -3070,7 +3153,11 @@ fn kubelet_error_subject_handles_multiline_systemctl_output() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Must not panic on the debug-assert in `Renderer::write_line`.
-    super::kubelet::emit_warn_with_error(&printer, "rollback: kubelet restart also failed", &err);
+    super::kubelet::emit_warn_with_error(
+        &cfgd_core::providers::SystemContext::new(&printer),
+        "rollback: kubelet restart also failed",
+        &err,
+    );
 
     let captured = buf.lock().unwrap().clone();
     // First line embedded as the head of the subject.
@@ -3110,8 +3197,10 @@ fn containerd_rollback_subject_handles_multiline_systemctl_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    // Must not panic on the debug-assert in `Renderer::write_line`.
-    printer.status_simple(
+    // Must not panic on the debug-assert in `Renderer::write_line`. Reported
+    // through the same channel the arm uses, so a standalone context still
+    // settles the line the assertions below read.
+    cfgd_core::providers::SystemContext::new(&printer).report(
         cfgd_core::output::Role::Warn,
         format!(
             "rollback: containerd restart also failed: {}",
@@ -3146,8 +3235,11 @@ fn sysctl_apply_with_non_mapping_desired_is_a_noop() {
     let sc = SysctlConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    sc.apply(&serde_yaml::Value::String("not a mapping".into()), &printer)
-        .expect("non-mapping must be Ok no-op");
+    sc.apply(
+        &serde_yaml::Value::String("not a mapping".into()),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("non-mapping must be Ok no-op");
     let captured = buf.lock().unwrap().clone();
     assert!(
         !captured.contains("sysctl"),
@@ -3170,7 +3262,10 @@ fn sysctl_apply_with_invalid_key_returns_validation_err() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let err = sc
-        .apply(&desired, &printer)
+        .apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
         .expect_err("invalid key must error before shellout");
     let msg = err.to_string();
     assert!(
@@ -3196,8 +3291,11 @@ fn sysctl_apply_skips_non_string_keys_without_panicking() {
     let sc = SysctlConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    sc.apply(&desired, &printer)
-        .expect("non-string keys must be skipped, not error");
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("non-string keys must be skipped, not error");
     let captured = buf.lock().unwrap().clone();
     assert!(
         !captured.contains("sysctl -w"),
@@ -3231,7 +3329,7 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
     // Apply may return Ok or Err depending on whether systemctl is present
     // (the enable shellout uses `?`); both are acceptable — what we pin is
     // that the "Failed to read unit file" warning is emitted.
-    let _ = su.apply(&yaml, &printer);
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("Failed to read unit file"),
@@ -3255,7 +3353,7 @@ fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &printer);
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("Installing unit file:"),
@@ -3278,7 +3376,7 @@ fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &printer);
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("systemctl enable cfgd-test-phantom-enable.service"),
@@ -3299,7 +3397,7 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &printer);
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("systemctl disable cfgd-test-phantom-disable.service"),
@@ -3357,7 +3455,11 @@ profiles:
 
         let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
-        sc.apply(&desired, &printer).unwrap();
+        sc.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
 
         let summary = NodeApplySummary {
             configurator: "seccomp".to_string(),
@@ -3412,7 +3514,11 @@ profiles:
 
         let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
-        sc.apply(&desired, &printer).unwrap();
+        sc.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
 
         let summary = NodeApplySummary {
             configurator: "seccomp".to_string(),
@@ -3476,7 +3582,11 @@ certificates:
 
         let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
-        cc.apply(&desired, &printer).unwrap();
+        cc.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
 
         let summary = NodeApplySummary {
             configurator: "certificates".to_string(),
@@ -3536,7 +3646,11 @@ certificates:
 
         let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
-        cc.apply(&desired, &printer).unwrap();
+        cc.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
 
         let summary = NodeApplySummary {
             configurator: "certificates".to_string(),

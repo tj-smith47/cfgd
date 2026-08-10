@@ -4,8 +4,8 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_to_string};
 use super::format::{find_toml_value, set_toml_value};
@@ -96,7 +96,7 @@ impl SystemConfigurator for ContainerdConfigurator {
         ))
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let config_path = Self::config_path(desired);
 
         let settings = match desired.get("settings").and_then(|v| v.as_mapping()) {
@@ -117,7 +117,7 @@ impl SystemConfigurator for ContainerdConfigurator {
             };
             let desired_str = yaml_value_to_string(desired_val);
 
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!("containerd: setting {} = {}", key_str, desired_str),
             );
@@ -148,19 +148,19 @@ impl SystemConfigurator for ContainerdConfigurator {
 
         cfgd_core::atomic_write_str(&config_path, &content)?;
 
-        printer.status_simple(Role::Info, "Restarting containerd");
+        cx.report(Role::Info, "Restarting containerd");
         if let Err(e) = Self::restart_containerd() {
             // Restart failed — attempt rollback
             if let Some(ref state) = backup
                 && !state.is_symlink
                 && !state.oversized
             {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     "containerd restart failed — restoring previous config",
                 );
                 if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "rollback: failed to restore config: {}",
@@ -168,7 +168,7 @@ impl SystemConfigurator for ContainerdConfigurator {
                         ),
                     );
                 } else if let Err(re) = Self::restart_containerd() {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "rollback: containerd restart also failed: {}",

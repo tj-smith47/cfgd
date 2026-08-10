@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::{diff_yaml_mapping, parse_reg_line, yaml_value_with_numeric_bools};
 
@@ -73,7 +73,7 @@ impl WindowsRegistryConfigurator {
         key_path: &str,
         value_name: &str,
         value: &str,
-        printer: &Printer,
+        cx: &SystemContext<'_>,
     ) -> Result<()> {
         if !cfg!(windows) {
             return Ok(());
@@ -103,7 +103,7 @@ impl WindowsRegistryConfigurator {
             .map_err(cfgd_core::errors::CfgdError::Io)?;
 
         if !output.status.success() {
-            printer.status_simple(
+            cx.report(
                 Role::Warn,
                 format!(
                     "reg add failed for {}\\{}: {}",
@@ -179,7 +179,7 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -200,8 +200,8 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                     None => continue,
                 };
                 let desired_str = yaml_value_with_numeric_bools(desired_val);
-                Self::write_reg_value(key_path, name, &desired_str, printer)?;
-                printer.status_simple(
+                Self::write_reg_value(key_path, name, &desired_str, cx)?;
+                cx.report(
                     Role::Ok,
                     format!("Set {}\\{} = {}", key_path, name, desired_str),
                 );
@@ -462,7 +462,10 @@ mod tests {
     fn registry_apply_no_mapping_value_is_noop() {
         let wrc = WindowsRegistryConfigurator;
         let (printer, _buf) = cfgd_core::output::Printer::for_test();
-        let result = wrc.apply(&serde_yaml::Value::String("not a mapping".into()), &printer);
+        let result = wrc.apply(
+            &serde_yaml::Value::String("not a mapping".into()),
+            &cfgd_core::providers::SystemContext::new(&printer),
+        );
         assert!(result.is_ok());
     }
 
@@ -504,7 +507,10 @@ mod tests {
             serde_yaml::Value::Number(7.into()),
             serde_yaml::Value::Mapping(inner_skip),
         );
-        let result = wrc.apply(&serde_yaml::Value::Mapping(outer), &printer);
+        let result = wrc.apply(
+            &serde_yaml::Value::Mapping(outer),
+            &cfgd_core::providers::SystemContext::new(&printer),
+        );
         assert!(result.is_ok());
     }
 
@@ -558,7 +564,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -566,7 +573,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -579,7 +587,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -592,7 +601,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -610,15 +620,21 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
     fn registry_write_reg_value_noop_on_non_windows() {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         // On non-Windows, write_reg_value returns Ok(()) immediately
-        WindowsRegistryConfigurator::write_reg_value(r"HKCU\Test", "TestValue", "42", &printer)
-            .unwrap();
+        WindowsRegistryConfigurator::write_reg_value(
+            r"HKCU\Test",
+            "TestValue",
+            "42",
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::read_command_output;
 
@@ -45,7 +45,7 @@ impl SystemConfigurator for XfconfConfigurator {
         diff_nested_mapping(desired, read_xfconf_value)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -69,7 +69,7 @@ impl SystemConfigurator for XfconfConfigurator {
 
                 let val_str = yaml_value_to_string(desired_value);
 
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("xfconf-query -c {} -p {} -s {}", channel, property, val_str),
                 );
@@ -102,7 +102,7 @@ impl SystemConfigurator for XfconfConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !create_output.status.success() {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "xfconf-query set failed for {}.{}: {}",
@@ -136,7 +136,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -144,7 +145,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -157,7 +159,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -170,7 +173,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -188,7 +192,8 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]

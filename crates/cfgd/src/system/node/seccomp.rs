@@ -3,8 +3,8 @@ use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::format::json_equal;
 
@@ -97,7 +97,7 @@ impl SystemConfigurator for SeccompConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let profiles_dir = desired
             .get("profilesDir")
             .and_then(|v| v.as_str())
@@ -129,13 +129,13 @@ impl SystemConfigurator for SeccompConfigurator {
 
             let profile_path = profiles_dir.join(file);
             if let Err(e) = cfgd_core::validate_no_traversal(std::path::Path::new(file)) {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!("Skipping seccomp profile {name} ({file}): {e}"),
                 );
                 continue;
             }
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!("Writing seccomp profile {}: {}", name, profile_path.posix()),
             );

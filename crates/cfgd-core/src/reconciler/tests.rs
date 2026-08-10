@@ -3316,7 +3316,9 @@ fn apply_env_write_env_file_to_tempdir() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     // Verify file was written
     let written = std::fs::read_to_string(&env_path).unwrap();
@@ -3346,7 +3348,9 @@ fn apply_env_write_skips_when_content_matches() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     // Should report skipped
     assert!(desc.contains("skipped"), "Expected skip: {}", desc);
@@ -3363,7 +3367,9 @@ fn apply_env_inject_source_line_creates_file() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
     assert!(written.contains(". ~/.cfgd.env"));
@@ -3388,7 +3394,9 @@ fn apply_env_inject_skips_when_already_present() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     assert!(desc.contains("skipped"), "Expected skip: {}", desc);
 }
@@ -3406,6 +3414,7 @@ fn apply_env_live_session_reports_the_planned_resource_id() {
     let desc = Reconciler::apply_env_action(
         &EnvAction::RefreshLiveSession { vars: Vec::new() },
         &printer,
+        crate::providers::NoteSink::discarded(),
     )
     .unwrap();
 
@@ -3437,7 +3446,8 @@ fn apply_env_inject_migrates_legacy_source_keyword() {
     };
 
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
     // The legacy line is upgraded in place, not duplicated.
@@ -3464,7 +3474,8 @@ fn apply_env_inject_appends_to_existing_content() {
     };
 
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
     assert!(written.starts_with("# my config\n"));
@@ -3883,7 +3894,8 @@ fn apply_env_write_with_aliases_produces_correct_file() {
     };
 
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     let written = std::fs::read_to_string(&env_path).unwrap();
     assert!(written.contains("export EDITOR=\"nvim\""));
@@ -10716,7 +10728,11 @@ fn verify_system_configurator_reports_drift() {
                 },
             ])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+        fn apply(
+            &self,
+            _: &serde_yaml::Value,
+            _: &crate::providers::SystemContext<'_>,
+        ) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -10802,7 +10818,11 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
             Ok(vec![])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+        fn apply(
+            &self,
+            _: &serde_yaml::Value,
+            _: &crate::providers::SystemContext<'_>,
+        ) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -15147,7 +15167,9 @@ fn apply_env_inject_refuses_a_non_utf8_rc_and_leaves_it_byte_identical() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    let err = Reconciler::apply_env_action(&action, &printer).unwrap_err();
+    let err =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap_err();
 
     assert!(
         err.to_string().contains("not valid UTF-8"),
@@ -15176,7 +15198,9 @@ fn apply_env_write_regenerates_a_corrupt_managed_file() {
         content: content.to_string(),
     };
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     assert!(
         !desc.ends_with(super::apply::ENV_SKIPPED_SUFFIX),
@@ -15199,7 +15223,10 @@ fn apply_env_inject_propagates_a_non_notfound_read_error() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    assert!(Reconciler::apply_env_action(&action, &printer).is_err());
+    assert!(
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .is_err()
+    );
     assert!(rc_path.is_dir(), "the target must be left untouched");
 }
 
@@ -15219,7 +15246,8 @@ fn apply_env_inject_refuses_an_unreadable_rc() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    let outcome = Reconciler::apply_env_action(&action, &printer);
+    let outcome =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded());
 
     // The kernel's read check does not apply to uid 0, so what stops an
     // elevated run from rewriting this file is cfgd's own mode-based guard, and
@@ -15258,7 +15286,9 @@ fn apply_env_inject_refuses_a_read_only_rc() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    let err = Reconciler::apply_env_action(&action, &printer).unwrap_err();
+    let err =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap_err();
     assert!(err.to_string().contains("read-only"), "{err}");
     assert_eq!(std::fs::read_to_string(&rc_path).unwrap(), original);
 
@@ -15669,14 +15699,16 @@ fn apply_env_write_refuses_a_link_redirecting_it_out_of_the_owner_s_tree() {
     if !crate::is_root() {
         // Only root can stage a foreign owner, so unprivileged this asserts the
         // permitted half: link and target share one uid, the write follows.
-        Reconciler::apply_env_action(&action, &printer).unwrap();
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
         assert!(std::fs::read_to_string(&outside).unwrap().contains("EVIL"));
         return;
     }
 
     std::os::unix::fs::chown(&env_path, Some(12345), Some(12345)).unwrap();
-    let err = Reconciler::apply_env_action(&action, &printer)
-        .expect_err("a link out of the owner's tree must be refused");
+    let err =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .expect_err("a link out of the owner's tree must be refused");
 
     assert!(
         err.to_string().contains("refusing to write through it"),
@@ -15715,7 +15747,8 @@ fn apply_env_inject_writes_through_a_symlinked_rc() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     assert!(
         std::fs::symlink_metadata(&rc_path)
@@ -17379,7 +17412,7 @@ impl PackageManager for NotePushingManager {
     fn install(&self, _packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for message in ["add /opt/brew/bin to PATH", "restart your shell"] {
             cx.notes
-                .push(crate::providers::PostInstallNote::warn(&self.name, message));
+                .push(crate::providers::ActionNote::warn(&self.name, message));
         }
         Ok(())
     }
@@ -17392,6 +17425,134 @@ impl PackageManager for NotePushingManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
+}
+
+/// A configurator that narrates from `apply`, the way every real one does while
+/// it walks the keys it is setting.
+struct NarratingConfigurator;
+
+impl crate::providers::SystemConfigurator for NarratingConfigurator {
+    fn name(&self) -> &str {
+        "sysctl"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Null)
+    }
+    fn diff(&self, _: &serde_yaml::Value) -> Result<Vec<crate::providers::SystemDrift>> {
+        Ok(vec![])
+    }
+    fn apply(&self, _: &serde_yaml::Value, cx: &crate::providers::SystemContext<'_>) -> Result<()> {
+        cx.report(crate::output::Role::Info, "sysctl -w net.ipv4.ip_forward=1");
+        cx.report(
+            crate::output::Role::Warn,
+            "reload deferred: /proc is read-only",
+        );
+        Ok(())
+    }
+}
+
+fn sysctl_set_value_plan() -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("work"),
+            vec![Action::System(SystemAction::SetValue {
+                configurator: "sysctl".to_string(),
+                key: "net.ipv4.ip_forward".to_string(),
+                desired: "1".to_string(),
+                current: "0".to_string(),
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+fn resolved_with_sysctl_key() -> crate::config::ResolvedProfile {
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].profile_name = "work".to_string();
+    let mut settings = serde_yaml::Mapping::new();
+    settings.insert(
+        serde_yaml::Value::String("net.ipv4.ip_forward".to_string()),
+        serde_yaml::Value::String("1".to_string()),
+    );
+    resolved
+        .merged
+        .system
+        .insert("sysctl".to_string(), serde_yaml::Value::Mapping(settings));
+    resolved
+}
+
+#[test]
+fn configurator_narration_renders_attached_under_its_system_action_line() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .system_configurators
+        .push(Box::new(NarratingConfigurator));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let (_, out) = apply_transcript(
+        &reconciler,
+        &sysctl_set_value_plan(),
+        &resolved_with_sysctl_key(),
+        &[],
+    );
+    let lines = transcript_lines(&out);
+
+    let status = lines
+        .iter()
+        .position(|l| l.contains("set sysctl.net.ipv4.ip_forward"))
+        .unwrap_or_else(|| panic!("the action's own status line: {out}"));
+    assert!(
+        lines[status].trim_start().starts_with('\u{2713}'),
+        "the action settles its own line first: {out}"
+    );
+    // Untagged: the line above already says which configurator spoke.
+    assert_eq!(
+        lines[status + 1].trim(),
+        "\u{2299} sysctl -w net.ipv4.ip_forward=1",
+        "narration attaches under the action, keeping its Info role: {out}"
+    );
+    assert_eq!(
+        lines[status + 2].trim(),
+        "\u{26A0} reload deferred: /proc is read-only",
+        "and the Warn role survives the trip through the sink: {out}"
+    );
+    let attached_indent = lines[status + 1].len() - lines[status + 1].trim_start().len();
+    let status_indent = lines[status].len() - lines[status].trim_start().len();
+    assert!(
+        attached_indent > status_indent,
+        "an attached note sits one level deeper than the line it belongs to: {out}"
+    );
+}
+
+#[test]
+fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
+    // The standalone shape — a `SystemContext::new` caller owns no action line,
+    // so a report the sink would otherwise hold is the only output the user
+    // gets and must still reach the terminal.
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let cx = crate::providers::SystemContext::new(&printer);
+    crate::providers::SystemConfigurator::apply(
+        &NarratingConfigurator,
+        &serde_yaml::Value::Null,
+        &cx,
+    )
+    .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(
+        out.contains("sysctl -w net.ipv4.ip_forward=1"),
+        "an undrained report still settles rather than vanishing: {out}"
+    );
+    assert!(
+        out.contains("reload deferred: /proc is read-only"),
+        "including the warning: {out}"
+    );
 }
 
 #[test]

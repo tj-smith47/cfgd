@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 /// SystemdUnitConfigurator — manages systemd unit files and enablement.
 #[derive(Default)]
@@ -103,7 +103,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let units = match desired.as_sequence() {
             Some(s) => s,
             None => return Ok(()),
@@ -125,7 +125,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 let source = self.resolve_unit_file(unit_file);
                 let dest = format!("/etc/systemd/system/{}", name);
                 let dest_path = Path::new(&dest);
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("Installing unit file: {} → {}", source.display(), dest),
                 );
@@ -133,7 +133,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 match std::fs::read(&source) {
                     Ok(content) => {
                         if let Err(e) = cfgd_core::atomic_write(dest_path, &content) {
-                            printer.status_simple(
+                            cx.report(
                                 Role::Warn,
                                 format!(
                                     "Failed to install unit file: {}",
@@ -143,7 +143,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                         } else if let Err(e) = cfgd_core::set_file_permissions(dest_path, 0o644) {
                             // systemd unit files are world-readable by convention; the
                             // atomic_write tempfile lands 0600, so widen it explicitly.
-                            printer.status_simple(
+                            cx.report(
                                 Role::Warn,
                                 format!(
                                     "Failed to set unit file mode: {}",
@@ -153,7 +153,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                         }
                     }
                     Err(e) => {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "Failed to read unit file: {}",
@@ -171,7 +171,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 
             // Enable/disable
             let action = if desired_enabled { "enable" } else { "disable" };
-            printer.status_simple(Role::Info, format!("systemctl {} {}", action, name));
+            cx.report(Role::Info, format!("systemctl {} {}", action, name));
 
             let output = Command::new("systemctl")
                 .args([action, name])
@@ -179,7 +179,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "systemctl {} {} failed: {}",
@@ -328,7 +328,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator::default();
         let yaml = serde_yaml::Value::Sequence(Vec::new());
-        su.apply(&yaml, &printer).unwrap();
+        su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -336,7 +337,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator::default();
         let yaml = serde_yaml::Value::String("not a sequence".into());
-        su.apply(&yaml, &printer).unwrap();
+        su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -349,7 +351,8 @@ mod tests {
             serde_yaml::Value::Bool(true),
         );
         let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(unit)]);
-        su.apply(&yaml, &printer).unwrap();
+        su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -407,7 +410,8 @@ mod tests {
 
             let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator::default();
-            su.apply(&yaml, &printer).unwrap();
+            su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+                .unwrap();
 
             let summary = UnitApplySummary { units_processed: 1 };
             let doc = Doc::new()
@@ -444,7 +448,8 @@ mod tests {
 
             let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator::default();
-            su.apply(&yaml, &printer).unwrap();
+            su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+                .unwrap();
 
             let summary = UnitApplySummary { units_processed: 1 };
             let doc = Doc::new()

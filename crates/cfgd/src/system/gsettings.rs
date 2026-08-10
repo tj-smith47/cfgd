@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::read_command_output;
 
@@ -55,7 +55,7 @@ impl SystemConfigurator for GsettingsConfigurator {
         diff_nested_mapping(desired, read_gsettings_value)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -79,7 +79,7 @@ impl SystemConfigurator for GsettingsConfigurator {
 
                 let gsettings_val = yaml_value_to_string(desired_value);
 
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("gsettings set {} {} {}", schema, key_str, gsettings_val),
                 );
@@ -90,7 +90,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "gsettings set failed for {}.{}: {}",
@@ -168,7 +168,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -176,7 +177,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -189,7 +191,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -202,7 +205,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -220,7 +224,8 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -263,7 +268,7 @@ mod tests {
         // either way; the missing-binary case currently returns an Io error
         // because Command::output → CfgdError::Io. So tolerate either Ok or
         // Err (the body coverage is unchanged either way).
-        let _ = gc.apply(&yaml, &printer);
+        let _ = gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     }
 
     #[test]

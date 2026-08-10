@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::read_command_output;
 
@@ -102,7 +102,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let files = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -135,7 +135,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                     };
                     let val_str = yaml_value_to_string(value);
 
-                    printer.status_simple(
+                    cx.report(
                         Role::Info,
                         format!(
                             "{} --file {} --group {} --key {} {}",
@@ -159,7 +159,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !output.status.success() {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "{} failed for {}.{}.{}: {}",
@@ -208,7 +208,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -216,7 +217,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -229,7 +231,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -242,7 +245,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -260,7 +264,8 @@ mod tests {
             serde_yaml::Value::Mapping(groups),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -278,7 +283,8 @@ mod tests {
             serde_yaml::Value::Mapping(groups),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -301,7 +307,8 @@ mod tests {
             serde_yaml::Value::Mapping(groups),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]

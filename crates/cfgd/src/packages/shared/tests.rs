@@ -154,7 +154,7 @@ fn extract_caveats_brew_cask_works_same_as_brew() {
     let output = test_cmd_output("==> Caveats\nRestart to complete install.\n==> Done\n", "");
     let notes = extract_caveats("brew-cask", &output);
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].manager, "brew-cask");
+    assert_eq!(notes[0].tag.as_deref(), Some("brew-cask"));
     assert!(notes[0].message.contains("Restart to complete install"));
 }
 
@@ -182,7 +182,7 @@ fn extract_caveats_pnpm_warnings() {
     let output = test_cmd_output("", "npm warn deprecated some-pkg@1.0\n");
     let notes = extract_caveats("pnpm", &output);
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].manager, "pnpm");
+    assert_eq!(notes[0].tag.as_deref(), Some("pnpm"));
 }
 
 #[test]
@@ -252,12 +252,12 @@ fn strip_arch_suffix_empty_string() {
 
 #[test]
 fn post_install_note_fields() {
-    let note = PostInstallNote::warn("brew", "test message");
-    assert_eq!(note.manager, "brew");
+    let note = ActionNote::warn("brew", "test message");
+    assert_eq!(note.tag.as_deref(), Some("brew"));
     assert_eq!(note.message, "test message");
     assert_eq!(note.role, cfgd_core::output::Role::Warn);
     assert_eq!(
-        PostInstallNote::info("go", "removed x").role,
+        ActionNote::info("go", "removed x").role,
         cfgd_core::output::Role::Info
     );
 }
@@ -353,7 +353,7 @@ fn extract_caveats_npm_warn_uppercase_and_lowercase() {
     let output = test_cmd_output("npm warn old-dep\nnpm WARN peer issue\n", "");
     let notes = extract_caveats("npm", &output);
     assert_eq!(notes.len(), 2);
-    assert!(notes.iter().all(|n| n.manager == "npm"));
+    assert!(notes.iter().all(|n| n.tag.as_deref() == Some("npm")));
 }
 
 #[test]
@@ -477,7 +477,7 @@ fn extract_caveats_brew_caveats_only_blank_lines() {
     let output = test_cmd_output("==> Caveats\n\n\n==> Summary\n", "");
     let notes = extract_caveats("brew", &output);
     // Blank lines are captured, joined, then trimmed — result is empty string
-    // but caveat_lines is non-empty so a PostInstallNote with empty message is produced
+    // but caveat_lines is non-empty so a ActionNote with empty message is produced
     assert_eq!(notes.len(), 1);
     assert!(
         notes[0].message.is_empty(),
@@ -1004,7 +1004,7 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
     .expect("should succeed");
     let drained = notes.take();
     assert_eq!(drained.len(), 1, "expected one caveat, got: {drained:?}");
-    assert_eq!(drained[0].manager, "brew");
+    assert_eq!(drained[0].tag.as_deref(), Some("brew"));
     assert!(
         drained[0].message.contains("Add to PATH"),
         "expected caveat message, got: {:?}",

@@ -1119,7 +1119,7 @@ mod bridge {
             1,
             "the caveat must reach the sink, not the terminal: {collected:?}"
         );
-        assert_eq!(collected[0].manager, "brew");
+        assert_eq!(collected[0].tag.as_deref(), Some("brew"));
         assert_eq!(
             collected[0].message,
             "Run xcode-select --install to complete setup."

@@ -331,7 +331,11 @@ impl<'a> super::Reconciler<'a> {
             .collect()
     }
 
-    pub(super) fn apply_env_action(action: &EnvAction, printer: &Printer) -> Result<String> {
+    pub(super) fn apply_env_action(
+        action: &EnvAction,
+        printer: &Printer,
+        notes: &crate::providers::NoteSink,
+    ) -> Result<String> {
         match action {
             EnvAction::WriteEnvFile { path, content } => {
                 if super::env_files::read_managed_baseline(path).as_ref() == Some(content) {
@@ -364,7 +368,7 @@ impl<'a> super::Reconciler<'a> {
                 Ok(format!("env:inject:{}", crate::to_posix_string(rc_path)))
             }
             EnvAction::RefreshLiveSession { vars } => {
-                let changed = crate::refresh_session_env(vars, printer);
+                let changed = crate::refresh_session_env(vars, printer, notes);
                 if changed == 0 {
                     return Ok(format!(
                         "{LIVE_SESSION_RESOURCE_ID}{}",

@@ -548,7 +548,7 @@ Tags: git vcs dvcs
                 .expect("bootstrap Ok via shim");
             let drained = notes.take();
             assert_eq!(drained.len(), 1, "expected one caveat, got {drained:?}");
-            assert_eq!(drained[0].manager, "chocolatey");
+            assert_eq!(drained[0].tag.as_deref(), Some("chocolatey"));
             assert!(
                 drained[0].message.contains("Restart your shell"),
                 "got: {}",

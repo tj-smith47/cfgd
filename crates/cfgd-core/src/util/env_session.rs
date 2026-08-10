@@ -16,6 +16,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::output::{Printer, Role};
+use crate::providers::NoteSink;
 
 /// Live-refresh shell-outs are local and fast; bound them anyway so a wedged
 /// session bus (`systemctl --user` with no user D-Bus) can't hang an apply.
@@ -37,8 +38,9 @@ enum ErrStream {
 }
 
 /// macOS: set a variable in the current launchd session (`launchctl setenv`).
-/// Warns through the printer on failure; returns whether it succeeded.
-pub fn launchctl_setenv(key: &str, value: &str, printer: &Printer) -> bool {
+/// Reports a failure into `notes` (attached under the owning action's line when
+/// the caller drains it); returns whether it succeeded.
+pub fn launchctl_setenv(key: &str, value: &str, printer: &Printer, notes: &NoteSink) -> bool {
     let mut cmd = crate::tool_cmd(LAUNCHCTL_BIN_ENV, "launchctl");
     cmd.args(["setenv", key, value]);
     run_setter(
@@ -47,12 +49,13 @@ pub fn launchctl_setenv(key: &str, value: &str, printer: &Printer) -> bool {
         &format!("launchctl setenv {key}"),
         ErrStream::Stderr,
         printer,
+        notes,
     )
 }
 
 /// Windows: persist a user variable to `HKCU\Environment` (`setx`). `setx`
 /// reports failures on stdout, not stderr.
-pub fn windows_setx(key: &str, value: &str, printer: &Printer) -> bool {
+pub fn windows_setx(key: &str, value: &str, printer: &Printer, notes: &NoteSink) -> bool {
     let mut cmd = crate::tool_cmd(SETX_BIN_ENV, "setx");
     cmd.args([key, value]);
     run_setter(
@@ -61,12 +64,13 @@ pub fn windows_setx(key: &str, value: &str, printer: &Printer) -> bool {
         &format!("setx {key}"),
         ErrStream::Stdout,
         printer,
+        notes,
     )
 }
 
 /// Linux/BSD: register a variable with the systemd user manager so units it
 /// later spawns inherit it. Best-effort — absent `systemctl` is a no-op.
-fn systemctl_user_setenv(key: &str, value: &str, printer: &Printer) -> bool {
+fn systemctl_user_setenv(key: &str, value: &str, printer: &Printer, notes: &NoteSink) -> bool {
     if !crate::command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl") {
         return false;
     }
@@ -78,6 +82,7 @@ fn systemctl_user_setenv(key: &str, value: &str, printer: &Printer) -> bool {
         &format!("systemctl --user set-environment {key}"),
         ErrStream::Stderr,
         printer,
+        notes,
     )
 }
 
@@ -109,6 +114,7 @@ fn run_setter(
     label: &str,
     err_stream: ErrStream,
     printer: &Printer,
+    notes: &NoteSink,
 ) -> bool {
     refuse_unseamed_session_write(seam);
     match crate::command_output_with_timeout(&mut cmd, ENV_REFRESH_TIMEOUT) {
@@ -118,7 +124,8 @@ fn run_setter(
                 ErrStream::Stdout => crate::stdout_lossy_trimmed(&output),
                 ErrStream::Stderr => crate::stderr_lossy_trimmed(&output),
             };
-            printer.status_simple(
+            notes.report(
+                printer,
                 Role::Warn,
                 format!(
                     "{label} failed: {}",
@@ -128,7 +135,8 @@ fn run_setter(
             false
         }
         Err(e) => {
-            printer.status_simple(
+            notes.report(
+                printer,
                 Role::Warn,
                 format!(
                     "{label} failed: {}",
@@ -149,7 +157,11 @@ fn run_setter(
 /// `systemctl --user set-environment`, Windows `setx`. The durable
 /// file/registry targets written elsewhere are authoritative; a failure here
 /// is surfaced as a warning and never aborts an apply.
-pub fn refresh_session_env(vars: &[(String, String)], printer: &Printer) -> usize {
+pub fn refresh_session_env(
+    vars: &[(String, String)],
+    printer: &Printer,
+    notes: &NoteSink,
+) -> usize {
     if vars.is_empty() {
         return 0;
     }
@@ -161,11 +173,11 @@ pub fn refresh_session_env(vars: &[(String, String)], printer: &Printer) -> usiz
             continue;
         }
         let ok = if cfg!(windows) {
-            windows_setx(key, value, printer)
+            windows_setx(key, value, printer, notes)
         } else if cfg!(target_os = "macos") {
-            launchctl_setenv(key, value, printer)
+            launchctl_setenv(key, value, printer, notes)
         } else {
-            systemctl_user_setenv(key, value, printer)
+            systemctl_user_setenv(key, value, printer, notes)
         };
         if ok {
             changed += 1;
@@ -268,7 +280,7 @@ mod tests {
     #[test]
     fn refresh_session_env_empty_is_noop() {
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        assert_eq!(refresh_session_env(&[], &printer), 0);
+        assert_eq!(refresh_session_env(&[], &printer, NoteSink::discarded()), 0);
     }
 
     /// A `/bin/sh` stand-in for a session manager: appends its argv to `log` and
@@ -296,7 +308,12 @@ mod tests {
         let _seam = crate::test_helpers::EnvVarGuard::set(LAUNCHCTL_BIN_ENV, &shim);
 
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        assert!(launchctl_setenv("EDITOR", "nvim", &printer));
+        assert!(launchctl_setenv(
+            "EDITOR",
+            "nvim",
+            &printer,
+            NoteSink::discarded()
+        ));
         assert_eq!(
             std::fs::read_to_string(&log).unwrap().trim(),
             "setenv EDITOR nvim"
@@ -313,7 +330,12 @@ mod tests {
         let _seam = crate::test_helpers::EnvVarGuard::set(SETX_BIN_ENV, &shim);
 
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        assert!(!windows_setx("EDITOR", "nvim", &printer));
+        assert!(!windows_setx(
+            "EDITOR",
+            "nvim",
+            &printer,
+            NoteSink::discarded()
+        ));
         printer.flush();
         let out = crate::output::strip_ansi(&buf.lock().unwrap());
         assert!(
@@ -329,6 +351,6 @@ mod tests {
     fn an_unseamed_session_write_is_refused_under_test() {
         let _unset = crate::test_helpers::EnvVarGuard::unset(LAUNCHCTL_BIN_ENV);
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        launchctl_setenv("EDITOR", "nvim", &printer);
+        launchctl_setenv("EDITOR", "nvim", &printer, NoteSink::discarded());
     }
 }

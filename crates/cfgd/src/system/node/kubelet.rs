@@ -4,8 +4,8 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_to_string};
 
@@ -100,7 +100,7 @@ impl SystemConfigurator for KubeletConfigurator {
         ))
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let config_path = Self::config_path(desired);
 
         let settings = match desired.get("settings").and_then(|v| v.as_mapping()) {
@@ -129,7 +129,7 @@ impl SystemConfigurator for KubeletConfigurator {
                 Some(k) => k,
                 None => continue,
             };
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!(
                     "kubelet: setting {} = {}",
@@ -167,20 +167,20 @@ impl SystemConfigurator for KubeletConfigurator {
 
         cfgd_core::atomic_write_str(&config_path, &content)?;
 
-        printer.status_simple(Role::Info, "Restarting kubelet");
+        cx.report(Role::Info, "Restarting kubelet");
         if let Err(e) = Self::restart_kubelet() {
             if let Some(ref state) = backup
                 && !state.is_symlink
                 && !state.oversized
             {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     "kubelet restart failed — restoring previous config",
                 );
                 if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
-                    emit_warn_with_error(printer, "rollback: failed to restore config", &re);
+                    emit_warn_with_error(cx, "rollback: failed to restore config", &re);
                 } else if let Err(re) = Self::restart_kubelet() {
-                    emit_warn_with_error(printer, "rollback: kubelet restart also failed", &re);
+                    emit_warn_with_error(cx, "rollback: kubelet restart also failed", &re);
                 }
             }
             return Err(e);
@@ -190,15 +190,19 @@ impl SystemConfigurator for KubeletConfigurator {
     }
 }
 
-/// Emit a `Role::Warn` status whose subject collapses a multi-line error into
+/// Report a `Role::Warn` note whose subject collapses a multi-line error into
 /// a single line via `cfgd_core::output::collapse_to_subject_line`.
 ///
 /// Systemctl errors are routinely multi-line (e.g. `"Transport endpoint is not
 /// connected\nSee system logs and 'systemctl status kubelet.service' for
-/// details."`). Pumping the raw `Display` into `status_simple`'s subject trips
+/// details."`). Pumping the raw `Display` into a status subject trips
 /// `Renderer::write_line`'s debug-assert against embedded newlines.
-pub(super) fn emit_warn_with_error(printer: &Printer, prefix: &str, err: &impl std::fmt::Display) {
-    printer.status_simple(
+pub(super) fn emit_warn_with_error(
+    cx: &SystemContext<'_>,
+    prefix: &str,
+    err: &impl std::fmt::Display,
+) {
+    cx.report(
         Role::Warn,
         format!(
             "{}: {}",

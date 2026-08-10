@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{CommandOutput, Role, collapse_to_subject_line};
-use cfgd_core::providers::{PackageContext, PostInstallNote};
+use cfgd_core::providers::{ActionNote, PackageContext};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
@@ -129,7 +129,7 @@ where
 }
 
 /// Extract caveats/warnings from package manager output.
-pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<PostInstallNote> {
+pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
     let combined = format!("{}\n{}", output.stdout, output.stderr);
     let mut notes = Vec::new();
 
@@ -147,10 +147,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 if in_caveats {
                     if line.starts_with("==> ") {
                         if !caveat_lines.is_empty() {
-                            notes.push(PostInstallNote::warn(
-                                manager,
-                                caveat_lines.join("\n").trim(),
-                            ));
+                            notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
                         }
                         in_caveats = false;
                     } else {
@@ -159,17 +156,14 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 }
             }
             if in_caveats && !caveat_lines.is_empty() {
-                notes.push(PostInstallNote::warn(
-                    manager,
-                    caveat_lines.join("\n").trim(),
-                ));
+                notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
             }
         }
         "npm" | "pnpm" => {
             for line in combined.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("npm warn") || trimmed.starts_with("npm WARN") {
-                    notes.push(PostInstallNote::warn(manager, trimmed));
+                    notes.push(ActionNote::warn(manager, trimmed));
                 }
             }
         }
@@ -177,7 +171,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
             for line in combined.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("WARNING:") {
-                    notes.push(PostInstallNote::warn(manager, trimmed));
+                    notes.push(ActionNote::warn(manager, trimmed));
                 }
             }
         }
@@ -188,7 +182,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 let lower = trimmed.to_lowercase();
                 if lower.contains("warning:") || lower.contains("caveat") || lower.contains("note:")
                 {
-                    notes.push(PostInstallNote::warn(manager, trimmed));
+                    notes.push(ActionNote::warn(manager, trimmed));
                 }
             }
         }

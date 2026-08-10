@@ -44,6 +44,32 @@ Forbidden outside the `output/` module itself:
 
 See Hard Rule #1 in `hard-rules.md`.
 
+## Provider narration goes to the note sink, never to the printer
+
+A `PackageManager` or `SystemConfigurator` executes UNDER an action line the reconciler
+settles from the plan. A `status_simple` called from inside one of them therefore lands
+*above* the line describing the same work, outside the phase tree. Both traits carry a
+context whose `report` is the narration channel:
+
+```rust
+// PackageManager — the tag names the speaker, because the action line names the package
+cx.report(Role::Warn, self.name(), "brew: run `brew link --force`");
+
+// SystemConfigurator — no tag: the action line already reads system:<name>.<key>
+cx.report(Role::Info, format!("systemctl {action} {name}"));
+```
+
+```
+✓ set sysctl.net.ipv4.ip_forward: 0 → 1     ← the reconciler's line, from the plan
+  ⊙ sysctl -w net.ipv4.ip_forward=1         ← cx.report, attached one level deeper
+  ⚠ reload deferred: /proc is read-only
+```
+
+Both land in one `NoteSink` and render through one path (`reconciler::apply::emit_notes`
+→ `SectionGuard::attached_status`) — never grow a second drain. A context nobody drains
+(`SystemContext::new`, `PackageContext::new`, `NoteSink::discarded()`) settles the report
+on the printer instead, so a standalone caller loses nothing.
+
 ## Source-constraint mode (every `compose_with_sources` call site)
 
 **`ConstraintMode::Report` is for read paths; every path that mutates the machine composes in `Enforce`.** Decide on what the command *does*, not on what it reads: `backup run` reads config like `status` but executes hooks and writes snapshots, so it is `Enforce`. `Report` records a source violation and continues (the read still has to render); `Enforce` aborts on the first one.

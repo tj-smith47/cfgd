@@ -111,8 +111,8 @@ impl<'a> PackageContext<'a> {
     pub fn report(&self, role: Role, manager: &str, message: impl Into<String>) {
         let message = message.into();
         if self.caller_owns_status {
-            self.notes.push(PostInstallNote {
-                manager: manager.to_string(),
+            self.notes.push(ActionNote {
+                tag: Some(manager.to_string()),
                 message,
                 role,
             });
@@ -122,37 +122,61 @@ impl<'a> PackageContext<'a> {
     }
 }
 
-/// An important message a package manager emitted while one action ran — a brew
-/// caveat, an npm warning. Part of the provider contract rather than of any one
-/// manager, because the reconciler is what renders it: the note is attached to
-/// the action that produced it instead of being printed from inside the manager,
-/// where it would land above the action's own status line.
+/// A narration line a provider emitted while one action ran — a brew caveat, an
+/// npm warning, the unit a systemd configurator reloaded. Part of the provider
+/// contract rather than of any one provider, because the reconciler is what
+/// renders it: the note is attached to the action that produced it instead of
+/// being printed from inside the provider, where it would land above the
+/// action's own status line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PostInstallNote {
-    pub manager: String,
+pub struct ActionNote {
+    /// The producing subsystem, rendered as a `[tag]` prefix. `None` when the
+    /// owning action line already names the producer: a note under
+    /// `system:shell.defaultShell` gains nothing from a `[shell]` prefix, while
+    /// a package action's line names the package rather than the manager that
+    /// spoke, so there the tag is the only thing identifying the speaker.
+    pub tag: Option<String>,
     pub message: String,
     /// How the note renders under the action's line. A caveat or a degraded
-    /// fallback is a [`Role::Warn`]; a report of work the manager did on the
-    /// side is a [`Role::Info`].
+    /// fallback is a [`Role::Warn`]; a report of work done on the side is a
+    /// [`Role::Info`].
     pub role: Role,
 }
 
-impl PostInstallNote {
-    /// A note the user must act on — a caveat, a fallback, a retry.
-    pub fn warn(manager: impl Into<String>, message: impl Into<String>) -> Self {
+impl ActionNote {
+    /// A tagged note the user must act on — a caveat, a fallback, a retry.
+    pub fn warn(tag: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            manager: manager.into(),
+            tag: Some(tag.into()),
             message: message.into(),
             role: Role::Warn,
         }
     }
 
-    /// A note that only reports what happened.
-    pub fn info(manager: impl Into<String>, message: impl Into<String>) -> Self {
+    /// A tagged note that only reports what happened.
+    pub fn info(tag: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            manager: manager.into(),
+            tag: Some(tag.into()),
             message: message.into(),
             role: Role::Info,
+        }
+    }
+
+    /// A note whose owning action line already names its producer.
+    pub fn untagged(role: Role, message: impl Into<String>) -> Self {
+        Self {
+            tag: None,
+            message: message.into(),
+            role,
+        }
+    }
+
+    /// The rendered body of the note — the ONE derivation, so a tagged and an
+    /// untagged note cannot drift into two layouts.
+    pub fn body(&self) -> String {
+        match &self.tag {
+            Some(tag) => format!("[{}] {}", tag, self.message),
+            None => self.message.clone(),
         }
     }
 }
@@ -162,7 +186,7 @@ impl PostInstallNote {
 /// Interior mutability because every `PackageManager` method takes
 /// `&PackageContext`.
 pub struct NoteSink {
-    notes: std::sync::Mutex<Vec<PostInstallNote>>,
+    notes: std::sync::Mutex<Vec<ActionNote>>,
     /// A sink nobody drains discards instead of growing. [`NoteSink::discarded`]
     /// hands out one `&'static` sink to every non-collecting context, so
     /// retaining pushes in it would be an unbounded leak with no reader — and
@@ -191,7 +215,7 @@ impl NoteSink {
         })
     }
 
-    pub fn push(&self, note: PostInstallNote) {
+    pub fn push(&self, note: ActionNote) {
         if !self.collecting {
             return;
         }
@@ -201,8 +225,22 @@ impl NoteSink {
             .push(note);
     }
 
+    /// Narrate under whichever action line is open, without the caller having to
+    /// know which one that is: a collecting sink holds the line for the drain
+    /// that will render it attached, while a discarded sink has no drain to
+    /// reach, so the line settles on the printer — standalone, that message is
+    /// the only output the user will get.
+    pub fn report(&self, printer: &Printer, role: Role, message: impl Into<String>) {
+        let message = message.into();
+        if self.collecting {
+            self.push(ActionNote::untagged(role, message));
+        } else {
+            printer.status_simple(role, message);
+        }
+    }
+
     /// Drain — called by the reconciler once per action, after its status.
-    pub fn take(&self) -> Vec<PostInstallNote> {
+    pub fn take(&self) -> Vec<ActionNote> {
         std::mem::take(&mut *self.notes.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
@@ -307,6 +345,52 @@ pub struct SystemDrift {
     pub actual: String,
 }
 
+/// The per-call context [`SystemConfigurator::apply`] receives: the printer, for
+/// the command windows a configurator opens, plus the sink its narration goes
+/// into.
+///
+/// The `SystemConfigurator` counterpart of [`PackageContext`], and deliberately
+/// the same [`NoteSink`] — package notes and system notes are drained and
+/// rendered by one mechanism, so there is exactly one place that decides how a
+/// note attaches to the action that produced it.
+pub struct SystemContext<'a> {
+    pub printer: &'a Printer,
+    pub notes: &'a NoteSink,
+}
+
+impl<'a> SystemContext<'a> {
+    /// A context nothing drains — every standalone caller and every fixture.
+    /// Reports settle on the printer, because nothing above will render them.
+    pub fn new(printer: &'a Printer) -> Self {
+        Self {
+            printer,
+            notes: NoteSink::discarded(),
+        }
+    }
+
+    /// A context whose narration travels back to the caller. Constructed only
+    /// where the caller settles the action's one status line and drains the
+    /// sink after it, which is why there is no separate `caller_owns_status`
+    /// flag here: collecting and owning the line are the same fact for a
+    /// configurator, and splitting them would make an undrained sink
+    /// representable.
+    pub fn with_notes(printer: &'a Printer, notes: &'a NoteSink) -> Self {
+        Self { printer, notes }
+    }
+
+    /// Report execution narration — the unit reloaded, the key generated, the
+    /// fallback taken.
+    ///
+    /// Under a caller-owned status this becomes a detail line rendered UNDER
+    /// that action's line; standalone it settles on its own. A
+    /// `SystemConfigurator` must never call `cx.printer.status_simple` directly:
+    /// a line printed from inside `apply` lands ABOVE the `system:<name>.<key>`
+    /// line the reconciler is about to settle for the same work.
+    pub fn report(&self, role: Role, message: impl Into<String>) {
+        self.notes.report(self.printer, role, message);
+    }
+}
+
 pub trait SystemConfigurator: Send + Sync {
     /// Configurator name — must match the key in the profile's `system:` map
     fn name(&self) -> &str;
@@ -325,10 +409,10 @@ pub trait SystemConfigurator: Send + Sync {
     /// here therefore goes through [`Printer::run_silent`] — [`Printer::run`]
     /// settles the window's own line too, rendering the same action twice.
     ///
-    /// Informational lines of a configurator's own are unaffected: a
-    /// per-key notice at the inherited depth is body text under that action,
-    /// not a competing claim on the action's outcome.
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()>;
+    /// Narration of a configurator's own goes through
+    /// [`SystemContext::report`], which attaches it under that action's line
+    /// rather than emitting a competing line beside it.
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()>;
 
     /// Provide the active config directory so a configurator can resolve
     /// config-relative file paths (e.g. systemd `unitFile`) the same way file
@@ -880,7 +964,7 @@ mod tests {
         fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
             Ok(Vec::new())
         }
-        fn apply(&self, _desired: &serde_yaml::Value, _printer: &Printer) -> Result<()> {
+        fn apply(&self, _desired: &serde_yaml::Value, _cx: &SystemContext<'_>) -> Result<()> {
             Ok(())
         }
     }

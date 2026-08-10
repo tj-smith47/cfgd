@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 // ---------------------------------------------------------------------------
 // CertificateConfigurator
@@ -101,7 +101,7 @@ impl SystemConfigurator for CertificateConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let ca_cert_dir = desired
             .get("caCertDir")
             .and_then(|v| v.as_str())
@@ -137,7 +137,7 @@ impl SystemConfigurator for CertificateConfigurator {
                         let meta = fs::metadata(path)?;
                         let current_mode = cfgd_core::file_permissions_mode(&meta);
                         if current_mode != Some(desired_mode) {
-                            printer.status_simple(
+                            cx.report(
                                 Role::Info,
                                 format!(
                                     "Setting permissions {:04o} on {} ({})",
@@ -147,7 +147,7 @@ impl SystemConfigurator for CertificateConfigurator {
                             cfgd_core::set_file_permissions(path, desired_mode)?;
                         }
                     } else {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!("Certificate file missing: {} ({})", path_str, name),
                         );
@@ -206,7 +206,10 @@ certificates:
         ))
         .unwrap();
         let err = CertificateConfigurator
-            .apply(&desired, &printer)
+            .apply(
+                &desired,
+                &cfgd_core::providers::SystemContext::new(&printer),
+            )
             .expect_err("invalid octal mode must surface as an error, not default to 0644");
         assert!(
             err.to_string().contains("9zz"),

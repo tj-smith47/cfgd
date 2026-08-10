@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 pub struct ShellConfigurator;
 
@@ -133,7 +133,7 @@ impl SystemConfigurator for ShellConfigurator {
         }
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let desired_shell = desired.as_str().unwrap_or_default();
         if desired_shell.is_empty() {
             return Ok(());
@@ -143,7 +143,7 @@ impl SystemConfigurator for ShellConfigurator {
             let (path, mut settings) = match load_terminal_settings()? {
                 Some(pair) => pair,
                 None => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         "Windows Terminal not installed; cannot set default profile",
                     );
@@ -154,7 +154,7 @@ impl SystemConfigurator for ShellConfigurator {
             let guid = match find_profile_guid(&settings, desired_shell) {
                 Some(g) => g,
                 None => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "No Windows Terminal profile named '{}' found",
@@ -165,7 +165,7 @@ impl SystemConfigurator for ShellConfigurator {
                 }
             };
 
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!(
                     "Setting Windows Terminal default profile to '{}' ({})",
@@ -184,7 +184,7 @@ impl SystemConfigurator for ShellConfigurator {
 
             Ok(())
         } else {
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!("Setting default shell to {}", desired_shell),
             );
@@ -196,7 +196,7 @@ impl SystemConfigurator for ShellConfigurator {
                 .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "chsh failed (may require password): {}",
@@ -283,8 +283,11 @@ mod tests {
         let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
         let sc = ShellConfigurator;
         let desired = serde_yaml::Value::String("/usr/bin/zsh".to_string());
-        sc.apply(&desired, &printer)
-            .expect("apply should succeed when chsh exits 0");
+        sc.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .expect("apply should succeed when chsh exits 0");
 
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -303,8 +306,11 @@ mod tests {
         let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
         let sc = ShellConfigurator;
         let desired = serde_yaml::Value::String("/usr/bin/zsh".to_string());
-        sc.apply(&desired, &printer)
-            .expect("apply should return Ok even when chsh fails");
+        sc.apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .expect("apply should return Ok even when chsh fails");
 
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -483,7 +489,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let sc = ShellConfigurator;
         let yaml = serde_yaml::Value::String(String::new());
-        sc.apply(&yaml, &printer).unwrap();
+        sc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -491,7 +498,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let sc = ShellConfigurator;
         let yaml = serde_yaml::Value::Null;
-        sc.apply(&yaml, &printer).unwrap();
+        sc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]

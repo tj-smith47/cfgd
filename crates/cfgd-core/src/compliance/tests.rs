@@ -738,7 +738,7 @@ impl crate::providers::SystemConfigurator for InlineSystemMock {
     fn apply(
         &self,
         _desired: &serde_yaml::Value,
-        _printer: &crate::output::Printer,
+        _cx: &crate::providers::SystemContext<'_>,
     ) -> crate::errors::Result<()> {
         Ok(())
     }

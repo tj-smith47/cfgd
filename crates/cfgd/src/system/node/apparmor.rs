@@ -4,8 +4,8 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 // ---------------------------------------------------------------------------
 // AppArmorConfigurator
@@ -141,7 +141,7 @@ impl SystemConfigurator for AppArmorConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let profiles = match desired.get("profiles").and_then(|v| v.as_sequence()) {
             Some(s) => s,
             None => return Ok(()),
@@ -158,7 +158,7 @@ impl SystemConfigurator for AppArmorConfigurator {
                 None => continue,
             };
             if let Err(e) = cfgd_core::validate_no_traversal(&path) {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!("Skipping AppArmor profile {name} ({}): {e}", path.posix()),
                 );
@@ -167,14 +167,14 @@ impl SystemConfigurator for AppArmorConfigurator {
 
             if let Some(content) = profile.get("content").and_then(|v| v.as_str()) {
                 cfgd_core::ensure_parent_dir(&path)?;
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("Writing AppArmor profile: {}", path.posix()),
                 );
                 cfgd_core::atomic_write_str(&path, content)?;
             }
 
-            printer.status_simple(Role::Info, format!("Loading AppArmor profile: {}", name));
+            cx.report(Role::Info, format!("Loading AppArmor profile: {}", name));
             Self::load_profile(&path)?;
         }
 

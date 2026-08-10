@@ -375,7 +375,11 @@ impl SystemConfigurator for MockSystemConfigurator {
             .collect())
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, _printer: &Printer) -> crate::errors::Result<()> {
+    fn apply(
+        &self,
+        desired: &serde_yaml::Value,
+        _cx: &crate::providers::SystemContext<'_>,
+    ) -> crate::errors::Result<()> {
         self.apply_calls.lock().unwrap().push(desired.clone());
         if *self.fail_apply.lock().unwrap() {
             return Err(CfgdError::Io(std::io::Error::other(
@@ -2790,7 +2794,8 @@ mod tests {
         let sc = MockSystemConfigurator::new("sysctl");
         let printer = test_printer();
         let desired = serde_yaml::Value::String("test".into());
-        sc.apply(&desired, &printer).unwrap();
+        sc.apply(&desired, &crate::providers::SystemContext::new(&printer))
+            .unwrap();
         assert_eq!(sc.apply_calls.lock().unwrap().len(), 1);
     }
 
@@ -2799,7 +2804,10 @@ mod tests {
         let sc = MockSystemConfigurator::new("sysctl");
         let printer = test_printer();
         sc.set_fail_apply(true);
-        let result = sc.apply(&serde_yaml::Value::Null, &printer);
+        let result = sc.apply(
+            &serde_yaml::Value::Null,
+            &crate::providers::SystemContext::new(&printer),
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("mock system apply failure"),

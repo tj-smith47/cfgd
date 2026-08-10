@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::{diff_yaml_mapping, read_command_output, yaml_value_with_numeric_bools};
 
@@ -50,7 +50,7 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -75,7 +75,7 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
 
                 let (value_type, value_str) = yaml_value_to_defaults_type(desired_value);
 
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!(
                         "defaults write {} {} -{} {}",
@@ -91,7 +91,7 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "defaults write failed for {}.{}: {}",
@@ -284,7 +284,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        md.apply(&yaml, &printer).unwrap();
+        md.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -292,7 +293,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        md.apply(&yaml, &printer).unwrap();
+        md.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -305,7 +307,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        md.apply(&yaml, &printer).unwrap();
+        md.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -318,7 +321,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        md.apply(&yaml, &printer).unwrap();
+        md.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -339,6 +343,7 @@ mod tests {
         // On non-macOS, defaults command won't exist, but the function still
         // iterates and skips the numeric key before reaching the command.
         // This tests the `None => continue` at line 389-391.
-        md.apply(&yaml, &printer).unwrap();
+        md.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 }
