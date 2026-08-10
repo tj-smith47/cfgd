@@ -119,9 +119,15 @@ fn decide_pending_multi_source_human() {
     printer.emit(build_decide_list_doc(&decisions, &[], None));
     drop(printer);
     let human = cap.human();
-    let app = human.find("app-config:").expect("app-config subsection");
-    let org = human.find("org-config:").expect("org-config subsection");
-    let team = human.find("team-config:").expect("team-config subsection");
+    let app = human
+        .find("source:app-config")
+        .expect("app-config subsection");
+    let org = human
+        .find("source:org-config")
+        .expect("org-config subsection");
+    let team = human
+        .find("source:team-config")
+        .expect("team-config subsection");
     assert!(
         app < org && org < team,
         "expected app-config < org-config < team-config in:\n{human}"
@@ -144,7 +150,11 @@ fn decide_pending_single_item_human() {
     drop(printer);
     let human = cap.human();
     assert!(
-        human.contains("solo-source: 1 pending item"),
+        human.contains("source:solo-source"),
+        "expected the source owner token as the heading, got:\n{human}"
+    );
+    assert!(
+        human.contains("1 pending item"),
         "expected singular 'item', got:\n{human}"
     );
     assert!(

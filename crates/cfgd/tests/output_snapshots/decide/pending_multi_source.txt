@@ -1,9 +1,12 @@
 Pending Decisions
-  app-config: 1 pending item
+  source:app-config
+    ⊙ 1 pending item
     ⊙ required file/bashrc — Create bashrc (create)
-  org-config: 1 pending item
+  source:org-config
+    ⊙ 1 pending item
     ⊙ optional env.EDITOR — Set EDITOR (set)
-  team-config: 1 pending item
+  source:team-config
+    ⊙ 1 pending item
     ⊙ recommended packages.brew.curl — Install curl (install)
 
 → Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve

@@ -156,33 +156,7 @@ pub fn build_fleet_status_doc(
     doc = doc.section_if_nonempty(
         "Pending Decisions",
         &output.pending_decisions,
-        |s, decisions| {
-            let mut by_source: std::collections::BTreeMap<
-                &str,
-                Vec<&cfgd_core::state::PendingDecision>,
-            > = std::collections::BTreeMap::new();
-            for d in decisions {
-                by_source.entry(&d.source).or_default().push(d);
-            }
-            by_source.into_iter().fold(s, |s, (source_name, items)| {
-                let count = items.len();
-                let plural = if count == 1 { "" } else { "s" };
-                // The same `source:<name>` token the Drift rows above carry —
-                // one screen must not name one source two ways.
-                s.subsection(Owner::source(source_name).token(), |sub| {
-                    let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
-                    items.iter().fold(sub, |sub, item| {
-                        sub.status(
-                            Role::Info,
-                            format!(
-                                "{} {} — {} ({})",
-                                item.tier, item.resource, item.summary, item.action
-                            ),
-                        )
-                    })
-                })
-            })
-        },
+        super::build_pending_decisions_table_section,
     );
 
     // Rendered beside the pending rows those batches would otherwise be:

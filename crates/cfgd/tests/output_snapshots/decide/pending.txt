@@ -1,5 +1,6 @@
 Pending Decisions
-  team-config: 2 pending items
+  source:team-config
+    ⊙ 2 pending items
     ⊙ recommended packages.brew.curl — Install curl via brew (install)
     ⊙ optional env.EDITOR — Set EDITOR (set)
 
