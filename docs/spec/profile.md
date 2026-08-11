@@ -727,6 +727,10 @@ scripts:
       interactive: true
 ```
 
+See [Lifecycle Scripts](../lifecycle-scripts.md#interactive-scripts) for the
+full contract, including the process-group-sharing and opt-in-timeout
+rationale.
+
 Each entry can be a string or an object:
 
 ```yaml
