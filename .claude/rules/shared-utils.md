@@ -86,6 +86,7 @@ Quoting is per-dialect: bash/zsh double quotes, fish single quotes and PowerShel
 - `powershell_single_quoted(value)` — a complete `'…'` token for PowerShell; `''` is the only escape and the contents are fully literal. The default choice for PowerShell
 - `powershell_double_quoted(value)` — a complete `"…"` token for the one PowerShell case that must interpolate (`$env:` references in a declared value)
 - `escape_powershell_double_quoted(s)` — the BODY of the above; backtick-escapes `` ` ``, `"`, and `$` unless it opens a `$NAME` / `$env:NAME` / `${env:NAME}` reference, so `$(…)` subexpressions cannot run
+- `cmd_double_quoted(value)` — a complete `"…"` token for `cmd.exe`/batch. Doubles every `%` to `%%`, the batch-parser escape for a literal percent (applies to a `cmd.exe /C <string>` invocation too, not only a `.cmd` file body) — `%` is a legal NTFS filename character and `cmd.exe` expands `%NAME%` even inside double quotes, so an unescaped wrap can splice the caller's own environment into the value. `"` is not escaped: NTFS forbids the character in a filename
 
 A PowerShell function-wrapper alias must carry its command as a quoted string built into a script block at CALL time (`function n { & ([scriptblock]::Create('<cmd> @args')) @args }`); pasted between the braces directly, a `}` in the command closes the function early and the remainder runs while the profile is still loading.
 

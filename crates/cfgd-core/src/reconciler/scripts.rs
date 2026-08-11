@@ -93,9 +93,10 @@ fn resolve_run_target(
     }
 }
 
-/// Resolve `candidate` against `script_dir` when relative, returning it only
-/// when it names a file that actually exists on disk — the shared
-/// file-vs-inline test both call sites in [`resolve_run_target`] use.
+/// Resolve `candidate` against `script_dir` when relative, returning it
+/// absolutized and only when it names a file that actually exists on disk —
+/// the shared file-vs-inline test both call sites in [`resolve_run_target`]
+/// use.
 fn resolve_existing_script(
     candidate: &str,
     script_dir: &std::path::Path,
@@ -106,23 +107,38 @@ fn resolve_existing_script(
     } else {
         path.to_path_buf()
     };
-    resolved.exists().then_some(resolved)
+    // `is_file()`, not `exists()`: a leading `.` (the POSIX dot-source
+    // builtin, e.g. `run: . ~/.venv/bin/activate && python app.py`) or an
+    // empty leading token (a block scalar opening with a blank line) both
+    // resolve to `script_dir` itself, which exists as a directory. `exists()`
+    // would substitute the directory in as argv[0]/the sourced target,
+    // destroying both idioms; `is_file()` correctly falls through to
+    // `RunTarget::Inline` and leaves the text untouched for the shell.
+    //
+    // `crate::absolutize_path` rather than the bare join: the whole point of
+    // substituting this token back into the run string is that it must not
+    // depend on the shell's own `cwd` (`working_dir`), so the value this
+    // function hands back has to be absolute on its own rather than resting
+    // on every caller always passing an already-absolute `script_dir`.
+    resolved
+        .is_file()
+        .then(|| crate::absolutize_path(&resolved))
 }
 
 /// Render `resolved` as a single word for substitution into an inline
 /// `run_str` body executed by `shell` — quoted so the resolved token cannot
 /// reopen, or be extended by, whatever the author wrote after it.
 ///
-/// `Cmd` (and `Auto` on Windows, which dispatches to it) has no entry in the
-/// `*_quoted` catalog in `util/strings.rs` because it needs none: `"` is one
-/// of the characters NTFS forbids in a filename, so a real resolved path can
-/// never contain the character `cmd.exe`'s own quoting uses, and no escaping
-/// body is required to make the wrap safe.
+/// `Cmd` (and `Auto` on Windows, which dispatches to it) goes through
+/// [`crate::cmd_double_quoted`] rather than a bare `"…"` wrap: `%` is a legal
+/// NTFS filename character and `cmd.exe` expands `%NAME%` even inside double
+/// quotes, so a resolved path such as `deploy%PATH%.cmd` would otherwise
+/// splice the caller's own environment into the substituted token.
 fn quote_resolved_script_path(resolved: &std::path::Path, shell: ScriptShell) -> String {
     match shell {
         ScriptShell::Pwsh => crate::powershell_single_quoted(&resolved.to_string_lossy()),
-        ScriptShell::Cmd => format!("\"{}\"", resolved.display()),
-        ScriptShell::Auto if cfg!(windows) => format!("\"{}\"", resolved.display()),
+        ScriptShell::Cmd => crate::cmd_double_quoted(&resolved.to_string_lossy()),
+        ScriptShell::Auto if cfg!(windows) => crate::cmd_double_quoted(&resolved.to_string_lossy()),
         ScriptShell::Auto | ScriptShell::Sh | ScriptShell::Bash | ScriptShell::Zsh => {
             crate::posix_single_quoted(&resolved.to_string_lossy())
         }

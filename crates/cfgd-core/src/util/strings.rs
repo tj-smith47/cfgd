@@ -401,6 +401,23 @@ pub fn powershell_double_quoted(value: &str) -> String {
     format!("\"{}\"", escape_powershell_double_quoted(value))
 }
 
+/// A value as a complete `cmd.exe`/batch double-quoted word — quotes
+/// included.
+///
+/// `cmd.exe` expands `%NAME%` **inside** double quotes — unlike every
+/// POSIX-family shell quoted here, where escaping `` ` `` and `$` is enough
+/// to stop all expansion — and `%` is a legal NTFS filename character, so a
+/// resolved path such as `deploy%PATH%.cmd` would splice the caller's own
+/// `PATH` into the value if left unescaped. Doubling every `%` to `%%` is the
+/// batch-parser escape for a literal percent, and it applies equally to a
+/// `cmd.exe /C <string>` invocation (the shape this crate always uses), which
+/// parses its argument through the same single-pass batch parser a `.cmd`
+/// file body gets. `"` is not escaped: NTFS forbids the character in a
+/// filename, so a real resolved path can never carry one.
+pub fn cmd_double_quoted(value: &str) -> String {
+    format!("\"{}\"", value.replace('%', "%%"))
+}
+
 /// Render a byte count for a human, at the largest scale that keeps it under
 /// four digits.
 ///
@@ -680,6 +697,32 @@ mod tests {
             assert!(
                 !ends_with_odd_run(inner, '`'),
                 "{label}: closing quote escaped by a trailing backtick run in {quoted}"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_double_quoted_doubles_percent_to_neutralize_expansion() {
+        assert_eq!(
+            cmd_double_quoted("deploy%PATH%.cmd"),
+            "\"deploy%%PATH%%.cmd\""
+        );
+        assert_eq!(cmd_double_quoted("%USERPROFILE%"), "\"%%USERPROFILE%%\"");
+        assert_eq!(cmd_double_quoted("plain"), "\"plain\"");
+    }
+
+    #[test]
+    fn cmd_double_quoted_is_wrapped_and_carries_no_lone_percent() {
+        for (label, value) in HOSTILE {
+            let quoted = cmd_double_quoted(value);
+            assert!(
+                quoted.starts_with('"') && quoted.ends_with('"'),
+                "{label}: not wrapped: {quoted}"
+            );
+            let inner = &quoted[1..quoted.len() - 1];
+            assert!(
+                inner.matches('%').count().is_multiple_of(2),
+                "{label}: odd number of percents in {quoted}"
             );
         }
     }

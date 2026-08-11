@@ -232,8 +232,9 @@ cfgd tests `run:` against the filesystem to decide which column above applies �
 there is no separate `file:` field:
 
 1. The **whole string** is tried first. If it names a file (relative to the
-   config directory, or absolute), that file runs directly: no shell, args
-   splitting, or interpretation — the shebang alone selects the interpreter.
+   script's own directory — see below — or absolute), that file runs
+   directly: no shell, args splitting, or interpretation — the shebang alone
+   selects the interpreter.
 
    ```yaml
    scripts:
@@ -262,8 +263,16 @@ there is no separate `file:` field:
    real path once the shell expands it) is left completely untouched — cfgd
    never guesses, it only substitutes a resolution it can prove.
 
-File resolution in both steps is always relative to the **config
-directory**, and is absolute regardless of how `--config` was spelled on the
-command line (a relative `--config ./cfgd.yaml` resolves identically to an
-absolute one) — never relative to the process's invocation directory or to
-`$HOME`, which is the script's own default [working directory](#working-directory).
+File resolution in both steps is always relative to a fixed directory, resolved
+the same way regardless of how `--config` was spelled on the command line (a
+relative `--config ./cfgd.yaml` resolves identically to an absolute one) —
+never relative to the process's invocation directory or to `$HOME`, which is
+the script's own default [working directory](#working-directory). Which
+directory depends on where the script lives:
+
+- **Profile-level hooks** (`spec.scripts.*` in `cfgd.yaml`) resolve relative to
+  the **config directory** — the same directory `$CFGD_CONFIG_DIR` names.
+- **Module hooks** (a module's own `scripts.*`, or its `run:` installer step)
+  resolve relative to that **module's own directory** — the same directory
+  `$CFGD_MODULE_DIR` names — not the config directory, even though the module
+  itself lives under a profile.

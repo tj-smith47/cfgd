@@ -1401,6 +1401,21 @@ fn resolve_run_target_relative_no_args_is_direct_exec() {
     }
 }
 
+// N1 regression pin: a whole-string `run:` naming a DIRECTORY, not a file,
+// must not take the direct-exec arm — `exists()` accepted a directory just
+// as readily as a file, and the same defect this commit fixes for the
+// leading-token case also reached here.
+#[test]
+fn resolve_run_target_whole_string_naming_a_directory_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(script_dir.path().join("subdir")).unwrap();
+    let target = resolve_run_target("subdir", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "subdir"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
 // A relative `run:` carrying trailing text is the shell arm (never
 // direct-exec, even though the leading token names a real file) — the
 // remainder is untouched so the shell, not this function, parses it. The
@@ -1480,6 +1495,38 @@ fn resolve_run_target_unresolvable_single_token_is_left_untouched() {
     let target = resolve_run_target("does-not-exist.sh", script_dir.path(), ScriptShell::Auto);
     match target {
         RunTarget::Inline(cmd) => assert_eq!(cmd, "does-not-exist.sh"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// N1 regression pin: a leading `.` (the POSIX dot-source builtin, e.g.
+// `run: . ~/.venv/bin/activate && python app.py`) must NOT resolve —
+// `script_dir.join(".")` names `script_dir` itself, which `exists()` (but
+// not `is_file()`) accepts, and substituting a directory in place of the
+// dot-source idiom silently rewrites `run:` into nonsense. The whole string
+// is left byte-identical, so the shell's own dot-source handling still runs.
+#[test]
+fn resolve_run_target_leading_dot_source_builtin_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let run_str = ". ~/.venv/bin/activate && python app.py";
+    let target = resolve_run_target(run_str, script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, run_str),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// N1 regression pin: a block scalar opening with a blank line
+// (`run_str == "\necho hi\n"`) has an empty leading token —
+// `script_dir.join("")` names `script_dir` itself, the same directory trap
+// as the dot-source case. Must not substitute `script_dir` in as argv[0].
+#[test]
+fn resolve_run_target_empty_leading_token_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let run_str = "\necho hi\n";
+    let target = resolve_run_target(run_str, script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, run_str),
         RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
     }
 }
