@@ -92,6 +92,7 @@ A PowerShell function-wrapper alias must carry its command as a quoted string bu
 
 - `default_config_dir()` — cross-platform config dir (Unix `~/.config/cfgd`, Windows `AppData\Roaming\cfgd`)
 - `expand_tilde(path)` — expand `~/...` or `~\...` to home; uses `HOME` on Unix, `USERPROFILE` (then `HOME`) on Windows
+- `absolutize_path(path)` — resolve `path` to an absolute path LEXICALLY (CWD-join + `.` removal, via `std::path::absolute`) without requiring it to exist and without following symlinks; use for any CLI entry point (`--config`) that must become absolute at the boundary. Deliberately does not canonicalize — a symlinked config file must keep the name the user gave it, not relocate to the symlink's target (see `atomic_write_resolved`'s dotfiles-repo pattern)
 - `resolve_relative_path(path, base)` — resolve relative to base with traversal validation
 - `validate_path_within(path, root)` — canonicalize and verify path within root
 - `validate_no_traversal(path)` — reject a user-written path reference that contains `..` **or** that names nothing of its own (`.`, `./`, so it would resolve to the directory it is joined onto). Use for paths cfgd reads from or writes to; a leading `./` stays legal

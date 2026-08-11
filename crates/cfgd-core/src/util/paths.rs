@@ -777,31 +777,36 @@ pub(crate) fn home_dir_var() -> Option<String> {
     }
 }
 
-/// Resolve `path` to an absolute path without requiring it to exist.
+/// Resolve `path` to an absolute path without requiring it to exist and
+/// without resolving symlinks.
 ///
-/// Prefers `Path::canonicalize` (resolves symlinks and `.`/`..`), but a CLI
-/// entry point (`--config`) is legitimately relative *and* not-yet-created —
-/// a fresh machine before `cfgd init`, or a `--config-dir` naming a directory
-/// with no file inside it yet. `canonicalize` errors on a missing path, which
-/// would otherwise leave a relative value relative; every directory derived
-/// from it downstream (a script hook's resolution base, its `cwd`) would then
-/// depend on the CALLER's own working directory rather than the location the
-/// user actually named. When canonicalization fails, an already-absolute
-/// path is returned unchanged and a relative one is joined onto the process's
-/// current directory instead.
+/// A CLI entry point (`--config`) is legitimately relative *and*
+/// not-yet-created — a fresh machine before `cfgd init`, or a `--config-dir`
+/// naming a directory with no file inside it yet — so this must not require
+/// the path to exist. `Path::canonicalize` (`realpath(3)`) was tried here
+/// first, but it also resolves symlinks: a symlinked `~/.config/cfgd/cfgd.yaml`
+/// pointing into a dotfiles repo — the pattern `atomic_write_resolved` exists
+/// to support — would relocate `config_dir` to the dotfiles directory, and
+/// every derivation from it (`profiles_dir`, a script hook's `script_dir`)
+/// would relocate with it, breaking a setup that worked before the path was
+/// absolutized. `std::path::absolute` is purely lexical — CWD-join plus `.`
+/// component removal, no filesystem access. `..` is left as a literal
+/// component on non-Windows (collapsing it lexically would silently disagree
+/// with a real symlink earlier in the path — the exact ambiguity this
+/// function exists to avoid); Windows's `GetFullPathNameW` does normalize it.
+/// Either way this satisfies "absolute regardless of invocation form"
+/// without the relocation risk of following a real symlink.
 ///
-/// `canonicalize` on Windows prefixes its result with the `\\?\` verbatim
-/// marker; stripped here so the returned value matches the plain form every
-/// other absolute path in cfgd uses.
+/// On Windows this may still carry the `\\?\` verbatim marker; stripped here
+/// so the returned value matches the plain form every other absolute path in
+/// cfgd uses.
 pub fn absolutize_path(path: &std::path::Path) -> std::path::PathBuf {
-    let absolute = match path.canonicalize() {
-        Ok(canon) => canon,
-        Err(_) if path.is_absolute() => path.to_path_buf(),
-        Err(_) => std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf()),
-    };
-    std::path::PathBuf::from(strip_windows_verbatim(&absolute.to_string_lossy()))
+    match std::path::absolute(path) {
+        Ok(absolute) => {
+            std::path::PathBuf::from(strip_windows_verbatim(&absolute.to_string_lossy()))
+        }
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// Resolve a relative path against a base directory with traversal validation.

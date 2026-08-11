@@ -826,6 +826,7 @@ fn bash_inline_no_env_file_skips_preamble() {
 fn build_inline_command_default_spawns_own_process_group() {
     use nix::unistd::{Pid, getpgid};
 
+    let _path_guard = crate::test_helpers::path_env_read_guard();
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, true);
     let mut child = cmd.spawn().expect("spawn must succeed");
@@ -848,6 +849,7 @@ fn build_inline_command_default_spawns_own_process_group() {
 fn build_inline_command_interactive_shares_callers_process_group() {
     use nix::unistd::{Pid, getpgid, getpgrp};
 
+    let _path_guard = crate::test_helpers::path_env_read_guard();
     let tmp = tempfile::tempdir().unwrap();
     let own_pgid = getpgrp();
     let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, false);
@@ -1384,54 +1386,183 @@ fn guard_skip_emits_skipped_status_line() {
 // run_str resolution, spawn-failure mapping, exit-code error path
 // -----------------------------------------------------------------------
 
-// A relative `run:` command with no trailing arguments resolves the sole
-// token against `script_dir`; the trailing-args slice is empty. A pure
-// function over its own `script_dir` parameter, so no test-home fixture
-// is needed — it never touches `$HOME`.
+// A relative `run:` naming exactly an existing file, with no trailing
+// text, is direct exec — byte-identical to the behavior in place before
+// `run:` args were ever resolved at all. A pure function over its own
+// `script_dir` parameter, so no test-home fixture is needed.
 #[test]
-fn resolve_run_target_relative_no_args() {
-    let script_dir = std::path::Path::new("/some/script/dir");
-    let (resolved, rest) = resolve_run_target("scripts/foo.sh", script_dir);
-    assert_eq!(resolved, script_dir.join("scripts/foo.sh"));
-    assert_eq!(rest, "");
+fn resolve_run_target_relative_no_args_is_direct_exec() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target("foo.sh", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::File(resolved) => assert_eq!(resolved, script_dir.path().join("foo.sh")),
+        RunTarget::Inline(cmd) => panic!("expected direct exec, got inline: {cmd}"),
+    }
 }
 
-// A relative `run:` command's trailing arguments are returned verbatim,
-// untokenized, alongside the same script_dir-joined resolution — the bug
-// this function fixes: the whole string used to be tested for existence
-// as one path segment, so `run: scripts/foo.sh bar` never resolved.
+// A relative `run:` carrying trailing text is the shell arm (never
+// direct-exec, even though the leading token names a real file) — the
+// remainder is untouched so the shell, not this function, parses it. The
+// leading token IS resolved against `script_dir` and substituted back in,
+// shell-quoted, fixing the original triage bug (unresolved relative paths)
+// without taking shell parsing away from the shell (the C1 regression this
+// pins against).
 #[test]
-fn resolve_run_target_relative_with_args() {
-    let script_dir = std::path::Path::new("/some/script/dir");
-    let (resolved, rest) = resolve_run_target("scripts/foo.sh --flag value", script_dir);
-    assert_eq!(resolved, script_dir.join("scripts/foo.sh"));
-    assert_eq!(rest, "--flag value");
+fn resolve_run_target_relative_with_args_substitutes_leading_token_only() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target("foo.sh --flag value", script_dir.path(), ScriptShell::Auto);
+    let expected_path =
+        crate::posix_single_quoted(&script_dir.path().join("foo.sh").to_string_lossy());
+    match target {
+        RunTarget::Inline(cmd) => {
+            assert_eq!(cmd, format!("{expected_path} --flag value"));
+        }
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
 }
 
-// An absolute `run:` command passes through untouched, never joined onto
-// script_dir — the trailing-args slice is empty.
+// An absolute `run:` naming exactly an existing file, with no trailing
+// text, is direct exec and never joined onto `script_dir`.
 #[test]
-fn resolve_run_target_absolute_no_args() {
+fn resolve_run_target_absolute_no_args_is_direct_exec() {
     let target_dir = tempfile::tempdir().unwrap();
     let script_dir = tempfile::tempdir().unwrap();
     let absolute = target_dir.path().join("run-me");
+    std::fs::write(&absolute, "#!/bin/sh\n").unwrap();
     let run_str = absolute.to_str().expect("tempdir path must be utf8");
-    let (resolved, rest) = resolve_run_target(run_str, script_dir.path());
-    assert_eq!(resolved, absolute);
-    assert_eq!(rest, "");
+    let target = resolve_run_target(run_str, script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::File(resolved) => assert_eq!(resolved, absolute),
+        RunTarget::Inline(cmd) => panic!("expected direct exec, got inline: {cmd}"),
+    }
 }
 
-// An absolute `run:` command's trailing arguments are returned verbatim
-// alongside the untouched absolute resolution.
+// An absolute `run:` carrying trailing text is the shell arm, with the
+// leading absolute path substituted back in unchanged (never re-joined) and
+// shell-quoted.
 #[test]
-fn resolve_run_target_absolute_with_args() {
+fn resolve_run_target_absolute_with_args_substitutes_leading_token_only() {
     let target_dir = tempfile::tempdir().unwrap();
     let script_dir = tempfile::tempdir().unwrap();
     let absolute = target_dir.path().join("run-me");
+    std::fs::write(&absolute, "#!/bin/sh\n").unwrap();
     let run_str = format!("{} --flag value", absolute.to_str().unwrap());
-    let (resolved, rest) = resolve_run_target(&run_str, script_dir.path());
-    assert_eq!(resolved, absolute);
-    assert_eq!(rest, "--flag value");
+    let target = resolve_run_target(&run_str, script_dir.path(), ScriptShell::Auto);
+    let expected_path = crate::posix_single_quoted(&absolute.to_string_lossy());
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} --flag value")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// A leading token that does NOT resolve to a real file (an ordinary shell
+// command, e.g. `echo hello`) is left completely untouched — no
+// substitution, no existence assumption, exactly the shell-arm behavior
+// from before any `run:` resolution existed.
+#[test]
+fn resolve_run_target_unresolvable_leading_token_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let target = resolve_run_target("echo hello", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "echo hello"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// A single relative token with no whitespace that doesn't exist as a file
+// (a PATH-resolved binary name) is also left untouched — the no-whitespace
+// early return in `resolve_run_target`.
+#[test]
+fn resolve_run_target_unresolvable_single_token_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let target = resolve_run_target("does-not-exist.sh", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "does-not-exist.sh"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// A single-line `run: |` block scalar clips to exactly one trailing
+// newline (YAML block-scalar "clip" chomping, the default). That newline
+// defeats the whole-string existence test (no real file is named
+// "foo.sh\n"), so this is the shell arm — same as any other trailing text
+// — with the leading token resolved and the newline preserved verbatim in
+// the tail, so the resolved command still ends the line the way the shell
+// expects.
+#[test]
+fn resolve_run_target_single_line_block_scalar_trailing_newline_is_shell_arm() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target("foo.sh\n", script_dir.path(), ScriptShell::Auto);
+    let expected_path =
+        crate::posix_single_quoted(&script_dir.path().join("foo.sh").to_string_lossy());
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path}\n")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// `$CFGD_CONFIG_DIR/...` is a shell-expanded env-var reference the script's
+// own environment supplies at spawn time (`build_script_env`) — this
+// function only ever tests the LITERAL leading token against the
+// filesystem, so a literal directory named "$CFGD_CONFIG_DIR" never exists
+// and the whole string passes through byte-identical, unresolved, for the
+// shell to expand.
+#[test]
+fn resolve_run_target_config_dir_var_form_is_left_byte_identical() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let target = resolve_run_target(
+        "$CFGD_CONFIG_DIR/foo.sh --flag",
+        script_dir.path(),
+        ScriptShell::Auto,
+    );
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "$CFGD_CONFIG_DIR/foo.sh --flag"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// C1 regression pin (unit level): `&&` in the trailing text must survive
+// into the substituted command unchanged — the discriminator that broke
+// this (splitting the WHOLE string on first whitespace and treating
+// everything after as argv) is gone.
+#[test]
+fn resolve_run_target_preserves_shell_metacharacters_in_tail() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("deploy.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target(
+        "deploy.sh && echo done",
+        script_dir.path(),
+        ScriptShell::Auto,
+    );
+    let expected_path =
+        crate::posix_single_quoted(&script_dir.path().join("deploy.sh").to_string_lossy());
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} && echo done")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// C1 regression pin (unit level): quoted trailing arguments survive
+// unsplit — `resolve_run_target` never touches anything past the leading
+// token's own byte span.
+#[test]
+fn resolve_run_target_preserves_quoted_tail() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("greet.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target(
+        "greet.sh \"hello world\"",
+        script_dir.path(),
+        ScriptShell::Auto,
+    );
+    let expected_path =
+        crate::posix_single_quoted(&script_dir.path().join("greet.sh").to_string_lossy());
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} \"hello world\"")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
 }
 
 // An absolute `run:` path that exists is executed directly as a file
@@ -1472,10 +1603,12 @@ fn execute_script_absolute_run_path_runs_as_file() {
 }
 
 // End-to-end: a relative `run:` carrying trailing arguments resolves its
-// FIRST token against script_dir and passes the rest as argv — the exact
-// regression `resolve_run_target` fixes (previously the whole string,
-// space and all, was tested for existence as one path and never matched,
-// so the script silently ran inline instead of as a file).
+// FIRST token against script_dir, substitutes the quoted absolute path back
+// into the command string, and hands the whole thing to the shell — the
+// shell, not this function, splits "world" into $1. Before `resolve_run_target`
+// existed, the whole string (space and all) was tested for existence as one
+// path and never matched, so the leading token was never resolved against
+// script_dir at all.
 #[cfg(unix)]
 #[test]
 fn execute_script_relative_run_path_with_args_resolves_against_script_dir() {
@@ -1507,6 +1640,126 @@ fn execute_script_relative_run_path_with_args_resolves_against_script_dir() {
     assert!(
         out.contains("hello world"),
         "trailing arg must reach the script's argv: {out:?}"
+    );
+}
+
+// C1 regression pin (end-to-end): `&&` after a resolved leading token must
+// still chain to a second command — the bug this fix exists for. Before the
+// `RunTarget` split, the whole `run:` string (space and all) was tested for
+// existence as one path, so a trailing `&& …` became literal argv of a
+// script that never received it as shell syntax.
+#[cfg(unix)]
+#[test]
+fn execute_script_metacharacters_after_resolved_script_still_run() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("first.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho first\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("first.sh && echo second".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("a resolved leading token followed by `&&` must still run as shell syntax");
+    assert!(changed, "a zero-exit script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(out.contains("first"), "first command must run: {out:?}");
+    assert!(
+        out.contains("second"),
+        "second command chained with && must also run: {out:?}"
+    );
+}
+
+// C1 regression pin (end-to-end): a quoted trailing argument must reach the
+// script as ONE argv entry, not be split on the embedded space. Before this
+// fix the whole string never resolved as a file, so it ran inline via the
+// shell already — this pins that the resolved-leading-token substitution
+// does not disturb quoting later in the string.
+#[cfg(unix)]
+#[test]
+fn execute_script_quoted_argument_reaches_script_unsplit() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("greet.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho \"[$1][$2]\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("greet.sh \"hello world\"".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("a quoted trailing argument must run");
+    assert!(changed, "a zero-exit script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(
+        out.contains("[hello world][]"),
+        "the quoted argument must arrive as a single $1, leaving $2 empty: {out:?}"
+    );
+}
+
+// C1 regression pin (end-to-end): a multi-line `run: |` body — a resolved
+// leading token on the first line, an ordinary shell statement on the
+// second — must run BOTH lines. Before this fix the whole string was
+// tested for existence as one path (never matching, because of the
+// embedded newline), so it fell into the same args-ification bug as the
+// single-line case: only the first line ever ran.
+#[cfg(unix)]
+#[test]
+fn execute_script_multiline_body_runs_every_line() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("first.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho first\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("first.sh\necho second".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("every line of a multi-line body must run");
+    assert!(changed, "a zero-exit script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(out.contains("first"), "first line must run: {out:?}");
+    assert!(
+        out.contains("second"),
+        "second line of the multi-line body must also run: {out:?}"
     );
 }
 

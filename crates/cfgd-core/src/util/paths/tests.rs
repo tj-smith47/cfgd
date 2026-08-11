@@ -678,3 +678,97 @@ fn fs_key_folding_is_reversible_or_absent() {
         );
     }
 }
+
+// --- absolutize_path ---
+
+#[test]
+fn absolutize_path_absolute_input_is_returned_unchanged() {
+    let abs = if cfg!(windows) {
+        PathBuf::from(r"C:\Users\me\cfgd.yaml")
+    } else {
+        PathBuf::from("/etc/cfgd/cfgd.yaml")
+    };
+    assert_eq!(super::absolutize_path(&abs), abs);
+}
+
+#[test]
+#[serial_test::serial]
+fn absolutize_path_relative_input_resolves_against_cwd() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let original_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = super::absolutize_path(Path::new("cfgd.yaml"));
+    std::env::set_current_dir(original_cwd).unwrap();
+
+    assert!(result.is_absolute(), "must be absolute: {result:?}");
+    // Compare through the same lexical (non-canonicalizing) join the
+    // production code performs, so a symlinked temp dir (macOS's `/tmp` is
+    // itself `/private/tmp`) doesn't fail this assertion for a reason
+    // unrelated to what it pins.
+    assert_eq!(result, dir.path().join("cfgd.yaml"));
+}
+
+#[test]
+#[serial_test::serial]
+fn absolutize_path_does_not_relocate_through_a_symlinked_directory() {
+    // Pins M1: a symlinked config dir (the dotfiles-repo pattern
+    // `atomic_write_resolved` exists to support) must keep the path the user
+    // named, not jump to the real target `realpath(3)` would resolve to.
+    let root = tempfile::TempDir::new().unwrap();
+    let real_target = root.path().join("dotfiles");
+    std::fs::create_dir(&real_target).unwrap();
+    let link = root.path().join("linked-config");
+    crate::create_symlink(&real_target, &link).unwrap();
+
+    let original_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(root.path()).unwrap();
+    let result = super::absolutize_path(Path::new("linked-config/cfgd.yaml"));
+    std::env::set_current_dir(original_cwd).unwrap();
+
+    assert_eq!(result, root.path().join("linked-config/cfgd.yaml"));
+    assert!(
+        !result.starts_with(&real_target),
+        "must not relocate to the symlink target: {result:?}"
+    );
+}
+
+#[test]
+fn absolutize_path_normalizes_a_single_dot_component() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let input = dir.path().join(".").join("cfgd.yaml");
+    let result = super::absolutize_path(&input);
+    assert_eq!(result, dir.path().join("cfgd.yaml"));
+}
+
+#[test]
+#[cfg(not(windows))]
+fn absolutize_path_leaves_dotdot_literal_on_non_windows() {
+    // `..` collapsing lexically would silently disagree with a real symlink
+    // earlier in the path (M1's exact concern) — `std::path::absolute`
+    // deliberately leaves it alone on non-Windows rather than guessing.
+    let dir = tempfile::TempDir::new().unwrap();
+    let input = dir.path().join("a").join("b").join("..").join("cfgd.yaml");
+    let result = super::absolutize_path(&input);
+    assert_eq!(
+        result,
+        dir.path().join("a").join("b").join("..").join("cfgd.yaml")
+    );
+}
+
+// --- strip_windows_verbatim: absolutize_path's own doc-comment claim ---
+
+#[test]
+fn strip_windows_verbatim_removes_the_prefix() {
+    assert_eq!(
+        super::strip_windows_verbatim(r"\\?\C:\Users\me\cfgd.yaml"),
+        r"C:\Users\me\cfgd.yaml"
+    );
+}
+
+#[test]
+fn strip_windows_verbatim_is_a_noop_without_the_prefix() {
+    assert_eq!(
+        super::strip_windows_verbatim("/etc/cfgd/cfgd.yaml"),
+        "/etc/cfgd/cfgd.yaml"
+    );
+}

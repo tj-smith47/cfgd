@@ -39,33 +39,94 @@ fn interactive_disposition(interactive: bool, stdin_is_tty: bool) -> Interactive
     }
 }
 
-/// Resolve `run_str`'s leading token (the script/interpreter) against
-/// `script_dir`, when it is a relative path naming an existing file there —
-/// alongside the untouched trailing argument text.
+/// How a `run:` string resolves to something [`execute_script_inner`] /
+/// [`run_filter_script`] can spawn.
+enum RunTarget {
+    /// `run_str`, taken as a whole, names an existing file: direct exec, the
+    /// OS's own shebang handling selects the interpreter, no shell involved
+    /// and no argv beyond the file itself.
+    File(std::path::PathBuf),
+    /// Everything else: an inline command a shell interprets. When the
+    /// leading whitespace-delimited token alone names an existing file
+    /// (relative to `script_dir`, or absolute), it has already been resolved
+    /// and substituted back in, quoted for the target shell — the remainder
+    /// of the string is untouched, so the shell, not this function, parses
+    /// it.
+    Inline(String),
+}
+
+/// Resolve `run_str` into a [`RunTarget`].
 ///
-/// Only the FIRST token is ever tested for existence: a `run: scripts/foo.sh
-/// bar` previously tested the *entire* string (`"scripts/foo.sh bar"`,
-/// space and all) as one path segment, which never exists on disk, so any
-/// `run:` carrying arguments silently fell through to the inline-shell arm
-/// with `cwd` at the script's `working_dir` (the home directory by default)
-/// instead of resolving relative to `script_dir`. The trailing text is
-/// returned verbatim; the caller whitespace-tokenizes it into `Command` argv
-/// entries when the first token resolves to a file — no shell re-parses it,
-/// since the OS's own shebang handling still selects the file's interpreter.
-fn resolve_run_target<'a>(
-    run_str: &'a str,
+/// The whole-string existence test runs first and is unconditional: a
+/// `run:` naming only a script path, with no trailing text, keeps running
+/// exactly as it always did — direct exec, no shell, no argv splitting. That
+/// scope is deliberate and narrower than "does the leading token resolve": a
+/// prior version of this function split on the first whitespace unconditionally
+/// and args-ified everything after, which reinterpreted `&&`, redirects,
+/// quoted arguments, and later lines of a multi-line body as literal argv
+/// entries instead of shell syntax — the second command in
+/// `scripts/deploy.sh && echo done` silently never ran. Only the LEADING
+/// token of a string that already needs the shell arm (because the whole
+/// string isn't a file) is ever resolved; the shell reparses everything
+/// else in `tail` byte-for-byte, so metacharacters, quoting, and later lines
+/// in a multi-line body behave exactly as they did before this function
+/// existed — the substitution only fixes the leading token's own resolution
+/// against `script_dir` instead of the caller's `working_dir`.
+fn resolve_run_target(
+    run_str: &str,
     script_dir: &std::path::Path,
-) -> (std::path::PathBuf, &'a str) {
-    let (command, rest) = match run_str.split_once(char::is_whitespace) {
-        Some((cmd, rest)) => (cmd, rest.trim_start()),
-        None => (run_str, ""),
+    shell: ScriptShell,
+) -> RunTarget {
+    if let Some(resolved) = resolve_existing_script(run_str, script_dir) {
+        return RunTarget::File(resolved);
+    }
+    let Some(idx) = run_str.find(char::is_whitespace) else {
+        return RunTarget::Inline(run_str.to_string());
     };
-    let resolved = if std::path::Path::new(command).is_relative() {
-        script_dir.join(command)
+    let (command, tail) = run_str.split_at(idx);
+    match resolve_existing_script(command, script_dir) {
+        Some(resolved) => {
+            let quoted = quote_resolved_script_path(&resolved, shell);
+            RunTarget::Inline(format!("{quoted}{tail}"))
+        }
+        None => RunTarget::Inline(run_str.to_string()),
+    }
+}
+
+/// Resolve `candidate` against `script_dir` when relative, returning it only
+/// when it names a file that actually exists on disk — the shared
+/// file-vs-inline test both call sites in [`resolve_run_target`] use.
+fn resolve_existing_script(
+    candidate: &str,
+    script_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(candidate);
+    let resolved = if path.is_relative() {
+        script_dir.join(path)
     } else {
-        std::path::PathBuf::from(command)
+        path.to_path_buf()
     };
-    (resolved, rest)
+    resolved.exists().then_some(resolved)
+}
+
+/// Render `resolved` as a single word for substitution into an inline
+/// `run_str` body executed by `shell` — quoted so the resolved token cannot
+/// reopen, or be extended by, whatever the author wrote after it.
+///
+/// `Cmd` (and `Auto` on Windows, which dispatches to it) has no entry in the
+/// `*_quoted` catalog in `util/strings.rs` because it needs none: `"` is one
+/// of the characters NTFS forbids in a filename, so a real resolved path can
+/// never contain the character `cmd.exe`'s own quoting uses, and no escaping
+/// body is required to make the wrap safe.
+fn quote_resolved_script_path(resolved: &std::path::Path, shell: ScriptShell) -> String {
+    match shell {
+        ScriptShell::Pwsh => crate::powershell_single_quoted(&resolved.to_string_lossy()),
+        ScriptShell::Cmd => format!("\"{}\"", resolved.display()),
+        ScriptShell::Auto if cfg!(windows) => format!("\"{}\"", resolved.display()),
+        ScriptShell::Auto | ScriptShell::Sh | ScriptShell::Bash | ScriptShell::Zsh => {
+            crate::posix_single_quoted(&resolved.to_string_lossy())
+        }
+    }
 }
 
 /// Prepend PATH directories cfgd recorded when it bootstrapped a package
@@ -630,65 +691,65 @@ fn execute_script_inner(
     // foreground group still includes the child (see the `Run` arm below).
     let set_process_group = !matches!(disposition, InteractiveDisposition::Run);
 
-    let (resolved, run_args) = resolve_run_target(run_str, script_dir);
+    let target = resolve_run_target(run_str, script_dir, shell);
 
     let cfgd_env_path = cfgd_env_path_for(shell);
 
-    let mut cmd = if resolved.exists() {
-        // File path — check executable bit, run directly (OS handles shebang).
-        // The override silently drops out on file scripts: the shebang owns
-        // interpreter choice, so wrapping the file in `bash -c` would either
-        // double-interpret it or break exec semantics. The entry's own
-        // `shell:` field on a file is still a config bug.
-        if entry_shell != ScriptShell::Auto {
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
-                    resolved.posix(),
-                ),
-            }));
-        }
-        if shell_override.is_some() {
-            tracing::debug!(
-                script = %resolved.posix(),
-                shell_override = ?shell_override,
-                "--shell override ignored on file-shebang script"
-            );
-        }
-        let meta = std::fs::metadata(&resolved)?;
-        if !crate::is_executable(&resolved, &meta) {
+    let mut cmd = match target {
+        RunTarget::File(resolved) => {
+            // File path — check executable bit, run directly (OS handles shebang).
+            // The override silently drops out on file scripts: the shebang owns
+            // interpreter choice, so wrapping the file in `bash -c` would either
+            // double-interpret it or break exec semantics. The entry's own
+            // `shell:` field on a file is still a config bug.
+            if entry_shell != ScriptShell::Auto {
+                return Err(CfgdError::Config(ConfigError::Invalid {
+                    message: format!(
+                        "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
+                        resolved.posix(),
+                    ),
+                }));
+            }
+            if shell_override.is_some() {
+                tracing::debug!(
+                    script = %resolved.posix(),
+                    shell_override = ?shell_override,
+                    "--shell override ignored on file-shebang script"
+                );
+            }
+            let meta = std::fs::metadata(&resolved)?;
+            if !crate::is_executable(&resolved, &meta) {
+                #[cfg(unix)]
+                let hint = "chmod +x";
+                #[cfg(windows)]
+                let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
+                return Err(CfgdError::Config(ConfigError::Invalid {
+                    message: format!(
+                        "script '{}' exists but is not executable ({})",
+                        resolved.posix(),
+                        hint,
+                    ),
+                }));
+            }
+            let mut c = std::process::Command::new(&resolved);
+            c.current_dir(working_dir);
             #[cfg(unix)]
-            let hint = "chmod +x";
-            #[cfg(windows)]
-            let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "script '{}' exists but is not executable ({})",
-                    resolved.posix(),
-                    hint,
-                ),
-            }));
+            if set_process_group {
+                use std::os::unix::process::CommandExt;
+                c.process_group(0);
+            }
+            c
         }
-        let mut c = std::process::Command::new(&resolved);
-        c.current_dir(working_dir);
-        if !run_args.is_empty() {
-            c.args(run_args.split_whitespace());
+        RunTarget::Inline(command) => {
+            // Inline command — interpreter selected by shell field
+            build_inline_command(
+                shell,
+                &command,
+                working_dir,
+                cfgd_env_path.as_deref(),
+                set_process_group,
+            )
         }
-        #[cfg(unix)]
-        if set_process_group {
-            use std::os::unix::process::CommandExt;
-            c.process_group(0);
-        }
-        c
-    } else {
-        // Inline command — interpreter selected by shell field
-        build_inline_command(
-            shell,
-            run_str,
-            working_dir,
-            cfgd_env_path.as_deref(),
-            set_process_group,
-        )
     };
 
     // Inject environment variables
@@ -1001,38 +1062,38 @@ pub(crate) fn run_filter_script(
 
     ensure_working_dir(run_str, working_dir)?;
 
-    let (resolved, run_args) = resolve_run_target(run_str, script_dir);
+    let target = resolve_run_target(run_str, script_dir, ScriptShell::Auto);
 
-    let mut cmd = if resolved.exists() {
-        let meta = std::fs::metadata(&resolved)?;
-        if !crate::is_executable(&resolved, &meta) {
+    let mut cmd = match target {
+        RunTarget::File(resolved) => {
+            let meta = std::fs::metadata(&resolved)?;
+            if !crate::is_executable(&resolved, &meta) {
+                #[cfg(unix)]
+                let hint = "chmod +x";
+                #[cfg(windows)]
+                let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
+                return Err(CfgdError::Config(ConfigError::Invalid {
+                    message: format!(
+                        "patch script '{}' exists but is not executable ({})",
+                        resolved.posix(),
+                        hint,
+                    ),
+                }));
+            }
+            let mut c = std::process::Command::new(&resolved);
+            c.current_dir(working_dir);
             #[cfg(unix)]
-            let hint = "chmod +x";
-            #[cfg(windows)]
-            let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
-            return Err(CfgdError::Config(ConfigError::Invalid {
-                message: format!(
-                    "patch script '{}' exists but is not executable ({})",
-                    resolved.posix(),
-                    hint,
-                ),
-            }));
+            {
+                use std::os::unix::process::CommandExt;
+                c.process_group(0);
+            }
+            c
         }
-        let mut c = std::process::Command::new(&resolved);
-        c.current_dir(working_dir);
-        if !run_args.is_empty() {
-            c.args(run_args.split_whitespace());
+        RunTarget::Inline(command) => {
+            // A filter script is never interactive — always its own process
+            // group so a timeout kill can reach the whole subtree.
+            build_inline_command(ScriptShell::Auto, &command, working_dir, None, true)
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            c.process_group(0);
-        }
-        c
-    } else {
-        // A filter script is never interactive — always its own process
-        // group so a timeout kill can reach the whole subtree.
-        build_inline_command(ScriptShell::Auto, run_str, working_dir, None, true)
     };
 
     for (key, value) in env_vars {
@@ -1136,7 +1197,9 @@ fn build_inline_command(
     run_str: &str,
     working_dir: &std::path::Path,
     cfgd_env_path: Option<&std::path::Path>,
-    set_process_group: bool,
+    // Only read inside `#[cfg(unix)]` below: process groups are a POSIX
+    // concept and there is no non-unix arm to consume it in.
+    #[cfg_attr(not(unix), allow(unused_variables))] set_process_group: bool,
 ) -> std::process::Command {
     let mut c = match shell {
         ScriptShell::Auto => {
