@@ -620,7 +620,7 @@ pub(super) fn apply_sighup_reload(
         "Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart",
     );
     match config::load_config(&ctx.config_path) {
-        Ok(new_cfg) => {
+        Ok(mut new_cfg) => {
             // Operator-triggered, not timer-driven: a SIGHUP is a discrete
             // reload the operator asked for, the daemon analog of a fresh CLI
             // invocation re-reading a changed file, not a periodic tick that

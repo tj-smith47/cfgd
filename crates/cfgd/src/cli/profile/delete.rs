@@ -69,8 +69,8 @@ pub fn cmd_profile_delete(
     // Safety: refuse if active profile
     let active_conflict = cli.config.exists()
         && match config::load_config(&cli.config) {
-            Ok(cfg) => {
-                drain_config_deprecations(printer, &cfg);
+            Ok(mut cfg) => {
+                drain_config_deprecations(printer, &mut cfg);
                 cfg.spec.profile.as_deref() == Some(name)
             }
             Err(_) => false,

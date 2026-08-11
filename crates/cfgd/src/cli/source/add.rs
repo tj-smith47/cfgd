@@ -44,8 +44,8 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     // Check if source already exists in config
     let config_path = cli.config.clone();
     if config_path.exists() {
-        let cfg = config::load_config(&config_path)?;
-        drain_config_deprecations(printer, &cfg);
+        let mut cfg = config::load_config(&config_path)?;
+        drain_config_deprecations(printer, &mut cfg);
         if cfg.spec.sources.iter().any(|s| s.name == source_name) {
             return Err(crate::cli::cli_error(
                 &source_name,

@@ -28,8 +28,8 @@ pub fn cmd_module_add_from_registry(
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
-    let cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     let registries = cfg
         .spec
@@ -232,8 +232,8 @@ pub fn cmd_module_add_remote(
     };
     let mut added_to_profile: Option<String> = None;
     if cli.config.exists() {
-        let cfg = config::load_config(&cli.config)?;
-        drain_config_deprecations(printer, &cfg);
+        let mut cfg = config::load_config(&cli.config)?;
+        drain_config_deprecations(printer, &mut cfg);
         let profile_name = match cli.profile.as_deref() {
             Some(p) => p,
             None => cfg.active_profile()?,
@@ -636,8 +636,8 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let registries = cfg
         .spec
         .modules
@@ -944,8 +944,8 @@ pub fn cmd_module_registry_rename(
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let registries = cfg
         .spec
         .modules
@@ -1069,8 +1069,8 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
         return Ok(());
     }
 
-    let cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let registries = cfg
         .spec
         .modules

@@ -67,8 +67,8 @@ fn collect_doctor_output(
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
-            Ok(cfg) => {
-                drain_config_deprecations(printer, &cfg);
+            Ok(mut cfg) => {
+                drain_config_deprecations(printer, &mut cfg);
                 (
                     DoctorConfigCheck {
                         valid: true,

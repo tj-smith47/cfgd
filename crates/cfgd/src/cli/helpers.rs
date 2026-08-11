@@ -68,7 +68,7 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
 /// command-boundary call site can go on spelling this name; the daemon's own
 /// startup / SIGHUP-reload sites call the core method directly, since they
 /// parse config in cfgd-core and cannot reach a binary-crate helper.
-pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &CfgdConfig) {
+pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &mut CfgdConfig) {
     cfg.drain_deprecations(printer);
 }
 
@@ -76,8 +76,8 @@ pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
     printer: &Printer,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
-    let cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let profile_name = match cli.profile.as_deref() {
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
@@ -87,6 +87,60 @@ pub(in crate::cli) fn load_config_and_profile(
         Err(e) => return Err(decorate_profile_not_found(cli, &cfg, &profile_name, e)),
     };
     Ok((cfg, profile_name, resolved))
+}
+
+/// Load config and resolve a profile, with the `--module` degrade shared by
+/// `cmd_apply` and `cmd_plan`: when `module_filter` names a single module
+/// and no profile resolves (unset, or named but not found), fall back to
+/// module-only mode instead of erroring, since a module-only run needs no
+/// profile at all.
+///
+/// Loads (and drains) `cli.config` EXACTLY ONCE regardless of which branch
+/// is taken. The two call sites this replaces each called
+/// `load_config_and_profile` (load + drain #1), and on its `Err` re-parsed
+/// the same file a second time to build the module-only fallback (load +
+/// drain #2) — the same legacy-key deprecation notice landing on the
+/// user's terminal twice for one `apply --module x` / `plan --module x`
+/// invocation.
+pub(in crate::cli) fn load_config_and_profile_module_scoped(
+    cli: &Cli,
+    printer: &Printer,
+    module_filter: Option<&str>,
+) -> anyhow::Result<(CfgdConfig, ResolvedProfile, Option<String>, bool)> {
+    let Some(mod_name) = module_filter else {
+        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
+        return Ok((cfg, resolved, Some(profile_name), true));
+    };
+
+    // `minimal_config()` subscribes to nothing, and that fabricated empty
+    // list must never reach the decision sweep: it would read as "no
+    // source is subscribed any more" and delete every decision row on the
+    // machine, turning "awaiting your answer" into "applies silently" with
+    // nothing to recover from.
+    let (cfg, config_parsed) = match config::load_config(&cli.config) {
+        Ok(mut cfg) => {
+            drain_config_deprecations(printer, &mut cfg);
+            (cfg, true)
+        }
+        Err(_) => (config::minimal_config(), false),
+    };
+
+    let profile_name = cli
+        .profile
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| cfg.active_profile().ok().map(str::to_string));
+    let resolved = profile_name
+        .as_deref()
+        .and_then(|name| config::resolve_profile(name, &profiles_dir(cli)).ok());
+
+    match resolved {
+        Some(resolved) => Ok((cfg, resolved, profile_name, config_parsed)),
+        None => {
+            let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
+            Ok((cfg, resolved, None, config_parsed))
+        }
+    }
 }
 
 /// Turn a bare `ProfileNotFound` into an actionable error when the requested
@@ -719,8 +773,8 @@ pub(in crate::cli) fn resolve_profile_name(
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
     }
-    let cfg = config::load_config(config_path)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
     if let Some(ref profile_override) = cli.profile {
         Ok(profile_override.clone())
     } else {

@@ -31,15 +31,24 @@ pub struct CfgdConfig {
 
 impl CfgdConfig {
     /// Drain [`Self::deprecations`] through `printer.deprecation()`, the
-    /// always-visible stderr channel. The one shared implementation behind
-    /// every command-boundary drain (`crate::cli::helpers::drain_config_deprecations`
-    /// in the binary crate) and the daemon's own startup / SIGHUP-reload sites,
-    /// which parse config directly in cfgd-core and so cannot reach the
+    /// always-visible stderr channel, THEN CLEAR IT — a second drain of the
+    /// same `CfgdConfig` is a no-op rather than a repeat print. `&mut self`
+    /// is deliberate: a command that loads config once and drains once
+    /// through the normal path, then falls through a secondary code path
+    /// that drains the SAME already-loaded value again (a `--module`
+    /// fallback that shares its `cfg` binding with the primary load, for
+    /// instance), must not surface one legacy-key notice twice.
+    ///
+    /// The one shared implementation behind every command-boundary drain
+    /// (`crate::cli::helpers::drain_config_deprecations` in the binary
+    /// crate) and the daemon's own startup / SIGHUP-reload sites, which
+    /// parse config directly in cfgd-core and so cannot reach the
     /// binary-crate helper.
-    pub fn drain_deprecations(&self, printer: &crate::output::Printer) {
+    pub fn drain_deprecations(&mut self, printer: &crate::output::Printer) {
         for msg in &self.deprecations {
             printer.deprecation(msg);
         }
+        self.deprecations.clear();
     }
 
     /// Returns the active profile name, or an error if no profile is configured.

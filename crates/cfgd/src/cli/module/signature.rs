@@ -45,8 +45,8 @@ pub(crate) fn enforce_signature_policy(
     // its sole opportunity to surface a deprecation on the user's real config.
     let require_signatures = if cli.config.exists() {
         match config::load_config(&cli.config) {
-            Ok(c) => {
-                drain_config_deprecations(printer, &c);
+            Ok(mut c) => {
+                drain_config_deprecations(printer, &mut c);
                 c.spec
                     .modules
                     .and_then(|m| m.security)

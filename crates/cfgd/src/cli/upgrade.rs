@@ -15,8 +15,8 @@ pub fn cmd_upgrade(
     // check and gates the user-scope skill ride-along that `install_release`
     // runs after a successful install (no second prompt).
     let update_cfg = match config::load_config(config_path) {
-        Ok(c) => {
-            crate::cli::helpers::drain_config_deprecations(printer, &c);
+        Ok(mut c) => {
+            crate::cli::helpers::drain_config_deprecations(printer, &mut c);
             c.spec.update.unwrap_or_default()
         }
         Err(_) => Default::default(),

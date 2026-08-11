@@ -66,8 +66,8 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let active = match &cli.profile {
         Some(p) => p.clone(),
         None => match config::load_config(&cli.config) {
-            Ok(c) => {
-                drain_config_deprecations(printer, &c);
+            Ok(mut c) => {
+                drain_config_deprecations(printer, &mut c);
                 c.spec.profile.unwrap_or_default()
             }
             Err(_) => String::new(),

@@ -191,32 +191,8 @@ pub fn run_apply(
     // final — it states the phase and action counts — so the profile label is
     // carried down rather than printed here. A module-only run resolved no
     // profile, so it carries none and the header omits the row.
-    let (cfg, resolved, profile_label, config_parsed) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli, printer) {
-            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name), true),
-            Err(e) => {
-                tracing::debug!("profile load failed, using module-only mode: {}", e);
-                // `minimal_config()` subscribes to nothing, and that fabricated
-                // empty list must never reach the decision sweep below: it
-                // would read as "no source is subscribed any more" and delete
-                // every decision row on the machine, turning "awaiting your
-                // answer" into "applies silently" with nothing to recover from.
-                let (cfg, config_parsed) = match config::load_config(&cli.config) {
-                    Ok(c) => {
-                        drain_config_deprecations(printer, &c);
-                        (c, true)
-                    }
-                    Err(_) => (config::minimal_config(), false),
-                };
-                let resolved =
-                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                (cfg, resolved, None, config_parsed)
-            }
-        }
-    } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
-        (cfg, resolved, Some(profile_name), true)
-    };
+    let (cfg, resolved, profile_label, config_parsed) =
+        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a

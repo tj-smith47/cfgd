@@ -44,8 +44,8 @@ pub(crate) fn run_source_update(
     printer.heading("Update Sources");
 
     let config_path = cli.config.clone();
-    let cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     if cfg.spec.sources.is_empty() {
         // A specific source was requested but the config has no sources: that is

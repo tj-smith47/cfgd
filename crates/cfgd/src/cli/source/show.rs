@@ -196,8 +196,8 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
 
 pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
-    let cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &cfg);
+    let mut cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     let source_spec = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(spec) => spec,

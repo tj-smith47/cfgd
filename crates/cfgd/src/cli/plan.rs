@@ -41,31 +41,8 @@ pub fn cmd_plan(
     // rows belong to is rendered once the plan is final, so the profile label
     // is carried down rather than printed here. A module-only run resolved no
     // profile, so it carries none and the header omits the row.
-    let (cfg, resolved, profile_label, config_parsed) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli, printer) {
-            Ok((cfg, profile_name, resolved)) => (cfg, resolved, Some(profile_name), true),
-            Err(e) => {
-                tracing::debug!("profile load failed, using module-only mode: {}", e);
-                // `minimal_config()` subscribes to nothing, and a fabricated
-                // empty subscription list must never be mistaken for the real
-                // one — it is what the decision scope reads to decide which
-                // rows are inert.
-                let (cfg, config_parsed) = match config::load_config(&cli.config) {
-                    Ok(c) => {
-                        drain_config_deprecations(printer, &c);
-                        (c, true)
-                    }
-                    Err(_) => (config::minimal_config(), false),
-                };
-                let resolved =
-                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                (cfg, resolved, None, config_parsed)
-            }
-        }
-    } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
-        (cfg, resolved, Some(profile_name), true)
-    };
+    let (cfg, resolved, profile_label, config_parsed) =
+        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
