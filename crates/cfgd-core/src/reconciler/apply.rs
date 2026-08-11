@@ -80,6 +80,25 @@ fn action_reports_its_own_status(action: &Action) -> bool {
 /// Elapsed times below this read as noise on a line whose subject is the point.
 const MIN_REPORTED_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The run's monotonic count of finishes, ticked wherever an action is
+/// collected — which is always the coordinator thread, sequential phase and
+/// concurrent one alike.
+///
+/// Separate from the plan-position counter because lanes make the two orders
+/// differ, and the wall clock cannot substitute: `utc_now_iso8601` truncates to
+/// whole seconds, so two lanes finishing inside one second are unordered by
+/// `completed_at`.
+#[derive(Default)]
+struct Completions(usize);
+
+impl Completions {
+    fn next(&mut self) -> usize {
+        let index = self.0;
+        self.0 += 1;
+        index
+    }
+}
+
 /// Who declared the manager a `PackageAction::Bootstrap` installs, as the
 /// `for <owner token>, …` detail its line carries. `None` when nothing declared
 /// it, which renders the line bare.
@@ -588,6 +607,7 @@ impl<'a> super::Reconciler<'a> {
         // from 0 across the whole run, over the actions that survive
         // `phase_filter`.
         let mut plan_index_base: usize = 0;
+        let mut completions = Completions::default();
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
         // The PATH directories the Env phase's planned content was built from.
         // Compared against the post-run set below to detect a manager this run
@@ -807,12 +827,16 @@ impl<'a> super::Reconciler<'a> {
                 // the action's own line instead of a bespoke one above it.
                 let mut failure_detail: Option<(String, bool)> = None;
 
+                let finished = completions.next();
                 let (desc, success, action_changed, error, should_abort) = match result {
                     Ok((desc, action_changed, script_output)) => {
                         if let Some(jid) = journal_id
-                            && let Err(e) =
-                                self.state
-                                    .journal_complete(jid, None, script_output.as_deref())
+                            && let Err(e) = self.state.journal_complete(
+                                jid,
+                                finished,
+                                None,
+                                script_output.as_deref(),
+                            )
                         {
                             tracing::warn!("failed to record journal completion: {e}");
                         }
@@ -835,7 +859,7 @@ impl<'a> super::Reconciler<'a> {
 
                         failure_detail = Some((collapse_to_subject_line(&e), continue_on_err));
                         if let Some(jid) = journal_id
-                            && let Err(je) = self.state.journal_fail(jid, &e.to_string())
+                            && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
                         {
                             tracing::warn!("failed to record journal failure: {je}");
                         }

@@ -197,7 +197,7 @@ mod tests {
             .journal_begin(apply_id, 0, "PostScripts", "script", raw_body, None)
             .unwrap();
         state
-            .journal_complete(jid, None, Some("captured output"))
+            .journal_complete(jid, 0, None, Some("captured output"))
             .unwrap();
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);

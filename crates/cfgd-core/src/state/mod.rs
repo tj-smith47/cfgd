@@ -432,6 +432,15 @@ const MIGRATIONS: &[&str] = &[
 
       UPDATE compliance_snapshots
           SET content_hash = cfgd_compliance_content_hash(snapshot_json, content_hash);"#,
+    // `action_index` is where an action sits in the run's plan; once package
+    // work runs in per-manager lanes that stops being the order the actions
+    // finished in, and the order they finished in stops being recoverable from
+    // the schema at all. The backfill is exact rather than a guess: every
+    // historical apply was sequential, so completion order WAS plan order.
+    // A reporting and forensics column — the restore reads `file_backups`,
+    // never the journal.
+    "ALTER TABLE apply_journal ADD COLUMN completion_index INTEGER;
+     UPDATE apply_journal SET completion_index = action_index;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

@@ -576,7 +576,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id_1, None)
         .unwrap();
-    state.journal_complete(jid1, None, None).unwrap();
+    state.journal_complete(jid1, 0, None, None).unwrap();
     std::fs::write(&target, "v1 content").unwrap();
 
     // Apply 2: backup of v1, then modify to v2.
@@ -591,7 +591,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let jid2 = state
         .journal_begin(apply_id_2, 0, "files", "file", &resource_id_2, None)
         .unwrap();
-    state.journal_complete(jid2, None, None).unwrap();
+    state.journal_complete(jid2, 0, None, None).unwrap();
     std::fs::write(&target, "v2 content").unwrap();
 
     (workspace, state_dir, target, apply_id_1)
@@ -635,7 +635,7 @@ pub fn log_history_setup(
 
 /// Seed a state DB with one apply and a set of journal entries. Each
 /// entry's optional `script_output` is recorded via
-/// `journal_complete(jid, None, script_output)`.
+/// `journal_complete(jid, idx, None, script_output)`.
 ///
 /// Returns `(state_dir, apply_id)`.
 pub fn log_show_output_setup(
@@ -652,7 +652,9 @@ pub fn log_show_output_setup(
         let jid = state
             .journal_begin(apply_id, idx, phase, action_type, resource_id, None)
             .unwrap();
-        state.journal_complete(jid, None, *script_output).unwrap();
+        state
+            .journal_complete(jid, idx, None, *script_output)
+            .unwrap();
     }
     (state_dir, apply_id)
 }
@@ -1257,7 +1259,7 @@ pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) 
             None,
         )
         .unwrap();
-    state.journal_complete(jid, None, None).unwrap();
+    state.journal_complete(jid, 0, None, None).unwrap();
 
     (state_dir, apply_id_1)
 }
@@ -1290,7 +1292,7 @@ pub fn rollback_state_with_multiline_script_action_setup() -> (tempfile::TempDir
             None,
         )
         .unwrap();
-    state.journal_complete(jid, None, None).unwrap();
+    state.journal_complete(jid, 0, None, None).unwrap();
 
     (state_dir, apply_id_1)
 }

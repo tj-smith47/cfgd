@@ -346,7 +346,14 @@ impl BackupRunRecord {
 pub struct JournalEntry {
     pub id: i64,
     pub apply_id: i64,
+    /// Where the action sits in the run's plan — the position in the flattened
+    /// group order, over the actions that survive `--phase`. Not a dispatch
+    /// counter: package work dispatches in Rule P's tiers, not in plan order.
     pub action_index: i64,
+    /// When the action actually finished: a monotonic counter assigned on the
+    /// coordinator thread at collection. `None` for a row whose run was killed
+    /// between its begin and its collection.
+    pub completion_index: Option<i64>,
     pub phase: String,
     pub action_type: String,
     pub resource_id: String,

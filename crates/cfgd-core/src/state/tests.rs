@@ -2,6 +2,40 @@ use rusqlite::params;
 
 use super::*;
 
+/// Every column an `ALTER TABLE … ADD COLUMN` migration introduces, keyed by
+/// the index of the migration that adds it.
+///
+/// SQLite has no idempotent `ADD COLUMN`: replaying one raises
+/// `duplicate column name`, which aborts and rolls back the whole migration
+/// batch. So a fixture reproducing an older database has to reproduce its
+/// SCHEMA too, not just its `schema_version` row.
+const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
+    (3, "apply_journal", "script_output"),
+    (14, "apply_journal", "completion_index"),
+];
+
+/// Present `store` as the database it was at `version`, so reopening replays
+/// every migration from `version` on exactly as a real upgrade would.
+///
+/// Winding the version row back alone is not enough — see [`ADDED_COLUMNS`].
+fn rewind_schema_version(store: &StateStore, version: usize) {
+    for (added_at, table, column) in ADDED_COLUMNS {
+        if *added_at >= version {
+            store
+                .conn
+                .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))
+                .unwrap_or_else(|e| panic!("cannot un-add {table}.{column}: {e}"));
+        }
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE schema_version SET version = ?1",
+            params![version as i64],
+        )
+        .unwrap();
+}
+
 #[test]
 fn open_in_memory() {
     let store = StateStore::open_in_memory().unwrap();
@@ -1144,19 +1178,21 @@ fn journal_lifecycle() {
     let j1 = store
         .journal_begin(apply_id, 0, "files", "create", "/home/user/.bashrc", None)
         .unwrap();
-    store.journal_complete(j1, Some("hash123"), None).unwrap();
+    store
+        .journal_complete(j1, 0, Some("hash123"), None)
+        .unwrap();
 
     let j2 = store
         .journal_begin(apply_id, 1, "files", "update", "/home/user/.zshrc", None)
         .unwrap();
-    store.journal_fail(j2, "permission denied").unwrap();
+    store.journal_fail(j2, 1, "permission denied").unwrap();
 
     // Script action with captured output
     let j3 = store
         .journal_begin(apply_id, 2, "scripts", "run", "setup.sh", None)
         .unwrap();
     store
-        .journal_complete(j3, None, Some("installed deps\nall good"))
+        .journal_complete(j3, 2, None, Some("installed deps\nall good"))
         .unwrap();
 
     // journal_entries returns all entries (ordered by action_index), including
@@ -1806,10 +1842,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
         // id-shape sweep", so appending a later migration must not silently
         // re-point it at the new tail.
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 8", [])
-            .unwrap();
+        rewind_schema_version(&store, 8);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -1937,10 +1970,7 @@ fn migration_10_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
         store
             .upsert_module_file("zsh", r"/home/me/od\d.zshrc", "h3", "Copy", apply_id)
             .unwrap();
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 9", [])
-            .unwrap();
+        rewind_schema_version(&store, 9);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -2202,16 +2232,16 @@ fn journal_entries_after_apply_returns_completed_desc() {
     let j1 = store
         .journal_begin(apply2, 0, "Packages", "install", "brew:curl", None)
         .unwrap();
-    store.journal_complete(j1, None, None).unwrap();
+    store.journal_complete(j1, 0, None, None).unwrap();
     let j2 = store
         .journal_begin(apply2, 1, "Packages", "install", "brew:wget", None)
         .unwrap();
-    store.journal_complete(j2, None, None).unwrap();
+    store.journal_complete(j2, 1, None, None).unwrap();
     // A failed entry should NOT be returned
     let j3 = store
         .journal_begin(apply2, 2, "Packages", "install", "brew:vim", None)
         .unwrap();
-    store.journal_fail(j3, "package not found").unwrap();
+    store.journal_fail(j3, 2, "package not found").unwrap();
 
     let entries = store.journal_entries_after_apply(apply1).unwrap();
     assert_eq!(
@@ -2219,11 +2249,114 @@ fn journal_entries_after_apply_returns_completed_desc() {
         2,
         "should return only completed entries, not failed"
     );
-    // Results are ordered by apply_id DESC, action_index DESC
+    // Results are ordered by apply_id DESC, completion_index DESC
     assert_eq!(entries[0].resource_id, "brew:wget");
     assert_eq!(entries[1].resource_id, "brew:curl");
     assert_eq!(entries[0].status, "completed");
     assert_eq!(entries[1].status, "completed");
+}
+
+#[test]
+fn journal_entries_after_apply_reports_in_completion_order_not_plan_order() {
+    // Two lanes: the action at plan position 0 finishes LAST, which is exactly
+    // what `action_index DESC` misreports once dispatch stops following plan
+    // order.
+    let store = StateStore::open_in_memory().unwrap();
+    let apply1 = store
+        .record_apply("default", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply2 = store
+        .record_apply("default", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+
+    let slow = store
+        .journal_begin(apply2, 0, "Packages", "install", "brew:slow", None)
+        .unwrap();
+    let quick = store
+        .journal_begin(apply2, 1, "Packages", "install", "apt:quick", None)
+        .unwrap();
+    store.journal_complete(quick, 0, None, None).unwrap();
+    store.journal_complete(slow, 1, None, None).unwrap();
+
+    let entries = store.journal_entries_after_apply(apply1).unwrap();
+    let ids: Vec<&str> = entries.iter().map(|e| e.resource_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["brew:slow", "apt:quick"],
+        "most-recent-first means the last FINISH, not the last plan position"
+    );
+}
+
+#[test]
+fn journal_entry_with_no_completion_index_still_orders_by_action_index() {
+    // A run killed between `journal_begin` and collection leaves the column
+    // NULL forever; the report across those rows must still order.
+    let store = StateStore::open_in_memory().unwrap();
+    let apply1 = store
+        .record_apply("default", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply2 = store
+        .record_apply("default", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+
+    for (index, resource) in [(0usize, "brew:first"), (1, "brew:second")] {
+        let id = store
+            .journal_begin(apply2, index, "Packages", "install", resource, None)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE apply_journal SET status = 'completed', completion_index = NULL WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+    }
+
+    let entries = store.journal_entries_after_apply(apply1).unwrap();
+    assert!(
+        entries.iter().all(|e| e.completion_index.is_none()),
+        "the fixture's whole point is NULL rows: {entries:?}"
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["brew:second", "brew:first"],
+        "COALESCE falls back to the plan position"
+    );
+}
+
+#[test]
+fn completion_index_backfills_every_historical_row_from_its_plan_position() {
+    // Every historical apply WAS sequential, so completion order was plan
+    // order — which is what makes the backfill exact rather than a guess.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        let apply_id = store
+            .record_apply("default", "hash", ApplyStatus::Success, None)
+            .unwrap();
+        for (index, resource) in [(0usize, "brew:curl"), (1, "brew:wget"), (2, "brew:vim")] {
+            let id = store
+                .journal_begin(apply_id, index, "Packages", "install", resource, None)
+                .unwrap();
+            store.journal_complete(id, index, None, None).unwrap();
+        }
+        rewind_schema_version(&store, 14);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let entries = store.journal_entries(1).unwrap();
+    assert_eq!(entries.len(), 3);
+    for entry in &entries {
+        assert_eq!(
+            entry.completion_index,
+            Some(entry.action_index),
+            "the backfill reproduces the sequential run's completion order"
+        );
+    }
 }
 
 // --- concurrent in-memory stores ---
@@ -2269,10 +2402,7 @@ fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point(
     {
         let store = StateStore::open(&path).unwrap();
         store.conn.execute("DROP TABLE backup_runs", []).unwrap();
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 12", [])
-            .unwrap();
+        rewind_schema_version(&store, 12);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -2430,10 +2560,7 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
         // id-undoubling rewrite", so appending a later migration must not
         // silently re-point it at the new tail.
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 13", [])
-            .unwrap();
+        rewind_schema_version(&store, 13);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -3101,6 +3228,7 @@ fn journal_entry_is_file_work_covers_module_file_deploys() {
         id: 1,
         apply_id: 1,
         action_index: 0,
+        completion_index: Some(0),
         phase: phase.to_string(),
         action_type: action_type.to_string(),
         resource_id: resource_id.to_string(),
@@ -3149,6 +3277,7 @@ fn is_file_work_classifies_by_resource_identity_not_phase() {
         id: 1,
         apply_id: 1,
         action_index: 0,
+        completion_index: Some(0),
         phase: phase.to_string(),
         action_type: action_type.to_string(),
         resource_id: resource_id.to_string(),

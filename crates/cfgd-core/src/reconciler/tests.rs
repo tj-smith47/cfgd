@@ -4718,7 +4718,7 @@ fn rollback_restores_file_content() {
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id, None)
         .unwrap();
-    state.journal_complete(jid1, None, None).unwrap();
+    state.journal_complete(jid1, 0, None, None).unwrap();
     std::fs::write(&target, "v1 content").unwrap();
 
     // Apply 2: modifies file to v2 content. Backup captures v1 content.
@@ -4733,7 +4733,7 @@ fn rollback_restores_file_content() {
     let jid2 = state
         .journal_begin(apply_id_2, 0, "files", "file", &update_resource_id, None)
         .unwrap();
-    state.journal_complete(jid2, None, None).unwrap();
+    state.journal_complete(jid2, 0, None, None).unwrap();
     std::fs::write(&target, "v2 content").unwrap();
 
     // Rollback to apply 1 — should restore v1 content
@@ -4780,7 +4780,7 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(ja, None, None).unwrap();
+    state.journal_complete(ja, 0, None, None).unwrap();
     std::fs::write(&f, "v1").unwrap();
     // Post-apply snapshot for A captures F at v1.
     let f_snap_a = crate::capture_file_resolved_state(&f).unwrap().unwrap();
@@ -4805,7 +4805,7 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(jb_f, None, None).unwrap();
+    state.journal_complete(jb_f, 0, None, None).unwrap();
     std::fs::write(&f, "v2").unwrap();
 
     state.store_absent_backup(apply_b, &g_path).unwrap();
@@ -4819,7 +4819,7 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(jb_g, None, None).unwrap();
+    state.journal_complete(jb_g, 0, None, None).unwrap();
     std::fs::write(&g, "g-content").unwrap();
 
     // Post-apply snapshots for B.
@@ -4898,7 +4898,7 @@ fn rollback_lists_non_file_actions() {
             None,
         )
         .unwrap();
-    state.journal_complete(journal_id, None, None).unwrap();
+    state.journal_complete(journal_id, 0, None, None).unwrap();
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -8904,7 +8904,7 @@ fn rollback_restores_symlink_target() {
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id, None)
         .unwrap();
-    state.journal_complete(jid1, None, None).unwrap();
+    state.journal_complete(jid1, 0, None, None).unwrap();
 
     // Apply 2: replaces symlink with a regular file. Backup captures symlink state.
     let file_state = crate::capture_file_state(&target).unwrap().unwrap();
@@ -8919,7 +8919,7 @@ fn rollback_restores_symlink_target() {
     let jid2 = state
         .journal_begin(apply_id_2, 0, "files", "file", &update_resource_id, None)
         .unwrap();
-    state.journal_complete(jid2, None, None).unwrap();
+    state.journal_complete(jid2, 0, None, None).unwrap();
 
     // Replace the symlink with a regular file (simulating apply 2)
     std::fs::remove_file(&target).unwrap();
@@ -10872,7 +10872,7 @@ fn rollback_removes_file_created_after_target_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(j_id, None, None).unwrap();
+    state.journal_complete(j_id, 0, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
@@ -10918,7 +10918,7 @@ fn rollback_keeps_file_that_existed_at_target_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(j_id, None, None).unwrap();
+    state.journal_complete(j_id, 0, None, None).unwrap();
     // Store backup so phase 1 handles it
     let file_state = crate::FileState {
         content: b"original".to_vec(),
@@ -10953,7 +10953,7 @@ fn rollback_keeps_file_that_existed_at_target_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(j_id, None, None).unwrap();
+    state.journal_complete(j_id, 0, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
@@ -10998,7 +10998,7 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
     let j1 = state
         .journal_begin(apply_id_2, 0, "Packages", "install", "brew:ripgrep", None)
         .unwrap();
-    state.journal_complete(j1, None, None).unwrap();
+    state.journal_complete(j1, 0, None, None).unwrap();
     let j2 = state
         .journal_begin(
             apply_id_2,
@@ -11009,7 +11009,7 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
             None,
         )
         .unwrap();
-    state.journal_complete(j2, None, None).unwrap();
+    state.journal_complete(j2, 0, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
