@@ -16114,6 +16114,22 @@ struct DispatchLogManager {
     log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     available: std::sync::Mutex<bool>,
     installed: std::sync::Mutex<HashSet<String>>,
+    /// The rendezvous a concurrency test drives this manager's operations
+    /// through. `None` for every ordering-only fixture, which then behaves
+    /// exactly as it did before lanes existed.
+    probe: Option<std::sync::Arc<LaneProbe>>,
+    /// Bootstrapping leaves the manager unavailable, so every one of its
+    /// actions keeps draining the phase — the "forced to one lane" half of the
+    /// concurrent-versus-sequential comparison.
+    stays_unavailable: bool,
+    /// Write and read this manager's resolved prefix from inside `install`,
+    /// which in a lane reaches the coordinator's connection through the proxy.
+    touches_state: bool,
+    /// Panic inside `install`, so a test can drive the lane-panic path.
+    panics: bool,
+    /// Lines pushed into the lane around this manager's rendezvous, so a test
+    /// can force two lanes to interleave their child output.
+    lane_lines: Option<(String, String)>,
 }
 
 impl DispatchLogManager {
@@ -16127,12 +16143,163 @@ impl DispatchLogManager {
             log: std::sync::Arc::clone(log),
             available: std::sync::Mutex::new(available),
             installed: std::sync::Mutex::new(HashSet::new()),
+            probe: None,
+            stays_unavailable: false,
+            touches_state: false,
+            panics: false,
+            lane_lines: None,
         }
+    }
+
+    fn with_probe(mut self, probe: &std::sync::Arc<LaneProbe>) -> Self {
+        self.probe = Some(std::sync::Arc::clone(probe));
+        self
+    }
+
+    fn stays_unavailable(mut self) -> Self {
+        self.stays_unavailable = true;
+        self
+    }
+
+    fn with_state_writes(mut self) -> Self {
+        self.touches_state = true;
+        self
+    }
+
+    fn panicking(mut self) -> Self {
+        self.panics = true;
+        self
+    }
+
+    fn with_lane_lines(mut self, first: &str, second: &str) -> Self {
+        self.lane_lines = Some((first.to_string(), second.to_string()));
+        self
     }
 
     fn record(&self, event: String) {
         self.log.lock().unwrap().push(event);
     }
+
+    /// Report this operation to the probe and block while the test holds it.
+    fn rendezvous(&self, label: &str) {
+        if let Some(probe) = &self.probe {
+            probe.enter(label);
+        }
+    }
+}
+
+/// A rendezvous a fixture manager blocks in, so a concurrency test pins the
+/// exact interleaving two lanes reach rather than racing for it.
+///
+/// Every wait is bounded: a scheduler that never dispatches must fail the
+/// assertion that follows rather than hang the suite.
+#[derive(Default)]
+struct LaneProbe {
+    state: std::sync::Mutex<LaneProbeState>,
+    signal: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct LaneProbeState {
+    /// `start:<label>` / `end:<label>`, in the order the operations reached
+    /// them — the completion order, which is what plan order is not.
+    events: Vec<String>,
+    in_flight: usize,
+    peak: usize,
+    held: HashSet<String>,
+}
+
+const LANE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl LaneProbe {
+    /// A probe whose named operations block until the test releases them.
+    fn holding(labels: &[&str]) -> std::sync::Arc<Self> {
+        let probe = Self::default();
+        probe.state.lock().unwrap().held = labels.iter().map(|l| (*l).to_string()).collect();
+        std::sync::Arc::new(probe)
+    }
+
+    fn locked(&self) -> std::sync::MutexGuard<'_, LaneProbeState> {
+        self.state.lock().unwrap()
+    }
+
+    /// One whole operation: record its start, block while the test holds it,
+    /// then record its end.
+    fn enter(&self, label: &str) {
+        let mut state = self.locked();
+        state.events.push(format!("start:{label}"));
+        state.in_flight += 1;
+        state.peak = state.peak.max(state.in_flight);
+        self.signal.notify_all();
+        let (mut state, _) = self
+            .signal
+            .wait_timeout_while(state, LANE_PROBE_TIMEOUT, |s| s.held.contains(label))
+            .unwrap();
+        state.events.push(format!("end:{label}"));
+        state.in_flight -= 1;
+        self.signal.notify_all();
+    }
+
+    fn release(&self, label: &str) {
+        self.locked().held.remove(label);
+        self.signal.notify_all();
+    }
+
+    fn release_all(&self) {
+        self.locked().held.clear();
+        self.signal.notify_all();
+    }
+
+    /// Wait until `predicate` holds. False on timeout, which every caller
+    /// asserts on rather than ignoring.
+    fn await_state(&self, predicate: impl Fn(&LaneProbeState) -> bool) -> bool {
+        let state = self.locked();
+        let (state, _) = self
+            .signal
+            .wait_timeout_while(state, LANE_PROBE_TIMEOUT, |s| !predicate(s))
+            .unwrap();
+        predicate(&state)
+    }
+
+    fn await_in_flight(&self, n: usize) -> bool {
+        self.await_state(|s| s.in_flight >= n)
+    }
+
+    fn await_started(&self, label: &str) -> bool {
+        let want = format!("start:{label}");
+        self.await_state(|s| s.events.contains(&want))
+    }
+
+    fn await_finished(&self, label: &str) -> bool {
+        let want = format!("end:{label}");
+        self.await_state(|s| s.events.contains(&want))
+    }
+
+    fn started(&self, label: &str) -> bool {
+        let want = format!("start:{label}");
+        self.locked().events.contains(&want)
+    }
+
+    fn in_flight(&self) -> usize {
+        self.locked().in_flight
+    }
+
+    fn peak(&self) -> usize {
+        self.locked().peak
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.locked().events.clone()
+    }
+}
+
+/// Position of a probe event, panicking when it never happened — an ordering
+/// assertion over a missing event would otherwise pass vacuously.
+fn event_at(events: &[String], event: &str) -> usize {
+    events
+        .iter()
+        .position(|e| e == event)
+        .unwrap_or_else(|| panic!("no {event:?} in {events:?}"))
 }
 
 impl PackageManager for DispatchLogManager {
@@ -16146,15 +16313,44 @@ impl PackageManager for DispatchLogManager {
         true
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
-        self.record(format!("bootstrap:{}", self.name));
-        *self.available.lock().unwrap() = true;
+        let label = format!("bootstrap:{}", self.name);
+        self.record(label.clone());
+        if !self.stays_unavailable {
+            *self.available.lock().unwrap() = true;
+        }
+        self.rendezvous(&label);
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
         Ok(self.installed.lock().unwrap().clone())
     }
-    fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
-        self.record(format!("install:{}:{}", self.name, packages.join(",")));
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        let label = format!("{}:{}", self.name, packages.join(","));
+        self.record(format!("install:{label}"));
+        assert!(!self.panics, "install:{label} panicked");
+        if self.touches_state {
+            cx.state
+                .record_resolved_prefix(&self.name, &format!("/opt/{}", self.name), false)?;
+        }
+        if let Some((first, _)) = &self.lane_lines
+            && let Some(lane) = cx.lane()
+        {
+            lane.push_line(first);
+        }
+        self.rendezvous(&label);
+        if let Some((_, second)) = &self.lane_lines
+            && let Some(lane) = cx.lane()
+        {
+            lane.push_line(second);
+        }
+        if self.touches_state {
+            let stored = cx.state.resolved_prefix(&self.name)?;
+            assert_eq!(
+                stored.map(|(prefix, _)| prefix),
+                Some(format!("/opt/{}", self.name)),
+                "a lane must read back what it wrote through the coordinator"
+            );
+        }
         let mut installed = self.installed.lock().unwrap();
         for p in packages {
             installed.insert(p.clone());
@@ -16232,8 +16428,16 @@ fn module_install_action(module: &str, manager: &str, package: &str) -> Action {
 }
 
 fn module_for(name: &str, manager: &str, package: &str) -> ResolvedModule {
+    module_with(name, &[(manager, package)])
+}
+
+/// A resolved module declaring one package per `(manager, package)` pair.
+fn module_with(name: &str, packages: &[(&str, &str)]) -> ResolvedModule {
     let mut module = make_resolved_module(name);
-    module.packages = vec![owner_resolved_package(manager, package)];
+    module.packages = packages
+        .iter()
+        .map(|(manager, package)| owner_resolved_package(manager, package))
+        .collect();
     module
 }
 
@@ -16662,6 +16866,725 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
             .map(|e| (e.action_index, e.resource_id.as_str()))
             .collect::<Vec<_>>(),
         vec![(0, "/home/u/.gitconfig")]
+    );
+}
+
+// --- concurrent package lanes ---
+
+/// An apply driven on a worker thread, so the test thread can steer a fixture's
+/// rendezvous while lanes are still in flight.
+struct ConcurrentApply {
+    registry: ProviderRegistry,
+    state: crate::state::StateStore,
+    plan: Plan,
+    modules: Vec<ResolvedModule>,
+    abort: crate::AbortFlag,
+}
+
+struct ConcurrentOutcome {
+    result: ApplyResult,
+    state: crate::state::StateStore,
+    transcript: String,
+}
+
+impl ConcurrentApply {
+    fn new(registry: ProviderRegistry, plan: Plan) -> Self {
+        Self {
+            registry,
+            state: test_state(),
+            plan,
+            modules: Vec::new(),
+            abort: crate::AbortFlag::new(),
+        }
+    }
+
+    fn with_modules(mut self, modules: Vec<ResolvedModule>) -> Self {
+        self.modules = modules;
+        self
+    }
+
+    fn run(self, drive: impl FnOnce()) -> ConcurrentOutcome {
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        let Self {
+            registry,
+            state,
+            plan,
+            modules,
+            abort,
+        } = self;
+        let worker = std::thread::spawn(move || {
+            let result = {
+                let reconciler = Reconciler::new(&registry, &state);
+                reconciler
+                    .apply(
+                        &plan,
+                        &make_empty_resolved(),
+                        Path::new("."),
+                        &printer,
+                        None,
+                        &modules,
+                        ReconcileContext::Apply,
+                        false,
+                        None,
+                        &abort,
+                    )
+                    .expect("apply")
+            };
+            (result, state, crate::output::strip_ansi(&cap.human()))
+        });
+        drive();
+        let (result, state, transcript) = worker.join().expect("apply thread");
+        ConcurrentOutcome {
+            result,
+            state,
+            transcript,
+        }
+    }
+}
+
+fn lane_registry(managers: Vec<DispatchLogManager>) -> ProviderRegistry {
+    let mut registry = ProviderRegistry::new();
+    for manager in managers {
+        registry.package_managers.push(Box::new(manager));
+    }
+    registry
+}
+
+#[test]
+fn worked_example_nvim_takes_brew_while_tmux_holds_apt() {
+    // `tmux` declares apt only; `nvim` declares brew and apt.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("nvim", "apt", "ripgrep"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_with("nvim", &[("brew", "neovim"), ("apt", "ripgrep")]),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            // 1. `nvim` takes brew, because nothing holds it.
+            // 2. `tmux` takes apt.
+            assert!(
+                driver.await_in_flight(2),
+                "two managers, two lanes: {:?}",
+                driver.events()
+            );
+            assert!(driver.started("brew:neovim") && driver.started("apt:tmux"));
+            assert!(
+                !driver.started("apt:ripgrep"),
+                "an owner already holding a lane must not take a second one \
+                 while another owner's only manager is idle: {:?}",
+                driver.events()
+            );
+
+            // 3. brew finishes; `nvim`'s apt work waits, because `tmux` still
+            //    holds apt.
+            driver.release("brew:neovim");
+            assert!(driver.await_finished("brew:neovim"));
+            assert!(
+                !driver.started("apt:ripgrep"),
+                "nvim's apt work started while tmux still held apt: {:?}",
+                driver.events()
+            );
+
+            // 4. `tmux`'s apt finishes; `nvim`'s apt proceeds.
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:apt:ripgrep") > event_at(&events, "end:apt:tmux"),
+        "{events:?}"
+    );
+    assert_eq!(probe.peak(), 2, "the phase really ran two lanes at once");
+}
+
+#[test]
+fn one_owners_actions_still_fill_every_free_lane() {
+    // The other half of the owner's-turn rule: with no second owner to yield a
+    // lane to, one owner's actions run across every manager in the phase, which
+    // is the concurrency bound rule 1 states.
+    let probe = LaneProbe::holding(&["brew:fd", "apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        install_action("apt", &["curl"]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_in_flight(2),
+            "one owner, two managers, two lanes: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(probe.peak(), 2);
+}
+
+#[test]
+fn profile_packages_never_dispatch_before_module_packages_complete() {
+    // The assertion a partition cannot make and a barrier must: the profile's
+    // lane is free the whole time and it still does not start.
+    let probe = LaneProbe::holding(&["apt:neovim"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        module_install_action("nvim", "apt", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "apt", "neovim")];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_started("apt:neovim"));
+            assert!(
+                !driver.started("brew:fd"),
+                "tier 1 dispatched while tier 0 was still running: {:?}",
+                driver.events()
+            );
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:brew:fd") > event_at(&events, "end:apt:neovim"),
+        "a tier is released when the tier above COMPLETES: {events:?}"
+    );
+}
+
+#[test]
+fn a_dependents_packages_wait_for_its_dependencys_packages_to_complete() {
+    let probe = LaneProbe::holding(&["apt:gcc"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("base", "apt", "gcc"),
+    ]);
+    let mut nvim = module_for("nvim", "brew", "neovim");
+    nvim.depends = vec!["base".to_string()];
+    let modules = vec![nvim, module_for("base", "apt", "gcc")];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_started("apt:gcc"));
+            assert!(
+                !driver.started("brew:neovim"),
+                "a dependent started while its dependency was still running: {:?}",
+                driver.events()
+            );
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:brew:neovim") > event_at(&events, "end:apt:gcc"),
+        "{events:?}"
+    );
+    assert_eq!(probe.peak(), 1, "a declared edge is not concurrency");
+}
+
+#[test]
+fn bootstrap_action_drains_the_phase() {
+    let probe = LaneProbe::holding(&["bootstrap:brew", "brew:fd", "apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        bootstrap_action("brew"),
+        install_action("brew", &["fd"]),
+        install_action("apt", &["curl"]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(driver.await_started("bootstrap:brew"));
+        assert_eq!(
+            driver.in_flight(),
+            1,
+            "nothing may overlap a bootstrap: {:?}",
+            driver.events()
+        );
+        driver.release("bootstrap:brew");
+        // Once the gate releases, the two installs it enabled run in their own
+        // lanes — so the drain was the bootstrap's, not the phase's.
+        assert!(
+            driver.await_in_flight(2),
+            "the phase stayed drained after the bootstrap finished: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(event_at(&events, "end:bootstrap:brew") < event_at(&events, "start:brew:fd"));
+    assert!(event_at(&events, "end:bootstrap:brew") < event_at(&events, "start:apt:curl"));
+    assert_eq!(probe.peak(), 2);
+}
+
+#[test]
+fn unavailable_manager_action_drains_the_phase() {
+    // The implicit bootstrap inside a module install: no planned `Bootstrap`
+    // action exists anywhere in this plan, so a gate keyed on the action
+    // variant would miss it entirely.
+    let probe = LaneProbe::holding(&["brew:neovim"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    assert!(
+        !plan.phases[0]
+            .actions()
+            .any(|a| matches!(a, Action::Package(PackageAction::Bootstrap { .. }))),
+        "the fixture's whole point is that nothing planned a bootstrap"
+    );
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_started("brew:neovim"));
+            assert_eq!(
+                driver.in_flight(),
+                1,
+                "an action on a not-currently-available manager must run alone: {:?}",
+                driver.events()
+            );
+            assert!(!driver.started("apt:tmux"));
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(event_at(&events, "end:brew:neovim") < event_at(&events, "start:apt:tmux"));
+    assert!(
+        dispatch_log(&log).contains(&"bootstrap:brew".to_string()),
+        "the module install bootstrapped brew inline: {:?}",
+        dispatch_log(&log)
+    );
+    assert_eq!(probe.peak(), 1);
+}
+
+#[test]
+fn manager_becomes_available_mid_phase() {
+    // The gate's predicate is a dispatch-time read, so once the bootstrap has
+    // made brew resolve, brew's next action stops draining and dispatches
+    // beside another manager's.
+    let probe = LaneProbe::holding(&["brew:bpkg", "apt:cpkg"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("a", "brew", "apkg"),
+        module_install_action("b", "brew", "bpkg"),
+        module_install_action("c", "apt", "cpkg"),
+    ]);
+    let modules = vec![
+        module_for("a", "brew", "apkg"),
+        module_for("b", "brew", "bpkg"),
+        module_for("c", "apt", "cpkg"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(
+                driver.await_in_flight(2),
+                "after the bootstrap, brew's lane runs beside apt's again: {:?}",
+                driver.events()
+            );
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(event_at(&events, "end:brew:apkg") < event_at(&events, "start:brew:bpkg"));
+    assert_eq!(probe.peak(), 2);
+}
+
+#[test]
+fn a_panicking_lane_fails_its_action_and_the_phase_finishes() {
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).panicking(),
+        DispatchLogManager::new("apt", &log, true),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(|| {});
+    std::panic::set_hook(hook);
+
+    let failed = outcome
+        .result
+        .action_results
+        .iter()
+        .find(|r| !r.success)
+        .expect("the panicking lane's action failed");
+    assert!(
+        failed.error.as_deref().unwrap_or_default().contains("brew"),
+        "the failure names the lane's manager: {:?}",
+        failed.error
+    );
+    assert!(
+        dispatch_log(&log).contains(&"install:apt:tmux".to_string()),
+        "a panicking worker must not stall the coordinator: {:?}",
+        dispatch_log(&log)
+    );
+}
+
+#[test]
+fn lane_state_writes_are_serialized_through_the_coordinator() {
+    // Both lanes write and read package state while the coordinator is parked
+    // in `recv()`: the proxy has to be serviced from the same loop that
+    // collects completions, or this deadlocks.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true)
+            .with_probe(&probe)
+            .with_state_writes(),
+        DispatchLogManager::new("apt", &log, true)
+            .with_probe(&probe)
+            .with_state_writes(),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            driver.release_all();
+        });
+
+    use crate::providers::PackageStateStore as _;
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    for manager in ["brew", "apt"] {
+        assert_eq!(
+            outcome
+                .state
+                .resolved_prefix(manager)
+                .unwrap()
+                .map(|(prefix, _)| prefix),
+            Some(format!("/opt/{manager}")),
+            "a lane's write reached the one connection"
+        );
+    }
+}
+
+#[test]
+fn rollback_report_reads_in_completion_order_not_plan_order() {
+    // Plan order and completion order have to DISAGREE, or the report's
+    // ordering column is unobservable. The tier barrier is what makes them
+    // disagree without a race: the profile's package sorts first in the plan
+    // and dispatches last, because tier 1 is released only once every tier-0
+    // action has completed. Forcing the same inversion by holding one lane
+    // would leave the last two completions racing for the channel.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true),
+        DispatchLogManager::new("apt", &log, true),
+    ]);
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        module_install_action("nvim", "apt", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "apt", "neovim")];
+
+    let job = ConcurrentApply::new(registry, plan).with_modules(modules);
+    // The apply to roll back TO: the report collects what ran AFTER it.
+    let baseline = job
+        .state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let outcome = job.run(|| {});
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let entries = outcome
+        .state
+        .journal_entries(outcome.result.apply_id)
+        .unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.action_index, e.resource_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "brew:install:fd"), (1, "nvim:packages:neovim"),],
+        "the plan position is unchanged by the dispatch order"
+    );
+
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &outcome.state);
+    let rollback = reconciler
+        .rollback_apply(baseline, &test_printer())
+        .expect("rollback");
+    assert_eq!(
+        rollback
+            .non_file_actions
+            .iter()
+            .map(|(_, resource)| resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["brew:install:fd", "nvim:packages:neovim"],
+        "most recent first is COMPLETION order, not plan order"
+    );
+    assert_eq!(
+        (rollback.files_restored, rollback.files_removed),
+        (0, 0),
+        "the restore reads file_backups and is untouched by the report's order"
+    );
+}
+
+#[test]
+fn aborted_dispatch_starts_nothing_new_and_records_aborted() {
+    let probe = LaneProbe::holding(&["apt:neovim"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    // One lane, two actions: the second cannot already be in flight when the
+    // abort lands, so "dispatches nothing new" is observable.
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "apt", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "apt", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let job = ConcurrentApply::new(registry, plan).with_modules(modules);
+    let abort = job.abort.clone();
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = job.run(move || {
+        assert!(driver.await_started("apt:neovim"));
+        abort.set(130);
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Aborted);
+    assert!(
+        !probe.started("apt:tmux"),
+        "an action dispatched after the abort: {:?}",
+        probe.events()
+    );
+    assert!(
+        probe.events().contains(&"end:apt:neovim".to_string()),
+        "an in-flight lane still finishes: {:?}",
+        probe.events()
+    );
+}
+
+#[test]
+fn concurrent_phase_tree_matches_sequential_tree() {
+    let tree_for = |forced_to_one_lane: bool| {
+        let log = new_dispatch_log();
+        let manager = |name: &str| {
+            let m = DispatchLogManager::new(name, &log, !forced_to_one_lane);
+            if forced_to_one_lane {
+                m.stays_unavailable()
+            } else {
+                m
+            }
+        };
+        let registry = lane_registry(vec![manager("brew"), manager("apt")]);
+        let plan = packages_phase(vec![
+            module_install_action("nvim", "brew", "neovim"),
+            module_install_action("tmux", "apt", "tmux"),
+        ]);
+        let modules = vec![
+            module_for("nvim", "brew", "neovim"),
+            module_for("tmux", "apt", "tmux"),
+        ];
+        let outcome = ConcurrentApply::new(registry, plan)
+            .with_modules(modules)
+            .run(|| {});
+        assert_eq!(outcome.result.status, ApplyStatus::Success);
+        packages_tree(&outcome.transcript)
+    };
+
+    assert_eq!(
+        tree_for(false),
+        tree_for(true),
+        "the phase tree is the plan's shape, never the dispatch's"
+    );
+}
+
+/// The `Packages` phase block of a transcript, with elapsed times folded — the
+/// tree, without the run header the index refresh differs in.
+fn packages_tree(transcript: &str) -> Vec<String> {
+    let normalized = crate::normalize_snapshot_durations(transcript);
+    normalized
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("Phase: Packages"))
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn non_tty_concurrent_phase_captures_not_streams() {
+    // Two lanes interleave their child output in TIME; off a TTY each action's
+    // output has to come back as one contiguous block, or a CI log and every
+    // golden are non-deterministic. A lane reads this process's own stderr to
+    // choose between capturing and a repainting window, so the capture path is
+    // reachable only where the suite itself was invoked off a terminal; the
+    // gate is the same predicate the production code uses.
+    if crate::test_helpers::live_region_available() {
+        return;
+    }
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true)
+            .with_probe(&probe)
+            .with_lane_lines("brew-line-one", "brew-line-two"),
+        DispatchLogManager::new("apt", &log, true)
+            .with_probe(&probe)
+            .with_lane_lines("apt-line-one", "apt-line-two"),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            // Both lanes have written their FIRST line by now, so a streaming
+            // lane would have put them side by side.
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let lines = transcript_lines(&outcome.transcript);
+    let at = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} in {lines:?}"))
+    };
+    assert_eq!(
+        at("brew-line-two"),
+        at("brew-line-one") + 1,
+        "a lane's body is one block: {lines:?}"
+    );
+    assert_eq!(
+        at("apt-line-two"),
+        at("apt-line-one") + 1,
+        "a lane's body is one block: {lines:?}"
+    );
+    assert!(
+        at("brew install neovim") < at("brew-line-one"),
+        "the body sits beneath the action it belongs to: {lines:?}"
+    );
+}
+
+#[test]
+fn wait_line_never_reaches_the_transcript() {
+    let probe = LaneProbe::holding(&["apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("nvim", "apt", "ripgrep"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_with("nvim", &[("brew", "neovim"), ("apt", "ripgrep")]),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            // nvim's apt work is genuinely blocked here — the state a wait line
+            // describes — and it still leaves no trace in the transcript.
+            assert!(driver.await_started("apt:tmux"));
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert!(
+        !outcome.transcript.contains("waiting on"),
+        "a wait line is live-region only: {}",
+        outcome.transcript
     );
 }
 

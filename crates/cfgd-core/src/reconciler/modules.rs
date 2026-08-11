@@ -1,6 +1,6 @@
 use crate::PathDisplayExt;
-use crate::config::{ResolvedProfile, ScriptEntry, ScriptShell};
-use crate::errors::{ConfigError, Result};
+use crate::config::{ResolvedProfile, ScriptShell};
+use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
@@ -9,7 +9,7 @@ use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env, execute_script,
     script_default_workdir,
 };
-use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
+use super::types::{ModuleAction, ModuleActionKind, ReconcileContext};
 
 impl<'a> super::Reconciler<'a> {
     #[allow(clippy::too_many_arguments)]
@@ -33,134 +33,23 @@ impl<'a> super::Reconciler<'a> {
 
         match &action.kind {
             ModuleActionKind::InstallPackages { resolved: pkgs } => {
-                // Packages in each InstallPackages action are already grouped by
-                // manager in plan_modules(), so just collect names and install.
-                let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
-
-                // A `prefer: [script]` install has no queryable installed-state, so
-                // idempotency is the script's own responsibility. When all of a
-                // package's guards (creates/onlyIf/unless) say "skip", the install
-                // is a clean no-op — `changed` stays false so apply reports it as
-                // unchanged rather than a re-run. Without guards the script runs
-                // every apply (changed=true), which is the author's responsibility.
-                let mut script_changed = false;
-                // A manager-backed install always counts as changed (the package
-                // managers own their own idempotency at the package level, but the
-                // action having reached the install call means work was attempted).
-                let mut manager_changed = false;
-
-                if let Some(first) = pkgs.first() {
-                    if first.manager == "script" {
-                        // Script-based install: run each package's script via execute_script
-                        let path_dirs = super::all_recorded_path_dirs(self.state);
-                        for pkg in pkgs {
-                            if let Some(ref script_content) = pkg.script {
-                                let profile_name = resolved
-                                    .layers
-                                    .last()
-                                    .map(|l| l.profile_name.as_str())
-                                    .unwrap_or("unknown");
-                                let env_vars = build_module_script_env(
-                                    &ScriptEnvContext {
-                                        config_dir,
-                                        profile_name,
-                                        context,
-                                        phase: &ScriptPhase::PostApply,
-                                        module_name: Some(&action.module_name),
-                                        module_dir: module_dir.as_deref(),
-                                        path_dirs: &path_dirs,
-                                    },
-                                    module_env,
-                                );
-                                // Build a Full entry so the package's idempotency
-                                // guards run through the same guard-evaluation path
-                                // as lifecycle scripts (creates → onlyIf → unless);
-                                // a guard that says "skip" yields changed=false.
-                                let script_entry = ScriptEntry::Full {
-                                    run: script_content.clone(),
-                                    timeout: None,
-                                    idle_timeout: None,
-                                    continue_on_error: None,
-                                    shell: ScriptShell::Auto,
-                                    only_if: pkg.only_if.clone(),
-                                    unless: pkg.unless.clone(),
-                                    creates: pkg.creates.clone(),
-                                    interactive: false,
-                                    workdir: None,
-                                };
-                                let source = module_dir.as_deref().unwrap_or(config_dir);
-                                let working = script_default_workdir(config_dir);
-                                let (_label, changed, _captured) = execute_script(
-                                    &script_entry,
-                                    source,
-                                    &working,
-                                    &env_vars,
-                                    MODULE_SCRIPT_TIMEOUT,
-                                    printer,
-                                    shell_override,
-                                    Some(abort),
-                                    ScriptReport::default(),
-                                )
-                                .map_err(|_| {
-                                    crate::errors::CfgdError::Config(ConfigError::Invalid {
-                                        message: format!(
-                                            "module {} install script for '{}' failed",
-                                            action.module_name, pkg.canonical_name
-                                        ),
-                                    })
-                                })?;
-                                script_changed |= changed;
-                            }
-                        }
-                    } else {
-                        // Find the manager — check all registered, not just available
-                        let pm = self
-                            .registry
-                            .package_managers
-                            .iter()
-                            .find(|m| m.name() == first.manager);
-
-                        if let Some(pm) = pm {
-                            let cx = crate::providers::PackageContext::with_notes(
-                                printer, self.state, notes,
-                            )
-                            .caller_owns_status();
-
-                            // Bootstrap if needed. The manager's PATH directories
-                            // are recorded, never appended to `~/.cfgd.env` here:
-                            // the generated env file has exactly one writer, and
-                            // an out-of-band append would be erased by the next
-                            // wholesale rewrite of that file.
-                            let was_available = pm.is_available();
-                            if !was_available && pm.can_bootstrap() {
-                                pm.bootstrap(&cx)?;
-                                self.record_bootstrap_path_dirs(pm.as_ref(), printer);
-                            }
-
-                            // The concurrent pre-pass (`Reconciler::
-                            // refresh_package_indexes`) already refreshed
-                            // every manager available before this run
-                            // started; a manager bootstrapped just above has
-                            // never been refreshed, so it still needs this
-                            // one inline update.
-                            if !was_available && pm.is_available() {
-                                pm.update(&cx)?;
-                            }
-
-                            pm.install(&pkg_names, &cx)?;
-                            manager_changed = true;
-                        }
-                    }
-                }
-
-                Ok((
-                    format!(
-                        "module:{}:packages:{}",
-                        action.module_name,
-                        pkg_names.join(",")
-                    ),
-                    script_changed || manager_changed,
-                ))
+                let exec =
+                    super::packages::PackageExec::new(self.registry, self.state, printer, notes);
+                let outcome = exec.install_module_packages(
+                    action,
+                    pkgs,
+                    &super::packages::ModuleInstallContext {
+                        config_dir,
+                        resolved,
+                        module_actions,
+                        context,
+                        shell_override,
+                        abort,
+                        path_dirs: &super::all_recorded_path_dirs(self.state),
+                    },
+                );
+                self.persist_bootstraps(exec.take_bootstrapped());
+                outcome
             }
             ModuleActionKind::DeployFiles { files } => {
                 for file in files {

@@ -500,6 +500,10 @@ impl<'a> super::Reconciler<'a> {
             // Sort managers: system/native managers first (apt, dnf, pacman, etc.),
             // then bootstrappable managers (brew, snap). This ensures build dependencies
             // are installed before packages that might need them.
+            // The sort is the offer order, not the guarantee: what actually keeps
+            // a bootstrappable manager's action from overlapping an available
+            // one's is the dispatcher's serial gate around any action whose
+            // manager is not currently available.
             let mut manager_order: Vec<&String> = by_manager.keys().collect();
             manager_order.sort_by_key(|mgr| {
                 match self

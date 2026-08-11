@@ -142,6 +142,13 @@ pub struct PackageContext<'a> {
     /// it is [`PackageContext::for_index_refresh`], so it cannot be left on by
     /// a builder call a later edit forgets to remove.
     windowless: bool,
+    /// The concurrent lane this action is executing in, when the phase is
+    /// running package work across managers. A command run under it feeds that
+    /// lane's own window (or its capture, off a TTY) instead of opening a
+    /// window at the ambient depth — ambient depth is per-renderer state, so N
+    /// lanes reading it would interleave. `None` for every sequential context,
+    /// which is every non-`Packages` phase and every read path.
+    lane: Option<&'a dyn crate::output::LaneOutput>,
 }
 
 impl<'a> PackageContext<'a> {
@@ -155,6 +162,7 @@ impl<'a> PackageContext<'a> {
             notes: NoteSink::discarded(),
             caller_owns_status: false,
             windowless: false,
+            lane: None,
         }
     }
 
@@ -171,6 +179,7 @@ impl<'a> PackageContext<'a> {
             notes,
             caller_owns_status: false,
             windowless: false,
+            lane: None,
         }
     }
 
@@ -188,6 +197,7 @@ impl<'a> PackageContext<'a> {
             notes: NoteSink::discarded(),
             caller_owns_status: false,
             windowless: true,
+            lane: None,
         }
     }
 
@@ -195,6 +205,25 @@ impl<'a> PackageContext<'a> {
     /// live output window. See the field doc on [`PackageContext::windowless`].
     pub fn windowless(&self) -> bool {
         self.windowless
+    }
+
+    /// Execute this context's commands inside `lane` — the concurrent
+    /// `Packages` phase's one entry point.
+    ///
+    /// Takes the lane by reference rather than by value because the coordinator
+    /// owns it: the lane's window has to be created at the action's depth,
+    /// which only the coordinator knows, and collapsed after the action's
+    /// status line is composed, which only the coordinator does.
+    #[must_use]
+    pub fn in_lane(mut self, lane: &'a dyn crate::output::LaneOutput) -> Self {
+        self.lane = Some(lane);
+        self
+    }
+
+    /// The lane this context executes in, if any. A `PackageManager` reaches
+    /// it through its shell-out helper rather than by hand.
+    pub fn lane(&self) -> Option<&'a dyn crate::output::LaneOutput> {
+        self.lane
     }
 
     /// Declare that the CALLER emits the one status line for this action.

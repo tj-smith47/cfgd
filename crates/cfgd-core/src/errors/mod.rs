@@ -226,6 +226,12 @@ pub enum PackageError {
 
     #[error("package manager '{manager}' not found in registry")]
     ManagerNotFound { manager: String },
+
+    // A worker thread that unwinds without reporting would leave the apply
+    // coordinator waiting on a message that can no longer arrive, so a lane
+    // catches its own unwind and fails the action instead of hanging the run.
+    #[error("{manager} package work panicked")]
+    LanePanicked { manager: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -479,6 +485,12 @@ pub enum StateError {
 
     #[error("apply lock held by another process: {holder}")]
     ApplyLockHeld { holder: String },
+
+    // Every SQLite access from a concurrent install lane is a message to the
+    // coordinator, which owns the one connection; this is that message failing
+    // to make the round trip.
+    #[error("package state unreachable from an install lane: {reason}")]
+    LaneUnreachable { reason: String },
 }
 
 impl From<rusqlite::Error> for StateError {

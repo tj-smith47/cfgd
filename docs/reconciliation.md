@@ -40,6 +40,22 @@ package-manager bootstraps, then profile-owned package work — so a module's de
 present before a module's own hooks need it, and a manager is installed before the profile
 package that needs it. Everywhere else, execution follows the displayed order.
 
+Those three groups are also a barrier: a group starts only once every action in the group
+above it has *finished*. Inside a group, package work runs **concurrently — one lane per
+package manager**, so `brew install` and `apt install` proceed at the same time while a
+single manager still runs one operation at a time. Two more rules narrow that:
+
+- A module's packages wait for the packages of every module it `depends` on.
+- An action for a manager cfgd has to install first drains the phase: it runs alone, and
+  nothing else starts until it finishes, because the install changes `PATH` for everything
+  after it.
+
+While a lane is held back, the live region shows one dimmed line per waiting group or
+action naming what it is waiting on (`module:nvim · waiting on apt`). Those lines exist
+only on a terminal — they are never logged, never in `-o json`, and never in scrollback.
+Because the lanes finish out of order, the `Packages` tree is written once, when the phase
+closes, in the displayed group order rather than the order things happened.
+
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the
 surfaces that phase owns: bootstrapping a package manager under `--phase packages` records

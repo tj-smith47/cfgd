@@ -10,6 +10,7 @@ mod env_files;
 mod file_action;
 mod files;
 mod format;
+mod lanes;
 mod modules;
 mod packages;
 mod patch;
@@ -56,7 +57,7 @@ pub use run::{
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Owner,
     OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext, RollbackResult,
-    ScriptAction, ScriptPhase, SystemAction, package_owner,
+    ScriptAction, ScriptPhase, SystemAction, Tier, package_owner,
 };
 pub use verify::{VerifyResult, verify};
 

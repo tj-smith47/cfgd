@@ -10,6 +10,58 @@ use super::printer::{DocCapture, Printer, PromptAnswer};
 use super::renderer::{Renderer, StringSink, Writer};
 use super::{OutputFormat, Theme, Verbosity};
 
+/// The draw target behind [`Printer::for_test_with_live_bars`]: everything
+/// indicatif paints is appended to the same buffer the printer's sink writes
+/// to, in the order the two reach it.
+#[derive(Debug)]
+struct RecordingTerm {
+    drawn: Arc<Mutex<String>>,
+}
+
+impl RecordingTerm {
+    fn record(&self, s: &str) -> std::io::Result<()> {
+        self.drawn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_str(s);
+        Ok(())
+    }
+}
+
+impl indicatif::TermLike for RecordingTerm {
+    fn width(&self) -> u16 {
+        200
+    }
+    fn height(&self) -> u16 {
+        40
+    }
+    fn move_cursor_up(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_down(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_right(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_left(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn write_line(&self, s: &str) -> std::io::Result<()> {
+        self.record(s)?;
+        self.record("\n")
+    }
+    fn write_str(&self, s: &str) -> std::io::Result<()> {
+        self.record(s)
+    }
+    fn clear_line(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn flush(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn build_test_printer(
     buf: Arc<Mutex<String>>,
     theme: Theme,
@@ -105,6 +157,42 @@ impl Printer {
             None,
         );
         (p, cap)
+    }
+
+    /// Capture wired the way PRODUCTION wires a printer that has bars: the
+    /// renderer knows its `MultiProgress`, so a line emitted while a bar is
+    /// live is routed through it instead of straight to the sink.
+    ///
+    /// Both the bar draws and the routed lines land in ONE buffer, which is the
+    /// point — garbling is two writers interleaving inside a single physical
+    /// stream, and two separate captures could not show it. Every other test
+    /// constructor builds a bar-less renderer, where routing never happens and
+    /// the question cannot be asked.
+    pub fn for_test_with_live_bars() -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let multi =
+            indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::term_like(
+                Box::new(RecordingTerm { drawn: buf.clone() }),
+            ));
+        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
+        let p = Printer {
+            renderer: Arc::new(Renderer::with_bars(
+                Theme::default(),
+                Verbosity::Normal,
+                multi.clone(),
+            )),
+            output_format: OutputFormat::Table,
+            sink_stderr: sink.clone(),
+            sink_stdout: sink,
+            multi_progress: multi,
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: None,
+            prompt_queue: None,
+            output_error: std::sync::atomic::AtomicBool::new(false),
+            list_envelope: false,
+        };
+        (p, buf)
     }
 
     /// Capture + canned prompt responses.

@@ -40,6 +40,10 @@ struct ActionOutcome {
     detail_muted: bool,
     duration: Option<std::time::Duration>,
     notes: Vec<ActionNote>,
+    /// The child output a concurrent lane captured instead of streaming, laid
+    /// out beneath this line when the phase's tree is written. Always empty in
+    /// a sequential phase, where the output window already showed it live.
+    body: Vec<String>,
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -79,6 +83,39 @@ fn action_reports_its_own_status(action: &Action) -> bool {
 
 /// Elapsed times below this read as noise on a line whose subject is the point.
 const MIN_REPORTED_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The per-phase display inputs every settled action line is built from.
+struct PhaseLedger<'p> {
+    phase_name: PhaseName,
+    /// The subject every action renders under, in both trees: the same string
+    /// the preview bullet printed and `align_width` measured.
+    subjects: &'p std::collections::HashMap<usize, String>,
+    bootstrap_owners: &'p std::collections::HashMap<&'p str, String>,
+}
+
+/// One finished action, as its collection point hands it over.
+struct SettleInput<'p, 'r> {
+    action: &'p Action,
+    journal_id: Option<i64>,
+    result: Result<(String, bool, Option<String>)>,
+    elapsed: std::time::Duration,
+    notes: Vec<ActionNote>,
+    body: Vec<String>,
+    finished: usize,
+    ledger: &'p PhaseLedger<'p>,
+    results: &'r mut Vec<ActionResult>,
+}
+
+/// What settling produced: the description the journal and the result row
+/// carry, whether the run must stop here, and the line the tree will render.
+struct Settled {
+    desc: String,
+    should_abort: bool,
+    /// `None` for the two script shapes, whose one line `execute_script`
+    /// already emitted; their notes are in `notes` instead.
+    outcome: Option<ActionOutcome>,
+    notes: Vec<ActionNote>,
+}
 
 /// The run's monotonic count of finishes, ticked wherever an action is
 /// collected — which is always the coordinator thread, sequential phase and
@@ -145,7 +182,7 @@ pub fn emit_action_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
     }
 }
 
-fn emit_action_line(section: &SectionGuard<'_>, outcome: &ActionOutcome) {
+fn emit_action_line(printer: &Printer, section: &SectionGuard<'_>, outcome: &ActionOutcome) {
     {
         let mut builder = section.action_status(outcome.role, &outcome.subject);
         if outcome.detail_muted {
@@ -159,6 +196,13 @@ fn emit_action_line(section: &SectionGuard<'_>, outcome: &ActionOutcome) {
         drop(builder);
     }
     emit_action_notes(section, &outcome.notes);
+    // Held back rather than streamed: two lanes streaming into one log
+    // interleave line by line, so a concurrent phase captures its children's
+    // output and lays each action's out under the line it belongs to. Empty
+    // whenever a live window already showed it, and under `Verbosity::Quiet`.
+    if !outcome.body.is_empty() {
+        crate::output::OutputWindow::dump_below(printer, section.depth, &outcome.body);
+    }
 }
 
 /// Identity of one planned action, for correlating the plan-order walk with the
@@ -697,6 +741,11 @@ impl<'a> super::Reconciler<'a> {
                 })
                 .collect();
             let width = align_width(phase);
+            let ledger = PhaseLedger {
+                phase_name: phase.name.clone(),
+                subjects: &subjects,
+                bootstrap_owners: &bootstrap_owners,
+            };
             // `Packages` writes its tree at phase close so the groups read in
             // `Owner::sort_key` order while Rule P dispatches `0 -> B -> 1`;
             // every other phase streams, because there its dispatch order and
@@ -720,264 +769,216 @@ impl<'a> super::Reconciler<'a> {
             let mut abort_stop: Option<u8> = None;
             let mut pre_script_stop: Option<String> = None;
 
-            for (owner, action, plan_index) in dispatch.into_iter() {
-                let action_index = plan_index_base + plan_index;
-                // Cooperative cancellation: a signal flips the abort flag, and
-                // the loop stops before beginning the next atomic action.
-                if let Some(code) = abort.aborted() {
-                    abort_stop = Some(code);
-                    break;
-                }
-                if !deferred
-                    && let Some(section) = phase_section.as_ref()
-                    && owner_open != Some(owner)
-                {
-                    // Explicit close before the next open: assigning over the
-                    // binding would build the new guard first and unwind the
-                    // renderer's section stack out of order.
-                    drop(owner_section.take());
-                    let group = section
-                        .section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
-                    group.live_column(width);
-                    owner_section = Some(group);
-                    owner_open = Some(owner);
-                }
-
-                let desc_for_journal = format_action_description(action);
-                let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
-
-                // Capture file state before overwrite (for backup). A target
-                // that does not yet exist (a CREATE) gets an absent marker so
-                // rollback removes it rather than restoring a later apply's
-                // post-apply snapshot.
-                if let Some(backup) = action_target_path(action) {
-                    let path = &backup.path;
-                    // Backup key, not display: every writer of
-                    // `file_backups.file_path` folds with `to_posix_fs_key` so a
-                    // rollback lookup finds the row a Windows apply wrote — and
-                    // so the row a rollback reopens still names the file that
-                    // was backed up.
-                    let path_str = crate::to_posix_fs_key(path);
-                    let captured = if backup.follow_symlink {
-                        crate::capture_file_resolved_state(path)
-                    } else {
-                        crate::capture_file_state(path)
-                    };
-                    match captured {
-                        Ok(Some(file_state)) => {
-                            if let Err(e) =
-                                self.state
-                                    .store_file_backup(apply_id, &path_str, &file_state)
-                            {
-                                tracing::warn!(
-                                    "failed to store file backup for {}: {}",
-                                    path.posix(),
-                                    e
-                                );
-                            }
-                        }
-                        Ok(None) => {
-                            if let Err(e) = self.state.store_absent_backup(apply_id, &path_str) {
-                                tracing::warn!(
-                                    "failed to store absent marker for {}: {}",
-                                    path.posix(),
-                                    e
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to capture file state for backup of {}: {}",
-                                path.posix(),
-                                e
-                            );
-                        }
-                    }
-                }
-
-                // Journal: record action start
-                let journal_id = self
-                    .state
-                    .journal_begin(
-                        apply_id,
-                        action_index,
-                        phase.name.as_str(),
-                        &action_type,
-                        &resource_id,
-                        None,
-                    )
-                    .ok();
-
-                let started = std::time::Instant::now();
-                let result = self.apply_action(
-                    action,
-                    resolved,
-                    config_dir,
+            if deferred {
+                // The concurrent dispatcher owns this phase: it opens each
+                // action's journal row at its dispatch point, runs the work in
+                // a per-manager lane, and hands every finish back HERE, on this
+                // thread, in completion order. No status line streams — the
+                // tree below is written once the phase closes.
+                let run = super::lanes::PackageRun {
                     printer,
                     apply_id,
-                    context,
+                    config_dir,
+                    resolved,
                     module_actions,
-                    &mut secret_env_collector,
+                    context,
                     shell_override,
                     abort,
-                    &notes,
-                );
-                let elapsed = started.elapsed();
-                // Set by the `Err` arm below so the tree renders the failure on
-                // the action's own line instead of a bespoke one above it.
-                let mut failure_detail: Option<(String, bool)> = None;
-
-                let finished = completions.next();
-                let (desc, success, action_changed, error, should_abort) = match result {
-                    Ok((desc, action_changed, script_output)) => {
-                        if let Some(jid) = journal_id
-                            && let Err(e) = self.state.journal_complete(
-                                jid,
-                                finished,
-                                None,
-                                script_output.as_deref(),
-                            )
-                        {
-                            tracing::warn!("failed to record journal completion: {e}");
-                        }
-                        (desc, true, action_changed, None, false)
-                    }
-                    Err(e) => {
-                        let desc = format_action_description(action);
-
-                        // Check if this is a script action with continueOnError
-                        let continue_on_err = if let Action::Script(ScriptAction::Run {
-                            entry,
-                            phase: script_phase,
-                            ..
-                        }) = action
-                        {
-                            effective_continue_on_error(entry, script_phase)
-                        } else {
-                            false
-                        };
-
-                        failure_detail = Some((collapse_to_subject_line(&e), continue_on_err));
-                        if let Some(jid) = journal_id
-                            && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
-                        {
-                            tracing::warn!("failed to record journal failure: {je}");
-                        }
-                        (desc, false, false, Some(e.to_string()), !continue_on_err)
+                    plan_index_base,
+                    action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
+                };
+                let mut collect = |action: &Action, collected: super::lanes::LaneCollected| {
+                    let finished = completions.next();
+                    let settled = self.settle_action(SettleInput {
+                        action,
+                        journal_id: collected.journal_id,
+                        result: collected
+                            .result
+                            .map(|(desc, changed)| (desc, changed, None)),
+                        elapsed: collected.elapsed,
+                        notes: collected.notes,
+                        body: collected.body,
+                        finished,
+                        ledger: &ledger,
+                        results: &mut results,
+                    });
+                    if let Some(outcome) = settled.outcome {
+                        recorded.insert(action_key(action), outcome);
                     }
                 };
-
-                let changed = success && action_changed;
-                results.push(ActionResult {
-                    phase: phase.name.as_str().to_string(),
-                    description: desc.clone(),
-                    success,
-                    error: error.clone(),
-                    changed,
-                });
-
-                // Drained unconditionally: a note left in the sink would
-                // attach to whichever action drains next, which is not the one
-                // that produced it.
-                let drained = notes.take();
-                // One status line per plan action, always — except the two
-                // script shapes, whose line `execute_script` already emitted.
-                // Their notes still belong under it.
-                if action_reports_its_own_status(action) {
-                    if let Some(section) = owner_section.as_ref() {
-                        emit_action_notes(section, &drained);
+                abort_stop = self.dispatch_package_lanes(&dispatch, &run, &mut collect);
+            } else {
+                for (owner, action, plan_index) in dispatch.into_iter() {
+                    let action_index = plan_index_base + plan_index;
+                    // Cooperative cancellation: a signal flips the abort flag, and
+                    // the loop stops before beginning the next atomic action.
+                    if let Some(code) = abort.aborted() {
+                        abort_stop = Some(code);
+                        break;
                     }
-                } else {
-                    let subject = subjects
-                        .get(&action_key(action))
-                        .cloned()
-                        .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
-                    let outcome = match &failure_detail {
-                        Some((message, continue_on_err)) => ActionOutcome {
-                            subject,
-                            role: if *continue_on_err {
-                                Role::Warn
-                            } else {
-                                Role::Fail
-                            },
-                            detail: Some(message.clone()),
-                            detail_muted: false,
-                            duration: None,
-                            notes: drained,
-                        },
-                        None => {
-                            let bootstrap = match action {
-                                Action::Package(PackageAction::Bootstrap { manager, .. }) => {
-                                    Some(manager.as_str())
+                    if !deferred
+                        && let Some(section) = phase_section.as_ref()
+                        && owner_open != Some(owner)
+                    {
+                        // Explicit close before the next open: assigning over the
+                        // binding would build the new guard first and unwind the
+                        // renderer's section stack out of order.
+                        drop(owner_section.take());
+                        let group = section.section_owner(&OwnerLabel::new(
+                            owner.kind.as_str(),
+                            owner.name.as_str(),
+                        ));
+                        group.live_column(width);
+                        owner_section = Some(group);
+                        owner_open = Some(owner);
+                    }
+
+                    let desc_for_journal = format_action_description(action);
+                    let (action_type, resource_id) =
+                        parse_resource_from_description(&desc_for_journal);
+
+                    // Capture file state before overwrite (for backup). A target
+                    // that does not yet exist (a CREATE) gets an absent marker so
+                    // rollback removes it rather than restoring a later apply's
+                    // post-apply snapshot.
+                    if let Some(backup) = action_target_path(action) {
+                        let path = &backup.path;
+                        // Backup key, not display: every writer of
+                        // `file_backups.file_path` folds with `to_posix_fs_key` so a
+                        // rollback lookup finds the row a Windows apply wrote — and
+                        // so the row a rollback reopens still names the file that
+                        // was backed up.
+                        let path_str = crate::to_posix_fs_key(path);
+                        let captured = if backup.follow_symlink {
+                            crate::capture_file_resolved_state(path)
+                        } else {
+                            crate::capture_file_state(path)
+                        };
+                        match captured {
+                            Ok(Some(file_state)) => {
+                                if let Err(e) =
+                                    self.state
+                                        .store_file_backup(apply_id, &path_str, &file_state)
+                                {
+                                    tracing::warn!(
+                                        "failed to store file backup for {}: {}",
+                                        path.posix(),
+                                        e
+                                    );
                                 }
-                                _ => None,
-                            };
-                            let noop = declared_noop_role(action);
-                            let role = match (noop, action_changed) {
-                                (Some(role), _) => role,
-                                (None, true) => Role::Ok,
-                                (None, false) => Role::Skipped,
-                            };
-                            // A bootstrap's detail is the only plan-derived one
-                            // in the tree, and it always carries its duration:
-                            // a `(0.0s)` is the reader's evidence that the
-                            // manager was already installed by an earlier tier.
-                            let (detail, duration) = match bootstrap {
-                                Some(manager) => {
-                                    (bootstrap_owners.get(manager).cloned(), Some(elapsed))
+                            }
+                            Ok(None) => {
+                                if let Err(e) = self.state.store_absent_backup(apply_id, &path_str)
+                                {
+                                    tracing::warn!(
+                                        "failed to store absent marker for {}: {}",
+                                        path.posix(),
+                                        e
+                                    );
                                 }
-                                None => (
-                                    (noop.is_none() && !action_changed)
-                                        .then(|| "unchanged".to_string()),
-                                    (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed),
-                                ),
-                            };
-                            ActionOutcome {
-                                subject,
-                                role,
-                                detail,
-                                detail_muted: true,
-                                duration,
-                                notes: drained,
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to capture file state for backup of {}: {}",
+                                    path.posix(),
+                                    e
+                                );
                             }
                         }
-                    };
-                    match (deferred, owner_section.as_ref()) {
-                        (true, _) => {
-                            recorded.insert(action_key(action), outcome);
-                        }
-                        (false, Some(section)) => emit_action_line(section, &outcome),
-                        // `PhaseName::Modules` opens no block: its only actions
-                        // are platform-gated skips, which the header's
-                        // `Modules` row already annotates.
-                        (false, None) => {}
                     }
-                }
 
-                // If a signal arrived while the action was running, the execute_script
-                // poll loop already killed the child and returned an error. Treat this
-                // as a cooperative abort (not a script failure) so the correct exit
-                // code (130 for SIGINT) and "aborted" DB row are recorded.
-                if let Some(code) = abort.aborted() {
-                    abort_stop = Some(code);
-                    break;
-                }
+                    // Journal: record action start
+                    let journal_id = self
+                        .state
+                        .journal_begin(
+                            apply_id,
+                            action_index,
+                            phase.name.as_str(),
+                            &action_type,
+                            &resource_id,
+                            None,
+                        )
+                        .ok();
 
-                // If a pre-script failed without continueOnError, abort
-                let is_pre_script = matches!(
-                    action,
-                    Action::Script(ScriptAction::Run { phase: sp, .. })
-                        if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
-                ) || matches!(
-                    action,
-                    Action::Module(ModuleAction {
-                        kind: ModuleActionKind::RunScript { phase: sp, .. },
-                        ..
-                    }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
-                );
-                if should_abort && is_pre_script {
-                    pre_script_stop = Some(condense_action_desc_for_display(action, &desc));
-                    break;
+                    let started = std::time::Instant::now();
+                    let result = self.apply_action(
+                        action,
+                        resolved,
+                        config_dir,
+                        printer,
+                        apply_id,
+                        context,
+                        module_actions,
+                        &mut secret_env_collector,
+                        shell_override,
+                        abort,
+                        &notes,
+                    );
+                    let elapsed = started.elapsed();
+                    let finished = completions.next();
+                    // Drained unconditionally: a note left in the sink would
+                    // attach to whichever action drains next, which is not the one
+                    // that produced it.
+                    let drained = notes.take();
+                    let settled = self.settle_action(SettleInput {
+                        action,
+                        journal_id,
+                        result,
+                        elapsed,
+                        notes: drained,
+                        body: Vec::new(),
+                        finished,
+                        ledger: &ledger,
+                        results: &mut results,
+                    });
+                    let should_abort = settled.should_abort;
+                    let desc = settled.desc;
+                    match settled.outcome {
+                        // One status line per plan action, always — except the two
+                        // script shapes, whose line `execute_script` already
+                        // emitted. Their notes still belong under it.
+                        None => {
+                            if let Some(section) = owner_section.as_ref() {
+                                emit_action_notes(section, &settled.notes);
+                            }
+                        }
+                        Some(outcome) => match (deferred, owner_section.as_ref()) {
+                            (true, _) => {
+                                recorded.insert(action_key(action), outcome);
+                            }
+                            (false, Some(section)) => emit_action_line(printer, section, &outcome),
+                            // `PhaseName::Modules` opens no block: its only actions
+                            // are platform-gated skips, which the header's
+                            // `Modules` row already annotates.
+                            (false, None) => {}
+                        },
+                    }
+
+                    // If a signal arrived while the action was running, the execute_script
+                    // poll loop already killed the child and returned an error. Treat this
+                    // as a cooperative abort (not a script failure) so the correct exit
+                    // code (130 for SIGINT) and "aborted" DB row are recorded.
+                    if let Some(code) = abort.aborted() {
+                        abort_stop = Some(code);
+                        break;
+                    }
+
+                    // If a pre-script failed without continueOnError, abort
+                    let is_pre_script = matches!(
+                        action,
+                        Action::Script(ScriptAction::Run { phase: sp, .. })
+                            if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                    ) || matches!(
+                        action,
+                        Action::Module(ModuleAction {
+                            kind: ModuleActionKind::RunScript { phase: sp, .. },
+                            ..
+                        }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                    );
+                    if should_abort && is_pre_script {
+                        pre_script_stop = Some(condense_action_desc_for_display(action, &desc));
+                        break;
+                    }
                 }
             }
 
@@ -1001,7 +1002,7 @@ impl<'a> super::Reconciler<'a> {
                             opened.live_column(width);
                             opened
                         });
-                        emit_action_line(group_section, &outcome);
+                        emit_action_line(printer, group_section, &outcome);
                     }
                 }
             }
@@ -1374,6 +1375,146 @@ impl<'a> super::Reconciler<'a> {
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Turn one finished action into its journal completion, its result row and
+    /// the line the phase's tree will render.
+    ///
+    /// The ONE settle, shared by the sequential walk and the concurrent
+    /// dispatcher, because the two orders differ and the LINE must not: a
+    /// deferred tree written from a second derivation would disagree with a
+    /// streaming one about role, detail or duration on the same action.
+    fn settle_action(&self, input: SettleInput<'_, '_>) -> Settled {
+        let SettleInput {
+            action,
+            journal_id,
+            result,
+            elapsed,
+            notes,
+            body,
+            finished,
+            ledger,
+            results,
+        } = input;
+        // Set by the `Err` arm below so the tree renders the failure on
+        // the action's own line instead of a bespoke one above it.
+        let mut failure_detail: Option<(String, bool)> = None;
+
+        let (desc, success, action_changed, error, should_abort) = match result {
+            Ok((desc, action_changed, script_output)) => {
+                if let Some(jid) = journal_id
+                    && let Err(e) =
+                        self.state
+                            .journal_complete(jid, finished, None, script_output.as_deref())
+                {
+                    tracing::warn!("failed to record journal completion: {e}");
+                }
+                (desc, true, action_changed, None, false)
+            }
+            Err(e) => {
+                let desc = format_action_description(action);
+
+                // Check if this is a script action with continueOnError
+                let continue_on_err = if let Action::Script(ScriptAction::Run {
+                    entry,
+                    phase: script_phase,
+                    ..
+                }) = action
+                {
+                    effective_continue_on_error(entry, script_phase)
+                } else {
+                    false
+                };
+
+                failure_detail = Some((collapse_to_subject_line(&e), continue_on_err));
+                if let Some(jid) = journal_id
+                    && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
+                {
+                    tracing::warn!("failed to record journal failure: {je}");
+                }
+                (desc, false, false, Some(e.to_string()), !continue_on_err)
+            }
+        };
+
+        let changed = success && action_changed;
+        results.push(ActionResult {
+            phase: ledger.phase_name.as_str().to_string(),
+            description: desc.clone(),
+            success,
+            error,
+            changed,
+        });
+
+        if action_reports_its_own_status(action) {
+            return Settled {
+                desc,
+                should_abort,
+                outcome: None,
+                notes,
+            };
+        }
+
+        let subject = ledger
+            .subjects
+            .get(&action_key(action))
+            .cloned()
+            .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
+        let outcome = match &failure_detail {
+            Some((message, continue_on_err)) => ActionOutcome {
+                subject,
+                role: if *continue_on_err {
+                    Role::Warn
+                } else {
+                    Role::Fail
+                },
+                detail: Some(message.clone()),
+                detail_muted: false,
+                duration: None,
+                notes,
+                body,
+            },
+            None => {
+                let bootstrap = match action {
+                    Action::Package(PackageAction::Bootstrap { manager, .. }) => {
+                        Some(manager.as_str())
+                    }
+                    _ => None,
+                };
+                let noop = declared_noop_role(action);
+                let role = match (noop, action_changed) {
+                    (Some(role), _) => role,
+                    (None, true) => Role::Ok,
+                    (None, false) => Role::Skipped,
+                };
+                // A bootstrap's detail is the only plan-derived one in the
+                // tree, and it always carries its duration: a `(0.0s)` is the
+                // reader's evidence that the manager was already installed by
+                // an earlier tier.
+                let (detail, duration) = match bootstrap {
+                    Some(manager) => (ledger.bootstrap_owners.get(manager).cloned(), Some(elapsed)),
+                    None => (
+                        (noop.is_none() && !action_changed).then(|| "unchanged".to_string()),
+                        (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed),
+                    ),
+                };
+                ActionOutcome {
+                    subject,
+                    role,
+                    detail,
+                    detail_muted: true,
+                    duration,
+                    notes,
+                    body,
+                }
+            }
+        };
+        Settled {
+            desc,
+            should_abort,
+            outcome: Some(outcome),
+            notes: Vec::new(),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

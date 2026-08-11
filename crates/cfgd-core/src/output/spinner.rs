@@ -164,6 +164,14 @@ impl<'p> ProgressBar<'p> {
     }
 }
 
+/// Whether anything can be drawn in the live region at all — the ONE statement
+/// of that gate, so a caller that has to decide BEFORE building a bar (a lane
+/// choosing between a live window and a capture) cannot answer it differently
+/// from the builders below.
+pub(crate) fn live_bars_available(verbosity: super::Verbosity) -> bool {
+    verbosity != super::Verbosity::Quiet && stderr_is_terminal()
+}
+
 /// Return the appropriate spinner bar for the current verbosity/TTY state:
 /// a hidden bar under Quiet or non-TTY, otherwise a styled spinner attached
 /// to the MultiProgress. Used by both `Printer::spinner` and
@@ -175,7 +183,7 @@ pub(crate) fn make_spinner_bar(
     depth: usize,
     message: &str,
 ) -> (IndProgressBar, Option<LiveBarGuard>) {
-    if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
+    if !live_bars_available(verbosity) {
         (IndProgressBar::hidden(), None)
     } else {
         // No `Spinner` (and so no sink) exists yet at this point in
@@ -202,7 +210,7 @@ pub(crate) fn make_progress_bar(
     verbosity: super::Verbosity,
     message: &str,
 ) -> (IndProgressBar, Option<LiveBarGuard>) {
-    if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
+    if !live_bars_available(verbosity) {
         (IndProgressBar::hidden(), None)
     } else {
         let (bar, live) = build_progress_bar(multi, renderer, total, message);

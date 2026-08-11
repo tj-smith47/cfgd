@@ -4,7 +4,6 @@ use crate::config::{EnvScope, MergedProfile};
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
-use crate::providers::PackageManager;
 use crate::state::StateStore;
 
 use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
@@ -115,39 +114,6 @@ fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>
 }
 
 impl<'a> super::Reconciler<'a> {
-    /// Capture the PATH directories `pm` contributes, immediately after it was
-    /// bootstrapped successfully.
-    ///
-    /// This is the only place the reconciler probes `path_dirs()`, and it is the
-    /// one instant the probe is trustworthy: the manager exists as of this call,
-    /// so it reports the prefix it actually installed into instead of guessing
-    /// from whatever happened to be on disk beforehand.
-    ///
-    /// A failed record does not fail the apply — the manager is installed either
-    /// way — but it does leave the PATH entry unwritten, so it is logged.
-    pub(super) fn record_bootstrap_path_dirs(&self, pm: &dyn PackageManager, printer: &Printer) {
-        let cx = crate::providers::PackageContext::new(printer, self.state);
-        // The directories land in shell files that a Git-Bash and a PowerShell
-        // session on the same Windows host both read, and in a state row those
-        // reads are compared against.
-        let dirs: Vec<String> = pm
-            .path_dirs(&cx)
-            .iter()
-            .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
-            .collect();
-        // Registered before the state write, and unconditionally: the very next
-        // action in this apply may be an install through a binary that just
-        // landed in one of these directories, and a failed state write is no
-        // reason to leave the running process unable to find it.
-        crate::register_bootstrapped_path_dirs(&dirs);
-        if let Err(e) = self.state.record_bootstrapped_path_dirs(pm.name(), &dirs) {
-            tracing::warn!(
-                "cannot record PATH directories for bootstrapped {}: {e}",
-                pm.name()
-            );
-        }
-    }
-
     /// Plan env file generation from merged profile + module env vars and aliases.
     /// Returns (actions, warnings) — warnings for shell rc conflicts.
     ///

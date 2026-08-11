@@ -89,15 +89,32 @@ pub(crate) enum StatusOwner {
     Caller,
 }
 
-/// Run `cmd` with live output displayed through an [`OutputWindow`], capturing
-/// stdout and stderr for the returned `CommandOutput`.
-pub(crate) fn run_command(
-    printer: &Printer,
-    depth: usize,
+/// What one [`spawn_and_pump`] run yields: the display sink, the exit status,
+/// the stdout and stderr captures, and the elapsed clock.
+type Pumped<S> = (
+    S,
+    std::process::ExitStatus,
+    Vec<String>,
+    Vec<String>,
+    Duration,
+);
+
+/// Spawn `cmd` with both pipes captured and feed every line to `on_line` as it
+/// arrives, returning the display sink, the exit status, the two captures and
+/// the elapsed clock.
+///
+/// The ONE spawn-and-pump in this module, so a live window and a concurrent
+/// lane cannot disagree about stdio configuration, about the `PATH` guard's
+/// span, or about which stream a captured line came from.
+///
+/// `sink` is a thunk rather than a value because it is only built once the
+/// spawn SUCCEEDED: an `OutputWindow` created ahead of a failing spawn would
+/// be abandoned, and an abandoned window leaves a status line behind.
+fn spawn_and_pump<S>(
     cmd: &mut std::process::Command,
-    label: &str,
-    settle: StatusOwner,
-) -> std::io::Result<CommandOutput> {
+    sink: impl FnOnce() -> S,
+    mut on_line: impl FnMut(&mut S, &str),
+) -> std::io::Result<Pumped<S>> {
     // Held for the whole run, not just the spawn: the child resolves its
     // program through `PATH` and reads its inherited working directory after
     // exec, so both must stay stable until it exits. Re-entrant, so a caller
@@ -113,8 +130,8 @@ pub(crate) fn run_command(
         .stderr(std::process::Stdio::piped())
         .spawn()?;
 
+    let mut sink = sink();
     let rx = spawn_readers(&mut child);
-    let mut window = printer.output_window_at(depth, label);
     let mut all_stdout = Vec::new();
     let mut all_stderr = Vec::new();
     // Blocking recv: the spinner's steady tick redraws independently of message
@@ -123,18 +140,46 @@ pub(crate) fn run_command(
     for line in rx {
         match line {
             Captured::Stdout(s) => {
-                window.push_line(&s);
+                on_line(&mut sink, &s);
                 all_stdout.push(s);
             }
             Captured::Stderr(s) => {
-                window.push_line(&s);
+                on_line(&mut sink, &s);
                 all_stderr.push(s);
             }
         }
     }
 
     let status = child.wait()?;
-    let duration = start.elapsed();
+    Ok((sink, status, all_stdout, all_stderr, start.elapsed()))
+}
+
+/// Run `cmd` inside a concurrent lane: the lane owns the rendering (a bounded
+/// window on a TTY, a capture off one) and the coordinator owns the status
+/// line, so nothing is settled here.
+pub(crate) fn run_command_in_lane(
+    cmd: &mut std::process::Command,
+    lane: &(impl super::lane::LaneOutput + ?Sized),
+) -> std::io::Result<CommandOutput> {
+    let ((), status, all_stdout, all_stderr, duration) =
+        spawn_and_pump(cmd, || (), |(), line| lane.push_line(line))?;
+    Ok(make_output(status, all_stdout, all_stderr, duration))
+}
+
+/// Run `cmd` with live output displayed through an [`OutputWindow`], capturing
+/// stdout and stderr for the returned `CommandOutput`.
+pub(crate) fn run_command(
+    printer: &Printer,
+    depth: usize,
+    cmd: &mut std::process::Command,
+    label: &str,
+    settle: StatusOwner,
+) -> std::io::Result<CommandOutput> {
+    let (window, status, all_stdout, all_stderr, duration) = spawn_and_pump(
+        cmd,
+        || printer.output_window_at(depth, label),
+        |window, line| window.push_line(line),
+    )?;
     if status.success() {
         match settle {
             StatusOwner::Window => drop(window.finish_ok(label).duration(duration)),

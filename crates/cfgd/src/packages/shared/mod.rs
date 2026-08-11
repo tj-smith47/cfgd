@@ -338,12 +338,19 @@ pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
 /// overlapping bars on a TTY and interleave N streams into a non-TTY log.
 /// Checked first, so a context can never fall through to a window by
 /// accident.
+///
+/// A concurrent install lane is checked before both: its window already exists,
+/// created by the coordinator at the action's depth, and `Printer::run` would
+/// open a second one at the ambient depth — which in a concurrent phase is
+/// whatever the last renderer state happened to be, shared by every lane.
 pub(super) fn pkg_run(
     cx: &PackageContext<'_>,
     cmd: &mut Command,
     label: impl Into<String>,
 ) -> std::io::Result<CommandOutput> {
-    if cx.windowless() {
+    if let Some(lane) = cx.lane() {
+        lane.run(cmd)
+    } else if cx.windowless() {
         let start = std::time::Instant::now();
         let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT)?;
         Ok(CommandOutput {

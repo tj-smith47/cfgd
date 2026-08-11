@@ -557,6 +557,8 @@ impl Phase {
 
     /// Every action in the phase, in the plan's own (display) order. What
     /// filters, counts and payloads see.
+    ///
+    /// Deliberately not the dispatch order — see [`Phase::dispatch_order`].
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
         self.groups.iter().flat_map(|g| g.actions.iter())
     }
@@ -577,28 +579,9 @@ impl Phase {
     pub fn dispatch_order(&self) -> impl Iterator<Item = (&Owner, &Action)> {
         let mut ordered: Vec<(&Owner, &Action)> = Vec::with_capacity(self.action_count());
         if self.name == PhaseName::Packages {
-            // The tier-B predicate is written as "not module-owned AND a
-            // bootstrap" rather than just "a bootstrap" so the three passes are
-            // a partition by construction. Every `Bootstrap` belongs to the
-            // `cfgd:managers` group, so under that membership rule the two
-            // spellings select the same actions — but only this one keeps an
-            // action from being dispatched twice if that rule ever slips.
-            let is_module = |o: &Owner| o.kind == OwnerKind::Module;
-            let is_bootstrap = |a: &Action| {
-                matches!(
-                    a,
-                    Action::Package(crate::providers::PackageAction::Bootstrap { .. })
-                )
-            };
-            ordered.extend(self.owned_actions().filter(|(o, _)| is_module(o)));
-            ordered.extend(
-                self.owned_actions()
-                    .filter(|(o, a)| !is_module(o) && is_bootstrap(a)),
-            );
-            ordered.extend(
-                self.owned_actions()
-                    .filter(|(o, a)| !is_module(o) && !is_bootstrap(a)),
-            );
+            for tier in Tier::ALL {
+                ordered.extend(self.owned_actions().filter(|(o, a)| Tier::of(o, a) == tier));
+            }
         } else {
             ordered.extend(self.owned_actions());
         }
@@ -611,6 +594,65 @@ impl Phase {
 
     pub fn is_empty(&self) -> bool {
         self.groups.iter().all(|g| g.actions.is_empty())
+    }
+}
+
+/// The `Packages` phase's three dispatch tiers, in the order they are released.
+///
+/// Two surfaces read this and they must not disagree: the dispatch order
+/// ([`Phase::dispatch_order`]) partitions the phase by it, and the dispatcher
+/// releases a tier only once the tier above it has *completed*. A partition
+/// that ranked an action differently from the barrier would let a bootstrap run
+/// beside the install it enables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Tier {
+    /// Module-owned package work.
+    Modules,
+    /// Every planned [`crate::providers::PackageAction::Bootstrap`], which is
+    /// exactly the `cfgd:managers` group. Named rather than numbered because it
+    /// sits BETWEEN the other two: a bootstrap must precede every profile-owned
+    /// consumer of the manager it installs, while a module install on an
+    /// unavailable manager bootstraps it inline and so needs no tier.
+    Bootstraps,
+    /// Everything else — in practice the profile's own package work.
+    Rest,
+}
+
+impl Tier {
+    /// The tiers in release order.
+    pub const ALL: [Tier; 3] = [Tier::Modules, Tier::Bootstraps, Tier::Rest];
+
+    /// The ONE tier derivation.
+    ///
+    /// The middle predicate is written as "not module-owned AND a bootstrap"
+    /// rather than just "a bootstrap" so the three arms are a partition by
+    /// construction. Every `Bootstrap` belongs to the `cfgd:managers` group, so
+    /// under that membership rule the two spellings select the same actions —
+    /// but only this one keeps an action from landing in two tiers if that rule
+    /// ever slips.
+    pub fn of(owner: &Owner, action: &Action) -> Self {
+        if owner.kind == OwnerKind::Module {
+            Tier::Modules
+        } else if matches!(
+            action,
+            Action::Package(crate::providers::PackageAction::Bootstrap { .. })
+        ) {
+            Tier::Bootstraps
+        } else {
+            Tier::Rest
+        }
+    }
+
+    /// What a group blocked behind this tier says it is waiting on.
+    ///
+    /// `Rest` is last, so nothing is ever blocked behind it and it can never
+    /// name itself.
+    pub fn wait_word(self) -> Option<&'static str> {
+        match self {
+            Tier::Modules => Some("modules"),
+            Tier::Bootstraps => Some("bootstraps"),
+            Tier::Rest => None,
+        }
     }
 }
 
