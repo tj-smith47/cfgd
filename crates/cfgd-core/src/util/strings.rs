@@ -409,11 +409,15 @@ pub fn powershell_double_quoted(value: &str) -> String {
 /// to stop all expansion — and `%` is a legal NTFS filename character, so a
 /// resolved path such as `deploy%PATH%.cmd` would splice the caller's own
 /// `PATH` into the value if left unescaped. Doubling every `%` to `%%` is the
-/// batch-parser escape for a literal percent, and it applies equally to a
-/// `cmd.exe /C <string>` invocation (the shape this crate always uses), which
-/// parses its argument through the same single-pass batch parser a `.cmd`
-/// file body gets. `"` is not escaped: NTFS forbids the character in a
-/// filename, so a real resolved path can never carry one.
+/// batch-parser escape for a literal percent. Whether `cmd.exe /C <string>`
+/// (the shape this crate always uses) collapses `%%` the way a `.cmd` file
+/// body does is NOT settled here — the two parsers are documented
+/// inconsistently and no host running this code can execute `cmd.exe`. A
+/// resolved path containing a literal `%` therefore has one of two failure
+/// modes on Windows and neither is worse than the unescaped form, which
+/// splices in the variable's value unconditionally. `"` is not escaped: NTFS
+/// forbids the character in a filename, so a real resolved path can never
+/// carry one.
 pub fn cmd_double_quoted(value: &str) -> String {
     format!("\"{}\"", value.replace('%', "%%"))
 }
@@ -547,6 +551,7 @@ mod tests {
         ("arith", "$((1+1))"),
         ("brace_default", "${x:-$(id)}"),
         ("prompt_op", "${x@P}"),
+        ("percent_var", "%PATH%"),
         ("combo", "x$(id)`id`\"'\\"),
     ];
 
