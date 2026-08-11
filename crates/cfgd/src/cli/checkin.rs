@@ -36,6 +36,7 @@ pub fn cmd_checkin(
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         &config_dir,
         &resolved,
+        Some((printer, &cli.config)),
     )?));
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();

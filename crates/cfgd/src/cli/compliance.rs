@@ -38,6 +38,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         &config_dir,
         &resolved,
+        Some((printer, &cli.config)),
     )?));
 
     let profile_name = cli
