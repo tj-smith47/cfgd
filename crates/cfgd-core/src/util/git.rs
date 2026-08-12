@@ -223,6 +223,31 @@ pub fn detect_git_head() -> Option<String> {
     git_output_cwd(&["rev-parse", "HEAD"])
 }
 
+/// Resolve a user-written repository reference into the value git should be
+/// handed: an existing local path wins, and anything else routes through
+/// [`expand_github_shorthand`].
+///
+/// `acme/config` is simultaneously a valid GitHub shorthand and a valid
+/// relative path, and only the filesystem can say which one the user meant.
+/// Every entry point that takes a repository reference from the user resolves
+/// it here, so a value naming something on disk is never silently turned into a
+/// network fetch of a same-named GitHub repository on one surface and left
+/// alone on another.
+///
+/// Presence is judged with `symlink_metadata`, not `Path::exists`: a dangling
+/// symlink is still an entry the user created under that name, and expanding it
+/// to a GitHub URL would answer a local name with a remote repository.
+///
+/// Resolution is idempotent — an expanded URL is neither a path nor a
+/// shorthand — so a caller may resolve a value that has already been resolved.
+pub fn resolve_repo_reference(value: &str) -> std::borrow::Cow<'_, str> {
+    let path = super::paths::expand_tilde(std::path::Path::new(value));
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    expand_github_shorthand(value)
+}
+
 /// Expand a GitHub `owner/repo` shorthand into a full HTTPS clone URL.
 ///
 /// `acme/config` becomes `https://github.com/acme/config.git`. Every other
@@ -232,18 +257,25 @@ pub fn detect_git_head() -> Option<String> {
 /// Pass-through classes:
 /// - explicit schemes: `https://`, `http://`, `ssh://`, `git://`, `file://`
 /// - SCP-style remotes (`git@github.com:acme/config.git`)
-/// - host-shaped values: `gitlab.com/config`, `git.example.com/acme/config`
+/// - dot-carrying hosts: `gitlab.com/config`, `git.example.com/acme/config`
 /// - path-shaped values: `/etc/cfgd`, `./config`, `~/config`, `C:\src\config`
 /// - anything that is not exactly two `/`-separated segments
 ///
-/// The host-shaped test is a dot anywhere in the FIRST segment. GitHub logins
-/// admit only ASCII alphanumerics and hyphens, so an owner can never carry a
-/// dot; a dotted first segment is therefore a hostname, never an owner. That
-/// keeps a self-hosted `gitlab.example.com/acme/config` pointed at its own
-/// server instead of being silently redirected to github.com. Repository names
-/// may contain dots (`acme/acme.github.io`), so the test is confined to the
-/// first segment. A `.git` suffix on the second segment is accepted and not
-/// doubled.
+/// The host test is a dot anywhere in the FIRST segment. GitHub logins admit
+/// only ASCII alphanumerics and hyphens, so an owner can never carry a dot; a
+/// dotted first segment is therefore a hostname, never an owner. That keeps a
+/// self-hosted `gitlab.example.com/acme/config` pointed at its own server
+/// instead of being silently redirected to github.com. Repository names may
+/// contain dots (`acme/acme.github.io`), so the test is confined to the first
+/// segment. A `.git` suffix on the second segment is accepted and not doubled.
+///
+/// A DOTLESS host is indistinguishable from an owner by grammar alone, so
+/// `localhost/config` and `gitserver/config` do expand to github.com. Name such
+/// a host with a scheme (`http://gitserver/config`) to reach it. This function
+/// answers from the string alone; the filesystem question — "does the user
+/// already have something by this name?" — belongs to
+/// [`resolve_repo_reference`], which every user-facing entry point calls
+/// instead of this one.
 pub fn expand_github_shorthand(value: &str) -> std::borrow::Cow<'_, str> {
     match split_github_shorthand(value) {
         Some((owner, repo)) => {
@@ -270,7 +302,10 @@ fn split_github_shorthand(value: &str) -> Option<(&str, &str)> {
         return None;
     }
     let stem = repo.strip_suffix(".git").unwrap_or(repo);
+    // A stem of nothing but dots (`.`, `..`) names a directory relative to the
+    // owner segment, never a repository — `acme/..` is a path, not a shorthand.
     let repo_ok = !stem.is_empty()
+        && stem.chars().any(|c| c != '.')
         && stem
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
@@ -772,6 +807,13 @@ mod tests {
         }
 
         #[test]
+        fn passes_through_dot_only_repo_stems() {
+            for value in ["acme/..", "acme/.", "acme/...", "acme/..git"] {
+                assert_eq!(expand_github_shorthand(value), value, "stem: {value}");
+            }
+        }
+
+        #[test]
         fn passes_through_ref_and_query_suffixes() {
             for value in [
                 "acme/config@v1.2.0",
@@ -793,6 +835,89 @@ mod tests {
         fn pass_through_does_not_allocate() {
             assert!(matches!(
                 expand_github_shorthand("https://github.com/acme/config.git"),
+                std::borrow::Cow::Borrowed(_)
+            ));
+        }
+    }
+
+    mod repo_reference {
+        use super::*;
+        use crate::test_helpers::CwdGuard;
+
+        #[test]
+        #[serial]
+        fn expands_a_shorthand_that_names_nothing_on_disk() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            assert_eq!(
+                resolve_repo_reference("acme/config"),
+                "https://github.com/acme/config.git"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn existing_relative_path_wins_over_shorthand() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            fs::create_dir_all(dir.path().join("acme").join("config")).expect("create nested dir");
+            assert_eq!(
+                resolve_repo_reference("acme/config"),
+                "acme/config",
+                "a relative path that exists must never become a GitHub URL"
+            );
+        }
+
+        #[test]
+        fn existing_absolute_path_wins_over_shorthand() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let nested = dir.path().join("acme").join("config");
+            fs::create_dir_all(&nested).expect("create nested dir");
+            let as_written = nested.to_string_lossy().into_owned();
+            assert_eq!(resolve_repo_reference(&as_written), as_written);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn dangling_symlink_wins_over_shorthand() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            fs::create_dir_all(dir.path().join("acme")).expect("create owner dir");
+            std::os::unix::fs::symlink("nowhere", dir.path().join("acme").join("config"))
+                .expect("plant dangling symlink");
+            assert_eq!(
+                resolve_repo_reference("acme/config"),
+                "acme/config",
+                "a broken link is still an entry the user named; expanding it answers a \
+                 local name with a remote repository"
+            );
+        }
+
+        #[test]
+        fn passes_through_full_urls() {
+            for value in [
+                "https://gitlab.example.com/acme/config.git",
+                "git@github.com:acme/config.git",
+                "gitlab.com/acme/config",
+            ] {
+                assert_eq!(resolve_repo_reference(value), value, "value: {value}");
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn resolution_is_idempotent() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            let once = resolve_repo_reference("acme/config").into_owned();
+            assert_eq!(resolve_repo_reference(&once), once);
+        }
+
+        #[test]
+        fn pass_through_does_not_allocate() {
+            assert!(matches!(
+                resolve_repo_reference("https://github.com/acme/config.git"),
                 std::borrow::Cow::Borrowed(_)
             ));
         }

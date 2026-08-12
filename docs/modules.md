@@ -460,8 +460,13 @@ cfgd module registry add https://gitlab.example.com/myorg/modules.git --name myo
 cfgd module registry add git@git.example.com:myorg/modules.git --name myorg
 ```
 
-A value whose first segment looks like a hostname (`gitlab.example.com/myorg/modules`)
-is a URL for that host, not a GitHub owner, so it is passed through untouched.
+A value whose first segment carries a dot (`gitlab.example.com/myorg/modules`) is a URL
+for that host, not a GitHub owner, so it is passed through untouched; a dotless host
+(`gitserver/modules`) cannot be told from an owner by the value alone, so name it with a
+scheme (`http://gitserver/modules --name myorg`). An existing local path also wins over
+the shorthand: run inside a directory holding `myorg/modules` and `cfgd module registry
+add myorg/modules --name myorg` registers that local repository rather than a same-named
+GitHub one (only a GitHub URL can supply a default name, so `--name` is required).
 
 ### Registry Tag Convention
 

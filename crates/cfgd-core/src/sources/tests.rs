@@ -797,6 +797,41 @@ fn load_source_rejects_dash_leading_url() {
 }
 
 #[test]
+#[serial]
+fn load_source_names_a_dash_leading_url_as_injection_even_where_local_origins_are_allowed() {
+    use crate::test_helpers::with_test_env_var;
+    // A dash-leading origin carries no scheme and no `host:`, so the
+    // local-origin guard would happily claim it — and answer an injection
+    // attempt with "that is a local path". The dash check runs first, and it
+    // runs whether or not local origins are permitted.
+    for allow in [Some("1"), None] {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", allow, || {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(dir.path());
+            let printer = test_printer();
+            let spec = crate::config::SourceSpec {
+                name: "evil".into(),
+                origin: crate::config::OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: "--upload-pack=touch /tmp/pwned".into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                },
+                subscription: Default::default(),
+                sync: Default::default(),
+            };
+            let err = mgr.load_source(&spec, &printer).unwrap_err().to_string();
+            assert!(
+                err.contains("must not begin with '-'"),
+                "CFGD_ALLOW_LOCAL_SOURCES={allow:?} must not reclassify an injected git \
+                 option as a local path, got: {err}"
+            );
+        });
+    }
+}
+
+#[test]
 fn remove_source_success() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
@@ -3212,6 +3247,74 @@ fn load_source_rejects_absolute_path_origin_without_allow_env() {
             "rejection must mention absolute paths: {msg}"
         );
     });
+}
+
+#[test]
+#[serial]
+fn load_source_rejects_relative_path_origin_without_allow_env() {
+    use crate::test_helpers::with_test_env_var;
+    // A relative origin is cloned from the process working directory just as
+    // readily as an absolute one, so the guard has to reject both or it names a
+    // rule it does not enforce.
+    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+        for url in ["acme/config", "./config", "../config", r"C:\src\config"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(&tmp.path().join("cache"));
+            let printer = test_printer();
+            let spec = crate::config::SourceSpec {
+                name: "relative".into(),
+                origin: crate::config::OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: url.into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                },
+                subscription: Default::default(),
+                sync: Default::default(),
+            };
+            let err = mgr.load_source(&spec, &printer).unwrap_err().to_string();
+            assert!(
+                err.contains("local path"),
+                "'{url}' must be rejected as a local origin, got: {err}"
+            );
+        }
+    });
+}
+
+#[test]
+fn remote_origin_urls_are_told_from_local_ones() {
+    for remote in [
+        "https://github.com/acme/config.git",
+        "http://internal/acme/config",
+        "ssh://git@github.com/acme/config.git",
+        "git://github.com/acme/config",
+        "git@github.com:acme/config.git",
+        "deploy@10.0.0.5:srv/config.git",
+        "gitserver:acme/config",
+    ] {
+        assert!(
+            super::is_remote_origin_url(remote),
+            "must stay a remote origin: {remote}"
+        );
+    }
+    for local in [
+        "file:///srv/git/config.git",
+        "FILE:///srv/git/config.git",
+        "/srv/git/config.git",
+        "acme/config",
+        "./config",
+        "../config",
+        "config",
+        r"C:\src\config",
+        "C:/src/config",
+        r"\\server\share\config",
+    ] {
+        assert!(
+            !super::is_remote_origin_url(local),
+            "must be judged a local origin: {local}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -521,65 +521,56 @@ fn is_clonable_source_rejects_plain_paths() {
     assert!(!is_clonable_source("config"));
 }
 
-// ─── resolve_from_value — GitHub shorthand vs existing path ────────────────
+// ─── --from resolution — GitHub shorthand vs existing path ─────────────────
 
 #[test]
-fn resolve_from_value_expands_github_shorthand() {
-    assert_eq!(
-        resolve_from_value("acme/machine-config"),
-        "https://github.com/acme/machine-config.git"
-    );
-}
-
-#[test]
-fn resolve_from_value_expanded_shorthand_is_clonable() {
-    assert!(is_clonable_source(&resolve_from_value("acme/config")));
-}
-
-#[test]
-fn resolve_from_value_passes_through_full_urls() {
-    for value in [
-        "https://gitlab.example.com/acme/config.git",
-        "git@github.com:acme/config.git",
-        "ssh://git@git.example.com/acme/config.git",
-        "gitlab.com/acme/config",
-    ] {
-        assert_eq!(resolve_from_value(value), value, "value: {value}");
+#[serial_test::serial]
+fn is_clonable_source_classifies_file_urls_without_reading_the_env_gate() {
+    // `is_git_source` gates `file://` behind CFGD_ALLOW_LOCAL_SOURCES, which any
+    // other test in this binary may have set. `--from` must classify the same way
+    // either way, or the answer depends on unrelated tests.
+    for allow in [Some("1"), None] {
+        let _guard = match allow {
+            Some(v) => cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", v),
+            None => cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES"),
+        };
+        assert!(
+            is_clonable_source("file:///srv/git/config"),
+            "file:// must be clonable with CFGD_ALLOW_LOCAL_SOURCES={allow:?}"
+        );
     }
 }
 
 #[test]
-fn resolve_from_value_existing_path_wins_over_shorthand() {
+fn expanded_shorthand_is_a_clonable_source() {
+    // The two halves have to agree: a resolved shorthand is what `resolve_from`
+    // then hands to `is_clonable_source`, and a URL it refused would be treated
+    // as a local path that does not exist.
+    assert!(is_clonable_source(&cfgd_core::resolve_repo_reference(
+        "acme/config"
+    )));
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_from_keeps_an_existing_relative_config_dir_as_a_path() {
     let dir = tempfile::tempdir().unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
     let nested = dir.path().join("acme").join("config");
     std::fs::create_dir_all(&nested).unwrap();
-    let as_written = nested.display().to_string();
-    assert_eq!(
-        resolve_from_value(&as_written),
-        as_written,
-        "an existing path must never be expanded into a GitHub URL"
-    );
-}
+    std::fs::write(
+        nested.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n",
+    )
+    .unwrap();
 
-#[test]
-fn resolve_from_value_existing_relative_path_wins_over_shorthand() {
-    let dir = tempfile::tempdir().unwrap();
-    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
-    std::fs::create_dir_all(dir.path().join("acme").join("config")).unwrap();
+    let printer = quiet_printer();
+    let resolved = resolve_from("acme/config", None, "master", &printer)
+        .expect("an existing relative config dir resolves to itself");
     assert_eq!(
-        resolve_from_value("acme/config"),
-        "acme/config",
-        "a relative path that exists must stay a path"
-    );
-}
-
-#[test]
-fn resolve_from_value_expands_when_no_such_path_exists() {
-    let dir = tempfile::tempdir().unwrap();
-    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
-    assert_eq!(
-        resolve_from_value("acme/config"),
-        "https://github.com/acme/config.git"
+        resolved,
+        Path::new("acme/config"),
+        "a relative path that exists must be used as-is, never cloned from GitHub"
     );
 }
 

@@ -216,10 +216,9 @@ cfgd source add git@github.com:acme-corp/dev-config.git
 
 ### Naming a Source
 
-`cfgd source add` (and `cfgd source replace`) takes any git URL, a local path, or the
-GitHub shorthand `owner/repo`. All are equally supported — the shorthand is a
-convenience for GitHub, never a requirement, and every other value reaches git exactly
-as you wrote it:
+`cfgd source add` (and `cfgd source replace`) takes any git URL or the GitHub shorthand
+`owner/repo`. Both are equally supported — the shorthand is a convenience for GitHub,
+never a requirement, and every other value reaches git exactly as you wrote it:
 
 ```sh
 # GitHub shorthand — expands to https://github.com/acme-corp/dev-config.git
@@ -230,15 +229,23 @@ cfgd source add https://github.com/acme-corp/dev-config.git
 cfgd source add https://gitlab.example.com/acme-corp/dev-config.git
 cfgd source add git@git.example.com:acme-corp/dev-config.git
 cfgd source add ssh://git@codeberg.org/acme-corp/dev-config.git
-
-# A local path
-cfgd source add /path/to/dev-config
 ```
 
-Only a bare `owner/repo` is expanded. A value whose first segment looks like a hostname
-(`gitlab.example.com/acme-corp/dev-config`) is a URL for that host, not a GitHub owner,
-so it is passed through untouched. The source name cfgd infers is the same either way
-(`dev-config`), so a shorthand and its full URL always name one subscription.
+Only a bare `owner/repo` is expanded, and an existing local path wins over the shorthand:
+run inside a directory that holds `acme-corp/dev-config` and that is what the value means
+(it is then refused as an origin — see below — rather than quietly subscribing you to a
+stranger's GitHub repository of the same name). A value whose first segment carries a dot
+(`gitlab.example.com/acme-corp/dev-config`) is a URL for that host, not a GitHub owner, so
+it is passed through untouched; a dotless host (`gitserver/dev-config`) is indistinguishable
+from an owner by the value alone, so name it with a scheme (`http://gitserver/dev-config`).
+The source name cfgd infers is the same either way (`dev-config`), so a shorthand and its
+full URL always name one subscription.
+
+A source origin must be a **remote**. Local paths — absolute, relative and `file://` alike
+— are refused: a source delivers files, packages and scripts to this machine, so its origin
+has to be something a subscriber can fetch, pin and verify, not a directory anything on the
+host can rewrite. See [testing a source locally](#testing-a-source-locally) for the
+development workflow.
 
 Manage existing subscriptions:
 
@@ -716,13 +723,7 @@ my-team-config/
         └── module.yaml
 ```
 
-4. Test locally before publishing:
-
-```sh
-# In another directory, subscribe to the local path
-cfgd source add /path/to/my-team-config
-cfgd plan    # verify the composed result
-```
+4. Test locally before publishing — see [testing a source locally](#testing-a-source-locally).
 
 5. Push to a git remote. Team members subscribe with:
 
@@ -733,6 +734,25 @@ cfgd source add https://gitlab.example.com/my-team/dev-config.git
 ```
 
 Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Subscribers with semver-range `pinVersion` values resolve against your tags and will only check out tags within their pinned range. (`metadata.version` in `cfgd-source.yaml` is informational; pinning is enforced against signed git refs, not that field.)
+
+### Testing a source locally
+
+A source origin must be a remote, so a path on your own machine is refused by default.
+The safest way to rehearse a source is to push it to a scratch branch or a private
+repository and subscribe to that — the composition you test is then the one subscribers
+will get, fetched the same way.
+
+When you need to iterate without pushing, `CFGD_ALLOW_LOCAL_SOURCES=1` lifts the
+local-origin guard for the invocation. It is a development switch, not a supported
+deployment shape: a local origin cannot be pinned to a tag, verified by signature, or
+fetched by anyone else, and every constraint a source's manifest declares is only as
+trustworthy as the directory it is read from.
+
+```sh
+# In another directory, subscribe to the working tree, then compose it
+CFGD_ALLOW_LOCAL_SOURCES=1 cfgd source add /path/to/my-team-config
+CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
+```
 
 ## Security Model
 

@@ -73,15 +73,20 @@ cfgd init --from <source> --apply --yes --install-daemon  # full one-liner boots
 ```
 
 `--from` accepts any git URL, a local path, or the GitHub shorthand `owner/repo` —
-all equally supported. Only a bare `owner/repo` is expanded; a value whose first
-segment looks like a hostname (`gitlab.example.com/you/config`) is a URL for that
-host and is passed through untouched, and an existing path always wins over the
-shorthand. The same rule applies to `cfgd apply --from` and `cfgd plan --from`.
+all equally supported. Only a bare `owner/repo` is expanded, and an existing path
+always wins over the shorthand: run inside a directory that holds `you/config`,
+`--from you/config` means that directory. A first segment carrying a dot
+(`gitlab.example.com/you/config`) is a URL for that host and is passed through
+untouched; a dotless first segment cannot be told from a GitHub owner by the
+value alone, so name a host like `gitserver` with a scheme
+(`http://gitserver/config`). The same rule applies everywhere cfgd takes a
+repository reference — `cfgd apply --from`, `cfgd plan --from`,
+`cfgd source add`, `cfgd source replace` and `cfgd module registry add`.
 
 | Flag | Description |
 |---|---|
 | `[path]` | Target directory (default: current directory) |
-| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to existing config |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
@@ -119,6 +124,7 @@ cfgd apply --skip-scripts           # apply without running any hooks
 
 | Flag | Description |
 |---|---|
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
 | `--phase <name>` | Apply only a specific phase |
 | `--yes`, `-y` | Skip confirmation prompt |
@@ -150,6 +156,7 @@ cfgd plan -o json                       # structured plan output
 
 | Flag | Description |
 |---|---|
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--phase <name>` | Show only a specific phase |
 | `--module <name>` | Plan only this module and its dependencies |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
@@ -865,15 +872,22 @@ cfgd source add git@github.com:acme/dev-config.git \
   --sync-interval 1h
 ```
 
-The URL may be any git URL, a local path, or the GitHub shorthand `owner/repo` —
-all equally supported:
+The URL may be any git URL or the GitHub shorthand `owner/repo` — both equally
+supported:
 
 ```sh
 cfgd source add acme/dev-config                              # GitHub shorthand
 cfgd source add https://github.com/acme/dev-config.git
 cfgd source add https://gitlab.example.com/acme/dev-config.git
-cfgd source add /path/to/dev-config
 ```
+
+A source origin must be a remote. A local path — absolute, relative or
+`file://` — is refused, because a source delivers files, packages and scripts
+to this machine and its origin has to be something a subscriber can fetch, pin
+and verify rather than a directory anything on the host can rewrite. An
+existing local path is never silently expanded into a GitHub URL either: it is
+reported as the local path it is. To try a source out before publishing it, see
+[testing a source locally](sources.md#testing-a-source-locally).
 
 ### `cfgd source list`
 

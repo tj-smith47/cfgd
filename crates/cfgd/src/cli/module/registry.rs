@@ -726,10 +726,12 @@ pub fn cmd_module_registry_add(
 ) -> anyhow::Result<()> {
     printer.heading("Add Module Registry");
 
-    // Expand a GitHub `owner/repo` shorthand before the name is derived and
-    // before the URL is persisted, so `extract_registry_name` sees the same
-    // string a later fetch will clone. Any other shape passes through.
-    let url = &*cfgd_core::expand_github_shorthand(url);
+    // Resolve the reference before the name is derived and before the URL is
+    // persisted, so `extract_registry_name` sees the same string a later fetch
+    // will clone. An existing local path stays itself rather than becoming a
+    // same-named GitHub repository; a GitHub `owner/repo` shorthand expands;
+    // any other shape passes through.
+    let url = &*cfgd_core::resolve_repo_reference(url);
 
     let registry_name = match name {
         Some(n) => n.to_string(),

@@ -4,7 +4,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
-use super::source::{clone_into, is_clonable_source, resolve_from, resolve_from_value};
+use super::source::{clone_into, is_clonable_source, resolve_from};
 use super::*;
 
 // ─────────────────────────────────────────────────────
@@ -55,7 +55,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The `--from` value is resolved ONCE here — an existing path stays a path,
     // a GitHub `owner/repo` shorthand becomes a clone URL — so the clone below
     // and the classification further down judge the same string.
-    let from = args.from.map(resolve_from_value);
+    let from = args
+        .from
+        .map(|f| cfgd_core::resolve_repo_reference(f).into_owned());
     let from_used = from.is_some();
     let target_dir = if let Some(from) = from.as_deref() {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));

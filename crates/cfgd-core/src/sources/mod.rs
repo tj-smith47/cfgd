@@ -28,6 +28,40 @@ use crate::output::{Printer, Role};
 pub(crate) const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";
 
+/// Whether git would treat this origin URL as a remote rather than a path on
+/// this machine. Applies git's own rule: a `scheme://` URL is remote, and so is
+/// the scp-style `[user@]host:path` form — recognised, as git recognises it, by
+/// a colon appearing before the first slash. Everything else (absolute,
+/// relative, UNC and drive-letter paths) is a location on this host.
+///
+/// Deliberately NOT [`crate::modules::is_git_source`], which is a strict
+/// scheme-and-`git@` allow-list: it answers "is this a git URL" for module file
+/// sources, where a bare `files/nvim` must stay a path, and rejects the legal
+/// `deploy@host:acme/config.git` remote that a source origin may name. This
+/// predicate answers the narrower question the source-origin guard asks — "does
+/// resolving this reach the network or the local filesystem" — so widening
+/// either one to serve the other would break the caller it was not written for.
+fn is_remote_origin_url(url: &str) -> bool {
+    let url = url.trim();
+    if url.to_lowercase().starts_with("file://") {
+        return false;
+    }
+    if url.contains("://") {
+        return true;
+    }
+    match url.split_once(':') {
+        Some((host, _)) => {
+            // A one-letter "host" is a Windows drive letter (`C:/repo`), which
+            // git resolves as a path on the host it runs on.
+            !host.is_empty()
+                && !host.contains('/')
+                && !host.contains('\\')
+                && !(host.len() == 1 && host.starts_with(|c: char| c.is_ascii_alphabetic()))
+        }
+        None => false,
+    }
+}
+
 /// Cached state for a single config source.
 #[derive(Debug, Clone)]
 pub struct CachedSource {
@@ -186,27 +220,40 @@ impl SourceManager {
     pub fn load_source(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         validate_source_name(&spec.name)?;
 
-        // Reject local file URLs to prevent local filesystem access from composed sources.
-        // CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test environments only.
-        let url_lower = spec.origin.url.to_lowercase();
-        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
-        if !allow_local && (url_lower.starts_with("file://") || url_lower.starts_with('/')) {
-            return Err(SourceError::GitError {
-                name: spec.name.clone(),
-                message: "local file:// URLs and absolute paths are not allowed as source origins"
-                    .to_string(),
-            }
-            .into());
-        }
-
         // A URL beginning with '-' would be parsed by git as an option rather
         // than the positional remote (clone/ls-remote take the URL positionally).
         // Reject it; the trailing positionals are additionally guarded with
-        // --end-of-options as defense in depth.
+        // --end-of-options as defense in depth. Judged BEFORE the local-origin
+        // check below and independently of CFGD_ALLOW_LOCAL_SOURCES, because an
+        // injected git option is an attack whatever the origin resolves to, and
+        // naming it a "local path" would describe the wrong defect.
         if spec.origin.url.trim_start().starts_with('-') {
             return Err(SourceError::GitError {
                 name: spec.name.clone(),
                 message: "source origin URL must not begin with '-'".to_string(),
+            }
+            .into());
+        }
+
+        // Reject local file URLs and filesystem paths to prevent local filesystem
+        // access from composed sources. A source delivers files, packages and
+        // scripts to the machine, so its origin has to be a remote a subscriber
+        // can verify and pin — not a directory whose contents anything on the
+        // host can rewrite. The check is on what GIT would treat as local rather
+        // than on a leading `/`: a bare `acme/config` or `../config` is a
+        // relative path git clones from the current directory just as readily as
+        // an absolute one, so accepting those left the guard naming a rule it did
+        // not enforce. CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test
+        // environments only.
+        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
+        if !allow_local && !is_remote_origin_url(&spec.origin.url) {
+            return Err(SourceError::GitError {
+                name: spec.name.clone(),
+                message: format!(
+                    "'{}' is a local path or file:// URL, which is not allowed as a source \
+                     origin — pass a git URL (e.g. https://github.com/acme/config.git)",
+                    spec.origin.url
+                ),
             }
             .into());
         }

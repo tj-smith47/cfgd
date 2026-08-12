@@ -7,4 +7,4 @@ Local repo
 
 Sources
   source:missing-team
-    ✗ sync failed — source error: git error for source 'missing-team': local file:// URLs and absolute paths are not allowed as source origins
+    ✗ sync failed — source error: git error for source 'missing-team': 'file:///nonexistent/path/that/does/not/exist.git' is a local path or file:// URL, which is not allowed as a source origin — pass a git URL (e.g. https://github.com/acme/config.git)

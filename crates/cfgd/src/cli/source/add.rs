@@ -3,11 +3,13 @@ use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::reconciler::Owner;
 
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
-    // Expand a GitHub `owner/repo` shorthand before anything reads the URL, so
-    // the inferred name, the clone, and the persisted `spec.sources[].origin`
-    // all carry the same clonable URL. Any other shape passes through.
-    let expanded_url = cfgd_core::expand_github_shorthand(&args.url).into_owned();
-    let url = &expanded_url;
+    // Resolve the reference before anything reads the URL, so the inferred name,
+    // the clone, and the persisted `spec.sources[].origin` all carry one string.
+    // An existing local path stays itself (and is then refused by `load_source`
+    // as a source origin, which is a truthful answer to what the user named);
+    // a GitHub `owner/repo` shorthand expands; any other shape passes through.
+    let resolved_url = cfgd_core::resolve_repo_reference(&args.url);
+    let url = &*resolved_url;
     let name = args.name.as_deref();
     let branch = args.branch.as_deref();
     let profile = args.profile.as_deref();
@@ -276,7 +278,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     if let Some(ref commit) = cached.last_commit {
         let lock_entry = cfgd_core::config::SourceLockEntry {
             name: source_name.clone(),
-            url: url.clone(),
+            url: url.to_string(),
             pin_version: pin_version.map(|s| s.to_string()),
             resolved_ref: cached.resolved_ref.clone(),
             resolved_commit: commit.clone(),
@@ -452,8 +454,11 @@ mod tests {
     #[test]
     fn add_names_a_github_shorthand_the_same_as_its_full_url() {
         // `cfgd source add acme/dev` and `cfgd source add https://github.com/acme/dev`
-        // must land on one source, so the shorthand has to reach the duplicate
-        // check already expanded and infer the same name.
+        // must land on ONE subscription, which is a claim about the inferred
+        // name only: `infer_source_name` reads the last path segment, so it
+        // answers `dev` either way and this test would pass with no expansion
+        // at all. What the expansion itself does to the URL is pinned by
+        // `add_hands_the_expanded_shorthand_to_the_source_load` below.
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("cfgd.yaml");
         std::fs::write(
@@ -474,6 +479,85 @@ mod tests {
             "expected already_exists, got: {meta:?}"
         );
         assert_eq!(meta.name, "dev");
+    }
+
+    /// A `cli` whose source cache cannot be created, so `load_source` fails at
+    /// its first filesystem step — before any clone, and with no network. That
+    /// is the earliest point at which the URL the command resolved becomes
+    /// observable: it is carried verbatim in the `load_failed` payload.
+    fn cli_with_unusable_cache(dir: &std::path::Path, config: PathBuf) -> Cli {
+        std::fs::write(dir.join("blocker"), "not a directory").expect("write blocker file");
+        let mut cli = cli_for(config);
+        cli.cache_dir = Some(dir.join("blocker").join("cache"));
+        cli
+    }
+
+    fn load_failed_url(err: &anyhow::Error) -> String {
+        let meta = meta_of(err);
+        assert_eq!(
+            meta.error_kind, "load_failed",
+            "expected the load to fail offline, got: {meta:?}"
+        );
+        meta.extras
+            .get("url")
+            .and_then(|v| v.as_str())
+            .expect("load_failed payload carries the resolved url")
+            .to_string()
+    }
+
+    #[test]
+    fn add_hands_the_expanded_shorthand_to_the_source_load() {
+        // The shorthand has to be expanded before `build_source_spec`, or the
+        // subscription is recorded against a string git cannot clone. The
+        // `load_failed` payload reports the URL that reached the load, so
+        // dropping the expansion flips this assertion.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_unusable_cache(dir.path(), dir.path().join("cfgd.yaml"));
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let mut args = base_args("acme/dev");
+        args.name = Some("shorthand".into());
+
+        let err = cmd_source_add(&cli, &printer, &args)
+            .expect_err("an uncreatable source cache fails the load before any clone");
+        drop(printer);
+
+        assert_eq!(
+            load_failed_url(&err),
+            "https://github.com/acme/dev.git",
+            "the shorthand must reach the source load already expanded"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn add_keeps_an_existing_relative_path_out_of_github() {
+        // The same value, with a directory of that name on disk: it means the
+        // directory, and `source add` says so instead of silently subscribing
+        // to a stranger's github.com/acme/dev.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+        std::fs::create_dir_all(dir.path().join("acme").join("dev")).expect("create local repo");
+        let cli = cli_with_unusable_cache(dir.path(), dir.path().join("cfgd.yaml"));
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let mut args = base_args("acme/dev");
+        args.name = Some("local".into());
+
+        let err = cmd_source_add(&cli, &printer, &args)
+            .expect_err("a local path is not a valid source origin");
+        drop(printer);
+
+        assert_eq!(
+            load_failed_url(&err),
+            "acme/dev",
+            "an existing relative path must never be expanded into a GitHub URL"
+        );
+        assert!(
+            meta_of(&err).message.contains("local path"),
+            "the failure must name what the user actually pointed at, got: {}",
+            meta_of(&err).message
+        );
     }
 
     #[test]

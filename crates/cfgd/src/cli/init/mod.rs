@@ -30,4 +30,4 @@ use enroll::{
     sign_with_gpg, sign_with_ssh,
 };
 #[cfg(test)]
-use source::{clone_into, is_clonable_source, resolve_from_value};
+use source::{clone_into, is_clonable_source};

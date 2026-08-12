@@ -28,11 +28,13 @@ cfgd init --from ssh://git@codeberg.org/you/machine-config.git
 cfgd init --from ~/existing/machine-config
 ```
 
-Only a bare `owner/repo` is expanded. A value whose first segment looks like a
-hostname (`gitlab.example.com/you/config`) is a URL for that host, not a GitHub
-owner, so it is left alone. An existing path always wins: if `you/machine-config`
-names a directory that exists relative to your current directory, cfgd uses that
-directory instead of going to GitHub.
+Only a bare `owner/repo` is expanded. A value whose first segment carries a dot
+(`gitlab.example.com/you/config`) is a URL for that host, not a GitHub owner, so
+it is left alone; a dotless host (`gitserver/config`) cannot be told from an
+owner by the value alone, so name it with a scheme (`http://gitserver/config`).
+An existing path always wins: if `you/machine-config` names a directory that
+exists relative to your current directory, cfgd uses that directory instead of
+going to GitHub.
 
 The flow:
 
