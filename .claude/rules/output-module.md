@@ -98,9 +98,9 @@ Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in
 `.claude/rules/structured-output-coverage.md`; `.claude/scripts/audit.sh`
 fails when one is missing.
 
-## No `tracing::warn!`/`tracing::error!` for a user-facing advisory in a parse/load function
+## No `tracing::warn!`/`tracing::error!` in the config/module/source domains
 
-Banned inside any `fn parse_*` / `fn load_*` under `crates/cfgd-core/src/config/`,
+Banned anywhere under `crates/cfgd-core/src/config/`,
 `crates/cfgd-core/src/modules/`, or `crates/cfgd-core/src/sources/` — the three
 domains whose whole job is turning user-authored YAML/TOML into cfgd's typed
 config. `tracing::warn!`/`tracing::error!` writes to a channel that's invisible
@@ -117,14 +117,31 @@ functions have many callers, none of which hold a `Printer`. `parse_config`'s
 `crates/cfgd/src/cli/helpers.rs`) is the working example to extend, not to
 reinvent per call site.
 
-`.claude/scripts/audit.sh` enforces this anchored on the PARSE/LOAD FUNCTION
-SIGNATURE, not on a file path or line range — a brace-depth walk finds the span
-of every `parse_*`/`load_*` function and scans only inside it, so the gate
-survives the function moving to a different file within those three domains.
+`.claude/scripts/audit.sh` enforces this on the DOMAIN — every non-test `.rs`
+under those three directories — rather than on a function-name shape. An earlier
+revision anchored on a `fn parse_*` / `fn load_*` signature and walked the
+function's brace span; it selected the wrong set, because `warn_on_legacy_theme_keys`
+is named neither, and neither is any advisory helper a parse function calls
+(`check_yaml_anchor_limit`, `read_manifest`, `validate_source_name`, …). The
+domain anchor covers all of them and needs no span walk, so no string literal or
+body-less trait signature can end a scan early.
+
 Escape hatch for a genuinely internal diagnostic (one no interactive user is
 meant to read) — mirrors `native-ok:` / `spawn-blocking-ok:` — mark the call
-line or the line directly above it:
+line or the comment line directly above it:
 
 ```rust
 tracing::warn!("cache miss for {}", key); // tracing-ok: internal cache-timing diagnostic, not user-facing
 ```
+
+The marker counts only inside a comment, only with a reason written after it,
+and is inherited only from a comment line — a call cannot exempt itself by
+naming the hatch in its own message string, and a marked call does not exempt
+the unmarked call beneath it.
+
+**What disqualifies a message from the hatch**, whatever the marker says: a
+message describing the user's own config, a key they wrote, a migration they
+have to perform, or anything that changes what they should do next is
+user-facing. "Internal" means a diagnostic whose entire audience is someone
+already reading `RUST_LOG` output — cache timings, retry counts, protocol
+traces.

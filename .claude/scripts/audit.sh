@@ -26,21 +26,180 @@ log_warn()    { _yellow; printf "WARN";  _reset; printf ":  %s\n" "$1"; WARNINGS
 log_ok()      { _green;  printf "OK";    _reset; printf ":    %s\n" "$1"; }
 log_section() { printf "\n--- %s ---\n" "$1"; }
 
+# --- Shared awk library ---
+# Prepend to any awk program that counts braces or honours an `<x>-ok:` marker,
+# so every gate answers "is this code?" and "is this exempt?" the same way. A
+# brace inside a string literal, a `'{'` char literal or a `//` comment is not
+# code structure: counted raw, one `let closer = "}";` ends a span early and
+# everything after it stops being scanned. A marker inside a message string is
+# not an annotation either — that would let a call exempt itself by naming the
+# escape hatch in its own text.
+AWK_LIB='
+BEGIN { RAW_HASHES = -1; IN_STR = 0 }
+function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
+# The code half of one line, with every literal and comment removed, plus the
+# comment half in LAST_COMMENT. Raw-string state carries across calls, so a
+# caller must invoke this exactly ONCE per line and feed the lines of a file in
+# order — twice on one line double-advances the state machine.
+function code_only(line,   q, out, i, j, n, c, h, closer, p) {
+    LAST_COMMENT = ""
+    # Fast path: nothing on this line can open a literal or a comment.
+    if (RAW_HASHES < 0 && !IN_STR && line !~ /["\047\/]/) return line
+    q = sprintf("%c", 39)
+    out = ""
+    i = 1
+    n = length(line)
+    while (i <= n) {
+        # A plain Rust string literal spans lines freely (with or without a
+        # trailing backslash), so an unterminated one carries its state to the
+        # next line. Read as code, its continuation lines pair the wrong quotes
+        # and a `layer";` tail parses as an `r"` raw-string opener that then
+        # swallows the rest of the file.
+        if (IN_STR) {
+            while (i <= n) {
+                c = substr(line, i, 1)
+                if (c == "\\") { i += 2; continue }
+                i++
+                if (c == "\"") { IN_STR = 0; break }
+            }
+            if (IN_STR) return out
+            continue
+        }
+        if (RAW_HASHES >= 0) {
+            closer = "\"" hashes_str(RAW_HASHES)
+            p = index(substr(line, i), closer)
+            if (p == 0) return out
+            i += p - 1 + length(closer)
+            RAW_HASHES = -1
+            continue
+        }
+        c = substr(line, i, 1)
+        if (c == "/") {
+            if (substr(line, i + 1, 1) == "/") { LAST_COMMENT = substr(line, i); return out }
+            out = out c
+            i++
+            continue
+        }
+        if (c == "r" || c == "b") {
+            h = raw_open_hashes(line, i)
+            if (h >= 0) {
+                j = i + RAW_OPEN_LEN
+                closer = "\"" hashes_str(h)
+                p = index(substr(line, j), closer)
+                if (p == 0) { RAW_HASHES = h; return out }
+                i = j + p - 1 + length(closer)
+                continue
+            }
+            out = out c
+            i++
+            continue
+        }
+        if (c == q) {
+            # A char literal is two or three characters inside the quotes;
+            # anything else opening with a quote is a lifetime, which is code.
+            if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == q) { i += 4; continue }
+            if (substr(line, i + 2, 1) == q) { i += 3; continue }
+            out = out q
+            i++
+            continue
+        }
+        if (c == "\"") {
+            j = i + 1
+            while (j <= n) {
+                c = substr(line, j, 1)
+                if (c == "\\") { j += 2; continue }
+                if (c == "\"") break
+                j++
+            }
+            if (j > n) { IN_STR = 1; return out }
+            i = j + 1
+            continue
+        }
+        out = out c
+        i++
+    }
+    return out
+}
+# Hash count of a raw-string opener (`r"`, `r#"`, `br##"`, …) starting at `i`,
+# or -1 when this is an ordinary identifier. Sets RAW_OPEN_LEN to the length of
+# the opener.
+function raw_open_hashes(line, i,   j, h) {
+    j = i
+    if (substr(line, j, 1) == "b") j++
+    if (substr(line, j, 1) != "r") return -1
+    j++
+    h = 0
+    while (substr(line, j, 1) == "#") { h++; j++ }
+    if (substr(line, j, 1) != "\"") return -1
+    RAW_OPEN_LEN = j - i + 1
+    return h
+}
+function is_comment_line(line) {
+    return (line ~ /^[^:]*:[0-9]+:[[:space:]]*\/\//)
+}
+# A marker counts only inside a comment and only with a reason after it, so a
+# call cannot exempt itself by naming the escape hatch in its own message.
+function carries_marker(comment, marker) {
+    return (comment ~ (marker "[[:space:]]*[^[:space:]]"))
+}
+# The line above only lends its marker when it IS a comment line: a previous
+# CALL carrying its own marker used to exempt the unmarked call beneath it.
+function marker_applies(comment, prev_line, prev_comment, marker) {
+    if (carries_marker(comment, marker)) return 1
+    if (is_comment_line(prev_line) && carries_marker(prev_comment, marker)) return 1
+    return 0
+}
+'
+
+# --- Fail loudly when a hard-coded scan directory no longer exists ---
+# A gate whose scope directory was renamed finds nothing and prints OK forever,
+# which is the one failure mode signature/domain anchoring exists to avoid.
+require_dirs() {
+    local label="$1"
+    shift
+    local missing=() d
+    for d in "$@"; do
+        [[ -d "$d" ]] || missing+=("$d")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "$label: scan directory missing — this gate is scanning nothing (rename it here too): ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
+require_dirs "workspace source scan" "${SRC_ROOTS[@]}" || true
+
 # --- Strip test blocks from a file and output non-test lines ---
+# Every gate below re-strips the same files, and the strip now parses literals
+# character by character, so the result is cached per file for the run.
+STRIP_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cfgd-audit.XXXXXX")"
+trap 'rm -rf "$STRIP_CACHE_DIR"' EXIT
+
 strip_test_blocks_from_file() {
     local filepath="$1"
-    awk -v filepath="$filepath" '
+    local cached="$STRIP_CACHE_DIR/${filepath//\//__}"
+    if [[ -f "$cached" ]]; then
+        cat "$cached"
+        return 0
+    fi
+    _strip_test_blocks_uncached "$filepath" | tee "$cached"
+}
+
+_strip_test_blocks_uncached() {
+    local filepath="$1"
+    awk -v filepath="$filepath" "$AWK_LIB"'
     BEGIN { in_test = 0; test_depth = 0 }
+    { code = code_only($0) }
     /^[[:space:]]*#\[cfg\(test\)\]/ {
         in_test = 1
         test_depth = 0
         next
     }
     in_test {
-        opens = gsub(/{/, "{")
-        test_depth += opens
-        closes = gsub(/}/, "}")
-        test_depth -= closes
+        opens = gsub(/{/, "{", code)
+        closes = gsub(/}/, "}", code)
+        test_depth += opens - closes
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
@@ -152,49 +311,45 @@ check_pattern error \
     'use (console|indicatif|syntect)::' \
     'output/'
 
-log_section "User-Facing Advisories (config/module/source parse+load paths)"
+log_section "User-Facing Advisories (config/module/source domains)"
 # tracing::warn!/error! is invisible without RUST_LOG — an advisory routed
 # there is one the user never sees. This is what happened to
 # warn_on_legacy_theme_keys before it was rerouted through
 # CfgdConfig.deprecations + printer.deprecation() (see output-module.md).
 #
-# Anchored on the PARSE/LOAD FUNCTION SIGNATURE (`fn (parse|load)_<name>(`),
-# not on a file path or line range: brace-depth walking (same trick as
-# strip_test_blocks_from_file) finds the span of every function whose name
-# starts with parse_ or load_ and scans only inside it, so the gate survives
-# that function moving to a different file within the three domains below, a
-# sibling function being added around it, or the file being renamed. Directory
-# scope names the three domains whose whole job is turning user-authored
-# YAML/TOML into cfgd's typed config — parse_/load_ elsewhere (parse_env_var,
-# parse_duration_str, …) are ordinary utility parsers with no advisory to
-# surface, and the separate "Config Parsing Boundary" gate above already
-# confines config-struct parsing to these directories, so a function that
-# legitimately does user-facing config parsing cannot migrate outside this
-# scope without tripping that gate first.
+# Anchored on the DOMAIN: every non-test .rs under the three directories whose
+# whole job is turning user-authored YAML/TOML into cfgd's typed config. An
+# earlier revision anchored on a `fn (parse|load)_<name>(` signature and walked
+# the function's brace span, which selected the wrong set twice over:
+# warn_on_legacy_theme_keys — the exemplar this gate exists to prevent — is
+# named neither parse_ nor load_, and neither is any of the advisory helpers a
+# parse function calls (check_yaml_anchor_limit, read_manifest, …). Scanning the
+# whole domain covers all of them, and needs no span walk to be defeated by a
+# brace in a string literal or by a body-less trait signature. The domain
+# carries no legitimate tracing::warn!/error! today, so the marker below is the
+# whole allow-list; the separate "Config Parsing Boundary" gate above keeps
+# config-struct parsing from migrating out of these directories in the first
+# place.
 #
 # Escape hatch (mirrors native-ok / spawn-blocking-ok): a genuinely internal
 # diagnostic — one no interactive user is meant to read — stays legal when the
 # call line or the line directly above it carries
 #   // tracing-ok: <why this diagnostic is not user-facing>
+# The marker counts only inside a comment, and only with a reason after it, so
+# a call cannot exempt itself by naming the hatch in its own message string.
 advisory_scope_dirs=(crates/cfgd-core/src/config crates/cfgd-core/src/modules crates/cfgd-core/src/sources)
+require_dirs "user-facing advisory scan" "${advisory_scope_dirs[@]}" || true
 advisory_violations=""
 while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
     esac
-    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk '
-        /fn[[:space:]]+(parse|load)_[A-Za-z0-9_]*[[:space:]]*\(/ && !in_fn {
-            in_fn = 1; depth = 0; started = 0
-        }
-        in_fn {
-            opens = gsub(/{/, "{")
-            closes = gsub(/}/, "}")
-            depth += opens - closes
-            if (depth > 0) started = 1
-            if (/tracing::(warn|error)!/ && !/tracing-ok:/ && prev !~ /tracing-ok:/) { print }
-            if (started && depth <= 0) { in_fn = 0 }
-        }
-        { prev = $0 }
+    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /tracing::(warn|error)!/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "tracing-ok:") { print }
+        { prev = $0; prev_comment = comment }
     ')
     if [[ -n "$file_hits" ]]; then
         advisory_violations="${advisory_violations}${file_hits}"$'\n'
@@ -202,10 +357,10 @@ while IFS= read -r -d '' rsfile; do
 done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
 if [[ -n "$advisory_violations" ]]; then
-    log_error "tracing::warn!/error! inside a config/module/source parse_*/load_* function (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
+    log_error "tracing::warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
     echo "$advisory_violations" | head -20
 else
-    log_ok "No tracing::warn!/error! inside config/module/source parse_*/load_* functions"
+    log_ok "No tracing::warn!/error! in the config/module/source domains"
 fi
 
 log_section "Controlled Shell Execution"
@@ -710,13 +865,19 @@ log_section "Test-home-safe blocking dispatch (workspace)"
 # annotate the call line or the line directly above it with
 #   // spawn-blocking-ok: <why the closure resolves no home paths>
 # util/paths.rs (the wrapper's own home) and test files are excluded.
+# Marker handling is the shared one (see AWK_LIB): in a comment, with a reason,
+# and inherited only from a comment line directly above — never from a previous
+# call that happened to carry its own marker.
 raw_spawns=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */util/paths.rs|*/tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*) continue ;;
     esac
-    strip_test_blocks_from_file "$rsfile" | awk '
-        /tokio::task::spawn_blocking/ && !/spawn-blocking-ok/ && prev !~ /spawn-blocking-ok/ && !/^[^:]*:[0-9]+:[[:space:]]*\/\// { print }
-        { prev = $0 }
+    strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /tokio::task::spawn_blocking/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "spawn-blocking-ok:") { print }
+        { prev = $0; prev_comment = comment }
     '
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null))
 if [[ -n "$raw_spawns" ]]; then
