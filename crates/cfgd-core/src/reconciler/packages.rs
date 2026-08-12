@@ -368,12 +368,19 @@ impl<'x> PackageExec<'x> {
                             // body, and a status detail that repeated it would
                             // put a whole build log on one line.
                             let rendered = e.to_string();
-                            let cause = rendered.lines().next().unwrap_or_default().trim();
+                            // The first NON-EMPTY line, and the suffix is dropped
+                            // when there is none: a leading blank would otherwise
+                            // render a dangling "failed: " with nothing after it.
+                            let cause = rendered.lines().map(str::trim).find(|l| !l.is_empty());
+                            let subject = format!(
+                                "module {} install script for '{}' failed",
+                                action.module_name, pkg.canonical_name,
+                            );
                             crate::errors::CfgdError::Config(ConfigError::Invalid {
-                                message: format!(
-                                    "module {} install script for '{}' failed: {cause}",
-                                    action.module_name, pkg.canonical_name,
-                                ),
+                                message: match cause {
+                                    Some(cause) => format!("{subject}: {cause}"),
+                                    None => subject,
+                                },
                             })
                         })?;
                         script_changed |= changed;
