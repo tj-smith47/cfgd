@@ -228,9 +228,12 @@ impl CliTestHarness {
         self.state_dir.path()
     }
 
+    /// The captured transcript, ANSI-stripped. Colour follows the terminal
+    /// the suite was invoked from, so a raw read makes every assertion below
+    /// depend on how `cargo test` was started rather than on what ran.
     fn output(&self) -> String {
         self.printer.flush();
-        self.buf.lock().unwrap().clone()
+        cfgd_core::test_helpers::captured_text(&self.buf)
     }
 
     fn json_output(&self) -> serde_json::Value {
@@ -5541,7 +5544,7 @@ fn cmd_apply_with_env_vars() {
 
     printer.flush();
     {
-        let output = buf.lock().unwrap().clone();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Apply"),
             "should contain Apply header, got: {output}"

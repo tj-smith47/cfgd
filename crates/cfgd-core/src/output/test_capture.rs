@@ -86,6 +86,9 @@ fn build_test_printer(
         // from: pinning it here is what makes the non-TTY rendering reachable
         // under `cargo test` from an interactive shell.
         live_region: false,
+        // Same reason, for the other half of the terminal: an unqueued prompt
+        // must refuse rather than block on a keyboard nobody is at.
+        interactive_stdin: false,
         list_envelope: false,
     }
 }
@@ -198,6 +201,7 @@ impl Printer {
             // reachable without a real terminal, so the proof obligation it
             // carries runs in the ordinary suite rather than only under a pty.
             live_region: true,
+            interactive_stdin: false,
             list_envelope: false,
         };
         (p, buf)
@@ -386,5 +390,60 @@ mod tests {
     fn for_test_doc_returns_capture() {
         let (_p, cap) = Printer::for_test_doc();
         assert_eq!(cap.human(), "");
+    }
+
+    /// Every capture constructor must answer "no live region" and "no human at
+    /// stdin", and the one that exists to reach the repainting path must report
+    /// a live region — all regardless of the terminal the suite was invoked
+    /// from.
+    ///
+    /// A golden captured through a printer that inherited the ambient terminal
+    /// records a different surface depending on how the suite was started: a
+    /// spinner's start line is written when there is no live region and
+    /// repainted away when there is, so `cargo test` from a pipe and the same
+    /// command under a pty disagree about the fixture's contents. The stdin
+    /// half fails harder still — an unqueued prompt on an inherited tty blocks
+    /// forever instead of refusing.
+    #[test]
+    fn capture_constructors_pin_their_terminal() {
+        for (name, p) in [
+            ("for_test", Printer::for_test().0),
+            ("for_test_at", Printer::for_test_at(Verbosity::Normal).0),
+            (
+                "for_test_with_theme",
+                Printer::for_test_with_theme(Theme::default(), Verbosity::Normal).0,
+            ),
+            (
+                "for_test_with_format",
+                Printer::for_test_with_format(OutputFormat::Table).0,
+            ),
+            ("for_test_doc", Printer::for_test_doc().0),
+            (
+                "for_test_doc_with_format",
+                Printer::for_test_doc_with_format(OutputFormat::Wide).0,
+            ),
+            (
+                "for_test_with_prompt_responses",
+                Printer::for_test_with_prompt_responses(Vec::new()).0,
+            ),
+            (
+                "for_test_doc_with_prompt_responses",
+                Printer::for_test_doc_with_prompt_responses(Vec::new()).0,
+            ),
+        ] {
+            assert!(
+                !p.live_bars(),
+                "{name} must report no live region, whatever terminal the suite was invoked from"
+            );
+            assert!(
+                !p.can_prompt(),
+                "{name} must refuse to prompt rather than block on the suite's own terminal"
+            );
+        }
+
+        assert!(
+            Printer::for_test_with_live_bars().0.live_bars(),
+            "for_test_with_live_bars exists to reach the repainting path and must report one"
+        );
     }
 }

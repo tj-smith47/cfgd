@@ -4696,7 +4696,7 @@ fn print_module_review_summary_emits_subheader_and_commit_integrity() {
         "sha256:def456",
     );
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("module:vim-config"),
         "the review heads the module with its owner token: {out}"

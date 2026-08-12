@@ -67,6 +67,15 @@ pub struct Printer {
     /// process's own stderr is, and the test that must exercise the repainting
     /// path needs one no matter what the suite was invoked from.
     pub(crate) live_region: bool,
+    /// Whether a `prompt_*` on this printer can reach a human. Decided ONCE, at
+    /// construction, from the process stdin the prompt would actually read —
+    /// the same shape as `live_region`, and for the same reason: a printer
+    /// whose sink is a capture buffer is driving no one's keyboard, no matter
+    /// what the process's own stdin is. Read at prompt time instead, a test
+    /// with no seeded answer BLOCKS on a real `inquire` prompt the moment the
+    /// suite is started under a pty, and a hang is a worse failure than a
+    /// mismatch because nothing ever reports it.
+    pub(crate) interactive_stdin: bool,
     /// When set (via `--list-envelope` / `CFGD_LIST_ENVELOPE`), a top-level JSON
     /// array emitted under `-o json`/`-o yaml` is wrapped in a KRM List envelope
     /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
@@ -150,6 +159,7 @@ impl Printer {
             prompt_queue: None,
             output_error: AtomicBool::new(false),
             live_region: super::spinner::stderr_is_terminal(),
+            interactive_stdin: super::prompts::stdin_is_terminal(),
             list_envelope: false,
         }
     }

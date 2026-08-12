@@ -467,7 +467,7 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/local/bin/cfgd"));
         assert!(unit.contains("--profile ws"));
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = Printer::for_test().0;
         uninstall_systemd_service(&printer, crate::Scope::User).expect("uninstall");
         assert!(!unit_path.exists());
 

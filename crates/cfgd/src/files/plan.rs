@@ -1228,7 +1228,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let resolved = make_resolved(FilesSpec::default());
         let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
-        let printer = Printer::new(Verbosity::Quiet);
+        let printer = Printer::for_test().0;
         let records = fm.diff(&resolved.merged, &printer).unwrap();
         assert!(records.is_empty());
     }

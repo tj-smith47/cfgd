@@ -42,7 +42,7 @@ const PROFILE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
                             spec: {}\n";
 
 fn quiet_printer() -> Printer {
-    Printer::new(Verbosity::Quiet)
+    Printer::for_test().0
 }
 
 // ---------------------------------------------------------------------------

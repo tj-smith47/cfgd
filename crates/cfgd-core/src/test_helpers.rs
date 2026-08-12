@@ -1017,6 +1017,24 @@ pub fn settled_status_lines(transcript: &str) -> Vec<String> {
         .collect()
 }
 
+/// Read a `Printer::for_test*` capture buffer with ANSI escapes removed — the
+/// ONE way a test should reach the string it asserts against.
+///
+/// Colour is a process-global `console` decision, not a per-printer one: it
+/// follows the terminal the suite was invoked from (on under a pty, off from a
+/// pipe) and any concurrent test holding a `ColorsEnabledGuard` can flip it
+/// mid-run. Read raw, an assertion answers a question about terminal shape —
+/// `contains("module:vim-config")` breaks on the escape between the owner
+/// token's two styled halves, `ends_with(path)` breaks on the trailing reset,
+/// and every negative `!contains(…)` passes vacuously the moment styling is on,
+/// silently guarding nothing.
+///
+/// A test that asserts ON the escapes wants the raw buffer and a
+/// `ColorsEnabledGuard` instead; every other test wants this.
+pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
+    crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Create a quiet `Printer` for tests that exercise the reconciler entry
 /// surface (`Reconciler::apply`, `Reconciler::apply_action`, and per-action
 /// helpers in `apply.rs` / `modules.rs` / `packages.rs` / `secrets.rs` /
@@ -1026,8 +1044,14 @@ pub fn settled_status_lines(transcript: &str) -> Vec<String> {
 /// Returns a bare `Printer` (not the `(Printer, Buffer)` tuple from
 /// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
 /// that don't assert on captured output.
+///
+/// Built from the capture constructor and not from `Printer::new`, because
+/// `new` inherits the terminal the suite was invoked from: under a pty that
+/// printer reports a live region AND a human at stdin, so a command reaching
+/// an unanswered confirmation prompt BLOCKS for the rest of the run instead of
+/// refusing. Discarding the buffer keeps the surface identical (Quiet, Table).
 pub fn test_printer() -> crate::output::Printer {
-    crate::output::Printer::new(crate::output::Verbosity::Quiet)
+    crate::output::Printer::for_test().0
 }
 
 /// A `PackageStateStore` that remembers nothing — for a fixture whose subject

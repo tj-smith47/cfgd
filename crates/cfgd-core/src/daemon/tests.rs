@@ -8773,7 +8773,7 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
     .await
     .unwrap();
 
-    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let out = harness::captured_text(&buf);
     let hooks_at = out
         .find(crate::reconciler::HOOKS_PHASE_LABEL)
         .unwrap_or_else(|| panic!("no Drift Hooks heading in:\n{out}"));
@@ -8878,7 +8878,7 @@ async fn auto_apply_tick_renders_header_tree_and_rollup() {
     .await
     .unwrap();
 
-    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let out = harness::captured_text(&buf);
     assert!(
         out.contains("\nReconcile\n") || out.starts_with("Reconcile\n"),
         "the tick opens with its own run header:\n{out}"
@@ -9114,7 +9114,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
 
     // What the tick REPORTED: one set — header, trigger and rollup all count
     // the pruned plan.
-    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let out = harness::captured_text(&buf);
     assert!(
         out.contains("Trigger  drift (2 resources)") && out.contains("Actions  2 planned"),
         "the header must count the pruned plan, not the withheld resources:\n{out}"
@@ -10651,6 +10651,11 @@ mod harness {
     /// for any test that doesn't need package or file planning to do real work.
     pub(super) use crate::test_helpers::NoopDaemonHooks as NoopHooks;
 
+    /// The captured render with ANSI escapes removed. Re-exported rather than
+    /// re-derived so the daemon tests and every other capture consumer read
+    /// their buffer through one function.
+    pub(super) use crate::test_helpers::captured_text;
+
     /// Build a `DaemonLoopContext` wired for tests. `config_path` is set to a
     /// nonexistent file under `tmp` so any handler that tries to load config
     /// returns early before touching real system state. `state_dir_override`
@@ -10814,7 +10819,7 @@ mod harness {
         let (ctx, buf) = sighup_ctx(tmp, config_path);
         let mut backup_timers = crate::daemon::BackupTimers::empty();
         runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         (
             captured,
             reconcile_secs.load(Ordering::Relaxed),
@@ -11257,7 +11262,7 @@ spec:
             .expect("join error")
             .expect("loop returned Err");
         assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Timer intervals reloaded"),
             "expected reload message in: {}",
@@ -12440,7 +12445,7 @@ spec: {}
         )
         .expect("setup with a deprecated theme key still succeeds");
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
             "expected startup to drain the theme deprecation notice; got: {captured:?}"
@@ -13313,7 +13318,7 @@ spec: {}
             &["reconcile=30s".to_string(), "compliance=900s".to_string()],
             "/tmp/cfgd-banner-test.sock",
         );
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(out.contains("Health: /tmp/cfgd-banner-test.sock"));
         assert!(out.contains("Intervals: reconcile=30s, compliance=900s"));
         assert!(out.contains("Daemon running"));
@@ -13593,7 +13598,7 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         // Banner emitted by print_startup_banner
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Daemon running"),
             "banner should announce running state, got: {}",
@@ -13739,7 +13744,7 @@ spec: {}
             .expect("daemon should shut down in time")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Reloading configuration") || out.contains("Timer intervals reloaded"),
             "expected sighup reload chatter, got: {}",
@@ -14062,7 +14067,7 @@ spec: {}
             "wait_for_shutdown must return after SIGTERM"
         );
         joined.unwrap().expect("task join");
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Received SIGTERM"),
             "shutdown printer should announce SIGTERM, got: {}",
@@ -14231,7 +14236,7 @@ spec: {}
             .expect("daemon join");
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Daemon stopped"),
             "cleanup path must run, got: {}",
@@ -14408,7 +14413,7 @@ spec: {}
     // reconcile output is emitted by `daemon::reconcile` through separate
     // short-lived printers and is invisible to the buffer below.
 
-    use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output::test_capture::assert_snapshot_at;
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
@@ -14466,8 +14471,7 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         drop(printer);
-        let raw = buf.lock().unwrap().clone();
-        let actual = normalize_ipc(&strip_ansi(&raw), &ipc_path);
+        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
         assert_snapshot("clean_reconcile_cycle.txt", &actual);
     }
 
@@ -14518,8 +14522,7 @@ spec: {}
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
 
         drop(printer);
-        let raw = buf.lock().unwrap().clone();
-        let actual = normalize_ipc(&strip_ansi(&raw), &ipc_path);
+        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
         assert_snapshot("drift_event.txt", &actual);
     }
 }
@@ -16444,7 +16447,7 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::harness::{captured_text, make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
         BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
@@ -16733,7 +16736,7 @@ mod backup_timers {
             "a changed schedule re-arms the timer"
         );
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
             "reload must report the timer-set delta: {captured}"
@@ -17237,7 +17240,7 @@ mod backup_timers {
             kept, armed,
             "the pending deadlines must survive the failure"
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedules NOT reloaded"),
             "the operator must be told the reload was refused: {captured}"
@@ -17282,7 +17285,7 @@ mod backup_timers {
             "a healed config must restore the timers without a restart or a SIGHUP"
         );
         assert!(!set.is_degraded());
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedules restored: 1 scheduled"),
             "the recovery must be visible: {captured}"
@@ -17312,7 +17315,7 @@ mod backup_timers {
 
         assert_eq!(set.len(), 0);
         assert!(!set.is_degraded());
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedule resolved: no units configured"),
             "the zero case must not say 'restored': {captured}"
@@ -17430,7 +17433,7 @@ mod backup_timers {
             "adopting a partial set must not clear the degraded state"
         );
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains(
                 "Backup schedules restored: 1 scheduled (source composition unavailable)"
@@ -17476,7 +17479,7 @@ mod backup_timers {
             set.degraded_reason(),
             Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains(
                 "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
@@ -17516,7 +17519,7 @@ mod backup_timers {
         runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
 
         assert!(!set.is_degraded());
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
             "got: {captured}"
@@ -17778,7 +17781,7 @@ mod backup_timers {
             let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
             crate::with_test_home(&home, || run(&state_dir, &store, &printer));
             drop(printer);
-            let human = buf.lock().unwrap().clone();
+            let human = captured_text(&buf);
             backups_block(&human)
         }
 

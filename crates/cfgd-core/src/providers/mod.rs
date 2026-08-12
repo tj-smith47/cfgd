@@ -1092,7 +1092,7 @@ mod tests {
     #[test]
     fn test_default_installed_packages_with_versions_empty() {
         let mock = StubPackageManager::new("mock");
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = crate::output::Printer::for_test().0;
         let state = StateStore::open_in_memory().unwrap();
         let pkgs = mock
             .installed_packages_with_versions(&test_cx(&printer, &state))
@@ -1198,7 +1198,7 @@ mod tests {
             .bootstrappable()
             .with_installed(&["jq", "ripgrep"])
             .with_package("jq", "1.7.1");
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = crate::output::Printer::for_test().0;
         let state = StateStore::open_in_memory().unwrap();
         assert!(stub.is_available());
         assert!(stub.can_bootstrap());
@@ -1219,7 +1219,7 @@ mod tests {
     fn stub_with_installed_error_returns_err() {
         let stub =
             StubPackageManager::new("brew").with_installed_error("simulated brew list failure");
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = crate::output::Printer::for_test().0;
         let state = StateStore::open_in_memory().unwrap();
         let err = stub
             .installed_packages(&test_cx(&printer, &state))
@@ -1234,7 +1234,7 @@ mod tests {
     #[test]
     fn stub_default_installed_packages_with_versions_with_content() {
         let stub = StubPackageManager::new("brew").with_installed(&["fd", "jq"]);
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = crate::output::Printer::for_test().0;
         let state = StateStore::open_in_memory().unwrap();
         let mut pkgs = stub
             .installed_packages_with_versions(&test_cx(&printer, &state))
@@ -1250,7 +1250,7 @@ mod tests {
     #[test]
     fn stub_default_path_dirs_empty() {
         let stub = StubPackageManager::new("apt");
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = crate::output::Printer::for_test().0;
         let state = StateStore::open_in_memory().unwrap();
         assert!(stub.path_dirs(&test_cx(&printer, &state)).is_empty());
     }

@@ -1303,9 +1303,12 @@ fn interactive_disposition_branches() {
     );
 }
 
-// The test process has no TTY, so an interactive script must be SKIPPED:
-// changed=false, the body does not run (sentinel absent), and a Warn line
-// names the script and the missing-TTY reason.
+// With no TTY an interactive script must be SKIPPED: changed=false, the body
+// does not run (sentinel absent), and a Warn line names the script and the
+// missing-TTY reason. The premise is SUPPLIED through `execute_script_with_tty`
+// rather than inherited from whatever the suite was invoked from — read from
+// the ambient terminal, the test asserts the skip path while running the run
+// path the moment the suite is started under a pty.
 #[cfg(all(unix, feature = "test-helpers"))]
 #[test]
 fn interactive_script_without_tty_skips_with_warn() {
@@ -1325,7 +1328,8 @@ fn interactive_script_without_tty_skips_with_warn() {
         interactive: true,
     };
 
-    let (_label, changed, captured) = execute_script(
+    let (_label, changed, captured) = execute_script_with_tty(
+        false,
         &entry,
         tmp.path(),
         tmp.path(),

@@ -1017,7 +1017,7 @@ spec:
 
         #[test]
         fn sign_apply_keyless_crd_satisfies_disallow_unsigned_admission() {
-            let printer = Printer::new(Verbosity::Quiet);
+            let printer = Printer::for_test().0;
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature = build_module_signature(&printer, true, None);
             let crd_json =
@@ -1041,7 +1041,7 @@ spec:
             std::fs::write(dir.path().join("cosign.pub"), "fake-public-key-pem")
                 .expect("write pub");
 
-            let printer = Printer::new(Verbosity::Quiet);
+            let printer = Printer::for_test().0;
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature =
                 build_module_signature(&printer, true, Some(key_path.to_str().expect("utf8 path")));

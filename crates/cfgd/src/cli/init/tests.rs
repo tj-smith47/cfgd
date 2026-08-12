@@ -468,11 +468,7 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
         "each profile must be enumerated 1-based on its own bullet: {captured}"
     );
 
-    let json_printer = Printer::with_format(
-        Verbosity::Normal,
-        None,
-        cfgd_core::output::OutputFormat::Json,
-    );
+    let json_printer = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json).0;
     let err = pick_profile(&profiles_dir, &json_printer)
         .expect_err("non-interactive prompt_text Errs in structured-format printer");
     let msg = err.to_string();
