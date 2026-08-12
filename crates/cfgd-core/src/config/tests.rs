@@ -2156,6 +2156,26 @@ spec:
 }
 
 #[test]
+fn a_live_icon_info_override_is_never_called_unsupported() {
+    // `iconInfo` sat in REMOVED_THEME_KEYS while the field it names was live,
+    // so declaring it produced both a working override and a notice saying the
+    // override would be ignored. The structural guard below pins the lists; this
+    // pins the symptom the user actually met.
+    let yaml = r##"
+spec:
+  theme:
+    name: dracula
+    overrides:
+      iconInfo: "i"
+"##;
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(
+        messages.is_empty(),
+        "iconInfo is a live ThemeOverrides field; it must draw no deprecation, got: {messages:?}"
+    );
+}
+
+#[test]
 fn modern_overrides_emit_no_warning() {
     let yaml = r##"
 spec:

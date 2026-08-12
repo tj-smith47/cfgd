@@ -60,10 +60,14 @@ pub(super) fn check_yaml_anchor_limit(contents: &str, context: &Path) -> Result<
 /// `iconInfo` briefly lived here after the field it names was actually dropped
 /// from the struct, then silently went stale when the field was re-added
 /// (`97aaa2eb`) — nothing re-checked this list against the struct it describes.
-/// `theme_key_lists_stay_consistent_with_theme_overrides_schema` in `tests.rs`
-/// derives the struct's live field set from its own `schemars` schema and
-/// fails if an entry here (or in [`RENAMED_THEME_KEYS`]) is contradicted by it,
-/// so this list can no longer drift unnoticed.
+/// `legacy_theme_key_lists_stay_consistent_with_theme_overrides_schema` in
+/// `tests.rs` derives the struct's live field set from its own `schemars`
+/// schema and fails if an entry here (or in [`RENAMED_THEME_KEYS`]) is
+/// contradicted by it. That guard is one-directional: it catches a key listed
+/// here that is still a live field, not a field DROPPED from `ThemeOverrides`
+/// with no entry added here — which ships the same drift silently, as a stale
+/// user key that draws no advisory at all. Adding a key here is part of
+/// removing or renaming a field, not a follow-up.
 pub(super) const REMOVED_THEME_KEYS: &[&str] = &["subheader", "key", "value"];
 
 /// Keys `ThemeOverrides` renamed, oldest name first. See [`REMOVED_THEME_KEYS`]
