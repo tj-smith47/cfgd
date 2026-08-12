@@ -214,6 +214,32 @@ Connect to a team's config source — cfgd fetches the manifest, shows available
 cfgd source add git@github.com:acme-corp/dev-config.git
 ```
 
+### Naming a Source
+
+`cfgd source add` (and `cfgd source replace`) takes any git URL, a local path, or the
+GitHub shorthand `owner/repo`. All are equally supported — the shorthand is a
+convenience for GitHub, never a requirement, and every other value reaches git exactly
+as you wrote it:
+
+```sh
+# GitHub shorthand — expands to https://github.com/acme-corp/dev-config.git
+cfgd source add acme-corp/dev-config
+
+# Any git URL, on any host
+cfgd source add https://github.com/acme-corp/dev-config.git
+cfgd source add https://gitlab.example.com/acme-corp/dev-config.git
+cfgd source add git@git.example.com:acme-corp/dev-config.git
+cfgd source add ssh://git@codeberg.org/acme-corp/dev-config.git
+
+# A local path
+cfgd source add /path/to/dev-config
+```
+
+Only a bare `owner/repo` is expanded. A value whose first segment looks like a hostname
+(`gitlab.example.com/acme-corp/dev-config`) is a URL for that host, not a GitHub owner,
+so it is passed through untouched. The source name cfgd infers is the same either way
+(`dev-config`), so a shorthand and its full URL always name one subscription.
+
 Manage existing subscriptions:
 
 ```sh
@@ -239,7 +265,9 @@ cfgd source priority acme-corp 800
 Switch teams or replace a source entirely:
 
 ```sh
+cfgd source replace acme-corp newco/dev-config                   # GitHub shorthand
 cfgd source replace acme-corp git@github.com:newco/dev-config.git
+cfgd source replace acme-corp https://gitlab.example.com/newco/dev-config.git
 ```
 
 Publish your own source:
@@ -699,7 +727,9 @@ cfgd plan    # verify the composed result
 5. Push to a git remote. Team members subscribe with:
 
 ```sh
+cfgd source add my-team/dev-config                       # GitHub shorthand
 cfgd source add git@github.com:my-team/dev-config.git
+cfgd source add https://gitlab.example.com/my-team/dev-config.git
 ```
 
 Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Subscribers with semver-range `pinVersion` values resolve against your tags and will only check out tags within their pinned range. (`metadata.version` in `cfgd-source.yaml` is informational; pinning is enforced against signed git refs, not that field.)

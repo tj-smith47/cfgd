@@ -3,21 +3,33 @@ use std::path::Path;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
-/// Returns true if the value is a clonable git source (URL or local git repo).
-pub(super) fn is_git_source(value: &str) -> bool {
-    // Remote URLs
-    if value.starts_with("https://")
-        || value.starts_with("http://")
-        || value.starts_with("ssh://")
-        || value.starts_with("git://")
-        || value.starts_with("git@")
-        || value.ends_with(".git")
-    {
+/// Returns true if the value is a clonable source: a git URL, a repository
+/// directory named `<name>.git`, or a local directory that is a git work tree.
+///
+/// The URL half is [`cfgd_core::modules::is_git_source`], the workspace's one git-URL
+/// predicate. The two extra arms exist only for `--from`, which may be pointed
+/// at a repository on the same machine: a module file source naming a local
+/// checkout must stay a path, so neither arm may widen the shared predicate.
+pub(super) fn is_clonable_source(value: &str) -> bool {
+    if cfgd_core::modules::is_git_source(value) || value.ends_with(".git") {
         return true;
     }
-    // Local git repos
     let path = cfgd_core::expand_tilde(Path::new(value));
     path.join(".git").exists()
+}
+
+/// Resolve a `--from` value as the user wrote it, expanding a GitHub
+/// `owner/repo` shorthand into a clone URL.
+///
+/// An existing path wins: `--from acme/config` run inside a directory that
+/// holds `acme/config` means that directory, not the GitHub repository, so the
+/// value is left alone. Expansion is idempotent, so a caller may resolve a
+/// value that has already been resolved.
+pub(super) fn resolve_from_value(from: &str) -> String {
+    if cfgd_core::expand_tilde(Path::new(from)).exists() {
+        return from.to_string();
+    }
+    cfgd_core::expand_github_shorthand(from).into_owned()
 }
 
 /// Resolve a --from value to a config directory path.
@@ -29,7 +41,8 @@ pub(crate) fn resolve_from(
     branch: &str,
     printer: &Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
-    if is_git_source(from) {
+    let from = &resolve_from_value(from);
+    if is_clonable_source(from) {
         let dest = target
             .map(|p| p.to_path_buf())
             .unwrap_or_else(cfgd_core::default_config_dir);

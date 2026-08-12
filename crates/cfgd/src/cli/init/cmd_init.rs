@@ -4,7 +4,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
-use super::source::{clone_into, is_git_source, resolve_from};
+use super::source::{clone_into, is_clonable_source, resolve_from, resolve_from_value};
 use super::*;
 
 // ─────────────────────────────────────────────────────
@@ -51,9 +51,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         cfgd_core::exit::ExitCode::Error.exit();
     }
 
-    // 1. Determine target directory and whether --from did a fresh clone
-    let from_used = args.from.is_some();
-    let target_dir = if let Some(from) = args.from {
+    // 1. Determine target directory and whether --from did a fresh clone.
+    // The `--from` value is resolved ONCE here — an existing path stays a path,
+    // a GitHub `owner/repo` shorthand becomes a clone URL — so the clone below
+    // and the classification further down judge the same string.
+    let from = args.from.map(resolve_from_value);
+    let from_used = from.is_some();
+    let target_dir = if let Some(from) = from.as_deref() {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
         resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
     } else {
@@ -93,7 +97,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // directory's contents with it), while `scaffold` would overwrite the
     // user's cfgd.yaml with a fresh template.
     let already_initialized = target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists();
-    if let Some(url) = args.from.filter(|f| is_git_source(f)) {
+    if let Some(url) = from.as_deref().filter(|f| is_clonable_source(f)) {
         if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }

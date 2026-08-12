@@ -1233,6 +1233,52 @@ fn cmd_module_registry_add_creates_entry() {
 }
 
 #[test]
+fn cmd_module_registry_add_expands_github_shorthand() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // No --name: the name must be derived from the EXPANDED URL, which is only
+    // possible if the shorthand became a github.com URL before extraction.
+    cmd_module_registry_add(&cli, &printer, "cfgd-community/modules", None).unwrap();
+
+    let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+    assert!(
+        contents.contains("https://github.com/cfgd-community/modules.git"),
+        "shorthand must be persisted as a full clone URL, got: {contents}"
+    );
+    assert!(
+        contents.contains("cfgd-community"),
+        "registry name must be derived from the expanded URL, got: {contents}"
+    );
+}
+
+#[test]
+fn cmd_module_registry_add_leaves_non_github_url_untouched() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    cmd_module_registry_add(
+        &cli,
+        &printer,
+        "https://gitlab.example.com/acme/modules.git",
+        Some("acme"),
+    )
+    .unwrap();
+
+    let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+    assert!(
+        contents.contains("https://gitlab.example.com/acme/modules.git"),
+        "a self-hosted URL must be persisted verbatim, got: {contents}"
+    );
+    assert!(
+        !contents.contains("github.com"),
+        "a self-hosted URL must never be redirected to github.com, got: {contents}"
+    );
+}
+
+#[test]
 fn cmd_module_registry_add_duplicate_is_noop() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());

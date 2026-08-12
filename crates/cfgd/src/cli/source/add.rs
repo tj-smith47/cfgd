@@ -3,7 +3,11 @@ use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::reconciler::Owner;
 
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
-    let url = &args.url;
+    // Expand a GitHub `owner/repo` shorthand before anything reads the URL, so
+    // the inferred name, the clone, and the persisted `spec.sources[].origin`
+    // all carry the same clonable URL. Any other shape passes through.
+    let expanded_url = cfgd_core::expand_github_shorthand(&args.url).into_owned();
+    let url = &expanded_url;
     let name = args.name.as_deref();
     let branch = args.branch.as_deref();
     let profile = args.profile.as_deref();
@@ -443,6 +447,33 @@ mod tests {
             "already_exists message must point to 'source update', got: {}",
             meta.message
         );
+    }
+
+    #[test]
+    fn add_names_a_github_shorthand_the_same_as_its_full_url() {
+        // `cfgd source add acme/dev` and `cfgd source add https://github.com/acme/dev`
+        // must land on one source, so the shorthand has to reach the duplicate
+        // check already expanded and infer the same name.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: dev\n      origin:\n        type: Git\n        url: https://github.com/acme/dev.git\n        branch: main\n",
+        )
+        .expect("write seed config");
+        let cli = cli_for(config_path);
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let err = cmd_source_add(&cli, &printer, &base_args("acme/dev"))
+            .expect_err("shorthand for an already-subscribed repo must error before clone");
+        drop(printer);
+
+        let meta = meta_of(&err);
+        assert_eq!(
+            meta.error_kind, "already_exists",
+            "expected already_exists, got: {meta:?}"
+        );
+        assert_eq!(meta.name, "dev");
     }
 
     #[test]

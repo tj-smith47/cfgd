@@ -412,7 +412,8 @@ impl Cli {
 
 #[derive(Parser)]
 pub struct ApplyArgs {
-    /// Config source: git URL to clone, or local path to an existing config directory
+    /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
+    /// to an existing config directory (an existing path wins over the shorthand)
     #[arg(long)]
     pub from: Option<String>,
     /// Preview changes without applying
@@ -448,7 +449,8 @@ pub struct ApplyArgs {
 
 #[derive(Parser)]
 pub struct PlanArgs {
-    /// Config source: git URL to clone, or local path to an existing config directory
+    /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
+    /// to an existing config directory (an existing path wins over the shorthand)
     #[arg(long)]
     pub from: Option<String>,
     /// Plan only a specific phase
@@ -475,14 +477,15 @@ pub struct PlanArgs {
 pub enum Command {
     /// Initialize a new cfgd configuration repository
     #[command(
-        long_about = "Scaffold or clone a cfgd configuration repository.\n\nExamples:\n  cfgd init\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init ~/cfgd --theme solarized-dark --apply"
+        long_about = "Scaffold or clone a cfgd configuration repository.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\nAn existing path always wins over the shorthand.\n\nExamples:\n  cfgd init\n  cfgd init --from acme/cfgd-config                         # GitHub shorthand\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init --from https://gitlab.example.com/acme/cfgd-config.git\n  cfgd init --from git@git.example.com:acme/cfgd-config.git\n  cfgd init --from ~/existing/config\n  cfgd init ~/cfgd --theme solarized-dark --apply"
     )]
     Init {
         /// Directory to initialize (default: current directory)
         #[arg(value_hint = clap::ValueHint::DirPath)]
         path: Option<String>,
 
-        /// Config source: git URL to clone, or local path to an existing config directory
+        /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
+        /// to an existing config directory (an existing path wins over the shorthand)
         #[arg(long)]
         from: Option<String>,
 
@@ -531,13 +534,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
@@ -644,7 +647,7 @@ pub enum Command {
 
     /// Manage modules
     #[command(
-        long_about = "Create, inspect, push, and manage modules.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org\n  cfgd module delete old --ignore-not-found"
+        long_about = "Create, inspect, push, and manage modules.\n\nA registry URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add my-org/cfgd-modules                                    # GitHub shorthand\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org\n  cfgd module registry add https://gitlab.example.com/my-org/cfgd-modules.git --name my-org\n  cfgd module delete old --ignore-not-found"
     )]
     Module {
         #[command(subcommand)]
@@ -653,7 +656,7 @@ pub enum Command {
 
     /// Manage config sources
     #[command(
-        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nA source URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd source add team/config --priority 700                       # GitHub shorthand\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source add https://gitlab.example.com/team/config.git\n  cfgd source add git@git.example.com:team/config.git\n  cfgd source list\n  cfgd source replace team team/config-v2\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
     )]
     Source {
         #[command(subcommand)]
@@ -1000,7 +1003,7 @@ pub enum StateCommand {
 
 #[derive(Parser)]
 pub struct SourceAddArgs {
-    /// Git URL of the source
+    /// Git URL of the source, on any host — or the GitHub shorthand `owner/repo`
     pub url: String,
     /// Name for this source (default: inferred from URL)
     #[arg(long)]
@@ -1113,7 +1116,7 @@ pub enum SourceCommand {
         /// Source to replace
         old_name: String,
 
-        /// Git URL of the new source
+        /// Git URL of the new source, on any host — or the GitHub shorthand `owner/repo`
         new_url: String,
     },
 
@@ -1949,9 +1952,9 @@ pub(crate) fn apply_shell_to_script_shell(s: ApplyShell) -> cfgd_core::config::S
 pub enum ModuleRegistryCommand {
     /// Add a module registry
     Add {
-        /// Git URL of the registry repo (GitHub only)
+        /// Git URL of the registry repo, on any host — or the GitHub shorthand `owner/repo`
         url: String,
-        /// Custom name/alias (defaults to GitHub org name)
+        /// Custom name/alias (defaults to the GitHub org name; required for any other host)
         #[arg(long)]
         name: Option<String>,
     },

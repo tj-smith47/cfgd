@@ -8,6 +8,32 @@
 cfgd init --from git@github.com:you/machine-config.git
 ```
 
+### Naming the Repo
+
+`--from` takes any git URL, a local path, or the GitHub shorthand `owner/repo`. All
+three are equally supported — the shorthand is a convenience for GitHub, never a
+requirement, and cfgd hands every other value to git exactly as you wrote it.
+
+```sh
+# GitHub shorthand — expands to https://github.com/you/machine-config.git
+cfgd init --from you/machine-config
+
+# Any git URL, on any host
+cfgd init --from https://github.com/you/machine-config.git
+cfgd init --from https://gitlab.example.com/you/machine-config.git
+cfgd init --from git@git.example.com:you/machine-config.git
+cfgd init --from ssh://git@codeberg.org/you/machine-config.git
+
+# A local path or local repository
+cfgd init --from ~/existing/machine-config
+```
+
+Only a bare `owner/repo` is expanded. A value whose first segment looks like a
+hostname (`gitlab.example.com/you/config`) is a URL for that host, not a GitHub
+owner, so it is left alone. An existing path always wins: if `you/machine-config`
+names a directory that exists relative to your current directory, cfgd uses that
+directory instead of going to GitHub.
+
 The flow:
 
 1. **Check prerequisites** — verifies git is installed
@@ -155,7 +181,9 @@ If the cloned repo contains both a `cfgd.yaml` (personal config) and a `cfgd-sou
 Use `cfgd source add` to subscribe to additional sources after init:
 
 ```sh
+cfgd source add acme/security-hardening                          # GitHub shorthand
 cfgd source add git@github.com:acme/security-hardening.git
+cfgd source add https://gitlab.example.com/acme/security-hardening.git
 ```
 
 cfgd fetches the manifest, shows the policy breakdown, lets you set a priority, and confirms before subscribing. See [sources.md](sources.md) for details.

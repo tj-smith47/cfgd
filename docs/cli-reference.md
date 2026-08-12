@@ -62,7 +62,9 @@ Initialize a new cfgd configuration repository.
 ```sh
 cfgd init                                          # interactive setup in current directory
 cfgd init ~/dotfiles                               # scaffold in specific directory
+cfgd init --from you/config                        # GitHub shorthand for owner/repo
 cfgd init --from git@github.com:you/config.git     # clone and scaffold
+cfgd init --from https://gitlab.example.com/you/config.git  # any git host
 cfgd init --from ~/existing/config                 # use local config directory
 cfgd init --from <source> --branch dev                # specify branch
 cfgd init --from <source> --apply-profile work-mac    # clone, activate profile, apply
@@ -70,10 +72,16 @@ cfgd init --from <source> --apply-module nvim         # clone, apply just one mo
 cfgd init --from <source> --apply --yes --install-daemon  # full one-liner bootstrap
 ```
 
+`--from` accepts any git URL, a local path, or the GitHub shorthand `owner/repo` —
+all equally supported. Only a bare `owner/repo` is expanded; a value whose first
+segment looks like a hostname (`gitlab.example.com/you/config`) is a URL for that
+host and is passed through untouched, and an existing path always wins over the
+shorthand. The same rule applies to `cfgd apply --from` and `cfgd plan --from`.
+
 | Flag | Description |
 |---|---|
 | `[path]` | Target directory (default: current directory) |
-| `--from <url\|path>` | Config source: git URL to clone, or local path to existing config |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to existing config |
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
@@ -826,13 +834,19 @@ Search configured registries for modules matching a query.
 Manage module registries.
 
 ```sh
+cfgd module registry add cfgd-community/modules            # GitHub shorthand
 cfgd module registry add https://github.com/cfgd-community/modules.git
 cfgd module registry add https://github.com/myorg/modules.git --name myorg
+cfgd module registry add https://gitlab.example.com/myorg/modules.git --name myorg
 cfgd module registry list
 cfgd module registry remove community
 cfgd module registry remove community --ignore-not-found  # exit 0 if absent
 cfgd module registry rename community cfgd-community
 ```
+
+The URL may be any git URL, or the GitHub shorthand `owner/repo`. Only GitHub URLs
+can supply a default registry name (the org), so pass `--name` when adding a
+registry hosted anywhere else.
 
 `module registry remove --ignore-not-found` exits `0` with a no-op message
 instead of the strict not-found error (exit `6`) when the registry is absent.
@@ -849,6 +863,16 @@ cfgd source add git@github.com:acme/dev-config.git \
   --priority 500 \
   --accept-recommended \
   --sync-interval 1h
+```
+
+The URL may be any git URL, a local path, or the GitHub shorthand `owner/repo` —
+all equally supported:
+
+```sh
+cfgd source add acme/dev-config                              # GitHub shorthand
+cfgd source add https://github.com/acme/dev-config.git
+cfgd source add https://gitlab.example.com/acme/dev-config.git
+cfgd source add /path/to/dev-config
 ```
 
 ### `cfgd source list`
@@ -898,7 +922,13 @@ Set or view source priority.
 
 ### `cfgd source replace <old> <new-url>`
 
-Replace one source with another.
+Replace one source with another. The new URL accepts the same forms as
+`cfgd source add` — any git URL, or the GitHub shorthand `owner/repo`.
+
+```sh
+cfgd source replace acme newco/dev-config                    # GitHub shorthand
+cfgd source replace acme https://gitlab.example.com/newco/dev-config.git
+```
 
 ### `cfgd source create`
 

@@ -446,6 +446,23 @@ cfgd module registry list
 cfgd module registry remove community
 ```
 
+A registry URL may be any git URL, or the GitHub shorthand `owner/repo`. Both are
+equally supported — the shorthand is a convenience for GitHub, never a requirement:
+
+```sh
+# GitHub shorthand — expands to https://github.com/cfgd-community/modules.git,
+# and the registry name defaults to the org (`cfgd-community`)
+cfgd module registry add cfgd-community/modules
+
+# Any git URL, on any host. Only GitHub URLs can supply a default name, so
+# name a registry on another host with --name
+cfgd module registry add https://gitlab.example.com/myorg/modules.git --name myorg
+cfgd module registry add git@git.example.com:myorg/modules.git --name myorg
+```
+
+A value whose first segment looks like a hostname (`gitlab.example.com/myorg/modules`)
+is a URL for that host, not a GitHub owner, so it is passed through untouched.
+
 ### Registry Tag Convention
 
 Registries use per-module git tags in the format `<module>/<version>` — for example, `tmux/v1.0.0`, `nvim/v2.3.1`. This allows a single git repo to host multiple modules with independent version histories. When you install a module at a specific version, cfgd checks out the tag matching that module name.
@@ -673,7 +690,9 @@ cfgd apply --dry-run --module nvim  # preview module changes
 ### Bootstrap a Single Module
 
 ```sh
+cfgd init --from jane/dotfiles --module nvim                       # GitHub shorthand
 cfgd init --from git@github.com:jane/dotfiles.git --module nvim
+cfgd init --from https://gitlab.example.com/jane/dotfiles.git --module nvim
 ```
 
 Clones the repo, finds the module, resolves deps, detects platform, and applies just that module.

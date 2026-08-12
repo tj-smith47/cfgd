@@ -497,28 +497,90 @@ fn pick_profile_no_dir_errors() {
 }
 
 #[test]
-fn is_git_source_detects_urls() {
-    assert!(is_git_source("https://github.com/user/repo"));
-    assert!(is_git_source("http://github.com/user/repo"));
-    assert!(is_git_source("git@github.com:user/repo.git"));
-    assert!(is_git_source("ssh://git@github.com/user/repo"));
-    assert!(is_git_source("git://github.com/user/repo"));
-    assert!(is_git_source("/some/local/path.git"));
+fn is_clonable_source_detects_urls() {
+    assert!(is_clonable_source("https://github.com/user/repo"));
+    assert!(is_clonable_source("http://github.com/user/repo"));
+    assert!(is_clonable_source("git@github.com:user/repo.git"));
+    assert!(is_clonable_source("ssh://git@github.com/user/repo"));
+    assert!(is_clonable_source("git://github.com/user/repo"));
+    assert!(is_clonable_source("/some/local/path.git"));
 }
 
 #[test]
-fn is_git_source_detects_local_git_repo() {
+fn is_clonable_source_detects_local_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
-    assert!(is_git_source(&dir.path().display().to_string()));
+    assert!(is_clonable_source(&dir.path().display().to_string()));
 }
 
 #[test]
-fn is_git_source_rejects_plain_paths() {
-    assert!(!is_git_source("/home/user/config"));
-    assert!(!is_git_source("~/my-config"));
-    assert!(!is_git_source("./relative/path"));
-    assert!(!is_git_source("config"));
+fn is_clonable_source_rejects_plain_paths() {
+    assert!(!is_clonable_source("/home/user/config"));
+    assert!(!is_clonable_source("~/my-config"));
+    assert!(!is_clonable_source("./relative/path"));
+    assert!(!is_clonable_source("config"));
+}
+
+// ─── resolve_from_value — GitHub shorthand vs existing path ────────────────
+
+#[test]
+fn resolve_from_value_expands_github_shorthand() {
+    assert_eq!(
+        resolve_from_value("acme/machine-config"),
+        "https://github.com/acme/machine-config.git"
+    );
+}
+
+#[test]
+fn resolve_from_value_expanded_shorthand_is_clonable() {
+    assert!(is_clonable_source(&resolve_from_value("acme/config")));
+}
+
+#[test]
+fn resolve_from_value_passes_through_full_urls() {
+    for value in [
+        "https://gitlab.example.com/acme/config.git",
+        "git@github.com:acme/config.git",
+        "ssh://git@git.example.com/acme/config.git",
+        "gitlab.com/acme/config",
+    ] {
+        assert_eq!(resolve_from_value(value), value, "value: {value}");
+    }
+}
+
+#[test]
+fn resolve_from_value_existing_path_wins_over_shorthand() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("acme").join("config");
+    std::fs::create_dir_all(&nested).unwrap();
+    let as_written = nested.display().to_string();
+    assert_eq!(
+        resolve_from_value(&as_written),
+        as_written,
+        "an existing path must never be expanded into a GitHub URL"
+    );
+}
+
+#[test]
+fn resolve_from_value_existing_relative_path_wins_over_shorthand() {
+    let dir = tempfile::tempdir().unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+    std::fs::create_dir_all(dir.path().join("acme").join("config")).unwrap();
+    assert_eq!(
+        resolve_from_value("acme/config"),
+        "acme/config",
+        "a relative path that exists must stay a path"
+    );
+}
+
+#[test]
+fn resolve_from_value_expands_when_no_such_path_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+    assert_eq!(
+        resolve_from_value("acme/config"),
+        "https://github.com/acme/config.git"
+    );
 }
 
 #[test]
@@ -1112,45 +1174,45 @@ fn resolve_from_nonexistent_path_fails() {
     );
 }
 
-// ─── is_git_source — comprehensive coverage ────────────────
+// ─── is_clonable_source — comprehensive coverage ────────────────
 
 #[test]
-fn is_git_source_https() {
-    assert!(is_git_source("https://github.com/user/repo"));
-    assert!(is_git_source("https://github.com/user/repo.git"));
+fn is_clonable_source_https() {
+    assert!(is_clonable_source("https://github.com/user/repo"));
+    assert!(is_clonable_source("https://github.com/user/repo.git"));
 }
 
 #[test]
-fn is_git_source_ssh() {
-    assert!(is_git_source("ssh://git@github.com/user/repo"));
-    assert!(is_git_source("git@github.com:user/repo.git"));
+fn is_clonable_source_ssh() {
+    assert!(is_clonable_source("ssh://git@github.com/user/repo"));
+    assert!(is_clonable_source("git@github.com:user/repo.git"));
 }
 
 #[test]
-fn is_git_source_git_protocol() {
-    assert!(is_git_source("git://github.com/user/repo"));
+fn is_clonable_source_git_protocol() {
+    assert!(is_clonable_source("git://github.com/user/repo"));
 }
 
 #[test]
-fn is_git_source_dot_git_suffix() {
-    assert!(is_git_source("anything.git"));
+fn is_clonable_source_dot_git_suffix() {
+    assert!(is_clonable_source("anything.git"));
 }
 
 #[test]
-fn is_git_source_local_plain_dir_not_git() {
+fn is_clonable_source_local_plain_dir_not_git() {
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        !is_git_source(&dir.path().display().to_string()),
+        !is_clonable_source(&dir.path().display().to_string()),
         "plain directory without .git should not be a git source"
     );
 }
 
 #[test]
-fn is_git_source_local_git_repo() {
+fn is_clonable_source_local_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".git")).unwrap();
     assert!(
-        is_git_source(&dir.path().display().to_string()),
+        is_clonable_source(&dir.path().display().to_string()),
         "directory with .git should be a git source"
     );
 }
@@ -1397,37 +1459,37 @@ fn count_packages_apt_and_cargo() {
     assert_eq!(count_packages(&spec), 3);
 }
 
-// ─── is_git_source — additional edge cases ────────────────────
+// ─── is_clonable_source — additional edge cases ────────────────────
 
 #[test]
-fn is_git_source_http_url() {
-    assert!(is_git_source("http://internal.host/repo"));
+fn is_clonable_source_http_url() {
+    assert!(is_clonable_source("http://internal.host/repo"));
 }
 
 #[test]
-fn is_git_source_empty_string() {
-    assert!(!is_git_source(""));
+fn is_clonable_source_empty_string() {
+    assert!(!is_clonable_source(""));
 }
 
 #[test]
-fn is_git_source_relative_path_not_git() {
-    assert!(!is_git_source("relative/path"));
+fn is_clonable_source_relative_path_not_git() {
+    assert!(!is_clonable_source("relative/path"));
 }
 
 #[test]
-fn is_git_source_dot_git_middle_not_matched_as_suffix() {
+fn is_clonable_source_dot_git_middle_not_matched_as_suffix() {
     // Only .git at the END matters
-    assert!(!is_git_source("something.github"));
+    assert!(!is_clonable_source("something.github"));
 }
 
 #[test]
-fn is_git_source_bare_name_not_git() {
-    assert!(!is_git_source("myconfig"));
+fn is_clonable_source_bare_name_not_git() {
+    assert!(!is_clonable_source("myconfig"));
 }
 
 #[test]
-fn is_git_source_file_ending_in_dot_git() {
-    assert!(is_git_source("file:///path/to/repo.git"));
+fn is_clonable_source_file_ending_in_dot_git() {
+    assert!(is_clonable_source("file:///path/to/repo.git"));
 }
 
 // ─── resolve_from — additional cases ──────────────────────────
@@ -4066,7 +4128,7 @@ mod enroll_mockito {
 //
 // These tests drive `cmd_init` with `args.from = Some(<file:// URL>)` to
 // exercise the clone-from-URL orchestration path. The `cli/init/source.rs`
-// `is_git_source` predicate matches any value ending in `.git`, so a bare
+// `is_clonable_source` predicate matches any value ending in `.git`, so a bare
 // repo at `<tmp>/upstream.git` works without an env var gate.
 
 #[cfg(unix)]
@@ -4077,7 +4139,7 @@ mod cmd_init_from_local_bare {
     /// Initialise a bare upstream + a working source repo, commit a populated
     /// cfgd config tree (cfgd.yaml + profiles/default.yaml), and push the
     /// branch to the bare. Returns the bare path that ends in `.git` — so
-    /// `is_git_source` treats `file://<bare>` as a clonable git source.
+    /// `is_clonable_source` treats `file://<bare>` as a clonable git source.
     fn make_bare_config_repo(tmp_root: &Path) -> PathBuf {
         let bare = tmp_root.join("upstream.git");
         let _bare_repo = git2::Repository::init_bare(&bare).unwrap();

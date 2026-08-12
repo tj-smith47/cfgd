@@ -8,6 +8,10 @@ pub fn cmd_source_replace(
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {
+    // Expanded here as well as in `cmd_source_add` (the expansion is
+    // idempotent) so the success line and its structured payload report the
+    // URL that was actually subscribed to, not the shorthand.
+    let new_url = &*cfgd_core::expand_github_shorthand(new_url);
     printer.heading(format!("Replace {}", Owner::source(old_name).token()));
 
     // Capture old source's profile and priority before removing
