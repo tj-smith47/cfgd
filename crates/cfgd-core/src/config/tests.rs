@@ -2172,6 +2172,47 @@ spec:
     );
 }
 
+/// `REMOVED_THEME_KEYS` and `RENAMED_THEME_KEYS` are hand-maintained strings
+/// describing `ThemeOverrides`, not values read off the struct — nothing stops
+/// them drifting the moment a field they name is re-added, renamed again, or
+/// dropped. This derives the struct's live field set from its own `schemars`
+/// schema (never restating the fields by hand) and cross-checks both lists
+/// against it, so a rename or a field coming back under an old name fails here
+/// instead of silently mis-warning users forever.
+#[test]
+fn legacy_theme_key_lists_stay_consistent_with_theme_overrides_schema() {
+    let schema = serde_json::to_value(schemars::schema_for!(super::ThemeOverrides))
+        .expect("ThemeOverrides schema serializes to a Value");
+    let live_fields: std::collections::BTreeSet<&str> = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("ThemeOverrides schema carries a properties object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+
+    for old in super::parse::REMOVED_THEME_KEYS {
+        assert!(
+            !live_fields.contains(old),
+            "REMOVED_THEME_KEYS names '{old}', but ThemeOverrides has a live field \
+             called '{old}' — the field came back and the deprecation notice is now a \
+             false alarm; drop it from REMOVED_THEME_KEYS"
+        );
+    }
+    for (old, new) in super::parse::RENAMED_THEME_KEYS {
+        assert!(
+            !live_fields.contains(old),
+            "RENAMED_THEME_KEYS names '{old}' as a legacy spelling, but ThemeOverrides \
+             has a live field called '{old}' — the field came back under its old name"
+        );
+        assert!(
+            live_fields.contains(new),
+            "RENAMED_THEME_KEYS points '{old}' at '{new}', but ThemeOverrides has no \
+             live field called '{new}' — the rename target itself has since moved"
+        );
+    }
+}
+
 /// Resolve the primary package list a bare-list form should populate, for a
 /// given manager field name, so the table test can assert both forms agree.
 fn primary_list_for(spec: &PackagesSpec, manager: &str) -> Vec<String> {

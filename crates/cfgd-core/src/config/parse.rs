@@ -56,14 +56,32 @@ pub(super) fn check_yaml_anchor_limit(contents: &str, context: &Path) -> Result<
     Ok(())
 }
 
+/// Keys `ThemeOverrides` used to accept and no longer does, with no replacement.
+/// `iconInfo` briefly lived here after the field it names was actually dropped
+/// from the struct, then silently went stale when the field was re-added
+/// (`97aaa2eb`) — nothing re-checked this list against the struct it describes.
+/// `theme_key_lists_stay_consistent_with_theme_overrides_schema` in `tests.rs`
+/// derives the struct's live field set from its own `schemars` schema and
+/// fails if an entry here (or in [`RENAMED_THEME_KEYS`]) is contradicted by it,
+/// so this list can no longer drift unnoticed.
+pub(super) const REMOVED_THEME_KEYS: &[&str] = &["subheader", "key", "value"];
+
+/// Keys `ThemeOverrides` renamed, oldest name first. See [`REMOVED_THEME_KEYS`]
+/// for why both sides of every pair are checked against the live struct.
+pub(super) const RENAMED_THEME_KEYS: &[(&str, &str)] = &[
+    ("iconSuccess", "iconOk"),
+    ("iconWarning", "iconWarn"),
+    ("iconError", "iconFail"),
+];
+
 /// Collect a deprecation message for every legacy `theme.overrides.*` key present
-/// in the raw YAML. Removed keys (subheader/key/value/iconInfo) and renamed keys
-/// (iconSuccess→iconOk, iconWarning→iconWarn, iconError→iconFail) are silently
-/// dropped by `ThemeOverrides`'s typed deserialize; this pre-pass surfaces them
-/// so users can migrate their `cfgd.yaml` instead of wondering why an override
-/// did nothing. Returns the messages rather than logging them directly: this is
-/// a core function with many callers, none of which hold a `Printer`, so the
-/// caller that owns a terminal drains the result through `printer.deprecation()`.
+/// in the raw YAML. Removed keys ([`REMOVED_THEME_KEYS`]) and renamed keys
+/// ([`RENAMED_THEME_KEYS`]) are silently dropped by `ThemeOverrides`'s typed
+/// deserialize; this pre-pass surfaces them so users can migrate their
+/// `cfgd.yaml` instead of wondering why an override did nothing. Returns the
+/// messages rather than logging them directly: this is a core function with
+/// many callers, none of which hold a `Printer`, so the caller that owns a
+/// terminal drains the result through `printer.deprecation()`.
 pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
     let mut messages = Vec::new();
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(raw_yaml) else {
@@ -77,23 +95,16 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
         return messages;
     };
 
-    let removed_keys = ["subheader", "key", "value", "iconInfo"];
-    let renamed_keys = [
-        ("iconSuccess", "iconOk"),
-        ("iconWarning", "iconWarn"),
-        ("iconError", "iconFail"),
-    ];
-
-    for k in removed_keys {
-        if m.contains_key(serde_yaml::Value::String(k.into())) {
+    for k in REMOVED_THEME_KEYS {
+        if m.contains_key(serde_yaml::Value::String((*k).into())) {
             messages.push(format!(
                 "config: theme.overrides.{k} is no longer supported (capability removed in v0.4); \
                  the field will be ignored. Remove it from your cfgd.yaml."
             ));
         }
     }
-    for (old, new) in renamed_keys {
-        if m.contains_key(serde_yaml::Value::String(old.into())) {
+    for (old, new) in RENAMED_THEME_KEYS {
+        if m.contains_key(serde_yaml::Value::String((*old).into())) {
             messages.push(format!(
                 "config: theme.overrides.{old} is renamed to {new}; \
                  the old name still works for now but will be removed in a future release."
