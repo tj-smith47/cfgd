@@ -921,6 +921,15 @@ fn execute_script_inner(
                 // Wait for reader threads to finish draining
                 let _ = stdout_handle.join();
                 let _ = stderr_handle.join();
+                // A script that exits between two loop iterations leaves its
+                // lines queued in the channel: the drain above ran before the
+                // readers had them, and `try_wait` then answered. Without this
+                // final drain a fast script's body is complete in `captured`
+                // and absent from the window/lane the reader is watching — the
+                // faster the script, the likelier it renders nothing at all.
+                for line in rx.try_iter() {
+                    st.push_line(&line);
+                }
 
                 let stdout_str = std::sync::Arc::try_unwrap(stdout_buf)
                     .ok()
@@ -969,6 +978,11 @@ fn execute_script_inner(
                     && let Some(a) = abort
                     && a.aborted().is_some()
                 {
+                    // Settling closes the window, so anything already queued
+                    // has to be shown first or it is dropped unrendered.
+                    for line in rx.try_iter() {
+                        st.push_line(&line);
+                    }
                     st.finish_fail("interrupted", Some(elapsed));
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
@@ -978,6 +992,9 @@ fn execute_script_inner(
                     }));
                 }
                 if let Some((reason, duration)) = kill_reason {
+                    for line in rx.try_iter() {
+                        st.push_line(&line);
+                    }
                     st.finish_fail(
                         &format!("{reason} after {}s", duration.as_secs()),
                         Some(elapsed),
