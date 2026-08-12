@@ -152,6 +152,62 @@ check_pattern error \
     'use (console|indicatif|syntect)::' \
     'output/'
 
+log_section "User-Facing Advisories (config/module/source parse+load paths)"
+# tracing::warn!/error! is invisible without RUST_LOG — an advisory routed
+# there is one the user never sees. This is what happened to
+# warn_on_legacy_theme_keys before it was rerouted through
+# CfgdConfig.deprecations + printer.deprecation() (see output-module.md).
+#
+# Anchored on the PARSE/LOAD FUNCTION SIGNATURE (`fn (parse|load)_<name>(`),
+# not on a file path or line range: brace-depth walking (same trick as
+# strip_test_blocks_from_file) finds the span of every function whose name
+# starts with parse_ or load_ and scans only inside it, so the gate survives
+# that function moving to a different file within the three domains below, a
+# sibling function being added around it, or the file being renamed. Directory
+# scope names the three domains whose whole job is turning user-authored
+# YAML/TOML into cfgd's typed config — parse_/load_ elsewhere (parse_env_var,
+# parse_duration_str, …) are ordinary utility parsers with no advisory to
+# surface, and the separate "Config Parsing Boundary" gate above already
+# confines config-struct parsing to these directories, so a function that
+# legitimately does user-facing config parsing cannot migrate outside this
+# scope without tripping that gate first.
+#
+# Escape hatch (mirrors native-ok / spawn-blocking-ok): a genuinely internal
+# diagnostic — one no interactive user is meant to read — stays legal when the
+# call line or the line directly above it carries
+#   // tracing-ok: <why this diagnostic is not user-facing>
+advisory_scope_dirs=(crates/cfgd-core/src/config crates/cfgd-core/src/modules crates/cfgd-core/src/sources)
+advisory_violations=""
+while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+    esac
+    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk '
+        /fn[[:space:]]+(parse|load)_[A-Za-z0-9_]*[[:space:]]*\(/ && !in_fn {
+            in_fn = 1; depth = 0; started = 0
+        }
+        in_fn {
+            opens = gsub(/{/, "{")
+            closes = gsub(/}/, "}")
+            depth += opens - closes
+            if (depth > 0) started = 1
+            if (/tracing::(warn|error)!/ && !/tracing-ok:/ && prev !~ /tracing-ok:/) { print }
+            if (started && depth <= 0) { in_fn = 0 }
+        }
+        { prev = $0 }
+    ')
+    if [[ -n "$file_hits" ]]; then
+        advisory_violations="${advisory_violations}${file_hits}"$'\n'
+    fi
+done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
+advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
+if [[ -n "$advisory_violations" ]]; then
+    log_error "tracing::warn!/error! inside a config/module/source parse_*/load_* function (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
+    echo "$advisory_violations" | head -20
+else
+    log_ok "No tracing::warn!/error! inside config/module/source parse_*/load_* functions"
+fi
+
 log_section "Controlled Shell Execution"
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run (controlled execution layer for progress UI)

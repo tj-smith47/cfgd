@@ -97,3 +97,34 @@ a surface only `Enforce` reaches needs nothing.
 Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in
 `.claude/rules/structured-output-coverage.md`; `.claude/scripts/audit.sh`
 fails when one is missing.
+
+## No `tracing::warn!`/`tracing::error!` for a user-facing advisory in a parse/load function
+
+Banned inside any `fn parse_*` / `fn load_*` under `crates/cfgd-core/src/config/`,
+`crates/cfgd-core/src/modules/`, or `crates/cfgd-core/src/sources/` — the three
+domains whose whole job is turning user-authored YAML/TOML into cfgd's typed
+config. `tracing::warn!`/`tracing::error!` writes to a channel that's invisible
+without `RUST_LOG` set; a legacy-key deprecation, an ambiguous-profile notice,
+or a malformed-manifest warning routed there is an advisory the user never
+sees, the exact bug `warn_on_legacy_theme_keys` shipped with before it was
+rerouted (see `parse::REMOVED_THEME_KEYS` / `RENAMED_THEME_KEYS`).
+
+Use instead: collect the message into a `Vec<String>` the caller can drain
+through `printer.deprecation(text)` (or `printer.alert(text)` for a run-affecting
+notice) at the command boundary that actually owns a terminal — these core
+functions have many callers, none of which hold a `Printer`. `parse_config`'s
+`CfgdConfig.deprecations` field (`#[serde(skip)]`, drained once per command via
+`crates/cfgd/src/cli/helpers.rs`) is the working example to extend, not to
+reinvent per call site.
+
+`.claude/scripts/audit.sh` enforces this anchored on the PARSE/LOAD FUNCTION
+SIGNATURE, not on a file path or line range — a brace-depth walk finds the span
+of every `parse_*`/`load_*` function and scans only inside it, so the gate
+survives the function moving to a different file within those three domains.
+Escape hatch for a genuinely internal diagnostic (one no interactive user is
+meant to read) — mirrors `native-ok:` / `spawn-blocking-ok:` — mark the call
+line or the line directly above it:
+
+```rust
+tracing::warn!("cache miss for {}", key); // tracing-ok: internal cache-timing diagnostic, not user-facing
+```
