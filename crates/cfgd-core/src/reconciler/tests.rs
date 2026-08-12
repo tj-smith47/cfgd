@@ -4819,7 +4819,9 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(jb_g, 0, None, None).unwrap();
+    // The completion counter is monotonic within a run, so two rows of one
+    // apply can never share an index.
+    state.journal_complete(jb_g, 1, None, None).unwrap();
     std::fs::write(&g, "g-content").unwrap();
 
     // Post-apply snapshots for B.
@@ -17609,6 +17611,41 @@ fn a_script_install_reports_through_its_lane() {
         status_line_count(&outcome.transcript),
         1,
         "the action's one status line is the coordinator's: {lines:?}"
+    );
+}
+
+#[test]
+fn a_failing_laned_script_install_reports_its_own_exit_status() {
+    // Inside a lane the script settles no line of its own, so the coordinator's
+    // is the ONLY one the reader gets. A mapped error that discarded the
+    // script's message would open with "something failed" and say nothing about
+    // what — the captured body below it is not a substitute for the first line.
+    let plan = packages_phase(vec![module_script_install_action(
+        "nvim", "pynvim", "exit 3",
+    )]);
+    let mut module = make_resolved_module("nvim");
+    module.packages = vec![script_resolved_package("pynvim", "exit 3")];
+
+    let outcome = ConcurrentApply::new(lane_registry(vec![]), plan)
+        .with_modules(vec![module])
+        .run(|| {});
+
+    assert_eq!(outcome.result.status, ApplyStatus::Failed);
+    let failure = outcome
+        .result
+        .action_results
+        .iter()
+        .find(|r| !r.success)
+        .and_then(|r| r.error.clone())
+        .unwrap_or_else(|| panic!("no failed action in {:?}", outcome.result.action_results));
+    assert!(
+        failure.contains("exit 3"),
+        "the coordinator's error carries the script's own exit status: {failure}"
+    );
+    let settled = crate::test_helpers::settled_status_lines(&outcome.transcript);
+    assert!(
+        settled.iter().any(|l| l.contains("exit 3")),
+        "and reaches the action's status line: {settled:?}"
     );
 }
 

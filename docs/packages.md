@@ -88,9 +88,11 @@ packages:
 ```
 
 An install that has to bootstrap its manager first runs alone: the `Packages`
-phase otherwise runs one lane per manager concurrently, but it drains around a
-manager that is not yet on `PATH`, so nothing can start before the prefix it
-would need exists.
+phase otherwise runs one lane per manager family concurrently, but it drains
+around a manager that is not yet on `PATH`, so nothing can start before the
+prefix it would need exists. The lane is per *family* rather than per name
+because `brew`, `brew-tap` and `brew-cask` drive one binary — formulae, taps and
+casks queue behind each other so only one `brew` process ever runs.
 
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)) and the generated env file, so a

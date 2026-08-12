@@ -24,8 +24,10 @@
 //!    bootstrap, which is the one intra-tier edge in the phase.
 //! 3. **Module `depends`** — a module's package work waits for every action of
 //!    its transitive dependencies.
-//! 4. **The per-manager lane** — at most one action per manager is in flight,
-//!    so the maximum parallelism is the number of distinct managers.
+//! 4. **The per-family lane** — at most one action per manager FAMILY is in
+//!    flight, so the maximum parallelism is the number of distinct families.
+//!    `brew`, `brew-tap` and `brew-cask` are one binary and share a lane; the
+//!    key is [`Slot::lane`], never the registered name.
 //! 5. **The owner's turn** — an owner already holding a lane takes a second one
 //!    only after every other owner with ready work has taken one. So a module
 //!    declaring brew and apt work takes brew while another module holds apt,
@@ -408,10 +410,18 @@ struct WaitInputs<'a, 'p> {
 }
 
 /// The wait bars currently on screen, each keyed by what replaces it: a group's
-/// by its owner token, an action's by its slot.
+/// by its owner token, an action's by the `(owner token, lane)` pair its
+/// sentence is built from.
+///
+/// That pair and not the slot index, because the pair IS the sentence: one
+/// owner with formulae, taps and casks all held behind a running `brew` has
+/// three blocked slots and one thing to say, and three byte-identical live
+/// lines would be three claims where there is one fact. Cardinality is still
+/// per blocked action wherever the actions differ — an owner blocked on `apt`
+/// and on `brew` keeps two bars, because those are two sentences.
 struct WaitBars<'p> {
     groups: HashMap<String, WaitBar<'p>>,
-    actions: HashMap<usize, WaitBar<'p>>,
+    actions: HashMap<(String, String), WaitBar<'p>>,
 }
 
 /// Every distinct owner in the phase, in the order the dispatch offers them,
@@ -566,6 +576,14 @@ impl super::Reconciler<'_> {
                         },
                         &mut bars,
                     );
+                } else {
+                    // Nothing new will dispatch after an abort, so every wait
+                    // line still on screen is a claim about work that will
+                    // never start. Cleared once here rather than per collected
+                    // action, because the refresh that would retire them is
+                    // itself skipped while aborting.
+                    bars.groups.clear();
+                    bars.actions.clear();
                 }
 
                 if running == 0 {
@@ -605,7 +623,6 @@ impl super::Reconciler<'_> {
                             lanes_busy.remove(lane);
                         }
                         owners_busy.remove(&slots[index].owner.token());
-                        bars.actions.remove(&index);
                         self.persist_bootstraps(done.bootstrapped);
                         collect(
                             slots[index].action,
@@ -700,7 +717,7 @@ fn refresh_wait_bars<'x>(
         }
     }
 
-    let mut blocked: HashMap<usize, String> = HashMap::new();
+    let mut blocked: HashMap<(String, String), String> = HashMap::new();
     for (index, slot) in slots.iter().enumerate() {
         if slot.state != SlotState::Waiting || Some(slot.tier) != in_flight {
             continue;
@@ -718,16 +735,22 @@ fn refresh_wait_bars<'x>(
         };
         if inputs.lanes_busy.contains(lane) {
             // The lane, not the registered name: an action for `brew-cask`
-            // held back by a running `brew` is waiting on brew.
-            blocked.insert(index, wait_subject(slot.owner, lane));
+            // held back by a running `brew` is waiting on brew. Keying on
+            // `(owner, lane)` collapses the several actions of one owner that
+            // are all held behind the same binary into the one line they all
+            // say.
+            blocked.insert(
+                (slot.owner.token(), lane.to_string()),
+                wait_subject(slot.owner, lane),
+            );
         }
     }
-    bars.actions.retain(|index, _| blocked.contains_key(index));
-    for (index, subject) in blocked {
-        match bars.actions.get(&index) {
+    bars.actions.retain(|key, _| blocked.contains_key(key));
+    for (key, subject) in blocked {
+        match bars.actions.get(&key) {
             Some(bar) => bar.set_subject(&subject),
             None => {
-                bars.actions.insert(index, printer.wait_bar(&subject));
+                bars.actions.insert(key, printer.wait_bar(&subject));
             }
         }
     }
@@ -1070,6 +1093,45 @@ mod tests {
         );
 
         assert_eq!(on_screen(&bars), vec!["profile:work · waiting on brew"]);
+    }
+
+    #[test]
+    fn one_owners_actions_behind_one_family_share_a_single_line() {
+        // Formulae, taps and casks all queue behind one `brew` process, so the
+        // owner has three blocked actions and exactly one thing to say. Keyed
+        // by slot the live region would repeat `waiting on brew` three times,
+        // character for character. A second lane still earns its own line —
+        // the collapse is of identical sentences, not of blocked actions.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let profile = Owner::profile("work");
+        let action = probe_action();
+        let mut slots = vec![
+            slot(&profile, Tier::Rest, "brew", &action),
+            slot(&profile, Tier::Rest, "brew-tap", &action),
+            slot(&profile, Tier::Rest, "brew-cask", &action),
+            slot(&profile, Tier::Rest, "apt", &action),
+        ];
+        slots[0].state = SlotState::Running;
+        let groups = groups_of(&slots);
+        let mut bars = empty_bars();
+
+        refresh(
+            &printer,
+            &slots,
+            &groups,
+            &HashMap::new(),
+            &busy(&["brew", "apt"]),
+            &mut bars,
+        );
+
+        assert_eq!(
+            on_screen(&bars),
+            vec![
+                "profile:work · waiting on apt",
+                "profile:work · waiting on brew",
+            ]
+        );
+        assert_eq!(bars.actions.len(), 2, "no line is drawn twice");
     }
 
     #[test]

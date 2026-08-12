@@ -357,11 +357,22 @@ impl<'x> PackageExec<'x> {
                                 ..ScriptReport::default()
                             },
                         )
-                        .map_err(|_| {
+                        .map_err(|e| {
+                            // The script's own message is carried rather than
+                            // discarded: inside a lane this error IS the status
+                            // line, because the script settles none of its own,
+                            // so dropping it leaves the first line the reader
+                            // sees saying only that something failed. Its FIRST
+                            // line only — the tail is the captured script
+                            // output, which already renders as the action's
+                            // body, and a status detail that repeated it would
+                            // put a whole build log on one line.
+                            let rendered = e.to_string();
+                            let cause = rendered.lines().next().unwrap_or_default().trim();
                             crate::errors::CfgdError::Config(ConfigError::Invalid {
                                 message: format!(
-                                    "module {} install script for '{}' failed",
-                                    action.module_name, pkg.canonical_name
+                                    "module {} install script for '{}' failed: {cause}",
+                                    action.module_name, pkg.canonical_name,
                                 ),
                             })
                         })?;
@@ -417,8 +428,13 @@ impl<'x> PackageExec<'x> {
     }
 }
 
-/// The lane key an action's work occupies, which is the manager whose binary it
-/// drives. `None` for an action that runs no manager command at all.
+/// The REGISTERED name of the manager an action's work drives. `None` for an
+/// action that runs no manager command at all.
+///
+/// Not the lane key: the lane is the name's family (`Slot::lane`), so that
+/// `brew-cask` queues behind `brew`. This name is what display, the journal and
+/// the availability sub-gate use, all three of which have to name the manager
+/// the user declared rather than the binary underneath it.
 ///
 /// A `prefer: [script]` module install keys on the literal `script`, the same
 /// pseudo-manager name the planner grouped it under: two of them do run

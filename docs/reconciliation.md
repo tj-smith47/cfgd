@@ -42,8 +42,11 @@ package that needs it. Everywhere else, execution follows the displayed order.
 
 Those three groups are also a barrier: a group starts only once every action in the group
 above it has *finished*. Inside a group, package work runs **concurrently — one lane per
-package manager**, so `brew install` and `apt install` proceed at the same time while a
-single manager still runs one operation at a time. Two more rules narrow that:
+package manager family**, so `brew install` and `apt install` proceed at the same time
+while a single manager still runs one operation at a time. A *family* is the managers
+sharing one binary: `brew`, `brew-tap` and `brew-cask` are three names for one `brew`, so
+they share a lane and cfgd never runs two `brew` processes at once. Two more rules narrow
+that:
 
 - A module's packages wait for the packages of every module it `depends` on.
 - An action for a manager cfgd has to install first drains the phase: it runs alone, and
