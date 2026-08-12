@@ -643,6 +643,7 @@ pub(crate) fn handle_reconcile(
                                 crate::reconciler::ScriptPhase::OnDrift.display_name(),
                             ),
                             non_fatal: true,
+                            ..Default::default()
                         },
                     ) {
                         Ok((desc, _, _)) => {
@@ -691,6 +692,7 @@ pub(crate) fn handle_reconcile(
                                 crate::reconciler::ScriptPhase::OnDrift.display_name(),
                             ),
                             non_fatal: true,
+                            ..Default::default()
                         },
                     ) {
                         Ok((desc, _, _)) => {

@@ -1,6 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{FileStrategy, LOCAL_LAYER};
+use cfgd_core::manager_family;
 use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
@@ -1164,16 +1165,6 @@ impl BootstrapRemovals {
             self.patterns.push(p.to_string());
         }
     }
-}
-
-/// The manager family a package manager belongs to.
-///
-/// A sub-manager (`brew-tap`, `brew-cask`) has no bootstrap of its own and
-/// answers `is_available()` with its parent's, so it is stranded by the parent's
-/// removal. This is the same key `plan_packages` uses to plan a sub-manager's
-/// install alongside its parent's bootstrap.
-fn manager_family(manager: &str) -> &str {
-    manager.split('-').next().unwrap_or(manager)
 }
 
 /// Warn when filtering removed a bootstrap but left installs that need the

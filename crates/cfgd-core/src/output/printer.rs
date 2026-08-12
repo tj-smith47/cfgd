@@ -60,6 +60,13 @@ pub struct Printer {
     /// stderr. The CLI entrypoint reads it via `had_output_error` after dispatch
     /// to exit non-zero — the failure has already been reported on stderr.
     pub(crate) output_error: AtomicBool,
+    /// Whether this printer has a live region — a terminal it can repaint in
+    /// place. Decided ONCE, at construction, from the stderr it will actually
+    /// write to, rather than re-read from the process at each bar: a printer
+    /// whose sink is a capture buffer has no live region no matter what the
+    /// process's own stderr is, and the test that must exercise the repainting
+    /// path needs one no matter what the suite was invoked from.
+    pub(crate) live_region: bool,
     /// When set (via `--list-envelope` / `CFGD_LIST_ENVELOPE`), a top-level JSON
     /// array emitted under `-o json`/`-o yaml` is wrapped in a KRM List envelope
     /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
@@ -142,6 +149,7 @@ impl Printer {
             test_doc_capture: None,
             prompt_queue: None,
             output_error: AtomicBool::new(false),
+            live_region: super::spinner::stderr_is_terminal(),
             list_envelope: false,
         }
     }
@@ -373,7 +381,7 @@ impl Printer {
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
-            self.verbosity(),
+            self.live_bars(),
             depth,
             &message,
         );
@@ -399,7 +407,7 @@ impl Printer {
             &self.multi_progress,
             &self.renderer,
             total,
-            self.verbosity(),
+            self.live_bars(),
             &message.into(),
         );
         super::spinner::ProgressBar {

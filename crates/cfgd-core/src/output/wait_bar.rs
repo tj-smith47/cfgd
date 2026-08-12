@@ -20,7 +20,7 @@ use super::renderer::{LiveBarGuard, Renderer, role_glyph};
 
 /// One live-region wait line. Replace its subject with [`WaitBar::set_subject`]
 /// as the thing being waited on changes; drop it when the wait ends.
-pub struct WaitBar<'p> {
+pub(crate) struct WaitBar<'p> {
     bar: IndProgressBar,
     renderer: Arc<Renderer>,
     /// Held for the bar's lifetime so the renderer's live-bar count tracks it.
@@ -34,8 +34,16 @@ impl WaitBar<'_> {
     ///
     /// Replacement rather than a second bar: a group waits on one thing at a
     /// time, and stacking the chain would leave superseded claims on screen.
-    pub fn set_subject(&self, subject: &str) {
+    pub(crate) fn set_subject(&self, subject: &str) {
         self.bar.set_message(self.compose(subject));
+    }
+
+    /// What the line currently says, without styling — the live region's own
+    /// state, so a scheduler test can assert on the bars it produced rather
+    /// than on the inputs it fed them.
+    #[cfg(test)]
+    pub(crate) fn subject(&self) -> String {
+        super::strip_ansi(&self.bar.message())
     }
 
     /// `<glyph> <subject>`, both from the theme. The glyph is never written at
@@ -70,8 +78,8 @@ impl super::Printer {
     /// under `Verbosity::Quiet`, the returned bar is hidden and every call on
     /// it is inert.
     #[must_use]
-    pub fn wait_bar(&self, subject: &str) -> WaitBar<'_> {
-        let (bar, live) = if super::spinner::live_bars_available(self.verbosity()) {
+    pub(crate) fn wait_bar(&self, subject: &str) -> WaitBar<'_> {
+        let (bar, live) = if self.live_bars() {
             let bar = self.multi_progress.add(IndProgressBar::new_spinner());
             // No `{spinner}`: a wait line is not progress, and an animated
             // frame beside a static "waiting on" reads as work happening.
@@ -100,16 +108,15 @@ mod tests {
 
     #[test]
     fn off_a_tty_the_wait_bar_is_hidden_and_writes_nothing() {
-        // `wait_bar` measures this process's own stderr, so the hidden form
-        // exists only where the suite was invoked off a terminal. The gate is
-        // the same predicate the production code uses, rather than a stand-in.
-        if crate::test_helpers::live_region_available() {
-            return;
-        }
-        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         let bar = printer.wait_bar("profile:work · waiting on modules");
         bar.set_subject("profile:work · waiting on bootstraps");
         assert!(bar.bar.is_hidden(), "a wait line has no non-TTY form");
+        drop(bar);
+        assert!(
+            buf.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            "a hidden wait line writes nothing, on any call and on drop"
+        );
     }
 
     #[test]

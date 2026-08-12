@@ -11009,7 +11009,9 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
             None,
         )
         .unwrap();
-    state.journal_complete(j2, 0, None, None).unwrap();
+    // The completion counter is monotonic within a run, so two rows of one
+    // apply can never share an index.
+    state.journal_complete(j2, 1, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
@@ -16427,6 +16429,25 @@ fn module_install_action(module: &str, manager: &str, package: &str) -> Action {
     })
 }
 
+/// A `prefer: [script]` package: the pseudo-manager `script` plus the body the
+/// module ships instead of a package name.
+fn script_resolved_package(package: &str, script: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        script: Some(script.to_string()),
+        ..owner_resolved_package("script", package)
+    }
+}
+
+fn module_script_install_action(module: &str, package: &str, script: &str) -> Action {
+    Action::Module(ModuleAction {
+        module_name: module.to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![script_resolved_package(package, script)],
+        },
+        origin: None,
+    })
+}
+
 fn module_for(name: &str, manager: &str, package: &str) -> ResolvedModule {
     module_with(name, &[(manager, package)])
 }
@@ -17250,6 +17271,10 @@ fn manager_becomes_available_mid_phase() {
 }
 
 #[test]
+// `set_hook` is process-wide: without this, a concurrently running test that
+// panics loses its message to the silencer below, and two tests swapping the
+// hook race on restoring it.
+#[serial_test::serial]
 fn a_panicking_lane_fails_its_action_and_the_phase_finishes() {
     let log = new_dispatch_log();
     let registry = lane_registry(vec![
@@ -17492,13 +17517,8 @@ fn packages_tree(transcript: &str) -> Vec<String> {
 fn non_tty_concurrent_phase_captures_not_streams() {
     // Two lanes interleave their child output in TIME; off a TTY each action's
     // output has to come back as one contiguous block, or a CI log and every
-    // golden are non-deterministic. A lane reads this process's own stderr to
-    // choose between capturing and a repainting window, so the capture path is
-    // reachable only where the suite itself was invoked off a terminal; the
-    // gate is the same predicate the production code uses.
-    if crate::test_helpers::live_region_available() {
-        return;
-    }
+    // golden are non-deterministic. The capture path is reachable here without
+    // a redirected suite, because a test printer pins its live region off.
     let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
     let log = new_dispatch_log();
     let registry = lane_registry(vec![
@@ -17549,6 +17569,46 @@ fn non_tty_concurrent_phase_captures_not_streams() {
     assert!(
         at("brew install neovim") < at("brew-line-one"),
         "the body sits beneath the action it belongs to: {lines:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_script_install_reports_through_its_lane() {
+    // A `prefer: [script]` install is the one package arm whose child process
+    // cfgd spawns itself, so it is the arm most likely to be routed at the
+    // printer by hand. Through the printer its body streams at ambient phase
+    // depth WHILE the action runs — above the line naming it, interleaved with
+    // every other lane — and the script settles a second status line beside the
+    // coordinator's. Through the lane it does neither.
+    let plan = packages_phase(vec![module_script_install_action(
+        "nvim",
+        "pynvim",
+        "echo script-body-line",
+    )]);
+    let mut module = make_resolved_module("nvim");
+    module.packages = vec![script_resolved_package("pynvim", "echo script-body-line")];
+
+    let outcome = ConcurrentApply::new(lane_registry(vec![]), plan)
+        .with_modules(vec![module])
+        .run(|| {});
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let lines = transcript_lines(&outcome.transcript);
+    let at = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} in {lines:?}"))
+    };
+    assert!(
+        at("pynvim") < at("script-body-line"),
+        "the script's body sits beneath the action it belongs to: {lines:?}"
+    );
+    assert_eq!(
+        status_line_count(&outcome.transcript),
+        1,
+        "the action's one status line is the coordinator's: {lines:?}"
     );
 }
 

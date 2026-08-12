@@ -37,7 +37,7 @@ pub trait LaneOutput {
 
 /// A lane worker's whole terminal surface. Built by
 /// [`Printer::lane_at`] on the coordinator thread and moved into the worker.
-pub struct LaneHandle<'p> {
+pub(crate) struct LaneHandle<'p> {
     /// The live repainting view, on a TTY. `None` off one, where
     /// [`LaneHandle::captured`] is the whole rendering.
     window: Option<Mutex<OutputWindow<'p>>>,
@@ -101,8 +101,8 @@ impl Printer {
     /// ambient depth, which is per-renderer state that two lanes would
     /// interleave.
     #[must_use]
-    pub fn lane_at(&self, depth: usize, label: impl Into<String>) -> LaneHandle<'_> {
-        let live = super::spinner::live_bars_available(self.verbosity());
+    pub(crate) fn lane_at(&self, depth: usize, label: impl Into<String>) -> LaneHandle<'_> {
+        let live = self.live_bars();
         LaneHandle {
             window: live.then(|| Mutex::new(self.output_window_at(depth, label))),
             captured: (!live && self.verbosity() != Verbosity::Quiet)
@@ -119,12 +119,15 @@ mod tests {
     use super::super::{Printer, Verbosity};
     use super::LaneOutput;
     use crate::output::strip_ansi;
-    use crate::test_helpers::live_region_available;
 
+    /// A printer whose sink is a buffer and whose live region is pinned OFF,
+    /// which is the state a redirected run is in — asserted here rather than
+    /// inherited from however the suite happened to be invoked.
     fn capturing_printer(verbosity: Verbosity) -> (Printer, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let mut p = Printer::new(verbosity);
         p.sink_stderr = Arc::new(StringSink(buf.clone()));
+        p.live_region = false;
         (p, buf)
     }
 
@@ -132,9 +135,6 @@ mod tests {
     fn off_a_tty_a_lane_captures_instead_of_streaming() {
         // Two lanes streaming into one log interleave line by line; the capture
         // is what lets the coordinator write each lane's body in one block.
-        if live_region_available() {
-            return;
-        }
         let (printer, buf) = capturing_printer(Verbosity::Normal);
         let lane = printer.lane_at(2, "module:nvim · brew install neovim");
         lane.push_line("==> Downloading");
@@ -158,15 +158,11 @@ mod tests {
 
     #[test]
     fn two_lanes_plus_status_writes_are_not_garbled() {
-        // The subject is a REAL live region. `live_bars_available` measures
-        // this process's own stderr, so the repainting-window path exists only
-        // where stderr is an attached terminal; where it is a pipe (CI, a
-        // redirected run) a lane captures instead and there is no interleaving
-        // to garble. The gate is the same predicate the production code uses,
-        // rather than a stand-in for it.
-        if !live_region_available() {
-            return;
-        }
+        // The subject is the repainting path, which only exists where the
+        // printer has a live region. `for_test_with_live_bars` gives it one
+        // without a terminal: a real `MultiProgress` drawing to a recorder,
+        // and the printer's own sink writing into the same buffer, so the two
+        // writers interleave in one stream exactly as they would on a tty.
         let (printer, buf) = Printer::for_test_with_live_bars();
         let lanes: Vec<_> = ["brew install neovim", "apt install tmux"]
             .iter()
@@ -199,6 +195,12 @@ mod tests {
         // not-garbled property — and the two-digit index keeps line 1 from
         // matching inside line 10.
         let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        // Not vacuous: a lane that fell back to capturing would put nothing in
+        // the stream at all, and every count below would still be 1.
+        assert!(
+            out.contains("lane 0 line") && out.contains("lane 1 line"),
+            "both lanes must have repainted into the stream: {out:?}"
+        );
         for line in 0..20 {
             let expected = format!("settled status line {line:02}");
             assert_eq!(

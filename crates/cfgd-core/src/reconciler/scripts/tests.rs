@@ -436,6 +436,7 @@ fn hook_status_line_matches_the_precomputed_hook_subject() {
         ScriptReport {
             subject: super::ScriptSubject::Hook("onDrift"),
             non_fatal: true,
+            ..ScriptReport::default()
         },
     )
     .expect("`echo` must succeed on every shell ScriptShell::Auto dispatches to");
@@ -2393,6 +2394,7 @@ fn script_failure_role_follows_non_fatal() {
             ScriptReport {
                 subject: ScriptSubject::Bare,
                 non_fatal,
+                ..ScriptReport::default()
             },
         );
         drop(printer);
@@ -2452,6 +2454,7 @@ fn script_status_fail_after_window_emits_one_fail() {
             ScriptReport {
                 subject: ScriptSubject::Hook("postApply"),
                 non_fatal: false,
+                ..ScriptReport::default()
             },
         );
         st.open_window("Running script: exit 1");
@@ -2484,6 +2487,7 @@ fn script_status_status_after_open_window_emits_one_line() {
             ScriptReport {
                 subject: ScriptSubject::Hook("postApply"),
                 non_fatal: false,
+                ..ScriptReport::default()
             },
         );
         st.open_window("Running script: exit 1");

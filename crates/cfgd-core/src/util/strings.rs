@@ -422,6 +422,22 @@ pub fn cmd_double_quoted(value: &str) -> String {
     format!("\"{}\"", value.replace('%', "%%"))
 }
 
+/// The manager family a package manager name belongs to: everything before the
+/// first `-`.
+///
+/// `brew`, `brew-tap` and `brew-cask` are three registered managers over ONE
+/// binary and one prefix. A sub-manager has no bootstrap of its own, answers
+/// `is_available()` with its parent's, and is stranded by its parent's removal
+/// — so the family, not the name, is the unit that three separate surfaces
+/// have to agree on: the planner pairing a sub-manager's install with its
+/// parent's bootstrap, the CLI's stranded-install warning, and the concurrent
+/// `Packages` dispatch, whose lane must be the binary rather than the name or
+/// three `brew` processes run at once.
+#[must_use]
+pub fn manager_family(manager: &str) -> &str {
+    manager.split('-').next().unwrap_or(manager)
+}
+
 /// Render a byte count for a human, at the largest scale that keeps it under
 /// four digits.
 ///

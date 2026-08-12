@@ -1017,20 +1017,6 @@ pub fn settled_status_lines(transcript: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether this process has a live region: the same predicate the output code
-/// uses to choose between a repainting bar and a plain sink write.
-///
-/// `cargo test` inherits the caller's stderr, so which of the two renderings
-/// the code under test takes is decided by how the suite was invoked. A test
-/// whose premise is ONE of them reads this and returns early where its premise
-/// does not hold, instead of asserting against a rendering that cannot happen:
-/// the concurrent-lane pair is `two_lanes_plus_status_writes_are_not_garbled`
-/// (needs one) and `non_tty_concurrent_phase_captures_not_streams` (needs the
-/// other), and neither can be expressed without saying which it is.
-pub fn live_region_available() -> bool {
-    std::io::IsTerminal::is_terminal(&std::io::stderr())
-}
-
 /// Create a quiet `Printer` for tests that exercise the reconciler entry
 /// surface (`Reconciler::apply`, `Reconciler::apply_action`, and per-action
 /// helpers in `apply.rs` / `modules.rs` / `packages.rs` / `secrets.rs` /

@@ -348,7 +348,14 @@ impl<'x> PackageExec<'x> {
                             self.printer,
                             mcx.shell_override,
                             Some(mcx.abort),
-                            ScriptReport::default(),
+                            // In a lane the script's output is the lane's and
+                            // its status line is the coordinator's; off a lane
+                            // this is `None` and nothing about the sequential
+                            // path changes.
+                            ScriptReport {
+                                lane: self.lane,
+                                ..ScriptReport::default()
+                            },
                         )
                         .map_err(|_| {
                             crate::errors::CfgdError::Config(ConfigError::Invalid {

@@ -245,7 +245,7 @@ impl<'p> SectionGuard<'p> {
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.printer.multi_progress,
             &self.renderer,
-            self.printer.verbosity(),
+            self.printer.live_bars(),
             self.depth,
             &message,
         );
@@ -272,7 +272,7 @@ impl<'p> SectionGuard<'p> {
             &self.printer.multi_progress,
             &self.renderer,
             total,
-            self.printer.verbosity(),
+            self.printer.live_bars(),
             &message.into(),
         );
         super::spinner::ProgressBar {

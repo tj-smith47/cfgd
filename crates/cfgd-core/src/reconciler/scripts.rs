@@ -331,12 +331,31 @@ pub(crate) enum ScriptSubject<'a> {
 /// One parameter carrying both facts rather than two: every call site that
 /// names the subject also knows whether its failure stops the run, and a second
 /// bare parameter is what lets the two drift apart at one arm.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ScriptReport<'a> {
     pub subject: ScriptSubject<'a>,
     /// The caller has already decided a failure here will not stop the run, so
     /// the one line renders `Role::Warn` rather than `Role::Fail`.
     pub non_fatal: bool,
+    /// Set when this script runs INSIDE a concurrent lane, which owns the whole
+    /// of the worker's terminal: the body flows into the lane and the one
+    /// status line is the coordinator's, not this call's. Without it a script
+    /// install would stream at ambient depth beside every other lane's output
+    /// and settle a second line for an action the coordinator also settles.
+    pub lane: Option<&'a dyn crate::output::LaneOutput>,
+}
+
+impl std::fmt::Debug for ScriptReport<'_> {
+    /// Hand-written because `dyn LaneOutput` is not `Debug`; the lane is
+    /// reported as present or absent, which is the only fact about it a
+    /// diagnostic needs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptReport")
+            .field("subject", &self.subject)
+            .field("non_fatal", &self.non_fatal)
+            .field("lane", &self.lane.is_some())
+            .finish()
+    }
 }
 
 /// The script's single status line, and the window it may collapse into.
@@ -362,6 +381,12 @@ enum ScriptState<'p> {
         printer: &'p Printer,
         subject: String,
     },
+    /// Inside a concurrent lane: the body goes to the lane and NOTHING is ever
+    /// settled here. Terminal in the same sense as `Reported` — the status the
+    /// caller would have emitted is the coordinator's to write.
+    Laned {
+        lane: &'p dyn crate::output::LaneOutput,
+    },
     /// The window is open. It is INSIDE the state, so the only way to reach it
     /// is a method that also moves the state to `Reported`.
     Windowed {
@@ -377,7 +402,7 @@ impl<'p> ScriptStatus<'p> {
     /// supply is derived from it by `format.rs`, which is also where a caller
     /// that must size an alignment column before the script runs derives the
     /// same string.
-    fn new(printer: &'p Printer, run: &str, report: ScriptReport<'_>) -> Self {
+    fn new(printer: &'p Printer, run: &str, report: ScriptReport<'p>) -> Self {
         let DisplaySubject { marker, body } = match report.subject {
             ScriptSubject::Bare => super::format::bare_script_subject(run),
             ScriptSubject::Hook(hook) => super::format::hook_script_subject(hook, run),
@@ -392,9 +417,12 @@ impl<'p> ScriptStatus<'p> {
                 Role::Fail
             },
             marker: marker.map(|m| format!("{m}:")),
-            state: ScriptState::Pending {
-                printer,
-                subject: body,
+            state: match report.lane {
+                Some(lane) => ScriptState::Laned { lane },
+                None => ScriptState::Pending {
+                    printer,
+                    subject: body,
+                },
             },
         }
     }
@@ -422,6 +450,9 @@ impl<'p> ScriptStatus<'p> {
                 apply(printer.action_status(role, subject))
             }
             ScriptState::Windowed { window, subject } => apply(window.finish_action(role, subject)),
+            // Deliberately silent, and deliberately still consumed: a lane's
+            // action has exactly one line and the coordinator writes it.
+            ScriptState::Laned { .. } => {}
             ScriptState::Reported => {
                 debug_assert!(false, "a script emitted a second status line");
             }
@@ -448,10 +479,12 @@ impl<'p> ScriptStatus<'p> {
         };
     }
 
-    /// Feed the window; a no-op in `Pending` and `Reported`.
+    /// Feed the window, or the lane; a no-op in `Pending` and `Reported`.
     fn push_line(&mut self, raw: &str) {
-        if let ScriptState::Windowed { window, .. } = &mut self.state {
-            window.push_line(raw);
+        match &mut self.state {
+            ScriptState::Windowed { window, .. } => window.push_line(raw),
+            ScriptState::Laned { lane } => lane.push_line(raw),
+            ScriptState::Pending { .. } | ScriptState::Reported => {}
         }
     }
 

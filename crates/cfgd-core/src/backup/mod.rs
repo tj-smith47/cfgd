@@ -630,6 +630,7 @@ fn run_hooks(
             ScriptReport {
                 subject: ScriptSubject::Hook(phase.display_name()),
                 non_fatal,
+                ..ScriptReport::default()
             },
         );
         // One item per hook, pushed as it completes — the fatal one included,

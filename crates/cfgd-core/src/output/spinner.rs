@@ -164,12 +164,17 @@ impl<'p> ProgressBar<'p> {
     }
 }
 
-/// Whether anything can be drawn in the live region at all — the ONE statement
-/// of that gate, so a caller that has to decide BEFORE building a bar (a lane
-/// choosing between a live window and a capture) cannot answer it differently
-/// from the builders below.
-pub(crate) fn live_bars_available(verbosity: super::Verbosity) -> bool {
-    verbosity != super::Verbosity::Quiet && stderr_is_terminal()
+impl super::Printer {
+    /// Whether anything can be drawn in this printer's live region at all — the
+    /// ONE statement of that gate, so a caller that has to decide BEFORE
+    /// building a bar (a lane choosing between a live window and a capture)
+    /// cannot answer it differently from the builders below.
+    ///
+    /// A property of the printer rather than of the process: the terminal a bar
+    /// would repaint is the one this printer writes to.
+    pub(crate) fn live_bars(&self) -> bool {
+        self.verbosity() != super::Verbosity::Quiet && self.live_region
+    }
 }
 
 /// Return the appropriate spinner bar for the current verbosity/TTY state:
@@ -179,20 +184,20 @@ pub(crate) fn live_bars_available(verbosity: super::Verbosity) -> bool {
 pub(crate) fn make_spinner_bar(
     multi: &indicatif::MultiProgress,
     renderer: &Arc<Renderer>,
-    verbosity: super::Verbosity,
+    live_bars: bool,
     depth: usize,
     message: &str,
 ) -> (IndProgressBar, Option<LiveBarGuard>) {
-    if !live_bars_available(verbosity) {
+    if !live_bars {
         (IndProgressBar::hidden(), None)
     } else {
         // No `Spinner` (and so no sink) exists yet at this point in
         // construction — this measures `console::Term::stderr()` directly,
         // which is exactly the sink `Printer` wires into every `Spinner` in
         // production (see `sink_stderr` in printer.rs). Reachable only when
-        // `stderr_is_terminal()` just returned true, and a captured-output
-        // test always trips the `IndProgressBar::hidden()` branch above
-        // instead, so this can never influence a `StringSink` capture.
+        // the printer reported a live region, and a captured-output test
+        // always trips the `IndProgressBar::hidden()` branch above instead, so
+        // this can never influence a `StringSink` capture.
         let (bar, live) = build_spinner(
             multi,
             renderer,
@@ -207,10 +212,10 @@ pub(crate) fn make_progress_bar(
     multi: &indicatif::MultiProgress,
     renderer: &Arc<Renderer>,
     total: u64,
-    verbosity: super::Verbosity,
+    live_bars: bool,
     message: &str,
 ) -> (IndProgressBar, Option<LiveBarGuard>) {
-    if !live_bars_available(verbosity) {
+    if !live_bars {
         (IndProgressBar::hidden(), None)
     } else {
         let (bar, live) = build_progress_bar(multi, renderer, total, message);

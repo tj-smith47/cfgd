@@ -35,10 +35,10 @@ pub mod window;
 pub use window::OutputWindow;
 
 pub mod lane;
-pub use lane::{LaneHandle, LaneOutput};
+pub use lane::LaneOutput;
 
 pub mod wait_bar;
-pub use wait_bar::WaitBar;
+pub(crate) use wait_bar::WaitBar;
 
 pub mod process;
 pub use process::CommandOutput;

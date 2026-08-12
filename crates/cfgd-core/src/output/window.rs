@@ -246,7 +246,7 @@ impl super::Printer {
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
-            self.verbosity(),
+            self.live_bars(),
             depth,
             &label,
         );

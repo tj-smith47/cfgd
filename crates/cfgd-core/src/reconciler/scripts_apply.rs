@@ -60,6 +60,7 @@ impl<'a> super::Reconciler<'a> {
                     ScriptReport {
                         subject: super::scripts::ScriptSubject::Planned(&subject),
                         non_fatal: effective_continue_on_error(entry, phase),
+                        ..ScriptReport::default()
                     },
                 )?;
 

@@ -323,12 +323,7 @@ pub fn plan_packages_observed(
                 packages: desired,
                 origin: LOCAL_LAYER.to_string(),
             });
-        } else if manager
-            .name()
-            .split('-')
-            .next()
-            .is_some_and(|prefix| bootstrapping.contains(prefix))
-        {
+        } else if bootstrapping.contains(cfgd_core::manager_family(manager.name())) {
             // Sub-manager whose parent is being bootstrapped (e.g. brew-tap when brew
             // is being bootstrapped). Install all desired — nothing is installed yet.
             actions.push(PackageAction::Install {

@@ -802,8 +802,19 @@ impl<'a> super::Reconciler<'a> {
                         ledger: &ledger,
                         results: &mut results,
                     });
-                    if let Some(outcome) = settled.outcome {
-                        recorded.insert(action_key(action), outcome);
+                    match settled.outcome {
+                        Some(outcome) => {
+                            recorded.insert(action_key(action), outcome);
+                        }
+                        // An action that reported its own status carries its
+                        // notes beside the outcome rather than inside it, and a
+                        // deferred phase has no line open to attach them under.
+                        // Unreachable: only the two script shapes self-report,
+                        // and neither is ever planned into `Packages`.
+                        None => debug_assert!(
+                            settled.notes.is_empty(),
+                            "a self-reporting action reached a lane carrying notes"
+                        ),
                     }
                 };
                 abort_stop = self.dispatch_package_lanes(&dispatch, &run, &mut collect);
@@ -1142,6 +1153,7 @@ impl<'a> super::Reconciler<'a> {
                     ScriptReport {
                         subject: ScriptSubject::Hook(ScriptPhase::OnChange.display_name()),
                         non_fatal: effective_continue_on_error(entry, &ScriptPhase::OnChange),
+                        ..ScriptReport::default()
                     },
                 ) {
                     Ok((desc, changed, _)) => {
@@ -1216,6 +1228,7 @@ impl<'a> super::Reconciler<'a> {
                         ScriptReport {
                             subject: ScriptSubject::Hook(ScriptPhase::OnChange.display_name()),
                             non_fatal: effective_continue_on_error(entry, &ScriptPhase::OnChange),
+                            ..ScriptReport::default()
                         },
                     ) {
                         Ok((desc, changed, _)) => {
@@ -1377,7 +1390,6 @@ impl<'a> super::Reconciler<'a> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Turn one finished action into its journal completion, its result row and
     /// the line the phase's tree will render.
     ///

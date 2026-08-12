@@ -232,6 +232,7 @@ impl<'a> super::Reconciler<'a> {
                     ScriptReport {
                         subject: super::scripts::ScriptSubject::Planned(&subject),
                         non_fatal: false,
+                        ..ScriptReport::default()
                     },
                 )?;
 

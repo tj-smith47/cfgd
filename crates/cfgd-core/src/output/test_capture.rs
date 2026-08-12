@@ -82,6 +82,10 @@ fn build_test_printer(
         test_doc_capture,
         prompt_queue,
         output_error: std::sync::atomic::AtomicBool::new(false),
+        // A capture buffer is not a terminal, whatever the suite was invoked
+        // from: pinning it here is what makes the non-TTY rendering reachable
+        // under `cargo test` from an interactive shell.
+        live_region: false,
         list_envelope: false,
     }
 }
@@ -190,6 +194,10 @@ impl Printer {
             test_doc_capture: None,
             prompt_queue: None,
             output_error: std::sync::atomic::AtomicBool::new(false),
+            // The whole point of this constructor: the repainting path is
+            // reachable without a real terminal, so the proof obligation it
+            // carries runs in the ordinary suite rather than only under a pty.
+            live_region: true,
             list_envelope: false,
         };
         (p, buf)
