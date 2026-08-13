@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::*;
+use std::collections::BTreeMap;
 
 fn make_local_profile() -> ResolvedProfile {
     ResolvedProfile {
@@ -734,7 +735,7 @@ fn validate_constraints_system_changes_blocked() {
         ..Default::default()
     };
     let spec = ProfileSpec {
-        system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
+        system: BTreeMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
     let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);
@@ -753,7 +754,7 @@ fn validate_constraints_system_changes_allowed() {
         ..Default::default()
     };
     let spec = ProfileSpec {
-        system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
+        system: BTreeMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
     assert!(collect_constraint_violations("acme", &constraints, &spec, false).is_empty());
@@ -2039,7 +2040,7 @@ fn has_content_with_secrets() {
 #[test]
 fn has_content_with_system() {
     let items = PolicyItems {
-        system: std::collections::HashMap::from([(
+        system: std::collections::BTreeMap::from([(
             "shell".into(),
             serde_yaml::Value::String("/bin/zsh".into()),
         )]),
@@ -2377,7 +2378,7 @@ fn count_policy_tier_items_comprehensive() {
             name: "g".into(),
             command: "git".into(),
         }],
-        system: HashMap::from([("shell".into(), serde_yaml::Value::Null)]),
+        system: BTreeMap::from([("shell".into(), serde_yaml::Value::Null)]),
         modules: vec!["mod1".into(), "mod2".into()],
         ..Default::default()
     };
@@ -2707,7 +2708,7 @@ fn compose_system_deep_merges() {
             priority: 1000,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
-                system: HashMap::from([(
+                system: BTreeMap::from([(
                     "shell".into(),
                     serde_yaml::Value::String("/bin/zsh".into()),
                 )]),
@@ -2715,7 +2716,10 @@ fn compose_system_deep_merges() {
             },
         }],
         merged: MergedProfile {
-            system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
+            system: BTreeMap::from([(
+                "shell".into(),
+                serde_yaml::Value::String("/bin/zsh".into()),
+            )]),
             ..Default::default()
         },
     };
@@ -2733,7 +2737,7 @@ fn compose_system_deep_merges() {
             priority: 500,
             policy: LayerPolicy::Recommended,
             spec: ProfileSpec {
-                system: HashMap::from([(
+                system: BTreeMap::from([(
                     "sysctl".into(),
                     serde_yaml::Value::String("value".into()),
                 )]),
@@ -3387,7 +3391,7 @@ fn composition_error_variant_system_change_not_allowed() {
         ..Default::default()
     };
     let spec = ProfileSpec {
-        system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
+        system: BTreeMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
     let err = collect_constraint_violations("acme", &constraints, &spec, false).remove(0);

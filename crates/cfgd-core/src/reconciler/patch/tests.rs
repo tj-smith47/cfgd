@@ -1327,7 +1327,7 @@ fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
             value: "build.internal".to_string(),
         }],
         aliases: Vec::new(),
-        system: std::collections::HashMap::new(),
+        system: std::collections::BTreeMap::new(),
         pre_apply_scripts: Vec::new(),
         post_apply_scripts: Vec::new(),
         pre_reconcile_scripts: Vec::new(),

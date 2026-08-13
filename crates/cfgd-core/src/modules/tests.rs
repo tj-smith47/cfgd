@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{BTreeMap, HashMap};
 
 use std::path::Path;
 
@@ -1494,7 +1495,7 @@ fn diff_module_specs_no_changes() {
             env: vec![],
             aliases: vec![],
             scripts: None,
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/fake"),
         origin: None,
@@ -1546,7 +1547,7 @@ fn diff_module_specs_detects_changes() {
             env: vec![],
             aliases: vec![],
             scripts: None,
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/fake"),
         origin: None,
@@ -1592,7 +1593,7 @@ fn diff_module_specs_detects_changes() {
             env: vec![],
             aliases: vec![],
             scripts: None,
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/fake"),
         origin: None,
@@ -1942,7 +1943,7 @@ fn diff_module_specs_scripts_changed() {
                 post_apply: vec![crate::config::ScriptEntry::Simple("echo old".to_string())],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -1961,7 +1962,7 @@ fn diff_module_specs_scripts_changed() {
                 post_apply: vec![crate::config::ScriptEntry::Simple("echo new".to_string())],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -1991,7 +1992,7 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
                 post_apply: vec![],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -2011,7 +2012,7 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
                 post_apply: vec![crate::config::ScriptEntry::Simple(raw_body.to_string())],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,

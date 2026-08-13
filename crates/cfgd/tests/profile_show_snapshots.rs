@@ -36,7 +36,7 @@ fn layer(name: &str) -> ProfileLayer {
 }
 
 fn happy_resolved() -> ResolvedProfile {
-    let mut system = HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert(
         "shellAliases".into(),
         serde_yaml::Value::String("default".into()),

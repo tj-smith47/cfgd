@@ -19,7 +19,6 @@
 //! Goldens live under `tests/output_snapshots/source_show/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_show_snapshots
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cfgd::cli::error::render_cli_error;
@@ -106,7 +105,7 @@ fn happy_manifest() -> ConfigSourceDocument {
                 },
                 recommended: PolicyItems {
                     system: {
-                        let mut m = HashMap::new();
+                        let mut m = std::collections::BTreeMap::new();
                         m.insert(
                             "shellAliases".into(),
                             serde_yaml::Value::String("default".into()),

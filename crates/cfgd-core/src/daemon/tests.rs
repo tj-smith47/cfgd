@@ -4144,7 +4144,7 @@ fn extract_source_resources_full_profile() {
         PackagesSpec,
     };
 
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert("sysctl".into(), serde_yaml::Value::Null);
 
     let merged = MergedProfile {
@@ -4228,7 +4228,7 @@ fn process_source_decisions_locked_item_notify_policy() {
 
     // The source offers this on a locked/required layer, so `lockedConflict`
     // governs it — not `newRecommended`.
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert("security-baseline".into(), serde_yaml::Value::Null);
 
     let merged = MergedProfile {
@@ -4529,7 +4529,7 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
         },
         ..Default::default()
     };
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert("security-policy".into(), serde_yaml::Value::Null);
     let locked = MergedProfile {
         system,
@@ -4659,7 +4659,7 @@ fn extract_source_resources_multiple_env_vars() {
 fn extract_source_resources_multiple_system_keys() {
     use crate::config::MergedProfile;
 
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert("sysctl".into(), serde_yaml::Value::Null);
     system.insert("kernelModules".into(), serde_yaml::Value::Null);
     system.insert("apparmor".into(), serde_yaml::Value::Null);

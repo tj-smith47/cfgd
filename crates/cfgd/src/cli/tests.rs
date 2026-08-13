@@ -18404,7 +18404,7 @@ fn count_policy_items_counts_pipx_dnf_and_npm_global() {
 #[test]
 fn count_policy_items_counts_files_env_and_system_independently() {
     use cfgd_core::config::{EnvVar, ManagedFileSpec};
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert(
         "shell".to_string(),
         serde_yaml::Value::String("bash".to_string()),
@@ -18451,7 +18451,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
 fn count_policy_items_sums_packages_files_env_and_system() {
     // End-to-end mixed bag: every contributing field set at once. Pin the
     // additive contract: no field silently swallows another.
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert(
         "shell".to_string(),
         serde_yaml::Value::String("bash".to_string()),

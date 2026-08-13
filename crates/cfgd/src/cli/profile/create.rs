@@ -135,7 +135,7 @@ pub fn cmd_profile_create(
     }
 
     // Build system settings
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     for s in &sys {
         let (key, value) = s.split_once('=').ok_or_else(|| {
             anyhow::anyhow!("Invalid system setting '{}' — expected key=value", s)

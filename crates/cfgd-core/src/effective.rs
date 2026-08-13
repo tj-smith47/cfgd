@@ -14,10 +14,11 @@
 //! write path does. Keeping availability out of the derivation is what makes the
 //! write and read paths agree on the desired set.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::config::{ManagedFileSpec, MergedProfile, PackageClaim, desired_packages_for_spec};
+use crate::config::{
+    ManagedFileSpec, MergedProfile, PackageClaim, SystemSettings, desired_packages_for_spec,
+};
 use crate::modules::ResolvedModule;
 use crate::to_posix_string;
 
@@ -89,21 +90,14 @@ pub struct EffectiveFile {
 /// Modules override the profile at leaf level, and a later module overrides an
 /// earlier one — consistent with how env and aliases merge.
 ///
-/// Ordered, unlike the `HashMap`s it merges: a consumer that ITERATES this map
-/// puts its order into a user-visible artifact — the `checks` array of a
-/// compliance snapshot, which is content-hashed to decide whether the machine
-/// changed, plus that snapshot's `-o json` and its `compliance diff` pairing.
-/// `RandomState` re-seeds per map instance, so two collections in one process
+/// Key-ordered, like the [`SystemSettings`] maps it merges: a consumer that
+/// ITERATES this map puts its order into a user-visible artifact — the `checks`
+/// array of a compliance snapshot, which is content-hashed to decide whether the
+/// machine changed, plus that snapshot's `-o json` and its `compliance diff`
+/// pairing. A hashed map re-seeds per instance, so two collections in one process
 /// would shuffle a machine that never changed.
-pub fn effective_system_map(
-    profile: &MergedProfile,
-    modules: &[ResolvedModule],
-) -> BTreeMap<String, serde_yaml::Value> {
-    let mut system: BTreeMap<String, serde_yaml::Value> = profile
-        .system
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule]) -> SystemSettings {
+    let mut system: SystemSettings = profile.system.clone();
     for module in modules {
         for (key, value) in &module.system {
             crate::deep_merge_yaml(
@@ -229,7 +223,6 @@ mod tests {
         EncryptionMode, EncryptionSpec, FileStrategy, FilesSpec, ManagedFileSpec, PackagesSpec,
     };
     use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
-    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn empty_profile() -> MergedProfile {
@@ -240,7 +233,7 @@ mod tests {
             aliases: Vec::new(),
             packages: PackagesSpec::default(),
             files: FilesSpec::default(),
-            system: HashMap::new(),
+            system: crate::config::SystemSettings::new(),
             secrets: Vec::new(),
             scripts: crate::config::ScriptSpec::default(),
             backups: Vec::new(),
@@ -254,7 +247,7 @@ mod tests {
             files: Vec::new(),
             env: Vec::new(),
             aliases: Vec::new(),
-            system: HashMap::new(),
+            system: crate::config::SystemSettings::new(),
             pre_apply_scripts: Vec::new(),
             post_apply_scripts: Vec::new(),
             pre_reconcile_scripts: Vec::new(),

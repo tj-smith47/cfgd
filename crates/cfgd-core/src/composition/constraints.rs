@@ -122,11 +122,7 @@ pub(super) fn collect_constraint_violations(
     }
 
     if !constraints.allow_system_changes {
-        // `spec.system` is a HashMap, so sort: a reported list an operator
-        // reads must not reshuffle between two runs of the same command.
-        let mut settings: Vec<&String> = spec.system.keys().collect();
-        settings.sort();
-        for setting in settings {
+        for setting in spec.system.keys() {
             violations.push(
                 CompositionError::SystemChangeNotAllowed {
                     source_name: source_name.to_string(),

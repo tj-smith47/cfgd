@@ -1,6 +1,6 @@
 use super::*;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[test]
 fn snapshot_serializes_to_json() {
@@ -249,7 +249,7 @@ fn collect_system_checks_maps_drifts() {
             }],
         )));
 
-    let mut system = HashMap::new();
+    let mut system = BTreeMap::new();
     system.insert(
         "shell".to_owned(),
         serde_yaml::Value::String("/bin/zsh".into()),
@@ -277,7 +277,7 @@ fn collect_system_checks_compliant_when_no_drift() {
         .system_configurators
         .push(Box::new(MockSystemConfigurator::new("shell")));
 
-    let mut system = HashMap::new();
+    let mut system = BTreeMap::new();
     system.insert(
         "shell".to_owned(),
         serde_yaml::Value::String("/bin/zsh".into()),
@@ -1054,7 +1054,7 @@ fn empty_module(name: &str) -> ResolvedModule {
         files: Vec::new(),
         env: Vec::new(),
         aliases: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         pre_apply_scripts: Vec::new(),
         post_apply_scripts: Vec::new(),
         pre_reconcile_scripts: Vec::new(),

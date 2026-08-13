@@ -39,8 +39,7 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
         })
     });
 
-    let mut system_keys: Vec<&String> = resolved.merged.system.keys().collect();
-    system_keys.sort();
+    let system_keys: Vec<&String> = resolved.merged.system.keys().collect();
     doc = doc.section_if_nonempty("System", &system_keys, |s, keys| {
         keys.iter().fold(s, |s, k| s.kv(k.as_str(), "(configured)"))
     });

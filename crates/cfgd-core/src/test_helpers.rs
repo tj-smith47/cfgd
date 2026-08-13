@@ -1232,7 +1232,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: std::collections::HashMap::new(),
+        system: std::collections::BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         platform_skip_reason: None,

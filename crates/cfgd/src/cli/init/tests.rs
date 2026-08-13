@@ -2373,7 +2373,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
         files: Vec::new(),
         env: Vec::new(),
         aliases: Vec::new(),
-        system: std::collections::HashMap::new(),
+        system: std::collections::BTreeMap::new(),
         pre_apply_scripts: Vec::new(),
         post_apply_scripts: Vec::new(),
         pre_reconcile_scripts: Vec::new(),

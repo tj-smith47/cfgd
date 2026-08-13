@@ -1788,6 +1788,45 @@ spec:
 }
 
 #[test]
+fn parsed_system_settings_keep_key_order_across_parses() {
+    let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: ordered
+spec:
+  system:
+    sysctl:
+      vm.swappiness: 10
+    launchd:
+      label: com.example.agent
+    gsettings:
+      org.gnome.desktop.interface: {}
+    apparmor:
+      profiles: []
+    kubelet:
+      maxPods: 110
+"#;
+    let first: ProfileDocument = serde_yaml::from_str(yaml).unwrap();
+    let second: ProfileDocument = serde_yaml::from_str(yaml).unwrap();
+
+    let keys: Vec<&str> = first.spec.system.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        vec!["apparmor", "gsettings", "kubelet", "launchd", "sysctl"],
+        "declaration order must not survive into iteration order"
+    );
+
+    // The checkin payload serializes this map and the compliance snapshot hashes
+    // an artifact built by walking it; two parses in one process that disagree
+    // report a machine that changed when nothing did.
+    assert_eq!(
+        serde_yaml::to_string(&first.spec.system).unwrap(),
+        serde_yaml::to_string(&second.spec.system).unwrap(),
+    );
+}
+
+#[test]
 fn module_system_merges_into_profile_system() {
     // Simulate what plan_system does: deep-merge module system over profile system.
     let profile_yaml = r#"
@@ -1800,10 +1839,8 @@ git:
   user.name: New Name
   user.email: new@example.com
 "#;
-    let mut profile_system: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(profile_yaml).unwrap();
-    let module_system: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(module_yaml).unwrap();
+    let mut profile_system: SystemSettings = serde_yaml::from_str(profile_yaml).unwrap();
+    let module_system: SystemSettings = serde_yaml::from_str(module_yaml).unwrap();
 
     // Apply module system on top of profile system (same logic as plan_system)
     for (key, value) in &module_system {
@@ -1835,16 +1872,16 @@ git:
 
 #[test]
 fn module_system_overrides_profile_on_conflict() {
-    let mut profile_system: HashMap<String, serde_yaml::Value> = {
-        let mut m = HashMap::new();
+    let mut profile_system: SystemSettings = {
+        let mut m = SystemSettings::new();
         m.insert(
             "git".to_string(),
             serde_yaml::from_str("user.name: Profile Name").unwrap(),
         );
         m
     };
-    let module_system: HashMap<String, serde_yaml::Value> = {
-        let mut m = HashMap::new();
+    let module_system: SystemSettings = {
+        let mut m = SystemSettings::new();
         m.insert(
             "git".to_string(),
             serde_yaml::from_str("user.name: Module Name").unwrap(),

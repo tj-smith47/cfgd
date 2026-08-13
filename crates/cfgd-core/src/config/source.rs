@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::origin::OriginSpec;
-use super::profile_spec::{EncryptionConstraint, ManagedFileSpec, PackagesSpec, SecretSpec};
+use super::profile_spec::{
+    EncryptionConstraint, ManagedFileSpec, PackagesSpec, SecretSpec, SystemSettings,
+};
 
 // --- Multi-source config management ---
 
@@ -264,8 +266,8 @@ pub struct PolicyItems {
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
     #[serde(default)]
-    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
-    pub system: HashMap<String, serde_yaml::Value>,
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    pub system: SystemSettings,
     #[serde(default)]
     pub profiles: Vec<String>,
     #[serde(default)]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -7,6 +7,15 @@ use super::module::ScriptEntry;
 use super::source::{EnvVar, ShellAlias};
 use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
+
+/// The `spec.system` map: configurator name → that configurator's settings block.
+///
+/// Ordered by key rather than hashed, because every surface that walks it is
+/// user-facing or persisted — the plan tree's System phase, the checkin payload's
+/// serialized config, `profile show`, the composition constraint report — and a
+/// hash map hands each of them a different order per process. Two runs on an
+/// unchanged machine then disagree about what they did.
+pub type SystemSettings = BTreeMap<String, serde_yaml::Value>;
 
 /// A package-manager spec struct that can be built from a bare list of package
 /// names, so a manager accepts both `manager: [a, b]` and
@@ -280,8 +289,8 @@ pub struct ProfileSpec {
     pub files: Option<FilesSpec>,
 
     #[serde(default)]
-    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
-    pub system: HashMap<String, serde_yaml::Value>,
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    pub system: SystemSettings,
 
     #[serde(default)]
     pub secrets: Vec<SecretSpec>,

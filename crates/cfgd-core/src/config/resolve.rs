@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Serialize;
@@ -6,7 +5,8 @@ use serde::Serialize;
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
     BackupSpec, EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec,
-    SecretSpec, validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
+    SecretSpec, SystemSettings, validate_backup_specs, validate_managed_file_specs,
+    validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -65,7 +65,7 @@ pub struct MergedProfile {
     pub aliases: Vec<ShellAlias>,
     pub packages: PackagesSpec,
     pub files: FilesSpec,
-    pub system: HashMap<String, serde_yaml::Value>,
+    pub system: SystemSettings,
     pub secrets: Vec<SecretSpec>,
     pub scripts: ScriptSpec,
     pub backups: Vec<BackupSpec>,
