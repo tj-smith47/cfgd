@@ -783,16 +783,16 @@ A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 **Example:**
 ```yaml
 backups:
-  - name: openlist-db
-    source: /var/lib/openlist/data.db     # file or directory
-    destination: ~/backups/openlist       # optional; default <state_dir>/backups/<name>/
+  - name: notes-db
+    source: ~/.local/share/notes/notes.db # file or directory
+    destination: ~/backups/notes          # optional; default <state_dir>/backups/<name>/
     namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
     schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
     retention: 7                          # optional; default 10; newest N kept per backup
     preBackup:                            # optional; existing ScriptEntry shape
-      - run: systemctl stop openlist
+      - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
     postBackup:
-      - run: systemctl start openlist
+      - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 ```
 
 CRD parity for `spec.backups[]` is not yet implemented — this field is available in the YAML/TOML

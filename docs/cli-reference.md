@@ -1051,14 +1051,14 @@ Run, inspect, or restore declarative backups (`spec.backups[]`). See [backups.md
 the full field reference and run semantics.
 
 ```sh
-cfgd backup run                # run every backup declared in the active profile
-cfgd backup run openlist-db    # run just the named backup
-cfgd backup list                # inventory + last-run status + next scheduled run; alias: ls
-cfgd backup list openlist-db    # just that unit's row
-cfgd backup list openlist-db --snapshots   # its snapshots: name, created, size
-cfgd backup restore openlist-db                          # newest snapshot, back over the source
-cfgd backup restore openlist-db --at 20260730T120000Z    # pick an older one
-cfgd backup restore openlist-db --to /tmp/inspect --yes  # somewhere else, no prompt
+cfgd backup run                                       # run every backup declared in the active profile
+cfgd backup run notes-db                              # run just the named backup
+cfgd backup list                                      # inventory + last-run status + next scheduled run; alias: ls
+cfgd backup list notes-db                             # just that unit's row
+cfgd backup list notes-db --snapshots                 # its snapshots: name, created, size
+cfgd backup restore notes-db                          # newest snapshot, back over the source
+cfgd backup restore notes-db --at 20260730T120000Z    # pick an older one
+cfgd backup restore notes-db --to /tmp/inspect --yes  # somewhere else, no prompt
 cfgd --output json backup list
 ```
 
