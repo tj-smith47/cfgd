@@ -104,12 +104,16 @@ by naming the file to source.
 ## Index refresh
 
 Before the first phase of an apply, cfgd refreshes the package index of every
-manager that already exists on the machine and has work in this run — all of them
-at once, reported as a single line naming the ones that answered:
+manager that already exists on the machine and has work in this run, reported as
+a single line naming the ones that answered:
 
 ```
 ✓ Package indexes updated — toolbox (0.0s)
 ```
+
+Most of those refresh concurrently. `npm` is the exception: its refresh reads
+cfgd's own state store, so it runs by itself after the concurrent group rather
+than sharing the store across threads. Either way the pre-pass reports one line.
 
 A manager cfgd bootstraps later in the same run is not in that pre-pass: it
 refreshes once, inline, immediately after its own bootstrap, so no manager is ever

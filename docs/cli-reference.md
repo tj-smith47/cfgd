@@ -141,6 +141,7 @@ cfgd apply --skip-scripts           # apply without running any hooks
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
 | `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
+| `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
 
 `apply` reconciles exactly what `plan` previews, so a [source item awaiting a
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.

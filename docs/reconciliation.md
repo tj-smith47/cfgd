@@ -61,7 +61,8 @@ There is nothing to tune: a machine that declares only `brew` packages still run
 `brew` at a time, and one that declares `brew`, `apt` and `cargo` runs three.
 
 Before the first phase, cfgd refreshes the package index of every manager already on the
-machine — concurrently, collapsed into one line naming them:
+machine — concurrently, except `npm`, whose refresh reads cfgd's own state store and so
+runs by itself afterwards — collapsed into one line naming them:
 
 ```
 ✓ Package indexes updated — toolbox (0.0s)

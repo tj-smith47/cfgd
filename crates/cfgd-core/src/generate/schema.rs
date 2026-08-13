@@ -475,8 +475,8 @@ spec:
       - scripts/on-change.sh
 
   # Declarative snapshot backups of a file or directory. A schedule-less unit
-  # runs during apply; a scheduled one runs on the daemon's timer or on demand
-  # via `cfgd backup run`.
+  # runs during apply; a scheduled one runs on the daemon's timer. `cfgd backup
+  # run` runs any unit it names, scheduled or not.
   # optional, default: []
   backups:
     - name: notes-db                        # required, string — unique across spec.backups; non-empty, no path separators or "." / "..", becomes <state_dir>/backups/<name>/
