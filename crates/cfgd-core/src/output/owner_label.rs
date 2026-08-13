@@ -81,13 +81,24 @@ mod tests {
 
     /// A preset whose three token slots are colour-only has nothing left to
     /// emit once colour is off, so the token is its own text and no more.
+    ///
+    /// The colour-ON half is what makes the colour-OFF half mean anything: an
+    /// unstamped theme spends no colour either, so asserting only the OFF case
+    /// would pass with the stamp ignored entirely.
     #[test]
     fn colour_disabled_drops_colour_only_slots() {
         let label = OwnerLabel::new("cfgd", "managers");
         assert_eq!(
-            label.styled(&Theme::from_preset("dracula")),
+            label.styled(&Theme::from_preset("dracula").with_colors(false)),
             "cfgd:managers"
         );
+        let on = label.styled(&Theme::from_preset("dracula").with_colors(true));
+        assert!(
+            on.contains("\u{1b}["),
+            "dracula's token slots spend no colour even with it on, so the \
+             assertion above proves nothing: {on:?}"
+        );
+        assert_eq!(strip_ansi(&on), "cfgd:managers");
     }
 
     /// `minimal` carries the secondary distinction in an attribute rather
@@ -95,17 +106,15 @@ mod tests {
     /// that attribute exactly as every other themed element does.
     #[test]
     fn colour_disabled_keeps_attribute_only_slots() {
-        let theme = Theme::from_preset("minimal");
+        let theme = Theme::from_preset("minimal").with_colors(false);
         let styled = OwnerLabel::new("module", "nvim").styled(&theme);
         assert_eq!(strip_ansi(&styled), "module:nvim");
+        // Spelled out rather than re-derived from the same theme: comparing
+        // against `theme.secondary.apply_to(…)` asserts only that the token
+        // used the slot it was built from, which holds however the slot renders.
         assert_eq!(
-            styled,
-            format!("{}:nvim", theme.secondary.apply_to("module")),
-            "the underlined secondary must survive NO_COLOR"
-        );
-        assert!(
-            styled.contains('\u{1b}'),
-            "attribute SGR was stripped: {styled:?}"
+            styled, "\u{1b}[4mmodule\u{1b}[0m:nvim",
+            "the underlined secondary must survive colour being off"
         );
     }
 }

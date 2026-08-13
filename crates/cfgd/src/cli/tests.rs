@@ -192,6 +192,7 @@ impl CliTestHarness {
             config_explicit: false,
             profile: None,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             verbose: 0,
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
@@ -494,6 +495,55 @@ fn cli_has_alias_subcommand() {
     assert!(Cli::try_parse_from(["cfgd", "alias", "list"]).is_ok());
     assert!(Cli::try_parse_from(["cfgd", "alias", "ls"]).is_ok());
     assert!(Cli::try_parse_from(["cfgd", "alias", "show", "n"]).is_ok());
+}
+
+/// `--model` / `--provider` / `--yes` govern every `generate` target, not just
+/// the bare form, so they are `global = true`. Declared beside the subcommand
+/// without that, they parse only BEFORE it — and the invocation the docs and
+/// `--help` both show, `cfgd generate profile <name> --model <m>`, errored.
+#[test]
+fn generate_backend_flags_may_follow_the_subcommand() {
+    use crate::cli::generate::GenerateTarget;
+
+    let parsed = Cli::try_parse_from([
+        "cfgd",
+        "generate",
+        "profile",
+        "laptop",
+        "--model",
+        "claude-opus-5",
+        "--provider",
+        "anthropic",
+        "--yes",
+    ])
+    .expect("backend flags must parse after the subcommand");
+
+    let Some(Command::Generate(args)) = parsed.command else {
+        panic!("expected the generate command");
+    };
+    assert_eq!(args.model.as_deref(), Some("claude-opus-5"));
+    assert_eq!(args.provider.as_deref(), Some("anthropic"));
+    assert!(args.yes);
+    assert!(
+        matches!(args.target, Some(GenerateTarget::Profile { .. })),
+        "the subcommand itself must still route"
+    );
+
+    // The pre-subcommand spelling keeps working — a global arg accepts both
+    // positions, so this is not a swap of one broken order for another.
+    let before = Cli::try_parse_from([
+        "cfgd",
+        "generate",
+        "--model",
+        "claude-opus-5",
+        "profile",
+        "laptop",
+    ])
+    .expect("backend flags must still parse before the subcommand");
+    let Some(Command::Generate(args)) = before.command else {
+        panic!("expected the generate command");
+    };
+    assert_eq!(args.model.as_deref(), Some("claude-opus-5"));
 }
 
 #[test]
@@ -1157,6 +1207,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -4624,6 +4675,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -5153,6 +5205,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),

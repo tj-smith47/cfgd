@@ -52,6 +52,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: cfgd::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: true,
         output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),

@@ -19,6 +19,7 @@ fn make_cli(config: PathBuf) -> Cli {
         verbose: 0,
         quiet: true,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         output: OutputFormatArg(OutputFormat::Table),
         list_envelope: false,
         jsonpath: None,

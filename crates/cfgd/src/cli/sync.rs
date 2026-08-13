@@ -44,7 +44,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-        let silent_printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
         // Opened once: every open runs the full migration chain, and the loop
         // below records a fetch per source. Best-effort — the cache refreshes
         // either way, so a read-only state dir must not turn a successful sync

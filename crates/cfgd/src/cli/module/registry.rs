@@ -68,7 +68,7 @@ pub fn cmd_module_add_from_registry(
             // takes a Printer; the Quiet sink suppresses the lib's
             // progress emissions so this command's status surface above
             // owns the user-facing line (inversion of control).
-            let lib_printer = null_lib_printer();
+            let lib_printer = null_lib_printer(printer);
             modules::fetch_registry_modules(registry_entry, &cache_base, &lib_printer)?;
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
                 Some(t) => t,
@@ -124,7 +124,7 @@ pub fn cmd_module_add_remote(
     // Quiet sink suppresses the lib's progress emissions so the spinner
     // owns the user-facing surface (inversion of control).
     let sp = printer.spinner(format!("Fetching {}", url));
-    let lib_printer = null_lib_printer();
+    let lib_printer = null_lib_printer(printer);
     let fetched = match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
         Ok(f) => {
             sp.finish_ok(format!("Fetched {}", url));
@@ -283,7 +283,7 @@ pub fn cmd_module_upgrade(
 
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
-    let lib_printer = null_lib_printer();
+    let lib_printer = null_lib_printer(printer);
 
     // Find the lockfile entry
     let mut lockfile = modules::load_lockfile(&config_dir)?;
@@ -630,7 +630,7 @@ pub(super) fn filter_and_build_search_results(
 
 pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
     let cache_base = module_cache_dir(cli)?;
-    let lib_printer = null_lib_printer();
+    let lib_printer = null_lib_printer(printer);
 
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
@@ -1222,6 +1222,11 @@ pub(super) fn ensure_module_in_profile_doc(
 /// drives the user-facing spinner / status above the call, so the lib's
 /// emissions are suppressed (inversion of control — the CLI owns the
 /// user-facing surface, the lib gets a non-emitting sink).
-fn null_lib_printer() -> cfgd_core::output::Printer {
-    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
+///
+/// Derived from the command's own printer rather than built fresh: a sink
+/// built from nothing re-resolves colour and theme, and a lib call that does
+/// emit — a warning survives Quiet — would answer to the terminal instead of
+/// to `--no-color` and `spec.theme`.
+fn null_lib_printer(printer: &Printer) -> cfgd_core::output::Printer {
+    printer.at_verbosity(cfgd_core::output::Verbosity::Quiet)
 }

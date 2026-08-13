@@ -347,6 +347,7 @@ pub(crate) fn handle_compliance_snapshot(
     compliance_cfg: &config::ComplianceConfig,
     state_dir_override: Option<&Path>,
     scope: crate::Scope,
+    printer: &crate::output::Printer,
 ) {
     tracing::info!("running compliance snapshot");
 
@@ -389,7 +390,7 @@ pub(crate) fn handle_compliance_snapshot(
     // source-delivered resources as missing. Mirrors the resolve_profile arm
     // above (error + return). A benign never-synced cache-miss is warn+skip inside
     // the resolver, not an Err, so it still snapshots local-only.
-    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+    let printer = printer.at_verbosity(crate::output::Verbosity::Quiet);
     let (resolved, source_module_roots) = match super::compose_daemon_desired_state(
         &cfg,
         &local_resolved,

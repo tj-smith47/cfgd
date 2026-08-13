@@ -568,8 +568,17 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let cc2 = cc.clone();
         let sd = ctx.state_dir_override.clone();
         let scope = ctx.scope;
+        let printer = Arc::clone(&ctx.printer);
         crate::spawn_blocking_with_test_home(move || {
-            handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref(), scope);
+            handle_compliance_snapshot(
+                &cp,
+                po.as_deref(),
+                &*hk,
+                &cc2,
+                sd.as_deref(),
+                scope,
+                &printer,
+            );
         })
         .await
         .map_err(|e| DaemonError::WatchError {

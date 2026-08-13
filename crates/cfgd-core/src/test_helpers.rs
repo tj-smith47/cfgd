@@ -1020,15 +1020,23 @@ pub fn settled_status_lines(transcript: &str) -> Vec<String> {
 /// Read a `Printer::for_test*` capture buffer with ANSI escapes removed — the
 /// ONE way a test should reach the string it asserts against.
 ///
-/// Colour is a process-global `console` decision, not a per-printer one: it
-/// follows the terminal the suite was invoked from (on under a pty, off from a
-/// mid-run. Read raw, an assertion answers a question about terminal shape —
-/// `contains("module:vim-config")` breaks on the escape between the owner
-/// token's two styled halves, `ends_with(path)` breaks on the trailing reset,
-/// and every negative `!contains(…)` passes vacuously the moment styling is on,
-/// silently guarding nothing.
+/// Colour is no longer ambient: every capture constructor pins `colors: false`
+/// at construction, so a buffer is unstyled BY CONSTRUCTION rather than because
+/// this function strips it. Keep using it anyway for any assertion about TEXT —
+/// `Printer::for_test_with_theme_colored` really does emit escapes, an
+/// attribute-carrying slot emits SGR even with colour off (`NO_COLOR` governs
+/// colour only), and a subject may carry foreign escapes of its own.
 ///
-/// A test that asserts ON the escapes wants the raw buffer and a
+/// Three failure shapes, all observed on the raw buffer while colour was still
+/// ambient: `contains("module:vim-config")` breaks on the escape between the
+/// owner token's two styled halves, `ends_with(path)` breaks on the trailing
+/// reset, and every negative `!contains(…)` passes vacuously once styling is
+/// on — it stops guarding anything without ever going red.
+///
+/// A test that asserts ON the escapes wants the raw buffer and
+/// `Printer::for_test_with_theme_colored`. To assert the colour DECISION rather
+/// than a rendered escape, call `output::printer::colors_must_be_disabled` and
+/// render nothing.
 pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
     crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()))
 }

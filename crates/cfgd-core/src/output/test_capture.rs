@@ -496,32 +496,6 @@ mod tests {
         );
     }
 
-    /// Restores the process-global colour flags on drop, including on unwind,
-    /// so a failed assertion cannot leave the suite's terminal decision flipped.
-    struct ColorGlobalOn {
-        stdout: bool,
-        stderr: bool,
-    }
-
-    impl ColorGlobalOn {
-        fn set() -> Self {
-            let prior = Self {
-                stdout: console::colors_enabled(),
-                stderr: console::colors_enabled_stderr(),
-            };
-            console::set_colors_enabled(true);
-            console::set_colors_enabled_stderr(true);
-            prior
-        }
-    }
-
-    impl Drop for ColorGlobalOn {
-        fn drop(&mut self) {
-            console::set_colors_enabled(self.stdout);
-            console::set_colors_enabled_stderr(self.stderr);
-        }
-    }
-
     /// A capture buffer is unstyled BY CONSTRUCTION, not because something
     /// strips it afterwards.
     ///
@@ -538,7 +512,7 @@ mod tests {
     fn a_flipped_colour_global_cannot_style_a_capture() {
         use crate::output::Role;
 
-        let _globals = ColorGlobalOn::set();
+        let _globals = crate::output::printer::ColorGlobalOn::set();
 
         // `Role::Ok` against slots that spend colour and nothing else: an
         // attribute-carrying slot would legitimately emit SGR with colour off

@@ -16,7 +16,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the compliance
     // snapshot reflects the same source-composed desired state that `apply` writes.
-    let quiet_printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
     // Report mode: a source security-constraint violation surfaces as a compliance
     // check rather than aborting (exit 4). `compliance` reports state; it does not
     // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
@@ -477,6 +477,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,

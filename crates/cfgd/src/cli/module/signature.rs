@@ -151,6 +151,7 @@ mod tests {
             config_explicit: false,
             profile: None,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             verbose: 0,
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),

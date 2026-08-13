@@ -265,7 +265,12 @@ pub(crate) fn build_progress_bar(
     let template = if renderer.theme.colors() {
         "{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}"
     } else {
-        "{spinner} [{bar:30}] {pos}/{len} {msg}"
+        // The empty half keeps `dim` — that is an ATTRIBUTE, not a colour, and
+        // `NO_COLOR` governs colour only, so dropping it made a colourless bar
+        // lose the contrast between filled and unfilled that is the only thing
+        // left telling them apart. Empty fill colour before the `/` is what
+        // spends no colour on the filled half.
+        "{spinner} [{bar:30./dim}] {pos}/{len} {msg}"
     };
     pb.set_style(
         ProgressStyle::with_template(template)
@@ -366,22 +371,18 @@ mod tests {
     /// reported condition: `--no-color` on a colour terminal. indicatif
     /// resolves the template field against those flags, so with them off the
     /// negative assertion would hold for the wrong reason and prove nothing.
+    ///
+    /// The colourless bar is checked for COLOUR escapes, not for escapes: it
+    /// keeps `dim` on its unfilled half, which is an attribute, and `NO_COLOR`
+    /// governs colour only. Dropping the attribute too would leave a
+    /// colourless bar with nothing at all separating filled from unfilled.
     #[cfg(feature = "test-helpers")]
     #[test]
     #[serial_test::serial]
     fn a_colourless_printer_draws_a_colourless_progress_bar() {
         use std::sync::{Arc, Mutex};
 
-        struct TerminalColour(bool, bool);
-        impl Drop for TerminalColour {
-            fn drop(&mut self) {
-                console::set_colors_enabled(self.0);
-                console::set_colors_enabled_stderr(self.1);
-            }
-        }
-        let _terminal = TerminalColour(console::colors_enabled(), console::colors_enabled_stderr());
-        console::set_colors_enabled(true);
-        console::set_colors_enabled_stderr(true);
+        let _terminal = crate::output::printer::ColorGlobalOn::set();
 
         fn draw(colors: bool) -> String {
             let drawn = Arc::new(Mutex::new(String::new()));
@@ -402,17 +403,45 @@ mod tests {
             drawn.lock().unwrap_or_else(|e| e.into_inner()).clone()
         }
 
+        /// Whether `drawn` carries an SGR sequence that sets a colour, as
+        /// opposed to one that sets an attribute like `dim` (`\x1b[2m`).
+        fn has_color_sgr(drawn: &str) -> bool {
+            drawn.split("\u{1b}[").skip(1).any(|seq| {
+                let Some((params, 'm')) = seq
+                    .find('m')
+                    .map(|i| (&seq[..i], seq[i..].chars().next().unwrap_or('\0')))
+                else {
+                    return false;
+                };
+                params.split(';').filter_map(|p| p.parse::<u16>().ok()).any(
+                    // 30-37/90-97 foreground, 40-47/100-107 background,
+                    // 38/48 the 256-colour and truecolor selectors.
+                    |n| {
+                        (30..=38).contains(&n)
+                            || (40..=48).contains(&n)
+                            || (90..=97).contains(&n)
+                            || (100..=107).contains(&n)
+                    },
+                )
+            })
+        }
+
         let off = draw(false);
         assert!(
-            !off.contains('\u{1b}'),
-            "a colourless printer drew escapes: {off:?}"
+            !has_color_sgr(&off),
+            "a colourless printer drew colour: {off:?}"
         );
         assert!(off.contains("2/4"), "bar did not draw at all: {off:?}");
+        assert!(
+            off.contains("\u{1b}[2m"),
+            "the colourless bar dropped `dim`, so its unfilled half is \
+             indistinguishable from its filled half: {off:?}"
+        );
 
         let on = draw(true);
         assert!(
-            on.contains('\u{1b}'),
-            "a colour printer drew no escapes, so the assertion above proves \
+            has_color_sgr(&on),
+            "a colour printer drew no colour, so the assertion above proves \
              nothing: {on:?}"
         );
     }

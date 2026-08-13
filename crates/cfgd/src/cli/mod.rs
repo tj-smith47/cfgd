@@ -235,6 +235,33 @@ fn extract_config_path(args: &[String]) -> Option<PathBuf> {
     Some(default_config_file())
 }
 
+/// When to colorize output, in the `auto`/`always`/`never` spelling every
+/// other CLI uses. The tri-state lives here rather than reusing
+/// [`cfgd_core::output::ColorChoice`] directly so clap owns the parsing and the
+/// core type stays free of a clap dependency.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum ColorWhen {
+    /// Follow the terminal, `NO_COLOR` and `TERM=dumb`.
+    #[default]
+    Auto,
+    /// Colorize even when stderr is not a terminal — for a pager that renders
+    /// escapes (`less -R`) or a captured transcript.
+    Always,
+    /// Never colorize.
+    Never,
+}
+
+impl From<ColorWhen> for cfgd_core::output::ColorChoice {
+    fn from(value: ColorWhen) -> Self {
+        match value {
+            ColorWhen::Auto => Self::Auto,
+            ColorWhen::Always => Self::Always,
+            ColorWhen::Never => Self::Never,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
@@ -336,9 +363,19 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
-    /// Disable colored output
+    /// Disable colored output (alias for --color never)
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// When to colorize output: auto (follow the terminal), always, never
+    #[arg(
+        long,
+        global = true,
+        value_name = "WHEN",
+        env = "CFGD_COLOR",
+        default_value = "auto"
+    )]
+    pub color: ColorWhen,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]

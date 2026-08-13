@@ -90,7 +90,7 @@ impl McpServer {
             session: GenerateSession::new(repo_root, env!("CARGO_PKG_VERSION")),
             home,
             managers: packages::all_package_managers(),
-            printer: cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet),
+            printer: cfgd_core::output::Printer::silent(),
             state,
         })
     }

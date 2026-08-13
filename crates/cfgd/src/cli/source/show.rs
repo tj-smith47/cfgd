@@ -271,7 +271,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    let silent_printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
     if let Err(e) = mgr.load_source(source_spec, &silent_printer) {
         printer.status_simple(
             Role::Warn,

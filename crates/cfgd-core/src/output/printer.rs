@@ -103,7 +103,11 @@ pub enum ColorChoice {
     /// `console`'s own tty/`CLICOLOR` detection, read once, minus the cases
     /// [`colors_must_be_disabled`] rules out.
     Auto,
-    /// Never colour. What `--no-color` selects.
+    /// Colour whatever the terminal says, short of the one case that would
+    /// corrupt data. What `--color always` selects, for a run piped into a
+    /// pager that renders escapes (`less -R`) or into a docs capture.
+    Always,
+    /// Never colour. What `--color never` / `--no-color` selects.
     Never,
 }
 
@@ -111,7 +115,20 @@ impl ColorChoice {
     /// Resolve to the concrete decision this printer will hold for its lifetime.
     fn resolve(self, output_format: &OutputFormat) -> bool {
         match self {
-            Self::Auto => console::colors_enabled() && !colors_must_be_disabled(output_format),
+            // The colour question is asked of STDERR, because stderr is where
+            // every human emission goes: stdout carries structured data only,
+            // and colour is already forced off there. Asking `colors_enabled()`
+            // (the stdout answer) styles `cfgd apply 2> log` into the log file
+            // and strips `cfgd apply | tee log` on a live terminal — both
+            // backwards.
+            Self::Auto => {
+                console::colors_enabled_stderr() && !colors_must_be_disabled(output_format)
+            }
+            // An explicit request outranks `NO_COLOR` / `TERM=dumb` (the
+            // convention is a default, not a veto) but never outranks the
+            // structured-output gate: an escape inside a JSON string field is
+            // corrupt data, not a styling preference.
+            Self::Always => !output_format.is_structured(),
             Self::Never => false,
         }
     }
@@ -139,12 +156,20 @@ impl Printer {
         Self::with_format(verbosity, None, OutputFormat::Table, ColorChoice::Auto)
     }
 
-    pub fn with_theme_name(verbosity: Verbosity, theme_name: Option<&str>) -> Self {
+    /// A non-emitting sink for a process that owns no terminal at all — the
+    /// Windows service entry point and the MCP server's JSON-RPC dispatch.
+    ///
+    /// Quiet AND [`ColorChoice::Never`], because there is no parent printer to
+    /// inherit a decision from and `Auto` would answer to whatever the service
+    /// host or the MCP client left on stderr. Every other quiet sink in the
+    /// workspace derives from a real printer via [`Printer::at_verbosity`];
+    /// reach for this one only where no such printer exists.
+    pub fn silent() -> Self {
         Self::with_format(
-            verbosity,
-            theme_name,
+            Verbosity::Quiet,
+            None,
             OutputFormat::Table,
-            ColorChoice::Auto,
+            ColorChoice::Never,
         )
     }
 
@@ -154,13 +179,33 @@ impl Printer {
         output_format: OutputFormat,
         colors: ColorChoice,
     ) -> Self {
+        let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
         let colors = colors.resolve(&output_format);
-        Self::build(verbosity, theme_name, output_format, colors)
+        Self::build(verbosity, theme, output_format, colors)
+    }
+
+    /// Production constructor for a printer built from the user's `spec.theme`
+    /// block: the preset it names AND the per-slot `overrides` it declares.
+    ///
+    /// Separate from [`Printer::with_format`] because the override pass has to
+    /// run before the colour stamp — `Theme::from_config` fills the optional
+    /// `primary` slot with a fresh style when a preset leaves it empty, and a
+    /// slot minted after the stamp would carry the default (colour-off)
+    /// decision instead of this printer's.
+    pub fn with_theme_config(
+        verbosity: Verbosity,
+        theme: Option<&crate::config::ThemeConfig>,
+        output_format: OutputFormat,
+        colors: ColorChoice,
+    ) -> Self {
+        let theme = Theme::from_config(theme);
+        let colors = colors.resolve(&output_format);
+        Self::build(verbosity, theme, output_format, colors)
     }
 
     fn build(
         verbosity: Verbosity,
-        theme_name: Option<&str>,
+        theme: Theme,
         output_format: OutputFormat,
         colors: bool,
     ) -> Self {
@@ -170,10 +215,7 @@ impl Printer {
         } else {
             verbosity
         };
-        let theme = theme_name
-            .map(Theme::from_preset)
-            .unwrap_or_default()
-            .with_colors(colors);
+        let theme = theme.with_colors(colors);
         // The MultiProgress is built first and a clone handed to the renderer,
         // so the two are wired at construction. This is the ONE constructor
         // whose stderr sink is that MultiProgress's own draw target, which is
@@ -218,7 +260,30 @@ impl Printer {
         // mid-run, which is the whole class of bug the field exists to close.
         Self::build(
             self.verbosity(),
-            Some(theme_name),
+            Theme::from_preset(theme_name),
+            self.output_format.clone(),
+            self.colors,
+        )
+        .with_list_envelope(self.list_envelope)
+    }
+
+    /// A copy of this printer at `verbosity`, inheriting the colour decision,
+    /// the theme (preset plus `spec.theme.overrides`) and the output format.
+    ///
+    /// The one way to mint the quiet sink a command hands to a library call, and
+    /// the daemon's own printer. A second `Printer::new` there re-resolves
+    /// colour from the terminal, so `--no-color` reached the process printer and
+    /// nothing else — the daemon drew a fully coloured reconcile tree into
+    /// journald — and re-resolves the theme from nothing, so the configured
+    /// `spec.theme` was dropped on the way.
+    ///
+    /// Carries no test capture or queued prompts, for the same reason
+    /// [`Printer::rethemed`] does not: those belong to the printer a test
+    /// constructed.
+    pub fn at_verbosity(&self, verbosity: Verbosity) -> Self {
+        Self::build(
+            verbosity,
+            self.renderer.theme.clone(),
             self.output_format.clone(),
             self.colors,
         )
@@ -598,6 +663,43 @@ impl Drop for Printer {
     }
 }
 
+/// Turns `console`'s process-global colour flags ON and restores them on drop,
+/// including on unwind, so a failed assertion cannot leave the suite's terminal
+/// decision flipped under every test that runs after it.
+///
+/// The ONE writer of those flags in the workspace, and test-only: production
+/// never touches them, because a printer's colour is decided at construction
+/// (see [`ColorChoice`]). A test reaches for this when the flags being ON is
+/// the reported condition it must reproduce — `--no-color` on a colour
+/// terminal, or a capture taken while an unrelated thread flipped them. Pair it
+/// with `serial_test::serial`; the flags are process-global.
+#[cfg(test)]
+pub(crate) struct ColorGlobalOn {
+    stdout: bool,
+    stderr: bool,
+}
+
+#[cfg(test)]
+impl ColorGlobalOn {
+    pub(crate) fn set() -> Self {
+        let prior = Self {
+            stdout: console::colors_enabled(),
+            stderr: console::colors_enabled_stderr(),
+        };
+        console::set_colors_enabled(true);
+        console::set_colors_enabled_stderr(true);
+        prior
+    }
+}
+
+#[cfg(test)]
+impl Drop for ColorGlobalOn {
+    fn drop(&mut self) {
+        console::set_colors_enabled(self.stdout);
+        console::set_colors_enabled_stderr(self.stderr);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +728,113 @@ mod tests {
             ColorChoice::Auto,
         );
         assert_eq!(p.verbosity(), Verbosity::Normal);
+    }
+
+    #[test]
+    #[serial]
+    fn derived_printers_inherit_the_colour_decision() {
+        // The terminal is asked to say YES, so a derived printer that re-reads
+        // it would come back coloured and the assertion below would fail. That
+        // is the regression: `cfgd daemon --no-color` built its own printer
+        // with `Printer::new`, which resolves `Auto`, and drew a fully coloured
+        // reconcile tree into journald.
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+        let _globals = ColorGlobalOn::set();
+
+        let never = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Never,
+        );
+        assert!(!never.colors());
+        assert!(!never.at_verbosity(Verbosity::Quiet).colors());
+        assert!(!never.at_verbosity(Verbosity::Verbose).colors());
+        assert!(!never.rethemed("dracula").colors());
+
+        // `silent()` answers the same way with no parent to inherit from.
+        assert!(!Printer::silent().colors());
+
+        // And the inheritance is faithful in the other direction: an ON
+        // decision survives the derivation too, so this is not a test that
+        // would pass with the field hardcoded to false.
+        let always = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert!(always.colors());
+        assert!(always.at_verbosity(Verbosity::Quiet).colors());
+    }
+
+    /// `spec.theme.overrides` is a documented field, and until the process
+    /// printer was built from the whole block it was inert: `main` passed only
+    /// `theme.name`, so `Theme::from_config` was reachable from nothing but its
+    /// own tests and every declared override was silently dropped.
+    #[test]
+    #[serial]
+    fn theme_overrides_reach_the_rendered_style() {
+        use crate::config::{ThemeConfig, ThemeOverrides};
+
+        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+
+        let config = ThemeConfig {
+            name: "dracula".to_string(),
+            overrides: ThemeOverrides {
+                success: Some("#010203".to_string()),
+                // The optional slot: a preset answering `None` must be FILLED
+                // by an override, and filled before the colour stamp — a slot
+                // minted afterwards would carry the default colour-off answer
+                // instead of this printer's.
+                primary: Some("#040506".to_string()),
+                ..Default::default()
+            },
+        };
+
+        let p = Printer::with_theme_config(
+            Verbosity::Normal,
+            Some(&config),
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        // Asserted on the RENDER rather than on the stored triple: reaching the
+        // theme struct is not the claim, reaching the escape a user sees is.
+        let theme = &p.renderer.theme;
+        assert!(theme.colors(), "the stamp must reach the overridden slots");
+        assert_eq!(
+            theme.success.apply_to("x").to_string(),
+            "\u{1b}[38;2;1;2;3mx\u{1b}[0m"
+        );
+        let primary = theme
+            .primary
+            .as_ref()
+            .expect("an override must fill an optional slot the preset leaves empty");
+        assert_eq!(
+            primary.apply_to("x").to_string(),
+            "\u{1b}[38;2;4;5;6mx\u{1b}[0m",
+            "a slot minted during the override pass must still carry this \
+             printer's colour decision, not the default colour-off one"
+        );
+
+        // No config at all is the default theme, not a panic or an empty one.
+        let bare = Printer::with_theme_config(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert_eq!(
+            bare.renderer.theme.success.apply_to("x").to_string(),
+            Theme::default()
+                .with_colors(true)
+                .success
+                .apply_to("x")
+                .to_string()
+        );
     }
 
     #[test]

@@ -12663,6 +12663,7 @@ spec: {}
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         // Snapshot row was written to the override DB.
@@ -12700,6 +12701,7 @@ spec: {}
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         // No snapshot stored because config load failed.
@@ -12743,6 +12745,7 @@ spec: {}
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         // No snapshot stored because resolve_profile failed.
@@ -12786,6 +12789,7 @@ spec: {}
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         let store =

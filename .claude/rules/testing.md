@@ -50,9 +50,16 @@ Colour is decided ONCE, per `Printer`, at construction, and folded into its them
 than merely stripped by convention. Production supplies the decision as a
 `ColorChoice` (`Auto` resolves `console`'s detection minus
 `output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`);
-every capture constructor supplies `false`. Nothing writes `console`'s colour flags,
-so no test can flip them under another — `a_flipped_colour_global_cannot_style_a_capture`
-turns them on deliberately and proves a capture stays unstyled.
+every capture constructor supplies `false`. No PRODUCTION code writes `console`'s colour
+flags, so nothing a run does can change what a printer already decided. Tests write them
+through exactly one guard — `output::printer::ColorGlobalOn`, which restores the prior
+values on drop including on unwind — and only to reproduce the flags being ON as the
+reported condition: `a_flipped_colour_global_cannot_style_a_capture` proves a capture
+stays unstyled anyway, `a_colourless_printer_draws_a_colourless_progress_bar` proves
+indicatif's own template resolution does not leak colour past `--no-color`, and
+`derived_printers_inherit_the_colour_decision` proves a derived printer does not re-read
+them. Never hand-roll a second save/restore struct; pair the guard with
+`serial_test::serial`.
 
 Strip anyway when the assertion is about TEXT: `captured_text` is still the ONE read of
 a capture buffer, because `for_test_with_theme_colored` really does emit escapes and an

@@ -237,27 +237,32 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    // `--no-color` is an input to the printer's own colour decision, not a
-    // global flipped beforehand: the printer settles colour once, at
-    // construction, so nothing later in the run can disagree with it. NO_COLOR
-    // and TERM=dumb are read inside that decision, so every Printer (including
-    // daemon-owned ones) honors the convention without a second spelling here.
+    // The colour choice is an input to the printer's own decision, not a global
+    // flipped beforehand: the printer settles colour once, at construction, so
+    // nothing later in the run can disagree with it, and every derived printer
+    // (the daemon's, every quiet library sink) inherits that one answer rather
+    // than re-reading the terminal. NO_COLOR and TERM=dumb are read inside the
+    // `Auto` arm, so the convention needs no second spelling here — and
+    // `--color always` deliberately outranks them.
+    // `--no-color` is the older spelling of `--color never`; it wins when both
+    // appear, because it can only ever have been typed to turn colour off.
     let color_choice = if cli.no_color {
         cfgd_core::output::ColorChoice::Never
     } else {
-        cfgd_core::output::ColorChoice::Auto
+        cli.color.into()
     };
 
-    // Try loading config for theme settings; fall back to default theme if unavailable
+    // Try loading config for theme settings; fall back to default theme if
+    // unavailable. The whole block travels, not just its name: `overrides`
+    // is a documented field, and a printer built from the name alone drops it.
     let theme_config = std::path::Path::new(&cli.config)
         .exists()
         .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
         .flatten()
         .and_then(|c| c.spec.theme);
-    let theme_name = theme_config.as_ref().map(|t| t.name.clone());
-    let printer = cfgd_core::output::Printer::with_format(
+    let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
-        theme_name.as_deref(),
+        theme_config.as_ref(),
         output_format,
         color_choice,
     )

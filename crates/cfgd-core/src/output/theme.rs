@@ -258,6 +258,11 @@ impl<D: Display> Display for StyledText<'_, D> {
     }
 }
 
+/// `Clone` so a printer derived from another (`Printer::at_verbosity`) inherits
+/// the theme it was actually rendering with — presets, config overrides and the
+/// colour stamp together — instead of rebuilding a preset from a name and
+/// silently dropping `spec.theme.overrides`.
+#[derive(Clone)]
 pub struct Theme {
     /// Whether this theme's styles may emit colour, stamped by
     /// [`Theme::with_colors`]. Private, so a theme cannot be assembled with the
@@ -836,55 +841,113 @@ mod tests {
         assert_eq!(out, "\x1b[1mhi\x1b[0m", "got: {out:?}");
     }
 
+    /// The colour-off decision, taken the way a printer takes it, so the env
+    /// var below is load-bearing: an unstamped `ThemedStyle` spends no colour
+    /// whatever `NO_COLOR` says, and a test that skipped this step asserted
+    /// nothing about the contract it was named for.
+    #[track_caller]
+    fn no_color_decision() -> bool {
+        let colors = !crate::output::printer::colors_must_be_disabled(&OutputFormat::Table);
+        assert!(!colors, "NO_COLOR must rule colour out");
+        colors
+    }
+
     #[test]
     #[serial]
     fn no_color_keeps_italic_for_default_accent() {
+        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
         // Matches the `default` preset's accent slot: hex("#d78700").italic()
-        let style = ThemedStyle::from_hex("#d78700").italic();
+        let style = ThemedStyle::from_hex("#d78700")
+            .italic()
+            .with_colors(no_color_decision());
         let out = style.apply_to("x").to_string();
         assert_eq!(out, "\x1b[3mx\x1b[0m", "got: {out:?}");
     }
 
     #[test]
     #[serial]
-    fn no_color_keeps_bold_on_plain_style() {
-        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let out = ThemedStyle::plain().bold().apply_to("x").to_string();
-        assert_eq!(out, "\x1b[1mx\x1b[0m", "got: {out:?}");
-    }
-
-    #[test]
-    #[serial]
-    fn no_color_keeps_underline_for_minimal_secondary() {
-        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        // Matches the `minimal` preset's secondary slot.
-        let out = ThemedStyle::plain().underlined().apply_to("x").to_string();
-        assert_eq!(out, "\x1b[4mx\x1b[0m", "got: {out:?}");
-    }
-
-    #[test]
-    #[serial]
     fn no_color_emits_no_escapes_when_no_attrs() {
+        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let out = ThemedStyle::plain().apply_to("x").to_string();
+        let colors = no_color_decision();
+        let out = ThemedStyle::plain()
+            .with_colors(colors)
+            .apply_to("x")
+            .to_string();
         assert_eq!(out, "x", "got: {out:?}");
         // Hex without attrs also emits no escapes when colors are off.
-        let out2 = ThemedStyle::from_hex("#bd93f9").apply_to("y").to_string();
+        let out2 = ThemedStyle::from_hex("#bd93f9")
+            .with_colors(colors)
+            .apply_to("y")
+            .to_string();
         assert_eq!(out2, "y", "got: {out2:?}");
     }
 
+    /// Every SGR parameter `styled` sets, in the order they appear, however
+    /// they are grouped: the colour-off path joins its attrs into one sequence
+    /// (`\x1b[1;3m`) while the colour-on path spends one sequence per attr
+    /// (`\x1b[1m\x1b[3m`). Both are the same terminal state, and an assertion
+    /// about which attrs are set must not read as an assertion about grouping.
+    fn sgr_params(styled: &str) -> Vec<u16> {
+        styled
+            .split("\u{1b}[")
+            .skip(1)
+            .filter_map(|seq| seq.split_once('m').map(|(params, _)| params))
+            .flat_map(|params| params.split(';').filter_map(|p| p.parse::<u16>().ok()))
+            .filter(|n| *n != 0)
+            .collect()
+    }
+
+    /// Attributes are independent of the colour decision — `NO_COLOR` governs
+    /// colour only, per no-color.org. Asserted against BOTH stamps rather than
+    /// against an env var, because a plain style carries no colour to strip and
+    /// so cannot tell the two decisions apart on its own.
     #[test]
-    #[serial]
-    fn no_color_joins_multiple_attrs() {
-        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        // bold + italic share the attrs path.
-        let out = ThemedStyle::plain()
+    fn attrs_survive_either_colour_decision() {
+        for colors in [false, true] {
+            let bold = ThemedStyle::plain()
+                .bold()
+                .with_colors(colors)
+                .apply_to("x")
+                .to_string();
+            assert_eq!(sgr_params(&bold), [1], "colors={colors}, got: {bold:?}");
+            assert_eq!(crate::output::strip_ansi(&bold), "x");
+
+            // Matches the `minimal` preset's secondary slot.
+            let underlined = ThemedStyle::plain()
+                .underlined()
+                .with_colors(colors)
+                .apply_to("x")
+                .to_string();
+            assert_eq!(
+                sgr_params(&underlined),
+                [4],
+                "colors={colors}, got: {underlined:?}"
+            );
+
+            let joined = ThemedStyle::plain()
+                .bold()
+                .italic()
+                .with_colors(colors)
+                .apply_to("x")
+                .to_string();
+            assert_eq!(
+                sgr_params(&joined),
+                [1, 3],
+                "colors={colors}, got: {joined:?}"
+            );
+        }
+
+        // The colour-off path is the one this module owns, so its exact wire
+        // form is pinned: multiple attrs join into a single sequence.
+        let joined_off = ThemedStyle::plain()
             .bold()
             .italic()
+            .with_colors(false)
             .apply_to("x")
             .to_string();
-        assert_eq!(out, "\x1b[1;3mx\x1b[0m", "got: {out:?}");
+        assert_eq!(joined_off, "\x1b[1;3mx\x1b[0m", "got: {joined_off:?}");
     }
 
     #[test]

@@ -39,7 +39,12 @@ pub(super) fn cmd_daemon(
 
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
-    let daemon_printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
+    // Derived from the process printer, never rebuilt: a fresh `Printer::new`
+    // re-resolves colour from the terminal, so `--no-color` reached the process
+    // printer and nothing else and the daemon drew a fully coloured reconcile
+    // tree into journald. It also re-resolves the theme from nothing, dropping
+    // the configured `spec.theme` on the way.
+    let daemon_printer = std::sync::Arc::new(printer.at_verbosity(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
         cfgd_core::output::Verbosity::Verbose
@@ -456,6 +461,7 @@ mod tests {
             config_explicit: false,
             profile: None,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             verbose: 0,
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
