@@ -41,17 +41,24 @@ have to be supplied, never inherited:
 
 | Ambient input | Supply it with |
 |---|---|
-| **Colour** — `console::colors_enabled()` is on under a pty | `crate::output::strip_ansi(...)` on the capture before ANY assertion |
+| **Colour** — a styled render used to re-read `console::colors_enabled()`, which is on under a pty | a `Printer::for_test*` constructor (all pin `colors: false`); `for_test_with_theme_colored` is the one that pins it ON |
 | **Live region** — a spinner's start line is written when there is none and repainted away when there is | a `Printer::for_test*` constructor (all pin `live_region: false`); `for_test_with_live_bars` is the one that pins it ON |
 | **stdin TTY** — the interactive-script gate | `execute_script_with_tty(stdin_is_tty, …)`, never the `execute_script` wrapper that reads `stdin().is_terminal()` |
 
-Colour is the trap, because it is process-global AND mutable: `ColorsEnabledGuard::set(true)`
-in a themes test flips it for every non-serial test running beside it, so even a
-pipe-invoked suite can style a capture. Strip, always — a `contains("✓ Foo")` breaks
-when an escape lands between the icon and the subject, and the negative form
-`!contains("✓ Foo")` passes vacuously, silently stopping guarding anything. Reach for
-`ColorsEnabledGuard` only when the assertion is ABOUT the escapes; to assert the colour
-DECISION use `output::printer::colors_must_be_disabled(&format)` and take no guard.
+Colour is decided ONCE, per `Printer`, at construction, and folded into its theme
+(`Theme::with_colors`), so a capture buffer cannot be styled by construction rather
+than merely stripped by convention. Production supplies the decision as a
+`ColorChoice` (`Auto` resolves `console`'s detection minus
+`output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`);
+every capture constructor supplies `false`. Nothing writes `console`'s colour flags,
+so no test can flip them under another — `a_flipped_colour_global_cannot_style_a_capture`
+turns them on deliberately and proves a capture stays unstyled.
+
+Strip anyway when the assertion is about TEXT: `captured_text` is still the ONE read of
+a capture buffer, because `for_test_with_theme_colored` really does emit escapes and an
+attribute-carrying slot emits SGR even with colour off (NO_COLOR governs colour only).
+Read the buffer raw only when the assertion is ABOUT the escapes; to assert the colour
+DECISION call `colors_must_be_disabled(&format)` and render nothing.
 
 Goldens are captured through a path where all three are pinned — `assert_human_snapshot*`
 strips for its caller, while the raw `assert_snapshot_at` does not, so a caller reaching

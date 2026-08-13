@@ -17,7 +17,7 @@ pub use component::{Component, KvPair};
 pub mod renderer;
 
 pub mod printer;
-pub use printer::{DocCapture, Printer, PromptAnswer};
+pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};
 
 pub mod owner_label;
 pub use owner_label::OwnerLabel;
@@ -222,9 +222,6 @@ pub use structured::validate_jsonpath_expr;
 
 #[cfg(feature = "test-helpers")]
 pub mod test_capture;
-
-#[cfg(test)]
-pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

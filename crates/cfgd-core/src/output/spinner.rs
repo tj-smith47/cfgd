@@ -353,6 +353,7 @@ mod tests {
             super::super::Verbosity::Quiet,
             None,
             super::super::OutputFormat::Table,
+            super::super::ColorChoice::Auto,
         );
         let sp = p.spinner("x");
         assert!(sp.bar.is_hidden(), "Quiet should yield a hidden bar");

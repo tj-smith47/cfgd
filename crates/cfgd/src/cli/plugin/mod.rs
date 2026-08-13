@@ -191,11 +191,12 @@ pub fn plugin_main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    if std::env::var_os("NO_COLOR").is_some() {
-        Printer::disable_colors();
-    }
-
-    let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0);
+    let printer = Printer::with_format(
+        Verbosity::Normal,
+        None,
+        cli.output.0,
+        cfgd_core::output::ColorChoice::Auto,
+    );
 
     let result = match cli.command {
         PluginCommand::Debug {

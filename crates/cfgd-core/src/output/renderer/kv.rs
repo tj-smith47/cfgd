@@ -169,14 +169,16 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn kv_keys_take_the_secondary_slot() {
-        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
-        let r = Renderer::new(Theme::from_preset("dracula"), Verbosity::Normal);
+        let r = Renderer::new(
+            Theme::from_preset("dracula").with_colors(true),
+            Verbosity::Normal,
+        );
         r.render_kv_block(&sink, 0, &[("Profile".into(), "work".into())]);
         let out = buf.lock().unwrap().clone();
 
-        let theme = Theme::from_preset("dracula");
+        let theme = Theme::from_preset("dracula").with_colors(true);
         assert!(
             out.contains(&theme.secondary.apply_to("Profile").to_string()),
             "key is not painted with the secondary slot: {out:?}"

@@ -76,6 +76,15 @@ pub struct Printer {
     /// suite is started under a pty, and a hang is a worse failure than a
     /// mismatch because nothing ever reports it.
     pub(crate) interactive_stdin: bool,
+    /// Whether this printer's output may carry colour. Decided ONCE, at
+    /// construction, and folded into the renderer's theme — the third ambient
+    /// terminal input, and the one that used to be re-read from
+    /// `console::colors_enabled()` inside every styled render. That global is
+    /// mutable by any thread, so a capture buffer could come back styled
+    /// because an unrelated test flipped it, which turns a negative assertion
+    /// (`!contains("✓ Foo")`) into one that passes vacuously. Held here as well
+    /// as in the theme so a re-themed copy keeps the decision this printer made.
+    pub(crate) colors: bool,
     /// When set (via `--list-envelope` / `CFGD_LIST_ENVELOPE`), a top-level JSON
     /// array emitted under `-o json`/`-o yaml` is wrapped in a KRM List envelope
     /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
@@ -83,8 +92,32 @@ pub struct Printer {
     pub(crate) list_envelope: bool,
 }
 
-/// Whether constructing a `Printer` for `output_format` must turn the terminal's
-/// colour flags off.
+/// How a `Printer` under construction decides whether it may emit colour.
+///
+/// The decision is an input rather than a global the caller mutates beforehand:
+/// a printer's colour is settled once, at construction, and folded into its
+/// theme, so nothing a later thread does can change what this printer renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorChoice {
+    /// Colour when the terminal and the output format both allow it —
+    /// `console`'s own tty/`CLICOLOR` detection, read once, minus the cases
+    /// [`colors_must_be_disabled`] rules out.
+    Auto,
+    /// Never colour. What `--no-color` selects.
+    Never,
+}
+
+impl ColorChoice {
+    /// Resolve to the concrete decision this printer will hold for its lifetime.
+    fn resolve(self, output_format: &OutputFormat) -> bool {
+        match self {
+            Self::Auto => console::colors_enabled() && !colors_must_be_disabled(output_format),
+            Self::Never => false,
+        }
+    }
+}
+
+/// Whether a `Printer` for `output_format` must refuse colour outright.
 ///
 /// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under
 /// structured output (Json / Yaml / Template / Jsonpath / Name) so a role-styled
@@ -92,13 +125,9 @@ pub struct Printer {
 /// enforced at construction, not by every caller remembering to wrap with
 /// `with_data`.
 ///
-/// Split out of [`Printer::with_format`] so the decision is testable without
-/// reading `console`'s colour flags. Those flags are process-global and every
-/// structured-output `Printer` construction in the test binary writes them, so an
-/// assertion made against them races the whole non-serial majority of the suite —
-/// a race `#[serial]` cannot fence, because the mutators are ordinary production
-/// constructions rather than serial tests.
-fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
+/// Split out of [`ColorChoice::resolve`] so the decision is testable without
+/// reading `console`'s colour flags at all.
+pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
     std::env::var_os("NO_COLOR").is_some()
         || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
         || output_format.is_structured()
@@ -107,37 +136,44 @@ fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
 impl Printer {
     /// Production constructor: stderr/stdout via `console::Term`.
     pub fn new(verbosity: Verbosity) -> Self {
-        Self::with_format(verbosity, None, OutputFormat::Table)
+        Self::with_format(verbosity, None, OutputFormat::Table, ColorChoice::Auto)
     }
 
     pub fn with_theme_name(verbosity: Verbosity, theme_name: Option<&str>) -> Self {
-        Self::with_format(verbosity, theme_name, OutputFormat::Table)
+        Self::with_format(
+            verbosity,
+            theme_name,
+            OutputFormat::Table,
+            ColorChoice::Auto,
+        )
     }
 
     pub fn with_format(
         verbosity: Verbosity,
         theme_name: Option<&str>,
         output_format: OutputFormat,
+        colors: ColorChoice,
     ) -> Self {
-        // A test holding a `ColorsEnabledGuard` owns both flags for its
-        // duration; clobbering them here would race it from any concurrently
-        // constructing test. Compiled out of release builds.
-        #[cfg(test)]
-        let pinned = crate::output::test_support::colors_are_pinned();
-        #[cfg(not(test))]
-        let pinned = false;
+        let colors = colors.resolve(&output_format);
+        Self::build(verbosity, theme_name, output_format, colors)
+    }
 
-        if !pinned && colors_must_be_disabled(&output_format) {
-            console::set_colors_enabled(false);
-            console::set_colors_enabled_stderr(false);
-        }
+    fn build(
+        verbosity: Verbosity,
+        theme_name: Option<&str>,
+        output_format: OutputFormat,
+        colors: bool,
+    ) -> Self {
         // Auto-quiet under structured output.
         let verbosity = if output_format.is_structured() {
             Verbosity::Quiet
         } else {
             verbosity
         };
-        let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
+        let theme = theme_name
+            .map(Theme::from_preset)
+            .unwrap_or_default()
+            .with_colors(colors);
         // The MultiProgress is built first and a clone handed to the renderer,
         // so the two are wired at construction. This is the ONE constructor
         // whose stderr sink is that MultiProgress's own draw target, which is
@@ -160,6 +196,7 @@ impl Printer {
             output_error: AtomicBool::new(false),
             live_region: super::spinner::stderr_is_terminal(),
             interactive_stdin: super::prompts::stdin_is_terminal(),
+            colors,
             list_envelope: false,
         }
     }
@@ -176,10 +213,14 @@ impl Printer {
     /// Carries no test capture or queued prompts: those belong to the printer a
     /// test constructed, and a re-themed copy is only taken on a real run.
     pub fn rethemed(&self, theme_name: &str) -> Self {
-        Self::with_format(
+        // The copy inherits the colour this printer resolved rather than
+        // re-resolving: re-reading the terminal would let the two disagree
+        // mid-run, which is the whole class of bug the field exists to close.
+        Self::build(
             self.verbosity(),
             Some(theme_name),
             self.output_format.clone(),
+            self.colors,
         )
         .with_list_envelope(self.list_envelope)
     }
@@ -205,20 +246,9 @@ impl Printer {
         matches!(self.output_format, OutputFormat::Wide)
     }
 
-    /// Disable color globally (today's `disable_colors`).
-    pub fn disable_colors() {
-        console::set_colors_enabled(false);
-        console::set_colors_enabled_stderr(false);
-    }
-
-    /// Force color globally regardless of TTY detection. Symmetric to
-    /// `disable_colors` so demo / example binaries that pipe their output for
-    /// capture can still emit real ANSI escapes. Production CLI dispatch goes
-    /// through `with_format`, which honors `NO_COLOR` and structured-output
-    /// gating — call this only from non-production entry points.
-    pub fn enable_colors() {
-        console::set_colors_enabled(true);
-        console::set_colors_enabled_stderr(true);
+    /// Whether this printer's output may carry colour.
+    pub fn colors(&self) -> bool {
+        self.colors
     }
 
     // ----- Top-level emit methods (depth 0) -----
@@ -577,25 +607,42 @@ mod tests {
     use serial_test::serial;
 
     #[test]
-    #[serial]
     fn structured_format_auto_quiets() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            ColorChoice::Auto,
+        );
         assert_eq!(p.verbosity(), Verbosity::Quiet);
     }
 
     #[test]
-    #[serial]
     fn table_format_keeps_verbosity() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Auto,
+        );
         assert_eq!(p.verbosity(), Verbosity::Normal);
     }
 
     #[test]
-    #[serial]
     fn is_structured_classifies() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            ColorChoice::Auto,
+        );
         assert!(p.is_structured());
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Auto,
+        );
         assert!(!p.is_structured());
     }
 

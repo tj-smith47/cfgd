@@ -123,7 +123,12 @@ mod tests {
 
     #[test]
     fn structured_mode_refuses_prompt() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            crate::output::ColorChoice::Auto,
+        );
         let r = p.prompt_confirm("really?");
         assert!(r.is_err());
     }
@@ -153,7 +158,12 @@ mod tests {
 
     #[test]
     fn structured_select_refuses_when_no_seeded_answer() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            crate::output::ColorChoice::Auto,
+        );
         let options = vec!["a".to_string(), "b".to_string()];
         let err = p
             .prompt_select("pick", &options)
@@ -175,7 +185,12 @@ mod tests {
 
     #[test]
     fn structured_text_refuses_when_no_seeded_answer() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            crate::output::ColorChoice::Auto,
+        );
         let err = p.prompt_text("name", "").expect_err("structured refuse");
         let msg = format!("{err}");
         assert!(

@@ -67,12 +67,13 @@ fn build_test_printer(
     theme: Theme,
     verbosity: Verbosity,
     format: OutputFormat,
+    colors: bool,
     test_doc_capture: Option<DocCapture>,
     prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
 ) -> Printer {
     let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
     Printer {
-        renderer: Arc::new(Renderer::new(theme, verbosity)),
+        renderer: Arc::new(Renderer::new(theme.with_colors(colors), verbosity)),
         output_format: format,
         sink_stderr: sink.clone(),
         sink_stdout: sink,
@@ -89,6 +90,9 @@ fn build_test_printer(
         // Same reason, for the other half of the terminal: an unqueued prompt
         // must refuse rather than block on a keyboard nobody is at.
         interactive_stdin: false,
+        // The third: a capture buffer is styled only when the test asked for
+        // styling, never because another thread flipped a process-global flag.
+        colors,
         list_envelope: false,
     }
 }
@@ -111,6 +115,28 @@ impl Printer {
             Theme::default(),
             verbosity,
             OutputFormat::Table,
+            false,
+            None,
+            None,
+        );
+        (p, buf)
+    }
+
+    /// The one capture constructor whose output carries ANSI colour, for the
+    /// tests whose subject IS the escapes a theme emits. Every other `for_test*`
+    /// yields an unstyled buffer no matter what the terminal or another thread
+    /// says, so a test that did not ask for colour cannot be handed it.
+    pub fn for_test_with_theme_colored(
+        theme: Theme,
+        verbosity: Verbosity,
+    ) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let p = build_test_printer(
+            buf.clone(),
+            theme,
+            verbosity,
+            OutputFormat::Table,
+            true,
             None,
             None,
         );
@@ -127,6 +153,7 @@ impl Printer {
             theme,
             verbosity,
             OutputFormat::Table,
+            false,
             None,
             None,
         );
@@ -140,6 +167,7 @@ impl Printer {
             Theme::default(),
             Verbosity::Quiet,
             format,
+            false,
             None,
             None,
         );
@@ -160,6 +188,7 @@ impl Printer {
             Theme::default(),
             Verbosity::Normal,
             OutputFormat::Table,
+            false,
             Some(cap.clone_internal()),
             None,
         );
@@ -183,8 +212,10 @@ impl Printer {
             ));
         let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
         let p = Printer {
+            // Stamped explicitly, like every theme a Printer renders through:
+            // the field below and the theme must never be able to disagree.
             renderer: Arc::new(Renderer::with_bars(
-                Theme::default(),
+                Theme::default().with_colors(false),
                 Verbosity::Normal,
                 multi.clone(),
             )),
@@ -202,6 +233,7 @@ impl Printer {
             // carries runs in the ordinary suite rather than only under a pty.
             live_region: true,
             interactive_stdin: false,
+            colors: false,
             list_envelope: false,
         };
         (p, buf)
@@ -229,6 +261,7 @@ impl Printer {
             Theme::default(),
             verbosity,
             OutputFormat::Table,
+            false,
             None,
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
         );
@@ -252,6 +285,7 @@ impl Printer {
             Theme::default(),
             Verbosity::Normal,
             format,
+            false,
             Some(cap.clone_internal()),
             None,
         );
@@ -274,6 +308,7 @@ impl Printer {
             Theme::default(),
             Verbosity::Normal,
             OutputFormat::Table,
+            false,
             Some(cap.clone_internal()),
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
         );
@@ -439,11 +474,154 @@ mod tests {
                 !p.can_prompt(),
                 "{name} must refuse to prompt rather than block on the suite's own terminal"
             );
+            assert!(
+                !p.colors(),
+                "{name} must be unstyled; only for_test_with_theme_colored may carry colour"
+            );
         }
 
         assert!(
             Printer::for_test_with_live_bars().0.live_bars(),
             "for_test_with_live_bars exists to reach the repainting path and must report one"
+        );
+        assert!(
+            !Printer::for_test_with_live_bars().0.colors(),
+            "for_test_with_live_bars must be unstyled like every other capture"
+        );
+        assert!(
+            Printer::for_test_with_theme_colored(Theme::default(), Verbosity::Normal)
+                .0
+                .colors(),
+            "the one colour-ON capture constructor must actually carry colour"
+        );
+    }
+
+    /// Restores the process-global colour flags on drop, including on unwind,
+    /// so a failed assertion cannot leave the suite's terminal decision flipped.
+    struct ColorGlobalOn {
+        stdout: bool,
+        stderr: bool,
+    }
+
+    impl ColorGlobalOn {
+        fn set() -> Self {
+            let prior = Self {
+                stdout: console::colors_enabled(),
+                stderr: console::colors_enabled_stderr(),
+            };
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
+            prior
+        }
+    }
+
+    impl Drop for ColorGlobalOn {
+        fn drop(&mut self) {
+            console::set_colors_enabled(self.stdout);
+            console::set_colors_enabled_stderr(self.stderr);
+        }
+    }
+
+    /// A capture buffer is unstyled BY CONSTRUCTION, not because something
+    /// strips it afterwards.
+    ///
+    /// `console`'s colour flags are process-global and mutable, so any thread
+    /// can turn them on mid-suite. While a render read them, an unrelated test
+    /// could hand a capture back styled — and a negative assertion over that
+    /// capture (`!contains("✓ Foo")`) then passed vacuously, stopping guarding
+    /// anything without ever going red. The flags are turned ON here to
+    /// reproduce exactly that, and the buffers are read RAW: routing through
+    /// `captured_text` would strip the escapes and prove nothing about where
+    /// the decision was made.
+    #[test]
+    #[serial_test::serial]
+    fn a_flipped_colour_global_cannot_style_a_capture() {
+        use crate::output::Role;
+
+        let _globals = ColorGlobalOn::set();
+
+        // `Role::Ok` against slots that spend colour and nothing else: an
+        // attribute-carrying slot would legitimately emit SGR with colour off
+        // (NO_COLOR governs colour only), and could not tell the two apart.
+        let flat: Vec<(&str, Arc<Mutex<String>>)> = vec![
+            ("for_test_at", {
+                let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+            ("for_test_with_theme", {
+                let (p, buf) =
+                    Printer::for_test_with_theme(Theme::from_preset("dracula"), Verbosity::Normal);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+            ("for_test_with_prompt_responses_at", {
+                let (p, buf) =
+                    Printer::for_test_with_prompt_responses_at(Vec::new(), Verbosity::Normal);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+            ("for_test_with_live_bars", {
+                let (p, buf) = Printer::for_test_with_live_bars();
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+        ];
+
+        let docs: Vec<(&str, DocCapture)> = vec![
+            ("for_test_doc", {
+                let (p, cap) = Printer::for_test_doc();
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                cap
+            }),
+            ("for_test_doc_with_format", {
+                let (p, cap) = Printer::for_test_doc_with_format(OutputFormat::Wide);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                cap
+            }),
+            ("for_test_doc_with_prompt_responses", {
+                let (p, cap) = Printer::for_test_doc_with_prompt_responses(Vec::new());
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                cap
+            }),
+        ];
+
+        let check = |name: &str, raw: &str| {
+            assert!(
+                raw.contains("wrote /etc/hosts"),
+                "{name} captured nothing, so the escape assertion below would pass vacuously: {raw:?}"
+            );
+            assert!(
+                !raw.contains('\u{1b}'),
+                "{name} was styled by the process-global colour flag: {raw:?}"
+            );
+        };
+
+        for (name, buf) in flat {
+            let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            check(name, &raw);
+        }
+        for (name, cap) in docs {
+            check(name, &cap.human());
+        }
+
+        // The one constructor that may be styled still is, so the assertions
+        // above are proving a decision rather than a dead render path.
+        let (p, buf) =
+            Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
+        p.status_simple(Role::Ok, "wrote /etc/hosts");
+        p.flush();
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains('\u{1b}'),
+            "for_test_with_theme_colored must carry colour: {raw:?}"
         );
     }
 }

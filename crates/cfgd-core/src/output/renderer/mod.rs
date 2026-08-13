@@ -711,13 +711,15 @@ mod tests {
     #[serial_test::serial]
     fn every_free_text_emitter_applies_a_theme_style() {
         use crate::output::Role;
-        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
 
         fn assert_styled(name: &str, emit: impl Fn(&Renderer, &StringSink)) {
             let buf = Arc::new(Mutex::new(String::new()));
             let sink = StringSink(buf.clone());
             // Verbose so `note`, which is Verbose-only, still emits.
-            let r = Renderer::new(Theme::from_preset("dracula"), Verbosity::Verbose);
+            let r = Renderer::new(
+                Theme::from_preset("dracula").with_colors(true),
+                Verbosity::Verbose,
+            );
             emit(&r, &sink);
             let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(
@@ -1162,6 +1164,7 @@ mod tests {
             Verbosity::Quiet,
             None,
             crate::output::OutputFormat::Table,
+            crate::output::ColorChoice::Auto,
         );
         let sp = p.spinner("hidden");
         assert!(sp.bar.is_hidden(), "Quiet must yield a hidden bar");

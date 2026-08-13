@@ -33,6 +33,13 @@ pub struct ThemedStyle {
     /// SGR parameters without re-deriving them from `inner` (which only
     /// exposes its attrs via its `Debug` impl).
     attrs: AttrSet,
+    /// Whether this style may emit colour. Stamped once by
+    /// [`Theme::with_colors`], from the decision the `Printer` took at its own
+    /// construction, instead of re-read from `console`'s process-global flag at
+    /// every render. `false` on a freshly built style, so a construction path
+    /// that forgets to stamp renders UNSTYLED — that fails a positive assertion
+    /// loudly, where the opposite default makes a negative one pass vacuously.
+    colors: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -100,6 +107,7 @@ impl ThemedStyle {
                 inner: Style::new().fg(Color::Color256(ansi256_from_rgb(r, g, b))),
                 rgb: Some((r, g, b)),
                 attrs: AttrSet::default(),
+                colors: false,
             },
             None => Self::default(),
         }
@@ -112,6 +120,7 @@ impl ThemedStyle {
             inner: Style::new().fg(color),
             rgb: None,
             attrs: AttrSet::default(),
+            colors: false,
         }
     }
 
@@ -140,19 +149,39 @@ impl ThemedStyle {
     }
 
     pub fn cyan(self) -> Self {
-        Self::from_console_color(Color::Cyan).with_attrs(self.attrs)
+        self.recolor(Color::Cyan)
     }
 
     pub fn red(self) -> Self {
-        Self::from_console_color(Color::Red).with_attrs(self.attrs)
+        self.recolor(Color::Red)
     }
 
     pub fn green(self) -> Self {
-        Self::from_console_color(Color::Green).with_attrs(self.attrs)
+        self.recolor(Color::Green)
     }
 
     pub fn yellow(self) -> Self {
-        Self::from_console_color(Color::Yellow).with_attrs(self.attrs)
+        self.recolor(Color::Yellow)
+    }
+
+    /// Swap the foreground for a named colour, carrying the attribute set and
+    /// the colour decision across. Rebuilding `inner` from scratch is what makes
+    /// carrying explicit: a swap that dropped `colors` would leave a stamped
+    /// theme with one silently unstyled slot.
+    fn recolor(self, color: Color) -> Self {
+        Self::from_console_color(color)
+            .with_attrs(self.attrs)
+            .with_colors(self.colors)
+    }
+
+    /// Stamp whether this style may emit colour. `force_styling` is set in step
+    /// with the flag because the 256-colour fallback arm of `StyledText::fmt`
+    /// delegates to `console::Style::apply_to`, which otherwise re-consults the
+    /// process-global colour flag and strips whatever this style decided.
+    pub fn with_colors(mut self, enabled: bool) -> Self {
+        self.colors = enabled;
+        self.inner = self.inner.force_styling(enabled);
+        self
     }
 
     fn with_attrs(mut self, attrs: AttrSet) -> Self {
@@ -172,11 +201,12 @@ impl ThemedStyle {
         self
     }
 
-    /// Wrap `text` for `Display` rendering. Resolved at format-time:
+    /// Wrap `text` for `Display` rendering. Resolved at format-time against the
+    /// colour decision this style carries:
     ///
-    /// - `console::colors_enabled()` is false (NO_COLOR / TERM=dumb / not a
+    /// - `colors` is false (NO_COLOR / TERM=dumb / structured output / not a
     ///   tty) AND no attrs → emit `text` with no escapes.
-    /// - `console::colors_enabled()` is false AND attrs are set → emit
+    /// - `colors` is false AND attrs are set → emit
     ///   `\x1b[<attrs>m{text}\x1b[0m`. NO_COLOR (per no-color.org) governs
     ///   color only — bold/dim/italic/underline are independent SGR signals
     ///   load-bearing for the `default` (italic accent) and `minimal`
@@ -203,8 +233,8 @@ impl<D: Display> Display for StyledText<'_, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let attrs = &self.style.attrs;
 
-        if !console::colors_enabled() {
-            // NO_COLOR / TERM=dumb / not a tty: emit attrs-only SGR (bold,
+        if !self.style.colors {
+            // Colour off for the printer this style belongs to: emit attrs-only SGR (bold,
             // dim, italic, underlined are independent of color per
             // no-color.org) so the `default` italic accent and the
             // `minimal` italic accent / underlined secondary keep their
@@ -229,6 +259,12 @@ impl<D: Display> Display for StyledText<'_, D> {
 }
 
 pub struct Theme {
+    /// Whether this theme's styles may emit colour, stamped by
+    /// [`Theme::with_colors`]. Private, so a theme cannot be assembled with the
+    /// slots and the decision disagreeing — every preset is built here and
+    /// stamped by the `Printer` that will render through it.
+    colors: bool,
+
     // Style slots (13)
     /// Style for an action subject at the deepest level of the run tree.
     /// `None` means the subject keeps the role's own style — the correct
@@ -266,6 +302,7 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
+            colors: false,
             // No palette foreground exists to spend here, and the terminal's
             // own default is the fall-through this slot exists to avoid — so
             // the subject keeps its role style.
@@ -298,6 +335,34 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Stamp every style slot with the colour decision the renderer's owner
+    /// took, and return the theme. This is the ONE place a theme learns whether
+    /// it may emit colour: `StyledText` reads the stamp instead of
+    /// `console::colors_enabled()`, so a printer's output cannot change because
+    /// an unrelated thread flipped a process-global flag mid-render.
+    pub fn with_colors(mut self, enabled: bool) -> Self {
+        self.colors = enabled;
+        self.primary = self.primary.map(|s| s.with_colors(enabled));
+        self.header = self.header.with_colors(enabled);
+        self.success = self.success.with_colors(enabled);
+        self.warning = self.warning.with_colors(enabled);
+        self.error = self.error.with_colors(enabled);
+        self.info = self.info.with_colors(enabled);
+        self.muted = self.muted.with_colors(enabled);
+        self.running = self.running.with_colors(enabled);
+        self.diff_add = self.diff_add.with_colors(enabled);
+        self.diff_remove = self.diff_remove.with_colors(enabled);
+        self.diff_context = self.diff_context.with_colors(enabled);
+        self.accent = self.accent.with_colors(enabled);
+        self.secondary = self.secondary.with_colors(enabled);
+        self
+    }
+
+    /// Whether styles from this theme may emit colour.
+    pub fn colors(&self) -> bool {
+        self.colors
+    }
+
     pub fn from_preset(name: &str) -> Self {
         match name {
             "dracula" => Self::dracula(),
@@ -447,6 +512,7 @@ impl Theme {
 
     fn minimal() -> Self {
         Self {
+            colors: false,
             // minimal spends no colour at all.
             primary: None,
             header: ThemedStyle::plain().bold(),
@@ -564,19 +630,24 @@ fn hex(s: &str) -> ThemedStyle {
 fn apply_color(style: &mut ThemedStyle, hex: &str) {
     if let Some((r, g, b)) = parse_hex_rgb(hex) {
         let attrs = style.attrs;
+        // The colour decision belongs to the printer, not to the palette an
+        // override names, so it survives the slot being rebuilt.
+        let colors = style.colors;
         *style = ThemedStyle {
             inner: Style::new().fg(Color::Color256(ansi256_from_rgb(r, g, b))),
             rgb: Some((r, g, b)),
             attrs: AttrSet::default(),
+            colors: false,
         }
-        .with_attrs(attrs);
+        .with_attrs(attrs)
+        .with_colors(colors);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::test_support::ColorsEnabledGuard;
+    use crate::output::OutputFormat;
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
 
@@ -713,8 +784,7 @@ mod tests {
     fn hex_style_emits_truecolor_escape_when_supported() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
-        let _colors = ColorsEnabledGuard::set(true);
-        let style = ThemedStyle::from_hex("#bd93f9");
+        let style = ThemedStyle::from_hex("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
@@ -724,8 +794,7 @@ mod tests {
     fn hex_style_with_bold_emits_truecolor_with_attr() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
-        let _colors = ColorsEnabledGuard::set(true);
-        let style = ThemedStyle::from_hex("#bd93f9").bold();
+        let style = ThemedStyle::from_hex("#bd93f9").bold().with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1;38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
@@ -735,8 +804,7 @@ mod tests {
     fn hex_style_falls_back_to_256_when_no_truecolor() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::unset("COLORTERM");
-        let _colors = ColorsEnabledGuard::set(true);
-        let style = ThemedStyle::from_hex("#bd93f9");
+        let style = ThemedStyle::from_hex("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         // Output must contain the 256-color SGR for the quantized slot.
         let (r, g, b) = (0xbd, 0x93, 0xf9);
@@ -757,10 +825,13 @@ mod tests {
     fn no_color_strips_color_keeps_attrs() {
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        // Simulate the colors-disabled state for this test.
-        let _colors = ColorsEnabledGuard::set(false);
-        // Attrs are independent of color per no-color.org: bold survives.
-        let style = ThemedStyle::from_hex("#bd93f9").bold();
+        // The two halves of the NO_COLOR contract, joined: the printer's own
+        // decision function answers "no colour", and the style stamped with
+        // that answer still emits its attrs — bold is independent of colour
+        // per no-color.org.
+        let colors = !crate::output::printer::colors_must_be_disabled(&OutputFormat::Table);
+        assert!(!colors, "NO_COLOR must rule colour out");
+        let style = ThemedStyle::from_hex("#bd93f9").bold().with_colors(colors);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1mhi\x1b[0m", "got: {out:?}");
     }
@@ -769,7 +840,6 @@ mod tests {
     #[serial]
     fn no_color_keeps_italic_for_default_accent() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let _colors = ColorsEnabledGuard::set(false);
         // Matches the `default` preset's accent slot: hex("#d78700").italic()
         let style = ThemedStyle::from_hex("#d78700").italic();
         let out = style.apply_to("x").to_string();
@@ -780,7 +850,6 @@ mod tests {
     #[serial]
     fn no_color_keeps_bold_on_plain_style() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let _colors = ColorsEnabledGuard::set(false);
         let out = ThemedStyle::plain().bold().apply_to("x").to_string();
         assert_eq!(out, "\x1b[1mx\x1b[0m", "got: {out:?}");
     }
@@ -789,7 +858,6 @@ mod tests {
     #[serial]
     fn no_color_keeps_underline_for_minimal_secondary() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let _colors = ColorsEnabledGuard::set(false);
         // Matches the `minimal` preset's secondary slot.
         let out = ThemedStyle::plain().underlined().apply_to("x").to_string();
         assert_eq!(out, "\x1b[4mx\x1b[0m", "got: {out:?}");
@@ -799,7 +867,6 @@ mod tests {
     #[serial]
     fn no_color_emits_no_escapes_when_no_attrs() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let _colors = ColorsEnabledGuard::set(false);
         let out = ThemedStyle::plain().apply_to("x").to_string();
         assert_eq!(out, "x", "got: {out:?}");
         // Hex without attrs also emits no escapes when colors are off.
@@ -811,7 +878,6 @@ mod tests {
     #[serial]
     fn no_color_joins_multiple_attrs() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let _colors = ColorsEnabledGuard::set(false);
         // bold + italic share the attrs path.
         let out = ThemedStyle::plain()
             .bold()

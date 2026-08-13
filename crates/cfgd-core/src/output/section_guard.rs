@@ -450,7 +450,7 @@ mod tests {
         theme: crate::output::Theme,
         body: impl FnOnce(&crate::output::section_guard::SectionGuard<'_>),
     ) -> String {
-        let (p, buf) = Printer::for_test_with_theme(theme, Verbosity::Normal);
+        let (p, buf) = Printer::for_test_with_theme_colored(theme, Verbosity::Normal);
         {
             let s = p.section("Files");
             body(&s);
@@ -468,7 +468,6 @@ mod tests {
     #[serial_test::serial]
     fn action_subject_keeps_role_style_under_default() {
         use crate::output::Theme;
-        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
 
         let plain_default = capture_section(Theme::from_preset("default"), |s| {
             let _ = s.status(Role::Ok, "wrote /etc/hosts");
@@ -504,8 +503,7 @@ mod tests {
     #[serial_test::serial]
     fn action_status_leaves_the_glyph_on_the_role_style() {
         use crate::output::Theme;
-        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
-        let theme = Theme::from_preset("dracula");
+        let theme = Theme::from_preset("dracula").with_colors(true);
         let glyph_run = theme.success.apply_to(&theme.icon_ok).to_string();
         let out = capture_section(Theme::from_preset("dracula"), |s| {
             let _ = s.action_status(Role::Ok, "wrote /etc/hosts");
@@ -582,12 +580,11 @@ mod tests {
     #[serial_test::serial]
     fn section_owner_heads_the_group_with_the_owner_token() {
         use crate::output::{OwnerLabel, Theme};
-        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
         let label = OwnerLabel::new("module", "nvim");
-        let expected = label.styled(&Theme::from_preset("dracula"));
+        let expected = label.styled(&Theme::from_preset("dracula").with_colors(true));
 
         let (p, buf) =
-            Printer::for_test_with_theme(Theme::from_preset("dracula"), Verbosity::Normal);
+            Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
         {
             let phase = p.section("Phase: Files");
             let owner = phase.section_owner(&label);

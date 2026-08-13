@@ -55,18 +55,20 @@ impl OwnerLabel {
 mod tests {
     use super::*;
     use crate::output::strip_ansi;
-    use crate::output::test_support::ColorsEnabledGuard;
 
     #[test]
     fn plain_is_kind_colon_name() {
         assert_eq!(OwnerLabel::new("module", "nvim").plain(), "module:nvim");
     }
 
+    /// Serial because `supports_truecolor()` reads `COLORTERM` / `NO_COLOR`,
+    /// and the composed render is compared against three slot renders taken
+    /// afterwards — a concurrent env mutation between the two would split the
+    /// comparison.
     #[test]
     #[serial_test::serial]
     fn styled_paints_three_slots_and_strips_back_to_plain() {
-        let _colors = ColorsEnabledGuard::set(true);
-        let theme = Theme::from_preset("dracula");
+        let theme = Theme::from_preset("dracula").with_colors(true);
         let label = OwnerLabel::new("profile", "work");
         let styled = label.styled(&theme);
         assert_eq!(strip_ansi(&styled), "profile:work");
@@ -80,9 +82,7 @@ mod tests {
     /// A preset whose three token slots are colour-only has nothing left to
     /// emit once colour is off, so the token is its own text and no more.
     #[test]
-    #[serial_test::serial]
     fn colour_disabled_drops_colour_only_slots() {
-        let _colors = ColorsEnabledGuard::set(false);
         let label = OwnerLabel::new("cfgd", "managers");
         assert_eq!(
             label.styled(&Theme::from_preset("dracula")),
@@ -94,9 +94,7 @@ mod tests {
     /// than a colour, and NO_COLOR governs colour only. The owner token keeps
     /// that attribute exactly as every other themed element does.
     #[test]
-    #[serial_test::serial]
     fn colour_disabled_keeps_attribute_only_slots() {
-        let _colors = ColorsEnabledGuard::set(false);
         let theme = Theme::from_preset("minimal");
         let styled = OwnerLabel::new("module", "nvim").styled(&theme);
         assert_eq!(strip_ansi(&styled), "module:nvim");

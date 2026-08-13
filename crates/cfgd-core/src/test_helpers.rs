@@ -1022,7 +1022,6 @@ pub fn settled_status_lines(transcript: &str) -> Vec<String> {
 ///
 /// Colour is a process-global `console` decision, not a per-printer one: it
 /// follows the terminal the suite was invoked from (on under a pty, off from a
-/// pipe) and any concurrent test holding a `ColorsEnabledGuard` can flip it
 /// mid-run. Read raw, an assertion answers a question about terminal shape —
 /// `contains("module:vim-config")` breaks on the escape between the owner
 /// token's two styled halves, `ends_with(path)` breaks on the trailing reset,
@@ -1030,7 +1029,6 @@ pub fn settled_status_lines(transcript: &str) -> Vec<String> {
 /// silently guarding nothing.
 ///
 /// A test that asserts ON the escapes wants the raw buffer and a
-/// `ColorsEnabledGuard` instead; every other test wants this.
 pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
     crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()))
 }

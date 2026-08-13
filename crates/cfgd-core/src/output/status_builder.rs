@@ -185,6 +185,21 @@ mod tests {
         )
     }
 
+    /// `build`'s styled sibling, for the tests whose subject IS the escapes a
+    /// role emits. A renderer's theme carries its own colour decision, so a
+    /// test that asserts on SGR placement asks for one here rather than hoping
+    /// the terminal the suite was invoked from supplied it.
+    fn build_colored() -> (Arc<Renderer>, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        (
+            Arc::new(Renderer::new(
+                Theme::default().with_colors(true),
+                Verbosity::Normal,
+            )),
+            buf,
+        )
+    }
+
     fn sink_for(buf: &Arc<Mutex<String>>) -> Arc<dyn Writer> {
         Arc::new(StringSink(buf.clone()))
     }
@@ -216,15 +231,8 @@ mod tests {
     /// reset closing the label's color cannot be followed by any further
     /// outer-role-styled text. Visible composition: "<glyph> <subject> <label>".
     #[test]
-    #[serial]
     fn label_appends_at_end_of_subject() {
-        let _restore_no_color = std::env::var("NO_COLOR").ok();
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-        }
-        let _guard = crate::output::test_support::ColorsEnabledGuard::set(true);
-
-        let (r, buf) = build();
+        let (r, buf) = build_colored();
         let sink = sink_for(&buf);
         let b = StatusBuilder::new(r, sink, 0, Role::Warn, "subject text")
             .label(Role::Secondary, "[meta]");
@@ -254,12 +262,6 @@ mod tests {
             tail_visible.trim().is_empty(),
             "no visible content may follow the label's inner reset; tail_visible={tail_visible:?}, line={line:?}"
         );
-
-        unsafe {
-            if let Some(v) = _restore_no_color {
-                std::env::set_var("NO_COLOR", v);
-            }
-        }
     }
 
     /// Foreign ANSI carried in a caller-supplied subject (e.g. a captured
@@ -269,7 +271,6 @@ mod tests {
     /// escapes cannot paint trailing characters.
     #[cfg(feature = "test-helpers")]
     #[test]
-    #[serial]
     fn subject_strips_foreign_ansi_before_role_styling() {
         use crate::output::Printer;
 
@@ -295,7 +296,6 @@ mod tests {
     /// shape must match.
     #[cfg(feature = "test-helpers")]
     #[test]
-    #[serial]
     fn doc_subject_strips_foreign_ansi_before_role_styling() {
         use crate::output::{Doc, Printer};
 
@@ -315,17 +315,20 @@ mod tests {
     /// `detail_style` paints the detail slot and nothing else. `None` — every
     /// existing call site — must emit a detail carrying no SGR of its own, or
     /// the seam would silently restyle output it was added beside.
+    /// Serial because dracula's slots carry an RGB triple, so every render
+    /// below asks `supports_truecolor()` — which reads `COLORTERM` /
+    /// `NO_COLOR` — and the expected detail is rendered separately from the
+    /// two captures it is compared against.
     #[test]
     #[serial]
     fn detail_style_paints_only_the_detail_slot() {
-        let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
-        let theme = Theme::from_preset("dracula");
+        let theme = Theme::from_preset("dracula").with_colors(true);
         let muted_detail = theme.muted.apply_to("unchanged").to_string();
 
         let render = |muted: bool| {
             let buf = Arc::new(Mutex::new(String::new()));
             let r = Arc::new(Renderer::new(
-                Theme::from_preset("dracula"),
+                Theme::from_preset("dracula").with_colors(true),
                 Verbosity::Normal,
             ));
             let b = StatusBuilder::new(r, sink_for(&buf), 0, Role::Skipped, "nvim");

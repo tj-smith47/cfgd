@@ -18179,10 +18179,7 @@ fn bootstrap_group_is_display_only() {
 }
 
 #[test]
-#[serial_test::serial]
 fn metadata_detail_is_muted_and_error_detail_is_not() {
-    let _colors = crate::output::test_support::ColorsEnabledGuard::set(true);
-
     /// Whether the detail beginning at `needle` is preceded by styling — the
     /// separator-to-text window carries an escape only when a detail style was
     /// supplied.

@@ -237,12 +237,16 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    // Handle --no-color flag. NO_COLOR / TERM=dumb are handled inside
-    // Printer::with_format so every Printer (including daemon-owned
-    // ones) honors the convention.
-    if cli.no_color {
-        cfgd_core::output::Printer::disable_colors();
-    }
+    // `--no-color` is an input to the printer's own colour decision, not a
+    // global flipped beforehand: the printer settles colour once, at
+    // construction, so nothing later in the run can disagree with it. NO_COLOR
+    // and TERM=dumb are read inside that decision, so every Printer (including
+    // daemon-owned ones) honors the convention without a second spelling here.
+    let color_choice = if cli.no_color {
+        cfgd_core::output::ColorChoice::Never
+    } else {
+        cfgd_core::output::ColorChoice::Auto
+    };
 
     // Try loading config for theme settings; fall back to default theme if unavailable
     let theme_config = std::path::Path::new(&cli.config)
@@ -251,9 +255,13 @@ fn main() -> anyhow::Result<()> {
         .flatten()
         .and_then(|c| c.spec.theme);
     let theme_name = theme_config.as_ref().map(|t| t.name.clone());
-    let printer =
-        cfgd_core::output::Printer::with_format(verbosity, theme_name.as_deref(), output_format)
-            .with_list_envelope(cli.list_envelope);
+    let printer = cfgd_core::output::Printer::with_format(
+        verbosity,
+        theme_name.as_deref(),
+        output_format,
+        color_choice,
+    )
+    .with_list_envelope(cli.list_envelope);
 
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and

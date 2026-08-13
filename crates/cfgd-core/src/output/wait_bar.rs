@@ -123,7 +123,12 @@ mod tests {
     fn the_glyph_comes_from_the_theme_not_the_call_site() {
         // `minimal` renders the pending icon as a space, so a call site that
         // hardcoded `○` would show one here.
-        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        let printer = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            crate::output::ColorChoice::Auto,
+        );
         let bar = printer.wait_bar("x");
         let composed = bar.compose("profile:work · waiting on modules");
         let icon = super::super::Theme::default().icon_pending;
