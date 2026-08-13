@@ -14,8 +14,8 @@ use super::{OutputFormat, Theme, Verbosity};
 /// indicatif paints is appended to the same buffer the printer's sink writes
 /// to, in the order the two reach it.
 #[derive(Debug)]
-struct RecordingTerm {
-    drawn: Arc<Mutex<String>>,
+pub(crate) struct RecordingTerm {
+    pub(crate) drawn: Arc<Mutex<String>>,
 }
 
 impl RecordingTerm {

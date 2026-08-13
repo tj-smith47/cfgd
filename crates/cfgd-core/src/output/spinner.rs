@@ -256,8 +256,19 @@ pub(crate) fn build_progress_bar(
 ) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new(total));
     let live = LiveBarGuard::acquire(renderer);
+    // indicatif resolves a `.cyan` template field against `console`'s own colour
+    // flags, which no longer track the printer's decision — nothing writes them.
+    // The template therefore has to carry that decision itself, or `--no-color`
+    // renders unstyled text beside a still-green bar. The spinner frames above
+    // need no such branch: they are styled through the theme, which already
+    // holds it.
+    let template = if renderer.theme.colors() {
+        "{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}"
+    } else {
+        "{spinner} [{bar:30}] {pos}/{len} {msg}"
+    };
     pb.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}")
+        ProgressStyle::with_template(template)
             .unwrap_or_else(|_| ProgressStyle::default_bar())
             .progress_chars("━╸─"),
     );
@@ -344,6 +355,66 @@ mod tests {
         let out = strip_ansi(&buf.lock().unwrap());
         // Info role has no icon; subject text appears.
         assert!(out.contains("abandoned"), "got: {out:?}");
+    }
+
+    /// A `--no-color` run must not draw a green bar beside unstyled text.
+    /// indicatif resolves a `.cyan` template field against `console`'s colour
+    /// flags, which no printer writes any more, so the only thing that can keep
+    /// the bar honest is the template carrying the printer's own decision.
+    ///
+    /// Both draws happen with `console`'s flags ON, because that IS the
+    /// reported condition: `--no-color` on a colour terminal. indicatif
+    /// resolves the template field against those flags, so with them off the
+    /// negative assertion would hold for the wrong reason and prove nothing.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[serial_test::serial]
+    fn a_colourless_printer_draws_a_colourless_progress_bar() {
+        use std::sync::{Arc, Mutex};
+
+        struct TerminalColour(bool, bool);
+        impl Drop for TerminalColour {
+            fn drop(&mut self) {
+                console::set_colors_enabled(self.0);
+                console::set_colors_enabled_stderr(self.1);
+            }
+        }
+        let _terminal = TerminalColour(console::colors_enabled(), console::colors_enabled_stderr());
+        console::set_colors_enabled(true);
+        console::set_colors_enabled_stderr(true);
+
+        fn draw(colors: bool) -> String {
+            let drawn = Arc::new(Mutex::new(String::new()));
+            let multi = indicatif::MultiProgress::with_draw_target(
+                indicatif::ProgressDrawTarget::term_like(Box::new(
+                    crate::output::test_capture::RecordingTerm {
+                        drawn: drawn.clone(),
+                    },
+                )),
+            );
+            let renderer = Arc::new(Renderer::new(
+                Theme::from_preset("dracula").with_colors(colors),
+                Verbosity::Normal,
+            ));
+            let (bar, _live) = build_progress_bar(&multi, &renderer, 4, "installing");
+            bar.set_position(2);
+            bar.tick();
+            drawn.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+
+        let off = draw(false);
+        assert!(
+            !off.contains('\u{1b}'),
+            "a colourless printer drew escapes: {off:?}"
+        );
+        assert!(off.contains("2/4"), "bar did not draw at all: {off:?}");
+
+        let on = draw(true);
+        assert!(
+            on.contains('\u{1b}'),
+            "a colour printer drew no escapes, so the assertion above proves \
+             nothing: {on:?}"
+        );
     }
 
     #[test]
