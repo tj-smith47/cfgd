@@ -1331,21 +1331,21 @@ mod tests {
     #[test]
     fn backup_spec_parses_pinned_design_shape() {
         let yaml = r#"
-name: openlist-db
-source: /var/lib/openlist/data.db
-destination: ~/backups/openlist
+name: notes-db
+source: ~/.local/share/notes/notes.db
+destination: ~/backups/notes
 namePattern: "{filename}.{timestamp}"
 schedule: "0 3 * * *"
 retention: 7
 preBackup:
-  - run: systemctl stop openlist
+  - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
 postBackup:
-  - run: systemctl start openlist
+  - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 "#;
         let spec: BackupSpec = serde_yaml::from_str(yaml).expect("pinned shape should parse");
-        assert_eq!(spec.name, "openlist-db");
-        assert_eq!(spec.source, PathBuf::from("/var/lib/openlist/data.db"));
-        assert_eq!(spec.destination, Some(PathBuf::from("~/backups/openlist")));
+        assert_eq!(spec.name, "notes-db");
+        assert_eq!(spec.source, PathBuf::from("~/.local/share/notes/notes.db"));
+        assert_eq!(spec.destination, Some(PathBuf::from("~/backups/notes")));
         assert_eq!(spec.name_pattern, "{filename}.{timestamp}");
         assert_eq!(spec.schedule.as_deref(), Some("0 3 * * *"));
         assert_eq!(spec.retention, 7);
@@ -1443,7 +1443,7 @@ postBackup:
         // unsafe shapes: every name shape that was legal before stays legal.
         for good in [
             "docs",
-            "openlist-db.v2",
+            "notes-db.v2",
             "a..b",
             "weekly_2026",
             "Backup 1",
@@ -1459,7 +1459,7 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_accepts_dashes_and_dots_in_name() {
-        let specs = vec![backup("openlist-db.v2")];
+        let specs = vec![backup("notes-db.v2")];
         validate_backup_specs(&specs)
             .expect("a name with internal dashes and dots should validate");
     }
@@ -1590,11 +1590,11 @@ postBackup:
     fn render_backup_name_pattern_substitutes_all_vars() {
         let rendered = render_backup_name_pattern(
             "{name}/{filename}.{timestamp}",
-            "openlist-db",
-            "data.db",
+            "notes-db",
+            "notes.db",
             "20260801T120000Z",
         );
-        assert_eq!(rendered, "openlist-db/data.db.20260801T120000Z");
+        assert_eq!(rendered, "notes-db/notes.db.20260801T120000Z");
     }
 
     #[test]

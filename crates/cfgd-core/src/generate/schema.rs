@@ -474,20 +474,21 @@ spec:
     onChange:
       - scripts/on-change.sh
 
-  # Declarative snapshot backups of a file or directory. Schema is validated
-  # at parse time; the engine that takes snapshots is not yet implemented.
+  # Declarative snapshot backups of a file or directory. A schedule-less unit
+  # runs during apply; a scheduled one runs on the daemon's timer or on demand
+  # via `cfgd backup run`.
   # optional, default: []
   backups:
-    - name: openlist-db                     # required, string — unique across spec.backups; non-empty, no path separators or "." / "..", becomes <state_dir>/backups/<name>/
-      source: /var/lib/openlist/data.db     # required, string — file or directory to snapshot
-      destination: ~/backups/openlist       # optional, default: <state_dir>/backups/<name>/
+    - name: notes-db                        # required, string — unique across spec.backups; non-empty, no path separators or "." / "..", becomes <state_dir>/backups/<name>/
+      source: ~/.local/share/notes/notes.db # required, string — file or directory to snapshot
+      destination: ~/backups/notes          # optional, default: <state_dir>/backups/<name>/
       namePattern: "{filename}.{timestamp}" # optional, default: "{filename}.{timestamp}" — vars {name} {filename} {timestamp}
       schedule: "0 3 * * *"                 # optional, string — cron (5-field "min hour day month weekday" or 6-field with leading seconds "sec min hour day month weekday") or interval (e.g. "6h"); omitted runs on every apply
       retention: 7                          # optional, integer, default: 10, minimum: 1 — newest N snapshots kept
       preBackup:                            # optional, default: [] — same shape as scripts
-        - run: systemctl stop openlist
+        - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
       postBackup:                           # optional, default: [] — same shape as scripts
-        - run: systemctl start openlist
+        - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 "#;
 
 const CONFIG_SCHEMA: &str = r#"# cfgd Config schema — cfgd.io/v1alpha1
