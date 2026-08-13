@@ -45,6 +45,16 @@ impl Renderer {
         syntax_set: &SyntaxSet,
         theme_set: &syntect::highlighting::ThemeSet,
     ) {
+        // syntect emits truecolor escapes of its own, from its own theme —
+        // nothing about this path passes through `Theme`, so a colour decision
+        // enforced only at style lookup does not reach it, and `cfgd diff
+        // --no-color` / `NO_COLOR=1` still wrote escapes into the reader's
+        // pipe. Same fallback as the missing-theme arm below.
+        if !self.theme.colors() {
+            let plain: Vec<String> = code.lines().map(str::to_string).collect();
+            self.emit_raw_block(w, &plain);
+            return;
+        }
         let syntax = syntax_set
             .find_syntax_by_token(lang)
             .or_else(|| syntax_set.find_syntax_by_extension(lang))
@@ -150,6 +160,40 @@ mod tests {
         assert!(
             stripped.contains("let y"),
             "stripped output missing 'let y': {stripped:?}"
+        );
+    }
+
+    /// syntect carries its own theme and emits truecolor escapes without ever
+    /// consulting `Theme`, so `cfgd diff --no-color` wrote escapes into the
+    /// reader's pipe while every other line on the same screen was unstyled.
+    #[test]
+    fn syntax_highlight_spends_no_colour_when_the_printer_has_none() {
+        let ss = SyntaxSet::load_defaults_newlines();
+        let ts = syntect::highlighting::ThemeSet::load_defaults();
+
+        let render = |colors: bool| {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = StringSink(buf.clone());
+            let r = Renderer::new(Theme::default().with_colors(colors), Verbosity::Normal);
+            r.render_syntax_highlight(&sink, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+            buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+
+        let off = render(false);
+        assert!(
+            !off.contains('\u{1b}'),
+            "a colourless printer highlighted with escapes: {off:?}"
+        );
+        assert!(
+            off.contains("let x"),
+            "the code itself was dropped: {off:?}"
+        );
+
+        let on = render(true);
+        assert!(
+            on.contains('\u{1b}'),
+            "a colour printer emitted no escapes, so the assertion above \
+             proves nothing: {on:?}"
         );
     }
 
