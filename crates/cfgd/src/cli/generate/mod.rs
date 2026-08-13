@@ -18,16 +18,20 @@ pub struct GenerateArgs {
     #[command(subcommand)]
     pub target: Option<GenerateTarget>,
 
+    // Backend selection and the confirmation gate govern every generate target,
+    // not just the bare form, so they are global: `cfgd generate profile laptop
+    // --model <m>` is how the flag reads, and a non-global arg declared beside
+    // the subcommand only parses BEFORE it.
     /// Override AI model
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub model: Option<String>,
 
     /// Override AI provider
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub provider: Option<String>,
 
     /// Skip confirmation prompts
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(long, short, global = true, env = "CFGD_YES")]
     pub yes: bool,
 
     /// Only scan dotfiles and shell config; print findings without AI generation
