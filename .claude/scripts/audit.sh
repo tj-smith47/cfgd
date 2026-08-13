@@ -887,139 +887,153 @@ else
     log_ok "No raw spawn_blocking in workspace production code"
 fi
 
-log_section "CLI long_about/Examples coverage (every top-level Command variant)"
-# CLAUDE.md convention: "Every top-level Command variant carries long_about
-# with an Examples: block." This gate enforces it as a regression guard so the
-# `cfgd skill` / `cfgd <kind> validate` surfaces (and every future variant)
-# can't ship without a worked example in `--help`.
-#
-# Detection (robust, errs toward flagging): walk the `pub enum Command {` body
-# by brace depth. At depth 1, accumulate the pending `#[command(...)]`
-# attribute (multi-line — tracked by paren balance) and, on reaching a variant
-# declaration (a depth-1 `Pascal` line), assert that pending attribute carried
-# `long_about` whose VALUE (isolated from other keys like `about`/`name`) is an
-# inline string literal containing the literal `Examples:`.
-#
-# Enforced constraints (each mis-shape gets a DISTINCT, accurate message):
-#   - no `#[command(...)]` / no `long_about=`        → "missing long_about"
-#   - `long_about` value is not an inline `"..."`    → "must be an inline string
-#     literal …" (include_str!/const are rejected so the Examples: block stays
-#     greppable — the whole point of this gate; do not relax this).
-#   - inline `long_about` value lacks `Examples:`    → "long_about lacks …"
-#
-# Two loud failure modes (never a silent/vacuous pass — this IS the guard):
-#   - if `pub enum Command {` is never found (renamed / brace reflowed onto its
-#     own line), awk emits `__ENUM_NOT_FOUND__` → wrapper hard-errors.
-#   - the walker's depth-1 variant count is cross-checked against a naive grep
-#     of PascalCase lines in the enum body; a mismatch (e.g. rustfmt changes the
-#     4-space indent the variant regex assumes) → `__COUNT_MISMATCH__:w:g`.
-#
-# Only the top-level enum is scanned — nested subcommand enums are out of scope.
-# Assumes rustfmt's default 4-space indent for variants; the count cross-check
-# is the tripwire if that assumption ever drifts.
 cli_mod="crates/cfgd/src/cli/mod.rs"
-if [[ -f "$cli_mod" ]]; then
-    # Naive ground-truth variant count: PascalCase tokens at the start of an
-    # indented line inside the enum body, counted independently of the walker.
-    grep_variant_count=$(awk '
-        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
+cli_ref="docs/cli-reference.md"
+
+# ONE walk of `pub enum Command { … }`, consumed by both gates below.
+#
+# Emits one TAB-separated record per top-level variant:
+#     <line>\t<Variant>\t<command-name>\t<long_about state>
+# where the state is one of `ok` / `missing` / `not-inline` / `no-examples`,
+# preceded by a `count\t<n>` record and, on failure, `__ENUM_NOT_FOUND__`.
+#
+# Derivation: walk the enum body by brace depth; at depth 1 accumulate the
+# pending `#[command(...)]` attribute (multi-line, tracked by paren balance)
+# and attach it to the next depth-1 `Pascal` line. The command NAME is that
+# attribute's `name = "..."` when present (MachineConfig → machineconfig,
+# McpServer → mcp-server) and the lowercased variant otherwise. The `name` key
+# is matched with a leading-boundary anchor so `value_name = "WHEN"` — a key
+# every flag-carrying variant may set — cannot be mistaken for it.
+#
+# Only the top-level enum is scanned; nested subcommand enums are out of scope.
+# Assumes rustfmt's default 4-space variant indent — the count cross-check
+# below is the tripwire if that ever drifts.
+cli_command_records() {
+    awk '
+        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; depth = 1; next }
         !in_enum { next }
-        {
-            line = $0
-            opens  = gsub(/{/, "{", line)
-            closes = gsub(/}/, "}", line)
+        { line = $0; opens = gsub(/{/, "{", line); closes = gsub(/}/, "}", line) }
+
+        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ {
+            collecting = 1; attr = ""; paren = 0; pending = ""
         }
-        # Count a variant only at depth 1 and only when not inside a still-open
-        # multi-line attribute (those carry no leading-PascalCase variant token).
-        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ { collecting = 1; paren = 0 }
         collecting {
+            attr = attr "\n" $0
+            if (match($0, /(^|[^_[:alnum:]])name[[:space:]]*=[[:space:]]*"[^"]+"/)) {
+                nm = substr($0, RSTART, RLENGTH)
+                sub(/^.*[^_[:alnum:]]?name[[:space:]]*=[[:space:]]*"/, "", nm)
+                sub(/"$/, "", nm)
+                pending = nm
+            }
             paren += gsub(/\(/, "(")
             paren -= gsub(/\)/, ")")
             if (paren <= 0) { collecting = 0 }
             depth += opens - closes
             next
         }
-        depth == 1 && /^[[:space:]]+[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ { n++ }
-        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
-        END { print n + 0 }
-    ' "$cli_mod")
-    long_about_gaps=$(awk -v gnt="$grep_variant_count" '
-    # Locate the top-level command enum opening brace.
-    !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; depth = 1; next }
-    !in_enum { next }
 
-    {
-        # Track brace depth across the enum body (ignores nested struct/enum
-        # bodies so only depth-1 lines are treated as variants).
-        line = $0
-        opens  = gsub(/{/, "{", line)
-        closes = gsub(/}/, "}", line)
-    }
+        depth == 1 && /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ {
+            variant = $0
+            sub(/^[[:space:]]+/, "", variant)
+            sub(/[[:space:]]*[({,].*$/, "", variant)
+            sub(/[[:space:]]+$/, "", variant)
 
-    # Accumulate a (possibly multi-line) #[command(...)] attribute at depth 1.
-    depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ {
-        collecting = 1
-        attr = ""
-        paren = 0
-    }
-    collecting {
-        attr = attr "\n" $0
-        paren += gsub(/\(/, "(")
-        paren -= gsub(/\)/, ")")
-        if (paren <= 0) { collecting = 0 }
-        # advance depth AFTER buffering (attr lines carry no enum-body braces)
-        depth += opens - closes
-        next
-    }
+            # Isolate the long_about VALUE so `Examples:` is tested against IT
+            # and not against some other key (`about = "… Examples: …"`).
+            la = attr
+            has_la = (attr ~ /long_about[[:space:]]*=/)
+            sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
+            state = !has_la ? "missing" : (la !~ /^"/ ? "not-inline" : (la !~ /Examples:/ ? "no-examples" : "ok"))
 
-    # A depth-1 PascalCase token starting a line is a variant declaration. The
-    # 4-space anchor matches the actual variants; the count cross-check (END)
-    # catches any indent drift that would make this regex skip variants.
-    depth == 1 && /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ {
-        seen++
-        match($0, /[A-Z][A-Za-z0-9]*/)
-        variant = substr($0, RSTART, RLENGTH)
-        has_la = (attr ~ /long_about[[:space:]]*=/)
-        # Isolate the long_about VALUE so Examples: is tested against IT, not
-        # against some other key (e.g. about = "… Examples: …"). Strip up to and
-        # including the `long_about =`, leaving the value as the head of `la`.
-        la = attr
-        sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
-        is_inline = (la ~ /^"/)
-        has_ex = (la ~ /Examples:/)
-        if (!has_la) {
-            printf "  %s:%d: %s — missing long_about\n", FILENAME, NR, variant
-        } else if (!is_inline) {
-            printf "  %s:%d: %s — long_about must be an inline string literal containing an Examples: block (found include_str!/const)\n", FILENAME, NR, variant
-        } else if (!has_ex) {
-            printf "  %s:%d: %s — long_about lacks an \"Examples:\" block\n", FILENAME, NR, variant
+            printf "%d\t%s\t%s\t%s\n", NR, variant, (pending != "" ? pending : tolower(variant)), state
+            seen++
+            attr = ""; pending = ""
+            depth += opens - closes
+            if (depth <= 0) { in_enum = 0 }
+            next
         }
-        attr = ""
-        depth += opens - closes
-        if (depth <= 0) { in_enum = 0 }
-        next
-    }
 
-    {
-        depth += opens - closes
-        if (in_enum && depth <= 0) { in_enum = 0 }
-    }
-    END {
-        if (!entered) { print "__ENUM_NOT_FOUND__"; exit }
-        if (seen != gnt) { printf "__COUNT_MISMATCH__:%d:%d\n", seen, gnt }
-    }
-    ' "$cli_mod")
-    if grep -q '__ENUM_NOT_FOUND__' <<<"$long_about_gaps"; then
-        log_error "long_about gate could not locate 'pub enum Command {' in $cli_mod (renamed or brace reflowed?); gate did not run"
-    elif mismatch=$(grep -o '__COUNT_MISMATCH__:[0-9]*:[0-9]*' <<<"$long_about_gaps"); then
-        log_error "long_about gate variant count mismatch ($mismatch = walker:grep) in $cli_mod — formatting drift may hide variants from the gate"
-        # Still surface any concrete gaps the walker did find alongside the mismatch.
-        printf "%s\n" "$long_about_gaps" | grep -v '__COUNT_MISMATCH__' | grep -v '^$' || true
-    elif [[ -n "$long_about_gaps" ]]; then
-        log_error "Top-level Command variants missing long_about/Examples: (CLAUDE.md CLI convention):"
-        printf "%s\n" "$long_about_gaps"
-    else
-        log_ok "Every top-level Command variant has long_about with an Examples: block"
+        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
+        END {
+            if (!entered) { print "__ENUM_NOT_FOUND__"; exit }
+            printf "count\t%d\n", seen + 0
+        }
+    ' "$cli_mod"
+}
+
+# Ground-truth variant count that CANNOT be truncated the way the walk above
+# can. rustfmt closes a top-level item with a bare `}` at column 0, so the enum
+# body is a line RANGE, and counting variants inside it never consults a brace:
+# an unbalanced `{` or `}` inside a doc comment or a `long_about` literal ends
+# the depth walk early, and a walker that stops after one variant reports every
+# name it saw as documented — a green, vacuous pass. The earlier cross-check
+# derived its "independent" count from the same depth walk, so it agreed with
+# the walker exactly when the walker was wrong.
+#
+# Attribute bodies are skipped by bracket balance (`#[` … `]`), which is a
+# different delimiter from the one at risk, so a brace inside an attribute's
+# string cannot reach this count either.
+cli_ground_truth_variant_count() {
+    awk '
+        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; next }
+        !in_enum { next }
+        /^\}/ { in_enum = 0; next }
+        !in_attr && /^[[:space:]]*#\[/ { in_attr = 1; bracket = 0 }
+        in_attr {
+            bracket += gsub(/\[/, "[")
+            bracket -= gsub(/\]/, "]")
+            if (bracket <= 0) { in_attr = 0 }
+            next
+        }
+        /^[[:space:]]*\/\// { next }
+        /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ { n++ }
+        END { if (!entered) print "__ENUM_NOT_FOUND__"; else print n + 0 }
+    ' "$cli_mod"
+}
+
+log_section "CLI long_about/Examples coverage (every top-level Command variant)"
+# CLAUDE.md convention: "Every top-level Command variant carries long_about
+# with an Examples: block." This gate enforces it as a regression guard so the
+# `cfgd skill` / `cfgd <kind> validate` surfaces (and every future variant)
+# can't ship without a worked example in `--help`.
+#
+# Each mis-shape gets a DISTINCT, accurate message:
+#   - no `#[command(...)]` / no `long_about=`     → "missing long_about"
+#   - value is not an inline `"..."`              → "must be an inline string
+#     literal …" (include_str!/const are rejected so the Examples: block stays
+#     greppable — the whole point of this gate; do not relax this).
+#   - inline value lacks `Examples:`              → "long_about lacks …"
+#
+# Never a silent pass: a missing enum, and any disagreement with the
+# brace-independent ground-truth count, are both hard errors.
+if [[ -f "$cli_mod" ]]; then
+    cli_records=$(cli_command_records)
+    cli_ground_truth=$(cli_ground_truth_variant_count)
+    cli_walked=$(awk -F'\t' '$1 == "count" { print $2 }' <<<"$cli_records")
+    if grep -q '__ENUM_NOT_FOUND__' <<<"$cli_records$cli_ground_truth"; then
+        log_error "CLI gates could not locate 'pub enum Command {' in $cli_mod (renamed or brace reflowed?); gates did not run"
+        cli_records=""
+    elif [[ "$cli_walked" != "$cli_ground_truth" ]]; then
+        log_error "Command-variant count mismatch (walker:$cli_walked ground-truth:$cli_ground_truth) in $cli_mod — a brace inside a doc comment or long_about literal can truncate the walk, hiding variants from both CLI gates"
+        cli_records=""
+    elif [[ "${cli_ground_truth:-0}" -eq 0 ]]; then
+        log_error "Extracted zero variants from 'pub enum Command' in $cli_mod (CLI gates could not run)"
+        cli_records=""
+    fi
+
+    if [[ -n "$cli_records" ]]; then
+        long_about_gaps=$(awk -F'\t' -v f="$cli_mod" '
+            $1 == "count" { next }
+            $4 == "missing"     { printf "  %s:%s: %s — missing long_about\n", f, $1, $2 }
+            $4 == "not-inline"  { printf "  %s:%s: %s — long_about must be an inline string literal containing an Examples: block (found include_str!/const)\n", f, $1, $2 }
+            $4 == "no-examples" { printf "  %s:%s: %s — long_about lacks an \"Examples:\" block\n", f, $1, $2 }
+        ' <<<"$cli_records")
+        if [[ -n "$long_about_gaps" ]]; then
+            log_error "Top-level Command variants missing long_about/Examples: (CLAUDE.md CLI convention):"
+            printf "%s\n" "$long_about_gaps"
+        else
+            log_ok "Every top-level Command variant has long_about with an Examples: block"
+        fi
     fi
 else
     log_error "CLI enum file not found: $cli_mod (long_about gate could not run)"
@@ -1034,66 +1048,28 @@ log_section "cli-reference.md covers every top-level Command variant"
 # and then searches the reference has no way to tell a missing entry from a
 # missing feature, so completeness is enforced here rather than promised there.
 #
-# Derivation: walk `pub enum Command {` by brace depth, take each depth-1
-# PascalCase variant, and use the `name = "..."` from its pending
-# `#[command(...)]` attribute when present (MachineConfig → machineconfig,
-# McpServer → mcp-server) or the lowercased variant otherwise. A command is
-# covered when some Markdown heading names it as `cfgd <name>` — one heading may
-# cover several (the three CRD kinds share one), which is why the match is on
-# the heading LINE rather than on its opening token.
+# A command is covered when some Markdown heading names it as `cfgd <name>` —
+# one heading may cover several (the three CRD kinds share one), which is why
+# the match is on the heading LINE rather than on its opening token.
 #
 # `cfgd mcp` is injected at runtime from brontes rather than declared in this
 # enum, so it is outside this gate's reach; it is documented, and the gate that
 # would cover it is a brontes-side concern.
-#
-# Loud on its own failure: an enum that cannot be found, or a walk that yields
-# no variants, is an error rather than a vacuous pass.
-cli_ref="docs/cli-reference.md"
-if [[ -f "$cli_mod" && -f "$cli_ref" ]]; then
-    cli_variant_names=$(awk '
-        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
-        !in_enum { next }
-        { line = $0; opens = gsub(/{/, "{", line); closes = gsub(/}/, "}", line) }
-        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ { collecting = 1; paren = 0; pending = "" }
-        collecting {
-            if (match($0, /name[[:space:]]*=[[:space:]]*"[^"]+"/)) {
-                attr = substr($0, RSTART, RLENGTH)
-                sub(/^name[[:space:]]*=[[:space:]]*"/, "", attr)
-                sub(/"$/, "", attr)
-                pending = attr
-            }
-            paren += gsub(/\(/, "(")
-            paren -= gsub(/\)/, ")")
-            if (paren <= 0) { collecting = 0 }
-            depth += opens - closes
-            next
-        }
-        depth == 1 && match($0, /^[[:space:]]+[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/) {
-            variant = $0
-            sub(/^[[:space:]]+/, "", variant)
-            sub(/[[:space:]]*[({,].*$/, "", variant)
-            sub(/[[:space:]]+$/, "", variant)
-            print (pending != "" ? pending : tolower(variant))
-            pending = ""
-        }
-        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
-    ' "$cli_mod")
-    if [[ -z "$cli_variant_names" ]]; then
-        log_error "Could not extract any variant from 'pub enum Command' in $cli_mod (cli-reference coverage gate could not run)"
-    else
-        undocumented=""
-        while read -r cmd; do
-            [[ -z "$cmd" ]] && continue
-            grep -qE "^#+ .*\`cfgd ${cmd}[\`[:space:]]" "$cli_ref" || undocumented="${undocumented}${undocumented:+, }${cmd}"
-        done <<< "$cli_variant_names"
-        if [[ -n "$undocumented" ]]; then
-            log_error "Top-level commands with no heading in $cli_ref: $undocumented"
-        else
-            log_ok "Every top-level Command variant has a heading in $cli_ref"
-        fi
-    fi
+if [[ ! -f "$cli_ref" ]]; then
+    log_error "Missing $cli_ref (cli-reference coverage gate could not run)"
+elif [[ -z "$cli_records" ]]; then
+    log_error "No Command variants available (cli-reference coverage gate could not run — see the error above)"
 else
-    log_error "Missing $cli_mod or $cli_ref (cli-reference coverage gate could not run)"
+    undocumented=""
+    while IFS=$'\t' read -r _line _variant cmd _state; do
+        [[ -z "$cmd" || "$_line" == "count" ]] && continue
+        grep -qE "^#+ .*\`cfgd ${cmd}[\`[:space:]]" "$cli_ref" || undocumented="${undocumented}${undocumented:+, }${cmd}"
+    done <<< "$cli_records"
+    if [[ -n "$undocumented" ]]; then
+        log_error "Top-level commands with no heading in $cli_ref: $undocumented"
+    else
+        log_ok "Every top-level Command variant has a heading in $cli_ref"
+    fi
 fi
 
 log_section "Publisher-secret env lockstep (release.yml preflight ↔ publish-crate.yml)"
