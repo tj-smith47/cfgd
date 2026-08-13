@@ -614,6 +614,8 @@ Compliance reports the **effective** desired state — the active profile combin
 
 Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <id1> <id2>` to compare two snapshots.
 
+**History records changes, not ticks.** The daemon collects a snapshot every interval but stores one only when its content differs from the newest stored row — the comparison is a hash of the snapshot with its collection timestamp excluded, so an unchanged machine hashes identically every time. A machine that has stopped changing therefore stops adding rows, and the newest row's timestamp is the last time something *changed*, not the last time cfgd looked. Do not read row arrival as a liveness signal: a device that is healthy and stable is indistinguishable in `compliance history` from one whose daemon has stopped. Use the daemon's own liveness surfaces for that — `cfgd daemon status`, the checkin timestamp on the gateway, or the service manager. `cfgd compliance` run by hand always stores its snapshot, because you asked for one.
+
 ---
 
 ### spec.update
