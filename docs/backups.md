@@ -458,15 +458,12 @@ for a CLI-driven one.
 ```console
 $ cfgd daemon
 Daemon
-
-Starting cfgd daemon...
-
+⊙ Starting cfgd daemon...
 ✓ Health: /run/user/1000/cfgd/cfgd.sock
-
 ✓ Intervals: reconcile=300s, backups=2 scheduled
-
-Daemon running — press Ctrl+C to stop
+⊙ Daemon running — press Ctrl+C to stop
  INFO scheduled backup tick backup=openlist-db
+
 Backup
   Config   /etc/cfgd/cfgd.yaml
   Profile  workstation

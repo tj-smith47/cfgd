@@ -155,7 +155,7 @@ See [docs/modules.md](docs/modules.md) for the full spec including git file sour
 | | **cfgd** | [chezmoi](https://chezmoi.io) | [Nix Home Manager](https://nix-community.github.io/home-manager/) | [Ansible](https://docs.ansible.com/) | [Puppet](https://www.puppet.com/) |
 |---|---|---|---|---|---|
 | **Focus** | Full machine state | Dotfiles | Dotfiles + packages (Nix) | General automation | Server/infra state |
-| **Packages** | **15 managers** | None | Nix only | Any (via tasks) | Any (via providers) |
+| **Packages** | **18 managers** | None | Nix only | Any (via tasks) | Any (via providers) |
 | **Drift detection** | **Continuous (daemon)** | Manual | On rebuild | Manual | Continuous (agent) |
 | **Cross-platform resolution** | **Per-package manager mapping** | N/A | Nix-only | Per-task conditionals | Per-OS Hiera data |
 | **Shareable modules** | **First-class** | Templates only | Flakes | Roles (Galaxy) | Forge (server-oriented) |
@@ -175,7 +175,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 - [MCP server](docs/ai-generate.md#serving-the-cli-itself): `cfgd mcp` serves the CLI itself as tools, so an assistant can reconcile a machine, not just write config for one
 - [Authoring skills](docs/skill.md): `cfgd skill install` teaches your coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) to author high-quality cfgd resources
 - [Shareable modules](docs/modules.md): cross-platform dev environment packages with dependency resolution and registries
-- [15 package managers](docs/packages.md): brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
+- [18 package managers](docs/packages.md): brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
 - [Secrets](docs/secrets.md): SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault; secret-backed environment variables
 - [Tera templates](docs/templates.md): render dotfiles with variables, OS detection, custom functions
 - [Continuous drift detection](docs/daemon.md): daemon watches for changes, auto-syncs, notifies or auto-corrects
@@ -219,6 +219,10 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, both MCP servers (`mcp-server` for authoring, `mcp` for driving the CLI) |
 | [Authoring Skills](docs/skill.md) | `cfgd skill` installer, supported agent providers, choosing between generate and skills |
+| [Releasing](docs/releasing.md) | CI-cut release pipeline, pre-release checklist, failure recovery |
+| [Image Pack](docs/image-pack.md) | Packing a directory into an OCI image volume, signing, pinning deployments |
+| [Multi-Tenancy](docs/multi-tenancy.md) | Namespace isolation and tenant boundaries for the operator |
+| [Lifecycle Scripts](docs/lifecycle-scripts.md) | `run:` resolution, hook phases, timeouts, interactive scripts |
 
 ## Distribution
 

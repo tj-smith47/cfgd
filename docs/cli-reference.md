@@ -132,6 +132,7 @@ cfgd apply --skip-scripts           # apply without running any hooks
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
 | `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
+| `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
 
 `apply` reconciles exactly what `plan` previews, so a [source item awaiting a
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
@@ -178,16 +179,16 @@ is consumer-local and carries no origin.
 ```sh
 $ cfgd plan
 Plan
-  Config   ~/.config/cfgd/cfgd.yaml
+  Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  dev-tools, localmod
   Phases   Packages, Post-Scripts
 
 Phase: Packages
   module:dev-tools
-    - brew install ripgrep, fd <- team
+    - brew install ripgrep (15.2.0) <- team
   module:localmod
-    - brew install jq
+    - brew install jq (1.8.2)
 
 Phase: Post-Scripts
   module:localmod
@@ -235,7 +236,12 @@ therefore sees that a module was gated out on one of them.
       "owner": { "kind": "module", "name": "dev-tools" },
       "token": "module:dev-tools",  // exactly what the tree prints
       "actions": [
-        { "type": "install", "description": "brew install ripgrep, fd <- team", "origin": "team" }
+        {
+          "type": "install",
+          "description": "brew install ripgrep (15.2.0) <- team",
+          "targets": ["ripgrep"],
+          "origin": "team"
+        }
       ]
     }
   ]
@@ -397,8 +403,48 @@ degradation pair and `warnings` alike — alongside its `decisions` array.
 Show detailed file diffs with syntax highlighting.
 
 ```sh
+cfgd diff                    # human drift report
+cfgd diff --module nvim      # a single module's resources
+cfgd diff --exit-code        # exit 5 on drift, for CI gating
 cfgd diff -o json            # structured drift payload
 ```
+
+The human render uses the plan's own axes — phase, then owner group — so a drifted
+resource is named by the same coordinates the plan and apply trees would use to fix it:
+
+```
+Diff
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  work
+
+Phase: Files
+  profile:work
+    ⊙ /home/you/.gitconfig (new file)
+[user]
+	name = You
+  module:nvim
+    ⊙ /home/you/.config/nvim/init.lua (new file)
+-- init
+    ⊙ /home/you/.config/nvim/lua/opts.lua (new file)
+-- opts
+  ⚠ File drift detected
+
+Phase: Packages
+  profile:work
+    ⚠ brew: missing — extra-tool
+    ⚠ nix: missing  — hello
+  cfgd:managers
+    ⚠ nix: not installed — can bootstrap via nix installer
+
+Phase: System
+  profile:work
+    ⚠ sysctl.net.core.somaxconn — want 8192, have 4096
+
+⚠ Drift detected
+```
+
+File bodies render at column 0 under the file they belong to, so a diff hunk stays
+copy-pasteable.
 
 The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
 

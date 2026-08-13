@@ -88,6 +88,50 @@ Setting `lockedConflict: Accept` causes the daemon to automatically remove your 
 
 See [sources.md](sources.md#automatic-apply-decisions) for the full decision workflow.
 
+## What a Tick Prints
+
+A foreground `cfgd daemon` reports a reconcile tick with the same header, phase → owner
+tree and rollup a `cfgd apply` prints — one skeleton, so a tick and a manual run are read
+the same way. Only the title differs, and the header gains a `Trigger` row naming what
+woke the tick:
+
+```console
+$ cfgd daemon
+Daemon
+⊙ Starting cfgd daemon...
+✓ Health: /run/user/0/cfgd/cfgd.sock
+✓ Intervals: reconcile=5s
+⊙ Daemon running — press Ctrl+C to stop
+ INFO running reconciliation check
+ INFO reconcile: drift detected actions=1
+ INFO drift policy is Auto — applying actions actions=1
+
+Reconcile
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  driftdemo
+  Trigger  drift (1 resources)
+  Phases   Files
+  Actions  1 planned
+
+Phase: Files
+  profile:driftdemo
+    ✓ update /home/you/.gitconfig
+
+✓ Reconcile complete — 1 action(s) succeeded (0.1s)
+ INFO auto-apply complete succeeded=1 failed=0
+```
+
+The `tracing` lines around it are unchanged, so existing log consumers keep working; the
+tree is strictly additional. Under `driftPolicy: NotifyOnly` (or `Prompt`, which has no
+terminal to prompt at in daemon context) the same header renders with the *preview* tree —
+what drifted, never what was done — and closes on
+`⚠ Drift detected — N action(s); policy is notify-only, nothing applied` instead of a
+completion rollup. Daemon lifecycle lines (the startup banner, SIGHUP reload, shutdown) stay flat
+status lines at column 0: they describe the process, not a run over a plan.
+
+Scheduled `spec.backups[]` fires render the same way, as a `Backup` run over a `Backups`
+group per unit — see [Declarative Backups](backups.md#daemon-scheduling).
+
 ## Drift Hooks
 
 When the daemon detects drift, it runs any `onDrift` scripts defined in the active profile before deciding how to handle the drift (`autoApply`, notify, or prompt). This fires regardless of the drift policy — `onDrift` is observability, not remediation.
@@ -103,6 +147,21 @@ scripts:
 ```
 
 Environment variables available to onDrift scripts: `CFGD_CONFIG_DIR`, `CFGD_PROFILE`, `CFGD_CONTEXT=reconcile`, `CFGD_PHASE=onDrift`. See the [Profile spec reference](spec/profile.md#specscripts) for the full script entry schema, timeout defaults, and `continueOnError` behaviour.
+
+They run before the reconcile header, under a `Drift Hooks` heading with one owner group
+per declaring thing, so a hook is attributed the same way a planned action is:
+
+```
+Drift Hooks
+  profile:driftdemo
+    ✓ onDrift: scripts/notify-slack.sh   (0.1s)
+  module:nvim
+    ✓ onDrift: scripts/snapshot-state.sh (0.1s)
+```
+
+The heading carries no `Phase: ` prefix, and that is the rule rather than an accident:
+`Phase: ` marks a phase the plan produced, and hooks are not planned. An `onDrift` failure
+renders as a warning, never as a run failure — the hooks observe drift, they do not fix it.
 
 ## Drift Accounting
 

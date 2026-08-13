@@ -40,18 +40,36 @@ package-manager bootstraps, then profile-owned package work — so a module's de
 present before a module's own hooks need it, and a manager is installed before the profile
 package that needs it. Everywhere else, execution follows the displayed order.
 
-Those three groups are also a barrier: a group starts only once every action in the group
-above it has *finished*. Inside a group, package work runs **concurrently — one lane per
+Those three tiers are also a barrier: a tier starts only once every action in the tier
+above it has *finished*. Inside a tier, package work runs **concurrently — one lane per
 package manager family**, so `brew install` and `apt install` proceed at the same time
 while a single manager still runs one operation at a time. A *family* is the managers
 sharing one binary: `brew`, `brew-tap` and `brew-cask` are three names for one `brew`, so
-they share a lane and cfgd never runs two `brew` processes at once. Two more rules narrow
+they share a lane and cfgd never runs two `brew` processes at once. Three more rules narrow
 that:
 
 - A module's packages wait for the packages of every module it `depends` on.
 - An action for a manager cfgd has to install first drains the phase: it runs alone, and
   nothing else starts until it finishes, because the install changes `PATH` for everything
   after it.
+- An owner already holding a lane takes a second one only after every other owner with
+  ready work has taken one, so two modules share the machine rather than one filling it.
+  A lone owner still fills every lane.
+
+The concurrency bound is the number of distinct manager families with work in the phase.
+There is nothing to tune: a machine that declares only `brew` packages still runs one
+`brew` at a time, and one that declares `brew`, `apt` and `cargo` runs three.
+
+Before the first phase, cfgd refreshes the package index of every manager already on the
+machine — concurrently, collapsed into one line naming them:
+
+```
+✓ Package indexes updated — toolbox (0.0s)
+```
+
+A manager cfgd bootstraps later in the run is not in that pre-pass; it refreshes once,
+inline, right after its bootstrap succeeds. A refresh that fails degrades the line to a
+warning and never fails the run.
 
 While a lane is held back, the live region shows one dimmed line per waiting group or
 action naming what it is waiting on (`module:nvim · waiting on apt`). Those lines exist
@@ -88,7 +106,7 @@ Use `cfgd plan --context reconcile` to preview what the daemon would run.
 
 ```
 Plan
-  Config   ~/.config/cfgd/cfgd.yaml
+  Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
   Phases   Packages, Files, System, Post-Scripts
@@ -96,21 +114,21 @@ Plan
 Phase: Packages
   profile:work
     - brew install extra-tool
-    - apt install ripgrep (14.1.0)
+    - nix install hello
   cfgd:managers
-    - bootstrap pipx via pip
+    - bootstrap nix via nix installer
   module:nvim
-    - snap install nvim (0.10.2)
+    - brew install neovim (0.12.4)
 
 Phase: Files
   profile:work
-    - update /home/you/.gitconfig
+    - create /home/you/.gitconfig
   module:nvim
-    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
+    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua
 
 Phase: System
   profile:work
-    - set macosDefaults.com.apple.dock.autohide: false → true
+    - set sysctl.net.core.somaxconn: 4096 → 8192
 
 Phase: Post-Scripts
   module:nvim
@@ -173,9 +191,18 @@ cfgd tracks state in a SQLite database at `~/.local/state/cfgd/state.db` (Linux;
 
 ## Provenance Tracking
 
-When using [multi-source config](sources.md), every action carries an `origin` field ("local" or source name) so the plan output shows where each change comes from:
+When using [multi-source config](sources.md), every action carries an `origin` field so the
+plan shows where each change comes from. A source-delivered action ends with ` <- <source>`;
+your own declarations carry no suffix, because "local" is the absence of a source rather
+than a source of its own:
 
 ```
-  + brew install git-secrets  <- acme-corp (required)
-  ~ EDITOR = "nvim"           <- local (overrides acme-corp)
+Phase: Packages
+  module:dev-tools
+    - brew install ripgrep (15.2.0) <- team
+  module:localmod
+    - brew install jq (1.8.2)
 ```
+
+The suffix is carried by each action rather than by the owner heading, so a plan mixing
+local and source-delivered work reads its provenance line by line.

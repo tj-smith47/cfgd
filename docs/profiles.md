@@ -222,13 +222,24 @@ spec:
 ```
 
 ```console
-$ cfgd apply
-  ✓ Wrote ~/.cfgd.env
-  ✓ Injected source line into ~/.bashrc
-  ✓ Injected source line into ~/.zshenv
-  ✓ Injected source line into ~/.profile
-  ✓ Wrote ~/.config/environment.d/cfgd.conf
-  ✓ Refreshed 1 live session variable(s)
+$ cfgd apply --yes
+Apply
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  envdemo
+  Phases   Environment
+  Actions  6 planned
+
+Phase: Environment
+  cfgd:env
+    ✓ write /home/you/.cfgd.env
+    ✓ inject source line into /home/you/.bashrc
+    ✓ inject source line into /home/you/.zshenv
+    ✓ inject source line into /home/you/.profile
+    ✓ write /home/you/.config/environment.d/cfgd.conf
+  cfgd:session
+    ✓ refresh live session (1 var(s))
+
+✓ Apply complete — 6 action(s) succeeded (0.3s)
 
 Shell environment changed
   - run: source ~/.cfgd.env
@@ -242,6 +253,11 @@ nvim
 $ systemctl --user show-environment | grep EDITOR
 EDITOR=nvim                                # systemd --user units + Wayland GUI
 ```
+
+The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
+a future shell reads, `cfgd:session` pushes the same values into the session manager you are
+already logged into. A host with no live user session reports that group's action as
+unchanged and carries the reason as a warning under it — the files are still correct.
 
 To opt out of the broader surfaces, narrow the scope — e.g. `envScope: Interactive` restores the
 classic "interactive shells only" behavior, writing just `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`

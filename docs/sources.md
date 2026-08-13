@@ -328,7 +328,7 @@ Only **Accepted** puts the item on your machine. `cfgd plan`, `cfgd apply` and t
 ```sh
 $ cfgd plan
 Plan
-  Config   ~/.config/cfgd/cfgd.yaml
+  Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  default
   Phases   Packages
 

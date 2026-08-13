@@ -101,6 +101,22 @@ Your *current* shell is the one exception — it predates the env file, which is
 why `cfgd apply`, `cfgd init --apply*`, and `cfgd module add --apply` all end
 by naming the file to source.
 
+## Index refresh
+
+Before the first phase of an apply, cfgd refreshes the package index of every
+manager that already exists on the machine and has work in this run — all of them
+at once, reported as a single line naming the ones that answered:
+
+```
+✓ Package indexes updated — toolbox (0.0s)
+```
+
+A manager cfgd bootstraps later in the same run is not in that pre-pass: it
+refreshes once, inline, immediately after its own bootstrap, so no manager is ever
+refreshed twice. A refresh that fails downgrades the line to a warning and names
+the manager that failed; it never fails the run, because a stale index is a reason
+for an install to be out of date, not a reason to stop.
+
 ## Profile Usage
 
 ```yaml
@@ -294,18 +310,24 @@ Each manager supports querying available package versions without installing:
 
 ```
 Plan
-  Config   ~/.config/cfgd/cfgd.yaml
-  Profile  work
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  pkgdemo
   Phases   Packages
 
 Phase: Packages
-  profile:work
-    - brew install ripgrep, fd, bat
-    - brew uninstall unused-tool
-    - skip snap: 'snap' not available — cannot auto-install on this platform
+  profile:pkgdemo
+    - brew install ripgrep
+    - toolbox install delta
+    - toolbox uninstall beta
+    - skip absent: 'absent' not available — cannot auto-install on this platform
 
-⊙ 3 action(s) planned
+⊙ 4 action(s) planned
 ```
+
+Every manager's work is one line per operation: an install names the manager and the
+packages it takes in one call, an uninstall names what leaves the desired set, and a
+manager that is neither present nor installable is a `skip` line carrying the reason
+rather than a silent omission.
 
 A package already at its desired version produces no action, so it gets no line:
 the plan lists what would change, not the full inventory.

@@ -49,7 +49,9 @@ a later one:
 - Backed-up content is restored via atomic write (an empty managed file is
   restored as empty, not removed)
 - Files created by a later apply — absent when the target apply completed — are removed
-- Package installs and system changes require manual review (listed in output)
+- Package installs and system changes require manual review (listed in output, most recent
+  first — the order actions *finished*, which is what "undo the last thing" means once the
+  `Packages` phase runs its managers concurrently)
 
 Rollback is available for any apply that has backups in the state store.
 
@@ -77,7 +79,7 @@ Deleting the lock file is the same remedy in either case.
 
 `cfgd apply` handles `SIGINT` (Ctrl-C) and `SIGTERM` as a **cooperative abort** rather than an abrupt kill:
 
-- **File and package actions** finish before the abort is honoured — atomic file writes complete, and a package install completes before the reconciler stops. The abort is detected between actions, never mid-write.
+- **File and package actions** finish before the abort is honoured — atomic file writes complete, and every package install already in flight completes before the reconciler stops. The abort is checked before anything new is dispatched, never mid-write, so the concurrent `Packages` phase drains its running lanes rather than dropping them.
 - **Script actions** (`preApply`, `postApply`, module scripts) are killed immediately: cfgd sends `SIGKILL` to the script's process group so the process exits within milliseconds instead of waiting for the full script timeout. Script authors should write idempotent scripts so a kill-and-rerun leaves the system in a clean state.
 - The reconciler stops **before** starting the next action after any killed/completed abort and unwinds normally.
 - The apply lock is released via its normal RAII drop (the guard drops as `cfgd apply` returns, *before* the process exits), so a subsequent `cfgd apply` runs immediately (no stuck lock).
@@ -89,16 +91,36 @@ Deleting the lock file is the same remedy in either case.
 The reported "{applied} of {total}" count is **filter-aware**: under `--phase` / `--skip` / `--only` / `--skip-scripts`, `total` is the number of actions actually in scope for the run, not the whole plan. A one-line message is printed, and `-o json` carries a structured payload:
 
 ```console
-$ cfgd apply --yes
-...
-⚠ apply aborted by signal — 3 of 7 action(s) applied; no partial writes, rerun to converge
+$ cfgd apply --yes            # Ctrl-C pressed during the package install
+Apply
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  abortdemo
+  Phases   Packages, Files
+  Actions  2 planned
+
+✓ Package indexes updated — slowbox (0.0s)
+
+Phase: Packages
+  profile:abortdemo
+    ✓ slowbox install epsilon (6.0s)
+
+⚠ apply aborted by signal — 1 of 2 action(s) applied; no partial writes, rerun to converge
+⊙ 1 action(s) not attempted (6.0s)
 $ echo $?
 130
 ```
 
+The in-flight install finished; the `Files` action after it was never dispatched, so its
+phase never opened. The same run under `-o json` carries the counts as a payload:
+
 ```console
-$ cfgd apply --yes --phase files -o json   # 2 file actions in scope, interrupted with Ctrl-C
-{"aborted":true,"signal":"SIGINT","applied":1,"total":2}
+$ cfgd apply --yes -o json   # same run, interrupted the same way
+{
+  "aborted": true,
+  "applied": 1,
+  "signal": "SIGINT",
+  "total": 2
+}
 ```
 
 Already-applied actions are real and recorded; rerun `cfgd apply` to converge the rest. On Windows, cooperative abort is not available and Ctrl-C falls back to the OS default disposition.

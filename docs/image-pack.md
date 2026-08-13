@@ -31,8 +31,8 @@ Pack Image
   Directory  ./out
   Artifact   registry.example.com/myapp/server:v1.4.0
   Digest     sha256:3a7b9c4d...
-✔ Signed artifact with cosign
-✔ Packed and pushed registry.example.com/myapp/server:v1.4.0
+✓ Signed artifact with cosign
+✓ Packed and pushed registry.example.com/myapp/server:v1.4.0
 ```
 
 ### Structured output (`-o json`)

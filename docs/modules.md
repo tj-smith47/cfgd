@@ -531,7 +531,7 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ```
 Plan
-  Config   ~/.config/cfgd/cfgd.yaml
+  Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
   Phases   Packages, Files, Post-Scripts
@@ -539,17 +539,17 @@ Plan
 Phase: Packages
   profile:work
     - brew install extra-tool
-    - apt install ripgrep (14.1.0), fd-find (8.7.0, alias: fd)
+    - apt install sl, cowsay
   module:nvim
-    - snap install nvim (0.10.2)
-    - npm install neovim
-    - pipx install pynvim
+    - brew install neovim (0.12.4)
+    - npm install neovim (5.4.0, alias: neovim-npm)
+    - pipx install pynvim (0.6.0)
 
 Phase: Files
   profile:work
-    - update /home/you/.gitconfig
+    - create /home/you/.gitconfig
   module:nvim
-    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua (12 files)
+    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua
 
 Phase: Post-Scripts
   module:nvim
@@ -558,6 +558,15 @@ Phase: Post-Scripts
 
 ⊙ 9 action(s) planned
 ```
+
+A module's package line names the manager that won resolution, the manager-specific package
+name being installed, and the version that manager reports. When the module entry's own
+name differs from the manager-specific one, it follows after `alias:` —
+`npm install neovim (5.4.0, alias: neovim-npm)` installs npm's `neovim` for a module entry
+named `neovim-npm`. A profile's own package lines carry
+neither: a profile names a manager and a package directly, so there is nothing resolved to
+report. A deploy naming more than three targets lists the first two and a count
+(`deploy a, b (12 files)`).
 
 Each phase groups its actions by the owner that declared them — `profile:<name>`
 for the profile's own work, `module:<name>` for a module's — so a bullet's owner
@@ -596,11 +605,26 @@ Resolution order when a profile references a module by name:
 1. **Local modules** (`<config-dir>/modules/`) always win over source-delivered modules.
 2. **Source priority** — when the module exists in multiple subscribed sources, the higher-priority source wins. Equal priority is tie-broken alphabetically by source name.
 
-Referencing a module that is neither local nor offered by any subscribed source is a **fatal error**. `cfgd plan` and `cfgd source show` display the originating source:
+Referencing a module that is neither local nor offered by any subscribed source is a **fatal error**. A source-delivered module's plan lines end with the delivering source, so its provenance is visible where its work is:
 
 ```
-nvim        unchanged   <- acme-corp
-corp-vpn    install     <- acme-corp
+Phase: Packages
+  module:dev-tools
+    - brew install ripgrep (15.2.0) <- team
+  module:localmod
+    - brew install jq (1.8.2)
+```
+
+`cfgd source show <name>` lists the modules a source offers, under the source's own owner token:
+
+```
+source:team-config
+  URL                 https://github.com/team/config
+  ...
+
+Modules
+  ⊙ dev-tools
+  ⊙ shell
 ```
 
 A source that delivers only modules (no profiles) is valid — see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.
