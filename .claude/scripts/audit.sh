@@ -1025,6 +1025,77 @@ else
     log_error "CLI enum file not found: $cli_mod (long_about gate could not run)"
 fi
 
+log_section "cli-reference.md covers every top-level Command variant"
+# docs/cli-reference.md opens by promising "Every top-level command has an entry
+# here". That promise decayed silently once already — eleven commands (alias,
+# backup, compliance, daemon, rollback, secret, state, man, and the three CRD
+# kinds) shipped with no heading, and three more carried a bare code block where
+# every sibling carried a full entry. A reader who runs `cfgd rollback --help`
+# and then searches the reference has no way to tell a missing entry from a
+# missing feature, so completeness is enforced here rather than promised there.
+#
+# Derivation: walk `pub enum Command {` by brace depth, take each depth-1
+# PascalCase variant, and use the `name = "..."` from its pending
+# `#[command(...)]` attribute when present (MachineConfig → machineconfig,
+# McpServer → mcp-server) or the lowercased variant otherwise. A command is
+# covered when some Markdown heading names it as `cfgd <name>` — one heading may
+# cover several (the three CRD kinds share one), which is why the match is on
+# the heading LINE rather than on its opening token.
+#
+# `cfgd mcp` is injected at runtime from brontes rather than declared in this
+# enum, so it is outside this gate's reach; it is documented, and the gate that
+# would cover it is a brontes-side concern.
+#
+# Loud on its own failure: an enum that cannot be found, or a walk that yields
+# no variants, is an error rather than a vacuous pass.
+cli_ref="docs/cli-reference.md"
+if [[ -f "$cli_mod" && -f "$cli_ref" ]]; then
+    cli_variant_names=$(awk '
+        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
+        !in_enum { next }
+        { line = $0; opens = gsub(/{/, "{", line); closes = gsub(/}/, "}", line) }
+        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ { collecting = 1; paren = 0; pending = "" }
+        collecting {
+            if (match($0, /name[[:space:]]*=[[:space:]]*"[^"]+"/)) {
+                attr = substr($0, RSTART, RLENGTH)
+                sub(/^name[[:space:]]*=[[:space:]]*"/, "", attr)
+                sub(/"$/, "", attr)
+                pending = attr
+            }
+            paren += gsub(/\(/, "(")
+            paren -= gsub(/\)/, ")")
+            if (paren <= 0) { collecting = 0 }
+            depth += opens - closes
+            next
+        }
+        depth == 1 && match($0, /^[[:space:]]+[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/) {
+            variant = $0
+            sub(/^[[:space:]]+/, "", variant)
+            sub(/[[:space:]]*[({,].*$/, "", variant)
+            sub(/[[:space:]]+$/, "", variant)
+            print (pending != "" ? pending : tolower(variant))
+            pending = ""
+        }
+        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
+    ' "$cli_mod")
+    if [[ -z "$cli_variant_names" ]]; then
+        log_error "Could not extract any variant from 'pub enum Command' in $cli_mod (cli-reference coverage gate could not run)"
+    else
+        undocumented=""
+        while read -r cmd; do
+            [[ -z "$cmd" ]] && continue
+            grep -qE "^#+ .*\`cfgd ${cmd}[\`[:space:]]" "$cli_ref" || undocumented="${undocumented}${undocumented:+, }${cmd}"
+        done <<< "$cli_variant_names"
+        if [[ -n "$undocumented" ]]; then
+            log_error "Top-level commands with no heading in $cli_ref: $undocumented"
+        else
+            log_ok "Every top-level Command variant has a heading in $cli_ref"
+        fi
+    fi
+else
+    log_error "Missing $cli_mod or $cli_ref (cli-reference coverage gate could not run)"
+fi
+
 log_section "Publisher-secret env lockstep (release.yml preflight ↔ publish-crate.yml)"
 # The anodizer-action publisher secrets are enumerated as an `env:` block in
 # TWO workflows: release.yml's preflight (--preflight-secrets) validates the

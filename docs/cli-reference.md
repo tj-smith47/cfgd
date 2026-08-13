@@ -2,6 +2,14 @@
 
 Complete command reference for `cfgd`. All commands respect [global flags](configuration.md#global-flags).
 
+**Every top-level command has an entry here**, and each entry is the same depth: what the command
+does in a sentence, a synopsis of its subcommands and arguments, the flags that are specific to it,
+and a link to the topic document when one exists. Global flags are listed once, in
+[Configuration](configuration.md#global-flags), and are never repeated per command. Semantics —
+what a backup run does when a hook fails, how a source's constraints are enforced — live in the
+topic document, which links back here; this file does not restate them. `cfgd help <command>` and
+`cfgd <command> --help` print the same synopsis from the binary itself.
+
 ## Core Commands
 
 ### `cfgd generate`
@@ -503,6 +511,27 @@ cfgd log -o json            # JSON apply history
 cfgd log --show-output 42   # show captured script output for apply #42
 ```
 
+### `cfgd rollback <apply-id>`
+
+Restore the file backups cfgd took before a previous apply, undoing that apply's file writes.
+
+```sh
+cfgd log                          # find the apply ID
+cfgd rollback 42                  # restore the files that apply overwrote
+cfgd rollback 42 --yes            # skip the confirmation
+cfgd rollback 42 -o json          # structured result
+```
+
+| Flag | Meaning |
+|---|---|
+| `--yes` / `-y` | skip the confirmation prompt (also `CFGD_YES=1`) |
+
+Rollback covers **cfgd's own file writes** — the pre-overwrite backups stored inline in the state
+database, not the declarative `spec.backups[]` snapshots that
+[`cfgd backup restore`](#cfgd-backup) puts back. Packages installed and system settings changed by
+that apply are not reverted. See [File Safety](safety.md#file-backups) for what is captured and for
+how long.
+
 ### `cfgd sync`
 
 Pull from all remotes, show changes, prompt for apply.
@@ -598,6 +627,20 @@ that passes `validate` is one the cluster will admit.
 A path argument reads that file; `-` reads from stdin. Exit code is `0` when the
 document is valid and `4` when it is invalid. With `-o json` the result is a
 `{"kind", "valid", "errors"}` payload for scripting.
+
+### `cfgd machineconfig` / `cfgd configpolicy` / `cfgd clusterconfigpolicy`
+
+Author-side commands for the three cluster CRD kinds. Each currently exposes a single subcommand,
+`validate`, documented together above under [`cfgd <kind> validate`](#cfgd-kind-validate); the
+schema for each kind is in [spec/machineconfig.md](spec/machineconfig.md),
+[spec/configpolicy.md](spec/configpolicy.md), and
+[spec/clusterconfigpolicy.md](spec/clusterconfigpolicy.md).
+
+```sh
+cfgd machineconfig validate mc.yaml
+cfgd configpolicy validate policy.yaml
+cfgd clusterconfigpolicy validate -
+```
 
 ### `cfgd skill`
 
@@ -1000,6 +1043,10 @@ Open `cfgd-source.yaml` in `$EDITOR`.
 
 ## Secret Commands
 
+### `cfgd secret`
+
+Encrypt, decrypt, and edit SOPS-managed secret files in the config repository.
+
 ```sh
 cfgd secret init                    # generate age key + .sops.yaml
 cfgd secret encrypt <file>          # encrypt values in place
@@ -1007,15 +1054,27 @@ cfgd secret decrypt <file>          # decrypt to stdout
 cfgd secret edit <file>             # decrypt, edit, re-encrypt
 ```
 
+No command-specific flags; each subcommand takes the file to operate on. See
+[Secrets](secrets.md) for the backend matrix (SOPS/age, 1Password, Bitwarden, Vault), key
+management, and how encrypted values are referenced from a profile.
+
 ## Daemon Commands
 
+### `cfgd daemon`
+
+Run the reconcile loop in the foreground, or manage it as a system service.
+
 ```sh
-cfgd daemon                # run in foreground (default)
+cfgd daemon                # run in foreground (default when no subcommand given)
 cfgd daemon run            # run in foreground (explicit)
-cfgd daemon install        # install as system service
-cfgd daemon status         # check running state
+cfgd daemon install        # install as a system service (systemd / launchd / Windows Service)
+cfgd daemon status         # check running state, PID, and socket path
 cfgd daemon uninstall      # stop the daemon and remove the service
 ```
+
+No command-specific flags; the daemon's behaviour is configured by the `daemon` block in
+`cfgd.yaml`. See [Daemon](daemon.md) for the timer set, drift policy, live config reload
+(`SIGHUP`), and which fields require a restart.
 
 ## Decision Commands
 
@@ -1047,8 +1106,9 @@ where unrecorded items could exist: with no config file, or a config with no
 
 ## Backup Commands
 
-Run, inspect, or restore declarative backups (`spec.backups[]`). See [backups.md](backups.md) for
-the full field reference and run semantics.
+### `cfgd backup`
+
+Run, inspect, or restore the declarative backups a profile declares in `spec.backups[]`.
 
 ```sh
 cfgd backup run                                       # run every backup declared in the active profile
@@ -1101,6 +1161,30 @@ unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#c
 `backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`
 additionally runs on the [daemon's timer](backups.md#daemon-scheduling), and a schedule-less one
 runs during `cfgd apply`.
+
+## Compliance Commands
+
+### `cfgd compliance`
+
+Collect a compliance snapshot of the machine — every managed file, package, and system setting
+scored against the effective desired state — and inspect the stored history.
+
+```sh
+cfgd compliance                          # collect and store a snapshot, print the summary
+cfgd compliance export                   # write the newest snapshot out
+cfgd compliance history                  # list stored snapshots, newest first
+cfgd compliance history --since 30d      # only snapshots newer than a duration
+cfgd compliance diff <base-id> <target-id>   # what changed between two snapshots
+```
+
+| Flag | Meaning |
+|---|---|
+| `--since <duration>` | (on `history`) only snapshots newer than `30d` / `12h` / `90m` |
+
+`cfgd compliance` run by hand always stores its snapshot. The daemon stores one only when the
+machine's content hash changed, so **history records changes, not ticks** — see
+[spec.compliance](spec/config.md#speccompliance) before treating row arrival as a liveness signal.
+Snapshot IDs for `diff` come from `history`.
 
 ## Image Commands
 
@@ -1243,6 +1327,56 @@ The server's enrollment method is configured by the administrator. cfgd auto-det
 6. On success, the server returns a permanent device API key
 
 **Key auto-detection:** If neither `--ssh-key` nor `--gpg-key` is specified, cfgd checks the SSH agent first, then falls back to `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, and `~/.ssh/id_ecdsa` in order. The first available key is used.
+
+### `cfgd alias`
+
+Manage user-level CLI aliases stored in `cfgd.yaml` under `spec.aliases` — shorthands for cfgd
+invocations you type often.
+
+```sh
+cfgd alias set pu "profile update --file"   # add or update; alias: add
+cfgd alias show pu                          # print the command a single alias expands to
+cfgd alias list                             # alias: ls
+cfgd alias delete pu                        # alias: rm
+```
+
+No command-specific flags. `set` takes `<NAME> <COMMAND>`, where `COMMAND` is the argument string
+the alias expands to. Aliases live in the config file, so they travel with the config repository.
+
+### `cfgd state forget-prefix <manager>`
+
+Forget the global-install prefix cfgd persisted for a package manager, so the next
+install/uninstall/list derives it fresh.
+
+```sh
+cfgd state forget-prefix npm
+cfgd state forget-prefix pipx
+```
+
+No command-specific flags. cfgd already revalidates a persisted prefix that became unwritable —
+this is for the opposite case, where a *better* prefix became available (permissions fixed after
+cfgd fell back to a user-local directory).
+
+### `cfgd man`
+
+Emit a `roff(7)` man page for cfgd on stdout.
+
+```sh
+cfgd man > cfgd.1 && man ./cfgd.1
+cfgd man > /usr/local/share/man/man1/cfgd.1
+```
+
+No command-specific flags.
+
+### `cfgd help [command]`
+
+Print the top-level synopsis, or the help for a named command. Identical to `--help`:
+`cfgd help backup` and `cfgd backup --help` produce the same page.
+
+```sh
+cfgd help                  # top-level command list
+cfgd help backup restore   # help for a nested subcommand
+```
 
 ### `cfgd completion <shell>`
 
