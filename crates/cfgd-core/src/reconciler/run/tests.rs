@@ -194,6 +194,52 @@ fn rollup_lines_covers_every_apply_status() {
     );
 }
 
+/// A run that planned work and reached none of it did not complete. `cfgd
+/// backup run` refused by another holder of the unit's lock exits 1, and used
+/// to close with `✓ Backup complete — 0 action(s) succeeded` above the
+/// shortfall — the tick and the exit code were the only two things on screen
+/// saying what happened, and they disagreed.
+#[test]
+fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
+    let nothing = RunTally {
+        succeeded: 0,
+        failed: 0,
+        planned_total: 3,
+        status: ApplyStatus::Success,
+        aborted: None,
+    };
+
+    let lines = rollup_lines(&nothing, RunTitle::Backup);
+    assert_eq!(
+        lines,
+        vec![(
+            Role::Skipped,
+            "Backup did not run — 3 action(s) not attempted".to_string()
+        )]
+    );
+
+    // And the shortfall line is not repeated underneath it.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&nothing, RunTitle::Backup, &printer, None);
+    drop(printer);
+    let out = strip_ansi(&buf.lock().unwrap());
+    assert_eq!(
+        out.matches("not attempted").count(),
+        1,
+        "the shortfall is named once, not twice: {out:?}"
+    );
+
+    // A run that planned nothing is untouched: it completed, having nothing to
+    // do, and must keep saying so.
+    assert_eq!(
+        rollup_lines(&RunTally::empty(), RunTitle::Apply),
+        vec![(
+            Role::Ok,
+            "Apply complete — 0 action(s) succeeded".to_string()
+        )]
+    );
+}
+
 /// A completed run names itself, so the header and the rollup cannot disagree
 /// about what ran. Only the `Success` arm is titled — `Partial` splits into two
 /// bare count lines, which is the shape every mock of a partial run shows.

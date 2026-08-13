@@ -423,17 +423,18 @@ Backup
 
 Backups
   backup:notes-db
-    — snapshot                                                                                    — already running (pid 2959397)
+    — snapshot                           — already running (pid 3349308)
 
-✓ Backup complete — 0 action(s) succeeded
-⊙ 3 action(s) not attempted (0.0s)
+— Backup did not run — 3 action(s) not attempted (0.0s)
 $ echo $?
 1
 ```
 
 The skip is one line in the unit's own group — the heading already names the unit, so the line
 names only what did not happen. Nothing it planned ran, so all three items are `not attempted`
-rather than failed.
+rather than failed — and the rollup says the run *did not run* rather than claiming it completed,
+because a `✓` above a nonzero exit code leaves the two things on screen that report the outcome
+contradicting each other.
 
 Every surface renders the collision the same way — a **skip**, because the unit *is* being backed
 up, just not by the caller. Only the exit code differs: `cfgd backup run` exits `1` (you asked for a

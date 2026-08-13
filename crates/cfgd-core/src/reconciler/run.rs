@@ -158,6 +158,18 @@ impl RunTally {
         self.planned_total
             .saturating_sub(self.succeeded + self.failed)
     }
+
+    /// The run planned work and reached none of it — every action was withheld
+    /// or skipped before it could be attempted.
+    ///
+    /// Distinct from a run that planned nothing: `Backup complete — 0 action(s)
+    /// succeeded` read as a clean finish on a `cfgd backup run` that was
+    /// refused by another holder of the unit's lock and exited 1, so the only
+    /// two things on screen that could tell the user what happened — the ✓ and
+    /// the exit code — disagreed.
+    fn nothing_attempted(&self) -> bool {
+        self.planned_total > 0 && self.succeeded == 0 && self.failed == 0
+    }
 }
 
 /// Severity ordering for [`RunTally::merge`]. A backup unit's trouble must
@@ -820,6 +832,17 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
             (Role::Ok, format!("{} action(s) succeeded", tally.succeeded)),
             (Role::Accent, format!("{} action(s) failed", tally.failed)),
         ],
+        // A run that reached none of what it planned did not complete, whatever
+        // its status says. One line, not two: the shortfall it would otherwise
+        // carry below is exactly the count named here.
+        ApplyStatus::Success if tally.nothing_attempted() => vec![(
+            Role::Skipped,
+            format!(
+                "{} did not run — {} action(s) not attempted",
+                title.as_str(),
+                tally.planned_total
+            ),
+        )],
         ApplyStatus::Success => vec![(
             Role::Ok,
             format!(
@@ -868,7 +891,8 @@ pub fn render_run_rollup(
 ) -> ApplyStatus {
     let mut lines = rollup_lines(tally, title);
     let shortfall = tally.shortfall();
-    if shortfall > 0 {
+    // The `did not run` arm already names the whole shortfall in its own line.
+    if shortfall > 0 && !(tally.status == ApplyStatus::Success && tally.nothing_attempted()) {
         // `Role::Info` and not `Role::Pending`: this is a final count, and
         // nothing it names is still going to happen.
         lines.push((Role::Info, format!("{shortfall} action(s) not attempted")));
