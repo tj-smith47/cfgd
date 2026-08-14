@@ -1,4 +1,7 @@
-✓ Package indexes updated — brew, apt
+Phase: Prerequisites
+  cfgd:managers
+    ✓ refresh apt index
+    ✓ refresh brew index
 
 Phase: Packages
   profile:test

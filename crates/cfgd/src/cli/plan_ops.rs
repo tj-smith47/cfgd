@@ -163,6 +163,7 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::ManagerAction::RefreshIndex { .. } => "refresh",
             reconciler::ManagerAction::Provision { .. } => "provision",
             reconciler::ManagerAction::Prerequisite { .. } => "prerequisite",
+            reconciler::ManagerAction::Refuse { .. } => "refuse",
         },
     }
 }
@@ -766,6 +767,9 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
             }
             reconciler::ManagerAction::Prerequisite { tool, .. } => {
                 format!("{}.{}", prefix, tool)
+            }
+            reconciler::ManagerAction::Refuse { manager, .. } => {
+                format!("{}.{}", prefix, manager)
             }
         },
     }

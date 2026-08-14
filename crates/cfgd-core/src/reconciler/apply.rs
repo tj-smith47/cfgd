@@ -17,14 +17,11 @@ use super::scripts::{
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
-    Action, ActionResult, ApplyResult, ManagerAction, ModuleAction, ModuleActionKind, Owner,
-    OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext, ScriptAction, ScriptPhase,
-    SystemAction,
+    Action, ActionResult, ApplyResult, MANAGER_RESOURCE_TYPE, ManagerAction, ModuleAction,
+    ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext,
+    ScriptAction, ScriptPhase, SystemAction,
 };
-use crate::providers::{
-    ActionNote, FileAction, IndexRefreshPackageState, NoteSink, PackageAction, PackageContext,
-    PackageManager, SecretAction,
-};
+use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAction};
 
 /// One action's line in the execution tree, resolved where the outcome is known
 /// and written either immediately (a streaming phase) or at phase close
@@ -407,212 +404,6 @@ impl<'a> super::Reconciler<'a> {
         Ok(())
     }
 
-    /// The distinct package managers this plan will actually touch, filtered
-    /// to `phase_filter` scope, to managers reporting available right now, and
-    /// to those the `Prerequisites` phase does not already refresh under a node
-    /// of its own.
-    ///
-    /// Walks both action shapes a manager name can arrive in — the
-    /// profile-level `PackageAction::Install`/`Bootstrap` and the module-level
-    /// `ModuleActionKind::InstallPackages`'s `resolved[].manager` (excluding
-    /// the `"script"` sentinel, which names no registry-backed manager). A
-    /// manager still needing `Bootstrap` is included here too and simply
-    /// drops out at the `is_available()` filter below in the common case; the
-    /// one place it does not drop out is a manager a module bootstrapped
-    /// implicitly ahead of its own planned `Bootstrap` action, which is
-    /// already available and has an index worth refreshing.
-    fn managers_in_play(
-        &self,
-        plan: &Plan,
-        phase_filter: Option<&PhaseFilter>,
-    ) -> Vec<&'a dyn PackageManager> {
-        let mut seen = std::collections::HashSet::new();
-        let mut names = Vec::new();
-        // Managers the `Prerequisites` phase refreshes itself, under a node of
-        // their own. A pre-pass that also refreshed them would run the same
-        // `apt update` twice in one run. Filter-aware, so a run that excluded
-        // that phase still gets its indexes refreshed here.
-        let mut covered = std::collections::HashSet::new();
-        for phase in &plan.phases {
-            for (owner, action) in phase.owned_actions() {
-                if let Some(filter) = phase_filter
-                    && !action_matches_phase_filter(&phase.name, owner, action, filter)
-                {
-                    continue;
-                }
-                match action {
-                    Action::Manager(
-                        ManagerAction::RefreshIndex { manager }
-                        | ManagerAction::Provision { manager, .. },
-                    ) => {
-                        covered.insert(manager.clone());
-                    }
-                    Action::Package(
-                        PackageAction::Install { manager, .. }
-                        | PackageAction::Bootstrap { manager, .. },
-                    ) => {
-                        if seen.insert(manager.clone()) {
-                            names.push(manager.clone());
-                        }
-                    }
-                    Action::Module(ModuleAction {
-                        kind: ModuleActionKind::InstallPackages { resolved },
-                        ..
-                    }) => {
-                        for pkg in resolved {
-                            if pkg.manager == "script" {
-                                continue;
-                            }
-                            if seen.insert(pkg.manager.clone()) {
-                                names.push(pkg.manager.clone());
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        names
-            .into_iter()
-            .filter(|name| !covered.contains(name))
-            .filter_map(|name| {
-                self.registry
-                    .package_managers
-                    .iter()
-                    .find(|pm| pm.name() == name)
-                    .map(|pm| pm.as_ref())
-            })
-            .filter(|pm| pm.is_available())
-            .collect()
-    }
-
-    /// Refresh every manager in play before any phase runs, concurrently
-    /// across managers, collapsed into exactly one status line.
-    ///
-    /// Every lane runs under `PackageContext::for_index_refresh`: windowless
-    /// (its command executes through `cfgd_core::command_output_with_timeout`
-    /// rather than a live `Printer` window — N overlapping windows would
-    /// render N overlapping bars on a TTY and interleave N streams into a
-    /// non-TTY log) and notes-discarding (a pre-pass note has no action to
-    /// attach under, so `PackageContext::report` settles it on the printer
-    /// immediately instead of misattaching it to whichever action happens to
-    /// run first). Each lane's spinner is the only visible progress
-    /// indicator, per the output brief's "spinners, never windows".
-    ///
-    /// Managers whose `update_needs_state()` is `false` (every manager except
-    /// npm today) refresh inside one `std::thread::scope`, each against its
-    /// own spinner and an `IndexRefreshPackageState` — safe with no `unsafe`,
-    /// because `PackageStateStore` carries no `Send + Sync` supertrait and so
-    /// `&dyn PackageStateStore` backed by the real `StateStore` (whose
-    /// `rusqlite::Connection` is `Send` but not `Sync`) can never cross a
-    /// spawned thread. `IndexRefreshPackageState` fails loudly rather than
-    /// succeeding silently if a stateless-partitioned manager's `update`
-    /// reaches `cx.state` anyway — that manager's `update_needs_state()`
-    /// override is wrong, not the pre-pass. A manager overriding
-    /// `update_needs_state()` to `true` refreshes sequentially instead, on
-    /// THIS thread, against the real `self.state` — it contributes its own
-    /// spinner and its own entry to the collapsed line, just not
-    /// concurrently with the others.
-    ///
-    /// A manager bootstrapped later in the run is not in scope here at all
-    /// (`managers_in_play` only admits an already-available manager): it
-    /// refreshes once, inline, immediately after its own bootstrap succeeds
-    /// (the module-package arm in `reconciler::modules`, and the
-    /// profile-package arm in `reconciler::packages`), so the pre-pass and an
-    /// inline site can never double-refresh the same manager.
-    ///
-    /// Never fails the phase: a refresh failure degrades the one collapsed
-    /// line to `Role::Warn` and the run continues.
-    fn refresh_package_indexes(
-        &self,
-        plan: &Plan,
-        phase_filter: Option<&PhaseFilter>,
-        printer: &Printer,
-    ) {
-        let managers = self.managers_in_play(plan, phase_filter);
-        if managers.is_empty() {
-            return;
-        }
-
-        let (stateful, stateless): (Vec<&'a dyn PackageManager>, Vec<&'a dyn PackageManager>) =
-            managers
-                .iter()
-                .copied()
-                .partition(|pm| pm.update_needs_state());
-
-        let started = std::time::Instant::now();
-        let mut outcomes: std::collections::HashMap<&str, std::result::Result<(), String>> =
-            std::collections::HashMap::new();
-
-        if !stateless.is_empty() {
-            let refresh_state = IndexRefreshPackageState;
-            let results = std::thread::scope(|scope| {
-                let handles: Vec<_> = stateless
-                    .iter()
-                    .map(|pm| {
-                        let refresh_state_ref = &refresh_state;
-                        let name = pm.name();
-                        let pm = *pm;
-                        let handle = scope.spawn(move || {
-                            let sp = printer.spinner(name);
-                            let cx = PackageContext::for_index_refresh(printer, refresh_state_ref);
-                            let result = pm.update(&cx).map_err(|e| collapse_to_subject_line(&e));
-                            sp.finish_silent();
-                            result
-                        });
-                        (name, handle)
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|(name, handle)| {
-                        let result = handle
-                            .join()
-                            .unwrap_or_else(|_| Err("index refresh thread panicked".to_string()));
-                        (name, result)
-                    })
-                    .collect::<Vec<_>>()
-            });
-            outcomes.extend(results);
-        }
-
-        for pm in &stateful {
-            let sp = printer.spinner(pm.name());
-            let cx = PackageContext::for_index_refresh(printer, self.state);
-            let result = pm.update(&cx).map_err(|e| collapse_to_subject_line(&e));
-            sp.finish_silent();
-            outcomes.insert(pm.name(), result);
-        }
-
-        let elapsed = started.elapsed();
-        let mut succeeded: Vec<&str> = Vec::new();
-        let mut failure: Option<(&str, String)> = None;
-        for pm in &managers {
-            let name = pm.name();
-            match outcomes.remove(name) {
-                Some(Ok(())) => succeeded.push(name),
-                Some(Err(err)) => {
-                    failure.get_or_insert((name, err));
-                }
-                None => {}
-            }
-        }
-
-        match failure {
-            Some((manager, err)) => {
-                printer
-                    .status(Role::Warn, "Package indexes updated")
-                    .detail(format!("{manager} failed: {err}"));
-            }
-            None => {
-                printer
-                    .status(Role::Ok, "Package indexes updated")
-                    .detail(succeeded.join(", "))
-                    .duration(elapsed);
-            }
-        }
-    }
-
     /// Apply a plan, executing each phase in order.
     /// Failed actions are logged and skipped — they don't abort the entire apply.
     ///
@@ -700,8 +491,6 @@ impl<'a> super::Reconciler<'a> {
         // that section's depth for the whole run: package-manager output
         // windows, script windows and every status they collapse into.
         let _inherit = printer.depth_inheritance();
-
-        self.refresh_package_indexes(plan, phase_filter, printer);
 
         'phases: for phase in &plan.phases {
             // Plan positions of the actions in this phase that survive
@@ -1404,6 +1193,14 @@ impl<'a> super::Reconciler<'a> {
                 .strip_suffix(ENV_SKIPPED_SUFFIX)
                 .unwrap_or(&result.description);
             let (rtype, rid) = parse_resource_from_description(description);
+            // A manager node is cfgd's own scaffolding, never a resource the
+            // user declared: a refreshed index, a provisioned manager and a
+            // tool a cascade shelled out to are none of them things cfgd
+            // prunes, restores or reports under `cfgd status`. The journal
+            // still records the work; `managed_resources` does not.
+            if rtype == MANAGER_RESOURCE_TYPE {
+                continue;
+            }
             self.state
                 .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
@@ -1501,7 +1298,12 @@ impl<'a> super::Reconciler<'a> {
                 } else {
                     Role::Fail
                 },
-                detail: Some(message.clone()),
+                // A refusal's subject IS its reason by construction
+                // (`cannot provision <m> — <reason>`), and the error it
+                // settles through restates that reason for the journal. On
+                // the line the two are one sentence printed twice.
+                detail: (!matches!(action, Action::Manager(ManagerAction::Refuse { .. })))
+                    .then(|| message.clone()),
                 detail_muted: false,
                 duration: None,
                 notes,
@@ -1603,7 +1405,7 @@ impl<'a> super::Reconciler<'a> {
                 .map(|(d, c)| (d, c, None)),
             Action::Manager(manager) => self
                 .apply_manager_action(manager, printer, notes)
-                .map(|d| (d, true, None)),
+                .map(|(desc, changed)| (desc, changed, None)),
             Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
                 let changed = !d.contains(ENV_SKIPPED_SUFFIX);
                 (d, changed, None)

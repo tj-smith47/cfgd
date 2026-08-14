@@ -10,8 +10,8 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, prerequisite_obtainable,
-    report_abandoned_step, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, report_abandoned_step,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
@@ -490,8 +490,7 @@ impl PackageManager for NpmManager {
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
         match detect_brew_system_method("nvm") {
-            "nvm" => prerequisite_obtainable("curl")
-                .then(|| BootstrapPlan::new("nvm").requiring(["curl"])),
+            "nvm" => Some(BootstrapPlan::new("nvm").requiring(["curl"])),
             method => Some(BootstrapPlan::new(method)),
         }
     }
@@ -802,13 +801,11 @@ mod tests {
 
     #[test]
     fn npm_bootstrap_plan_follows_the_brew_system_nvm_cascade() {
+        // The cascade always has an arm — brew, a system manager, or nvm — so
+        // the plan itself is unconditional; whether the nvm arm's `curl` can be
+        // had is `feasible_bootstrap_plan`'s question.
         let plan = NpmManager.bootstrap_plan();
-        // Should be planned if brew, apt, dnf, or curl is available
-        let expected = brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("curl");
-        assert_eq!(plan.is_some(), expected);
+        assert!(plan.is_some());
         if let Some(plan) = plan {
             // The method names whichever arm of `bootstrap`'s cascade this host
             // reaches; only the nvm fallback shells out to a tool of its own,
@@ -1196,11 +1193,6 @@ mod tests {
         /// other test of that invariant uses a mock manager, which never opens a
         /// window at all — this one drives a REAL manager through a REAL
         /// shell-out, so a window that settles its own line is visible here.
-        /// The plan's only manager is npm, so the concurrent index-refresh
-        /// pre-pass also settles its own collapsed line ahead of the phase;
-        /// that line is excluded before counting, since it is a second line
-        /// for DIFFERENT work (the refresh), not a double-settle of this one
-        /// action.
         #[test]
         #[serial]
         fn a_real_install_shell_out_emits_one_line_under_apply() {
@@ -1258,7 +1250,6 @@ mod tests {
                         .iter()
                         .any(|g| l.starts_with(*g))
                 })
-                .filter(|l| !l.contains("Package indexes updated"))
                 .collect();
             assert_eq!(
                 settled.len(),

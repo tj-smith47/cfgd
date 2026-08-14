@@ -77,14 +77,22 @@ impl PackageManager for PipxManager {
         match detect_brew_system_method("pip") {
             // Only the pip fallback installs into the user's own tree; brew and
             // the system managers land pipx on the system PATH.
-            "pip" => ["pip3", "pip"]
-                .into_iter()
-                .find(|t| command_available(t))
-                .map(|tool| {
+            // The tool the pip arm would run: whichever is present, else the
+            // preferred name. Naming it even when it is absent is what lets the
+            // planner say WHY pipx cannot be provisioned instead of dropping it
+            // — `pip3` is not installable under that name from any system
+            // manager, so `feasible_bootstrap_plan` still answers `None`.
+            "pip" => {
+                let tool = ["pip3", "pip"]
+                    .into_iter()
+                    .find(|t| command_available(t))
+                    .unwrap_or("pip3");
+                Some(
                     BootstrapPlan::new("pip")
                         .requiring([tool])
-                        .creating(pip_user_scripts_dir(tool))
-                }),
+                        .creating(pip_user_scripts_dir(tool)),
+                )
+            }
             method => Some(BootstrapPlan::new(method)),
         }
     }

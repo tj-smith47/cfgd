@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use cfgd_core::output::{Printer, Verbosity};
-use cfgd_core::providers::PackageContext;
+use cfgd_core::providers::{PackageContext, PackageManagerExt};
 
 use super::cargo::{cargo_available, cargo_cmd};
 use super::go::{find_go, go_available, go_cmd};
@@ -3131,16 +3131,24 @@ fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
     // One gate over the whole registry, so a manager added later cannot declare
     // a prerequisite nothing can install or a PATH entry nothing can resolve.
     let home = tempfile::tempdir().unwrap();
-    let plans: Vec<(String, cfgd_core::providers::BootstrapPlan)> =
+    let plans: Vec<(String, cfgd_core::providers::BootstrapPlan, bool)> =
         cfgd_core::with_test_home(home.path(), || {
             all_package_managers()
                 .iter()
-                .filter_map(|m| m.bootstrap_plan().map(|p| (m.name().to_string(), p)))
+                .filter_map(|m| {
+                    m.bootstrap_plan().map(|p| {
+                        (
+                            m.name().to_string(),
+                            p,
+                            m.feasible_bootstrap_plan().is_some(),
+                        )
+                    })
+                })
                 .collect()
         });
     assert!(!plans.is_empty(), "no manager planned a bootstrap");
 
-    for (name, plan) in plans {
+    for (name, plan, feasible) in plans {
         assert!(!plan.method.trim().is_empty(), "{name}: empty method");
         // The prerequisite population is closed on purpose: a plan may only
         // name a tool a system manager can actually install for it.
@@ -3149,18 +3157,23 @@ fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
                 ["curl", "pip3", "pip"].contains(&tool.as_str()),
                 "{name}: unknown prerequisite {tool}"
             );
-            // A tool that is MISSING when the plan is minted becomes a
-            // `Prerequisites` node running `<system manager> install <tool>`,
-            // so for those the tool's name has to be the package's name as
-            // well. `pip3`/`pip` are not — apt calls that package
-            // `python3-pip` — which is why the only plan naming them is minted
-            // when they are already on the machine.
-            assert!(
-                tool == "curl" || cfgd_core::command_available(tool),
-                "{name}: plans a bootstrap around missing {tool}, which no system \
-                 manager installs under that name"
-            );
         }
+        // The plan describes the cascade whatever this host carries;
+        // feasibility is the separate question asked of the same plan, and the
+        // two must agree. A tool that is missing and that no system manager
+        // installs under that name (`pip3` — apt calls the package
+        // `python3-pip`) makes the plan infeasible, which is what lets the
+        // planner refuse the manager with the cause named instead of dropping
+        // it silently.
+        let obtainable = plan
+            .requires
+            .iter()
+            .all(|tool| cfgd_core::providers::prerequisite_obtainable(tool));
+        assert_eq!(
+            feasible, obtainable,
+            "{name}: feasibility must follow the plan's own tools ({:?})",
+            plan.requires
+        );
         for dir in &plan.creates_path_dirs {
             assert!(
                 !dir.contains('\\'),

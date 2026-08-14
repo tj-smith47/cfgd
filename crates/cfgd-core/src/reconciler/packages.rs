@@ -209,11 +209,10 @@ impl<'x> PackageExec<'x> {
                             }
                             .into());
                         }
-                        // The concurrent pre-pass (`Reconciler::refresh_package_indexes`)
-                        // already refreshed every manager available before this run
-                        // started; a manager bootstrapped just above has never been
-                        // refreshed, so it still needs this one inline update — mirrors
-                        // the module-package bootstrap arm below.
+                        // The `Prerequisites` phase refreshed every manager that was
+                        // available when the run was planned; a manager bootstrapped
+                        // just above was not, so it still needs this one inline
+                        // update — mirrors the module-package bootstrap arm below.
                         if !was_available && pm.is_available() {
                             pm.update(&cx)?;
                         }
@@ -278,21 +277,46 @@ impl<'x> PackageExec<'x> {
     /// installed carries a fresh index. The description returned is the node's
     /// own id, so the journal row and the DAG edge naming it are the same
     /// string.
-    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<String> {
+    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<(String, bool)> {
         let cx = self.cx();
         // A provision's manager is by definition not available yet, so the
         // lookup spans every registered manager rather than the available ones.
-        let pm = self
-            .registry
-            .package_managers
-            .iter()
-            .find(|pm| pm.name() == action.manager())
-            .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
-                manager: action.manager().to_string(),
-            })?;
+        // It is resolved per arm rather than up front, because a refusal names
+        // work the planner already ruled out and must not be answered with a
+        // different failure when the manager is not registered at all.
+        let lookup = |name: &str| {
+            self.registry
+                .package_managers
+                .iter()
+                .find(|pm| pm.name() == name)
+                .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
+                    manager: name.to_string(),
+                })
+        };
+        let mut changed = true;
         match action {
-            ManagerAction::RefreshIndex { .. } => pm.update(&cx)?,
+            // An index refresh is best-effort and never fails the phase: a
+            // flaky mirror must not turn a run into a failure the installs
+            // below it would have survived, and the install that follows
+            // reports its own error with better words. The line settles as
+            // unchanged — which is what a failed refresh leaves behind — with
+            // the cause attached beneath it.
+            ManagerAction::RefreshIndex { manager } => {
+                let pm = lookup(manager)?;
+                if let Err(e) = pm.update(&cx) {
+                    cx.report(
+                        crate::output::Role::Warn,
+                        manager,
+                        format!(
+                            "index refresh failed: {}",
+                            crate::output::collapse_to_subject_line(&e)
+                        ),
+                    );
+                    changed = false;
+                }
+            }
             ManagerAction::Provision { manager, .. } => {
+                let pm = lookup(manager)?;
                 // An earlier node — or a module's own install — may have
                 // provisioned it already. What the node promises is an
                 // available manager, not a second run of an installer that is
@@ -309,11 +333,24 @@ impl<'x> PackageExec<'x> {
                     .into());
                 }
             }
-            ManagerAction::Prerequisite { tool, .. } => {
-                pm.install(std::slice::from_ref(tool), &cx)?;
+            ManagerAction::Prerequisite {
+                tool, installer, ..
+            } => {
+                lookup(installer)?.install(std::slice::from_ref(tool), &cx)?;
+            }
+            // Nothing to run: the node IS the refusal. It fails rather than
+            // succeeding at nothing, because the packages that named this
+            // manager are not going to be installed either. The reason is
+            // restated for the journal; the line itself does not reprint it.
+            ManagerAction::Refuse { manager, reason } => {
+                return Err(crate::errors::PackageError::BootstrapFailed {
+                    manager: manager.clone(),
+                    message: reason.clone(),
+                }
+                .into());
             }
         }
-        Ok(action.node_id())
+        Ok((action.node_id(), changed))
     }
 
     /// Apply one module-owned `InstallPackages` action.
@@ -454,12 +491,10 @@ impl<'x> PackageExec<'x> {
                         self.record_bootstrap(pm.as_ref());
                     }
 
-                    // The concurrent pre-pass (`Reconciler::
-                    // refresh_package_indexes`) already refreshed
-                    // every manager available before this run
-                    // started; a manager bootstrapped just above has
-                    // never been refreshed, so it still needs this
-                    // one inline update.
+                    // The `Prerequisites` phase refreshed every
+                    // manager that was available when the run was
+                    // planned; a manager bootstrapped just above was
+                    // not, so it still needs this one inline update.
                     if !was_available && pm.is_available() {
                         pm.update(&cx)?;
                     }
@@ -528,7 +563,7 @@ impl super::Reconciler<'_> {
         action: &ManagerAction,
         printer: &Printer,
         notes: &NoteSink,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         let exec = PackageExec::new(self.registry, self.state, printer, notes);
         let result = exec.apply_manager_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());

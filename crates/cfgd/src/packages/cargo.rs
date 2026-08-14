@@ -8,8 +8,8 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, home_relative_dir, prerequisite_obtainable,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
+    bootstrap_via_shell_script, home_relative_dir, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
@@ -43,11 +43,11 @@ impl PackageManager for CargoManager {
     }
 
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
-        prerequisite_obtainable("curl").then(|| {
+        Some(
             BootstrapPlan::new("rustup")
                 .requiring(["curl"])
-                .creating(home_relative_dir("~/.cargo/bin"))
-        })
+                .creating(home_relative_dir("~/.cargo/bin")),
+        )
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -343,10 +343,11 @@ tokei v12.1.2:
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let home = tempfile::tempdir().unwrap();
         let plan = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
-        // Planned exactly when the installer's one tool can be HAD — present
-        // already, or installable from an available system manager, which is
-        // what the planner mints a prerequisite node for.
-        assert_eq!(plan.is_some(), prerequisite_obtainable("curl"));
+        // The plan is unconditional: it describes what the cascade needs, and
+        // whether this host can carry that out is `feasible_bootstrap_plan`'s
+        // question — so the planner can name `curl` as the cause when it
+        // cannot.
+        assert!(plan.is_some());
         let Some(plan) = plan else { return };
         // What `bootstrap` runs: rustup's install script, fetched with curl,
         // landing cargo (and everything `cargo install` builds) in ~/.cargo/bin.

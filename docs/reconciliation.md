@@ -63,8 +63,8 @@ There is nothing to tune: a machine that declares only `brew` packages still run
 
 Index refreshes and manager provisioning are actions in the `Prerequisites` phase, named in
 the plan and reported where they ran — see [packages.md](packages.md#index-refresh). A run
-that filters that phase out still refreshes ahead of the work it selected, collapsed into
-one line. A refresh that fails is a warning and never fails the run.
+that filters that phase out does not refresh behind your back: the refresh belongs to the
+phase you excluded. A refresh that fails is a warning and never fails the run.
 
 While a lane is held back, the live region shows one dimmed line per waiting group or
 action naming what it is waiting on (`module:nvim · waiting on apt`). Those lines exist

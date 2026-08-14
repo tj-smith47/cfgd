@@ -146,10 +146,17 @@ pub enum ManagerAction {
         required_by: Vec<String>,
         depends_on: Vec<String>,
     },
+    /// A manager this run needs and this host cannot provision, with the cause
+    /// named. It runs nothing: the node exists so the refusal is visible in the
+    /// phase the user is told to look at, instead of being a manager that
+    /// quietly never appears.
+    Refuse { manager: String, reason: String },
 }
 
 /// The `resource_type` half of every [`ManagerAction`]'s persisted identity.
-const MANAGER_RESOURCE_TYPE: &str = "manager";
+/// Also the one value `record_managed_resources` refuses to write a row for:
+/// cfgd's own scaffolding is journalled, never managed.
+pub(super) const MANAGER_RESOURCE_TYPE: &str = "manager";
 
 fn refresh_id(manager: &str) -> String {
     format!("refresh:{manager}")
@@ -161,6 +168,10 @@ fn provision_id(manager: &str) -> String {
 
 fn prereq_id(tool: &str) -> String {
     format!("prereq:{tool}")
+}
+
+fn refuse_id(manager: &str) -> String {
+    format!("refuse:{manager}")
 }
 
 fn node_of(resource_id: &str) -> String {
@@ -180,6 +191,7 @@ impl ManagerAction {
             ManagerAction::RefreshIndex { manager } => refresh_id(manager),
             ManagerAction::Provision { manager, .. } => provision_id(manager),
             ManagerAction::Prerequisite { tool, .. } => prereq_id(tool),
+            ManagerAction::Refuse { manager, .. } => refuse_id(manager),
         }
     }
 
@@ -205,11 +217,18 @@ impl ManagerAction {
         node_of(&prereq_id(tool))
     }
 
+    /// The DAG id of the refusal to provision `manager`. Nothing depends on a
+    /// refusal — a node that would have is refused itself — so this exists for
+    /// the planner's own bookkeeping and for the journal row.
+    pub fn refuse_node(manager: &str) -> String {
+        node_of(&refuse_id(manager))
+    }
+
     /// The nodes this one must follow, as [`ManagerAction::node_id`] values.
     /// Empty for a refresh, which is always a root.
     pub fn depends_on(&self) -> &[String] {
         match self {
-            ManagerAction::RefreshIndex { .. } => &[],
+            ManagerAction::RefreshIndex { .. } | ManagerAction::Refuse { .. } => &[],
             ManagerAction::Provision { depends_on, .. }
             | ManagerAction::Prerequisite { depends_on, .. } => depends_on,
         }
@@ -220,9 +239,9 @@ impl ManagerAction {
     /// prerequisite, since `apt install curl` is apt's command.
     pub fn manager(&self) -> &str {
         match self {
-            ManagerAction::RefreshIndex { manager } | ManagerAction::Provision { manager, .. } => {
-                manager
-            }
+            ManagerAction::RefreshIndex { manager }
+            | ManagerAction::Provision { manager, .. }
+            | ManagerAction::Refuse { manager, .. } => manager,
             ManagerAction::Prerequisite { installer, .. } => installer,
         }
     }

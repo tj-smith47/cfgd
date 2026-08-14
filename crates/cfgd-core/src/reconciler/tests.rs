@@ -2982,10 +2982,16 @@ fn apply_package_install_calls_mock_and_records_state() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.action_results.len(), 1);
-    assert!(result.action_results[0].success);
-    assert!(result.action_results[0].error.is_none());
-    assert!(result.action_results[0].description.contains("ripgrep"));
+    // The install, and ahead of it the `Prerequisites` node refreshing the
+    // index it reads.
+    assert_eq!(result.action_results.len(), 2);
+    assert!(result.action_results.iter().all(|r| r.success));
+    assert!(result.action_results.iter().all(|r| r.error.is_none()));
+    assert_eq!(
+        result.action_results[0].description, "manager:refresh:brew",
+        "the manager's index is refreshed before the packages that read it"
+    );
+    assert!(result.action_results[1].description.contains("ripgrep"));
 
     // Verify install was actually called on the tracking mock
     let pm = registry.package_managers[0].as_ref();
@@ -3633,7 +3639,8 @@ fn apply_full_flow_plan_apply_verify_consistent() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.succeeded(), 1);
+    // The install, and the `Prerequisites` node refreshing its manager's index.
+    assert_eq!(result.succeeded(), 2);
     assert_eq!(result.failed(), 0);
 
     // State store should show the apply
@@ -3696,8 +3703,9 @@ fn apply_records_summary_json() {
     let last = state.last_apply().unwrap().unwrap();
     let summary = last.summary.unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
-    assert_eq!(parsed["total"], 1);
-    assert_eq!(parsed["succeeded"], 1);
+    // The install, and the `Prerequisites` node refreshing its manager's index.
+    assert_eq!(parsed["total"], 2);
+    assert_eq!(parsed["succeeded"], 2);
     assert_eq!(parsed["failed"], 0);
     assert_eq!(result.apply_id, last.id);
 }
@@ -3749,8 +3757,14 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    // No actions executed because Env phase is empty and Packages phase was filtered out
-    assert_eq!(result.action_results.len(), 0);
+    // Only the manager node the `Prerequisites` phase owns: the install the
+    // filter excluded did not run.
+    let descriptions: Vec<&str> = result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert_eq!(descriptions, vec!["manager:refresh:brew"]);
 }
 
 #[test]
@@ -3916,8 +3930,9 @@ fn apply_multiple_package_actions_all_succeed() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.action_results.len(), 2);
-    assert_eq!(result.succeeded(), 2);
+    // Two installs, each preceded by its manager's index refresh.
+    assert_eq!(result.action_results.len(), 4);
+    assert_eq!(result.succeeded(), 4);
     assert_eq!(result.failed(), 0);
 
     // Verify both managers had their install called
@@ -3928,247 +3943,23 @@ fn apply_multiple_package_actions_all_succeed() {
     assert!(cargo.installed_packages(&cx).unwrap().contains("bat"));
 }
 
-/// A package manager whose `update` fails on demand — for the index-refresh
-/// pre-pass's degraded-line test.
-struct RefreshFailingPackageManager {
+/// A package manager that counts its index refreshes — the evidence for a
+/// refresh cfgd was NOT asked to perform.
+struct UpdateCountingPackageManager {
     name: String,
-    fails: bool,
+    updates: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl PackageManager for RefreshFailingPackageManager {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn is_available(&self) -> bool {
-        true
-    }
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
-        None
-    }
-    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
-    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
-        Ok(HashSet::new())
-    }
-    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
-    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
-        if self.fails {
-            Err(crate::errors::PackageError::CommandFailed {
-                manager: self.name.clone(),
-                source: std::io::Error::other("simulated index refresh failure"),
-            }
-            .into())
-        } else {
-            Ok(())
+impl UpdateCountingPackageManager {
+    fn new(name: &str, updates: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self {
+            name: name.to_string(),
+            updates,
         }
     }
-    fn available_version(&self, _package: &str) -> Result<Option<String>> {
-        Ok(None)
-    }
 }
 
-#[test]
-fn apply_refreshes_managers_in_play_concurrently_into_one_collapsed_line() {
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(RefreshFailingPackageManager {
-            name: "apt".to_string(),
-            fails: false,
-        }));
-    registry
-        .package_managers
-        .push(Box::new(RefreshFailingPackageManager {
-            name: "brew".to_string(),
-            fails: false,
-        }));
-
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
-
-    let pkg_actions = vec![
-        PackageAction::Install {
-            manager: "apt".to_string(),
-            packages: vec!["ripgrep".to_string()],
-            origin: "local".to_string(),
-        },
-        PackageAction::Install {
-            manager: "brew".to_string(),
-            packages: vec!["jq".to_string()],
-            origin: "local".to_string(),
-        },
-    ];
-
-    let plan = reconciler
-        .plan(
-            &resolved,
-            Vec::new(),
-            pkg_actions,
-            Vec::new(),
-            ReconcileContext::Apply,
-        )
-        .unwrap();
-
-    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
-            Path::new("."),
-            &printer,
-            None,
-            &[],
-            ReconcileContext::Apply,
-            false,
-            None,
-            &crate::AbortFlag::new(),
-        )
-        .unwrap();
-    drop(printer);
-
-    assert_eq!(result.status, ApplyStatus::Success);
-
-    let output = crate::output::strip_ansi(&buf.lock().unwrap());
-    let refresh_lines: Vec<&str> = output
-        .lines()
-        .map(str::trim)
-        .filter(|l| l.contains("Package indexes updated"))
-        .collect();
-    assert_eq!(
-        refresh_lines.len(),
-        1,
-        "expected exactly one collapsed refresh line, got: {output}"
-    );
-    let line = refresh_lines[0];
-    assert!(
-        line.starts_with('\u{2713}'),
-        "success refresh must render Role::Ok: {line:?}"
-    );
-    assert!(
-        line.contains("Package indexes updated — apt, brew ("),
-        "managers must appear in the detail slot, in plan order: {line:?}"
-    );
-    assert!(
-        line.trim_end().ends_with("s)"),
-        "elapsed time must land in the duration slot: {line:?}"
-    );
-}
-
-#[test]
-fn apply_refresh_failure_degrades_the_collapsed_line_and_does_not_fail_the_phase() {
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(RefreshFailingPackageManager {
-            name: "apt".to_string(),
-            fails: true,
-        }));
-    registry
-        .package_managers
-        .push(Box::new(RefreshFailingPackageManager {
-            name: "brew".to_string(),
-            fails: false,
-        }));
-
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
-
-    let pkg_actions = vec![
-        PackageAction::Install {
-            manager: "apt".to_string(),
-            packages: vec!["ripgrep".to_string()],
-            origin: "local".to_string(),
-        },
-        PackageAction::Install {
-            manager: "brew".to_string(),
-            packages: vec!["jq".to_string()],
-            origin: "local".to_string(),
-        },
-    ];
-
-    let plan = reconciler
-        .plan(
-            &resolved,
-            Vec::new(),
-            pkg_actions,
-            Vec::new(),
-            ReconcileContext::Apply,
-        )
-        .unwrap();
-
-    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
-            Path::new("."),
-            &printer,
-            None,
-            &[],
-            ReconcileContext::Apply,
-            false,
-            None,
-            &crate::AbortFlag::new(),
-        )
-        .unwrap();
-    drop(printer);
-
-    // A degraded refresh never fails the phase: both package installs still ran.
-    assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.succeeded(), 2);
-    assert_eq!(result.failed(), 0);
-
-    let output = crate::output::strip_ansi(&buf.lock().unwrap());
-    let refresh_lines: Vec<&str> = output
-        .lines()
-        .map(str::trim)
-        .filter(|l| l.contains("Package indexes updated"))
-        .collect();
-    assert_eq!(
-        refresh_lines.len(),
-        1,
-        "expected exactly one collapsed refresh line, got: {output}"
-    );
-    let line = refresh_lines[0];
-    assert!(
-        line.starts_with('\u{26A0}'),
-        "degraded refresh must render Role::Warn: {line:?}"
-    );
-    assert!(
-        line.contains("Package indexes updated — apt failed: "),
-        "the failing manager's error must be the status detail: {line:?}"
-    );
-    assert!(
-        line.contains("simulated index refresh failure"),
-        "the collapsed error must be visible: {line:?}"
-    );
-    assert!(
-        !line.contains("brew"),
-        "a successful manager's name must give way to the error, one detail slot: {line:?}"
-    );
-}
-
-/// A package manager whose `update` blocks on a shared barrier — proves the
-/// index-refresh pre-pass's stateless lane runs its managers on genuinely
-/// separate threads rather than a sequential loop that would only LOOK
-/// concurrent from the collapsed status line's perspective. A regression to
-/// sequential execution deadlocks here, because only one lane would ever
-/// reach the barrier — which is why the enclosing test bounds the wait with
-/// a timeout instead of hanging the suite.
-struct BarrierSyncedPackageManager {
-    name: String,
-    barrier: std::sync::Arc<std::sync::Barrier>,
-}
-
-impl PackageManager for BarrierSyncedPackageManager {
+impl PackageManager for UpdateCountingPackageManager {
     fn name(&self) -> &str {
         &self.name
     }
@@ -4191,7 +3982,8 @@ impl PackageManager for BarrierSyncedPackageManager {
         Ok(())
     }
     fn update(&self, _: &PackageContext<'_>) -> Result<()> {
-        self.barrier.wait();
+        self.updates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -4199,51 +3991,48 @@ impl PackageManager for BarrierSyncedPackageManager {
     }
 }
 
-#[test]
-fn apply_refresh_pre_pass_runs_stateless_managers_truly_concurrently() {
-    const MANAGERS: [&str; 3] = ["apt", "brew", "cargo"];
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(MANAGERS.len()));
-
-    let mut registry = ProviderRegistry::new();
-    for name in MANAGERS {
-        registry
-            .package_managers
-            .push(Box::new(BarrierSyncedPackageManager {
-                name: name.to_string(),
-                barrier: barrier.clone(),
-            }));
+/// A plan carrying package work and NO `Prerequisites` node — what a run whose
+/// manager node was pruned (`--skip prerequisites.<name>`) hands to `apply`.
+/// Built by hand because `Reconciler::plan` mints a node for every manager its
+/// package work names.
+fn plan_of_package_actions(actions: Vec<PackageAction>) -> Plan {
+    let profile = Owner::profile("test");
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &profile,
+            actions.into_iter().map(Action::Package).collect(),
+        )],
+        warnings: Vec::new(),
     }
+}
 
-    let pkg_actions: Vec<PackageAction> = MANAGERS
-        .iter()
-        .map(|name| PackageAction::Install {
-            manager: name.to_string(),
-            packages: vec!["placeholder".to_string()],
-            origin: "local".to_string(),
-        })
-        .collect();
+#[test]
+fn a_pruned_refresh_node_leaves_the_index_alone() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    let updates = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    registry
+        .package_managers
+        .push(Box::new(UpdateCountingPackageManager::new(
+            "apt",
+            updates.clone(),
+        )));
 
-    // The whole `apply` call runs on a detached thread rather than
-    // `std::thread::scope`: a scope blocks the test thread joining its
-    // children before returning, which would defeat the timeout below if the
-    // pre-pass ever DID regress to sequential execution and deadlocked on the
-    // barrier.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let state = test_state();
-        let reconciler = Reconciler::new(&registry, &state);
-        let resolved = make_empty_resolved();
-        let plan = reconciler
-            .plan(
-                &resolved,
-                Vec::new(),
-                pkg_actions,
-                Vec::new(),
-                ReconcileContext::Apply,
-            )
-            .unwrap();
-        let printer = test_printer();
-        let result = reconciler.apply(
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    // The shape `--skip prerequisites.apt` leaves behind: the install the user
+    // kept, without the refresh they removed. The refresh belongs to the phase,
+    // so nothing else may perform it on the phase's behalf.
+    let plan = plan_of_package_actions(vec![PackageAction::Install {
+        manager: "apt".to_string(),
+        packages: vec!["ripgrep".to_string()],
+        origin: "local".to_string(),
+    }]);
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
             &plan,
             &resolved,
             Path::new("."),
@@ -4254,18 +4043,162 @@ fn apply_refresh_pre_pass_runs_stateless_managers_truly_concurrently() {
             false,
             None,
             &crate::AbortFlag::new(),
-        );
-        let _ = tx.send(result.map(|r| r.status));
-    });
-
-    let status = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect(
-            "apply did not complete within 10s — the index-refresh pre-pass regressed to \
-             sequential execution and deadlocked on the barrier",
         )
         .unwrap();
-    assert_eq!(status, ApplyStatus::Success);
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(result.action_results.len(), 1, "only the install ran");
+
+    assert_eq!(
+        updates.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a refresh the user removed from the plan must not run anyway"
+    );
+}
+
+#[test]
+fn a_prerequisite_is_never_recorded_as_a_user_managed_resource() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("apt")));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let profile = Owner::profile("test");
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &profile,
+                vec![
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "apt".to_string(),
+                    }),
+                    Action::Manager(ManagerAction::Prerequisite {
+                        tool: "curl".to_string(),
+                        installer: "apt".to_string(),
+                        required_by: vec!["brew".to_string()],
+                        depends_on: vec![ManagerAction::refresh_node("apt")],
+                    }),
+                ],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &profile,
+                vec![Action::Package(PackageAction::Install {
+                    manager: "apt".to_string(),
+                    packages: vec!["ripgrep".to_string()],
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: Vec::new(),
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let recorded: Vec<String> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| format!("{}:{}", r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        recorded.iter().all(|id| !id.starts_with("manager:")),
+        "curl is a tool cfgd needed, not a resource the user declared: cfgd never \
+         removes it and `cfgd status` never claims it: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|id| id.contains("ripgrep")),
+        "the user's own package is still recorded: {recorded:?}"
+    );
+    // The journal still carries the work, which is where a prerequisite belongs.
+    let journalled: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .map(|e| format!("{}:{}", e.action_type, e.resource_id))
+        .collect();
+    assert!(
+        journalled.contains(&"manager:prereq:curl".to_string()),
+        "the journal records what cfgd did: {journalled:?}"
+    );
+}
+
+#[test]
+fn a_refusal_states_its_reason_once() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let reason = "curl is missing and no system manager is available";
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Refuse {
+                manager: "nix".to_string(),
+                reason: reason.to_string(),
+            })],
+        )],
+        warnings: Vec::new(),
+    };
+
+    let (printer, buf) = Printer::for_test();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Failed);
+
+    let rendered = crate::test_helpers::captured_text(&buf);
+    assert_eq!(
+        rendered.matches(reason).count(),
+        1,
+        "the subject already IS the reason; the error it settles through must not \
+         reprint it: {rendered}"
+    );
+    assert!(
+        rendered.contains("cannot provision nix — curl is missing"),
+        "the line still names the manager and the cause: {rendered}"
+    );
+    // The journal keeps the self-contained reason, which is what a later reader has.
+    let journalled: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| e.error)
+        .collect();
+    assert!(
+        journalled.iter().any(|e| e.contains(reason)),
+        "the journal records why: {journalled:?}"
+    );
 }
 
 #[test]
@@ -5184,7 +5117,8 @@ fn apply_partial_when_some_actions_fail() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Partial);
-    assert_eq!(result.succeeded(), 1);
+    // brew's install and both managers' index refreshes; only apt's install fails.
+    assert_eq!(result.succeeded(), 3);
     assert_eq!(result.failed(), 1);
 
     // Verify state store records partial status
@@ -5210,15 +5144,9 @@ fn apply_failed_when_all_actions_fail() {
         origin: "local".to_string(),
     }];
 
-    let plan = reconciler
-        .plan(
-            &resolved,
-            Vec::new(),
-            pkg_actions,
-            Vec::new(),
-            ReconcileContext::Apply,
-        )
-        .unwrap();
+    // Hand-built so the failing install is the run's ONLY action, and "every
+    // action failed" stays expressible.
+    let plan = plan_of_package_actions(pkg_actions);
 
     let printer = test_printer();
     let result = reconciler
@@ -5322,15 +5250,9 @@ fn apply_survives_a_panicking_lane_worker_instead_of_hanging() {
         let state = test_state();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
-        let plan = reconciler
-            .plan(
-                &resolved,
-                Vec::new(),
-                pkg_actions,
-                Vec::new(),
-                ReconcileContext::Apply,
-            )
-            .unwrap();
+        // Hand-built so the panicking install is the run's ONLY action, and
+        // "every action failed" stays expressible.
+        let plan = plan_of_package_actions(pkg_actions);
         let printer = test_printer();
         let result = reconciler.apply(
             &plan,
@@ -5423,9 +5345,10 @@ fn apply_continue_on_error_post_script_continues() {
         )
         .unwrap();
 
-    // Package install succeeded, post-script failed but continued
+    // Package install and its manager's index refresh succeeded, post-script
+    // failed but continued
     assert_eq!(result.status, ApplyStatus::Partial);
-    assert_eq!(result.succeeded(), 1); // package install
+    assert_eq!(result.succeeded(), 2); // index refresh + package install
     assert_eq!(result.failed(), 1); // failed post-script
 
     // Verify the failed action is the script
@@ -19239,9 +19162,8 @@ fn action_notes_render_under_the_status_they_belong_to() {
     let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
     let lines = transcript_lines(&out);
 
-    // The concurrent index-refresh pre-pass also emits a leading `\u{2713}`
-    // line ("Package indexes updated — brew"), so the search must target the
-    // install action's own status rather than the first checkmark seen.
+    // Targets the install action's own status rather than the first checkmark
+    // seen: other lines in the transcript carry the same marker.
     let status = lines
         .iter()
         .position(|l| l.contains("brew install neovim"))

@@ -536,6 +536,9 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
             "{installer} install {tool} — required by {}",
             required_by.join(", ")
         ),
+        ManagerAction::Refuse { manager, reason } => {
+            format!("cannot provision {manager} — {reason}")
+        }
     }
 }
 

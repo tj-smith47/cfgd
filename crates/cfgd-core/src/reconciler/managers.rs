@@ -1,14 +1,14 @@
 //! The `cfgd:managers` owner group of the `Prerequisites` phase: one node per
-//! package manager the run's desired state depends on, plus the tools cfgd's
-//! own bootstrap cascades shell out to, wired into a dependency graph.
+//! package manager the run's own work depends on, plus the tools cfgd's
+//! bootstrap cascades shell out to, wired into a dependency graph.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::config::MergedProfile;
-use crate::modules::ResolvedModule;
-use crate::providers::{PackageManager, ProviderRegistry, is_system_manager};
+use crate::providers::{
+    PackageAction, PackageManager, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS, is_system_manager,
+};
 
-use super::types::{Action, ManagerAction};
+use super::types::{Action, ManagerAction, ModuleAction, ModuleActionKind, PhaseName};
 
 /// The manager name a module package carries when its "install" is an inline
 /// script rather than a manager command. It names no registry entry.
@@ -20,6 +20,8 @@ enum MemberState {
     Present,
     /// Absent, provisioned by the method its own cascade resolved to.
     Provision { via: String },
+    /// Absent and unprovisionable on this host, with the cause named.
+    Refused { reason: String },
 }
 
 impl MemberState {
@@ -28,7 +30,14 @@ impl MemberState {
         match self {
             MemberState::Present => ManagerAction::refresh_node(manager),
             MemberState::Provision { .. } => ManagerAction::provision_node(manager),
+            MemberState::Refused { .. } => ManagerAction::refuse_node(manager),
         }
+    }
+
+    /// Whether this state ends with the manager usable. A node that depends on
+    /// a manager only makes sense when it does.
+    fn yields_a_usable_manager(&self) -> bool {
+        matches!(self, MemberState::Present | MemberState::Provision { .. })
     }
 }
 
@@ -47,45 +56,49 @@ struct Graph {
 
 /// Plan the manager nodes for this run.
 ///
-/// Membership is the effective desired package set — every manager the merged
-/// profile or any resolved module names — **closed transitively over every
-/// installer a `BootstrapPlan` names**: the system manager that installs a
-/// missing prerequisite, and the manager a cascade installs through (`npm`,
-/// `pipx` and `go` prefer brew, so brew joins even when no package names it).
-/// Without the closure an edge either dangles or the install happens invisibly,
-/// which is the unrendered bootstrap this phase exists to replace.
+/// Membership starts from the managers this run's own work NAMES — a package
+/// install planned in `Packages`, from the profile or from a module, or a
+/// manager the run wanted and could not plan for at all — and is then closed
+/// transitively over every installer a `BootstrapPlan` names: the system
+/// manager that installs a missing prerequisite, and the manager a cascade
+/// installs through (`npm`, `pipx` and `go` prefer brew, so brew joins even
+/// when no package names it). Without the closure an edge either dangles or the
+/// install happens invisibly, which is the unrendered bootstrap this phase
+/// exists to replace.
+///
+/// Membership is deliberately NOT the desired package set: an index refresh is
+/// only worth its network round trip when something in the run consumes the
+/// index. A converged machine plans nothing here, so `cfgd apply` still reaches
+/// its "nothing to do" answer and the daemon's reconcile tick does not run
+/// `apt update` on every interval.
 ///
 /// A sub-manager collapses onto its family's node: `brew-cask` has no bootstrap
 /// of its own and answers `is_available()` with brew's, so provisioning it IS
 /// provisioning brew, and two nodes would run `brew update` twice.
 ///
-/// A manager that is absent and has no plan mints no node — nothing here could
-/// carry it out, and the `Packages` phase already reports it as a skip naming
-/// the manager.
+/// A manager that is absent with no cascade at all on this platform mints no
+/// node — nothing here could carry it out, and the `Packages` phase already
+/// reports it as a skip naming the manager. A manager whose cascade IS blocked
+/// (its tool is missing and nothing available installs it) mints a refusal
+/// naming the cause, because that is a thing cfgd would otherwise have done
+/// silently.
 ///
 /// The returned order is deterministic and topological: refreshes (which are
-/// always roots), then prerequisites, then provisions in dependency order, each
-/// tier sorted by name. Two runs against an unchanged host therefore plan
-/// byte-identical actions, and a scheduler walking the list in order never
-/// reaches a node before its dependencies.
+/// always roots), then prerequisites, then provisions in dependency order, then
+/// the refusals, each tier sorted by name. Two runs against an unchanged host
+/// therefore plan byte-identical actions, and a scheduler walking the list in
+/// order never reaches a node before its dependencies.
 pub(super) fn plan_managers(
     registry: &ProviderRegistry,
-    profile: &MergedProfile,
-    modules: &[ResolvedModule],
+    package_actions: &[PackageAction],
+    module_routed: &[(PhaseName, Action)],
 ) -> Vec<Action> {
     // The one system manager every prerequisite in this run is installed from,
     // resolved once so two prerequisites can never name two installers on the
     // same host.
     let installer = prerequisite_installer(registry).map(|pm| pm.name().to_string());
 
-    let mut queue: VecDeque<String> =
-        crate::effective::effective_desired_packages(profile, modules)
-            .into_iter()
-            .filter(|ep| ep.manager != SCRIPT_SENTINEL)
-            .map(|ep| node_manager(registry, &ep.manager).to_string())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+    let mut queue: VecDeque<String> = wanted_managers(registry, package_actions, module_routed);
 
     let mut graph = Graph::default();
     while let Some(name) = queue.pop_front() {
@@ -101,6 +114,9 @@ pub(super) fn plan_managers(
             graph.members.insert(name, MemberState::Present);
             continue;
         }
+        // No cascade at all on this platform (apt on macOS, winget on Linux).
+        // There is no cfgd decision to render: the manager was never a
+        // candidate here, and `Packages` says so.
         let Some(plan) = pm.bootstrap_plan() else {
             continue;
         };
@@ -111,22 +127,30 @@ pub(super) fn plan_managers(
             .filter(|tool| !crate::command_available(tool))
             .cloned()
             .collect();
+        // Judged against the REGISTRY rather than `PATH`, so the planner never
+        // promises an install it has no registered manager to schedule.
+        let unobtainable: Vec<&String> = missing
+            .iter()
+            .filter(|tool| {
+                installer.is_none() || !SYSTEM_INSTALLABLE_TOOLS.contains(&tool.as_str())
+            })
+            .collect();
+        if !unobtainable.is_empty() {
+            let reason = blocked_reason(&unobtainable, installer.as_deref());
+            graph.members.insert(name, MemberState::Refused { reason });
+            continue;
+        }
         if !missing.is_empty() {
-            // Nothing on this host installs the tool the cascade shells out to,
-            // so the manager cannot be provisioned at all and mints no node
-            // rather than one that must fail. `bootstrap_plan` answers `None`
-            // on that path too; this is the planner's own guard against a plan
-            // promising more than the host can carry out.
-            let Some(installer) = installer.as_ref() else {
-                continue;
-            };
-            for tool in &missing {
-                graph
-                    .prerequisites
-                    .entry(tool.clone())
-                    .or_default()
-                    .insert(name.clone());
-                queue.push_back(installer.clone());
+            // `unobtainable` was empty, so an installer exists.
+            if let Some(installer) = installer.as_ref() {
+                for tool in &missing {
+                    graph
+                        .prerequisites
+                        .entry(tool.clone())
+                        .or_default()
+                        .insert(name.clone());
+                    queue.push_back(installer.clone());
+                }
             }
             graph.needs.insert(name.clone(), missing);
         }
@@ -146,7 +170,129 @@ pub(super) fn plan_managers(
             .insert(name, MemberState::Provision { via: plan.method });
     }
 
+    refuse_provisions_with_no_usable_installer(&mut graph);
+    drop_prerequisites_nothing_still_needs(&mut graph);
     build_actions(&graph, installer.as_deref())
+}
+
+/// The managers this run's own work names, family-folded and deduplicated.
+///
+/// Two shapes count, and no others. A planned INSTALL — profile-level or a
+/// module's — is a consumer of the manager's index and so earns a refresh. A
+/// profile-level SKIP is a manager the run wanted and could not plan for, which
+/// is where a refusal gets named. An uninstall consumes no index and a manager
+/// nothing in the run touches has nothing to refresh for.
+fn wanted_managers(
+    registry: &ProviderRegistry,
+    package_actions: &[PackageAction],
+    module_routed: &[(PhaseName, Action)],
+) -> VecDeque<String> {
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    for action in package_actions {
+        let manager = match action {
+            PackageAction::Install { manager, .. } | PackageAction::Skip { manager, .. } => manager,
+            PackageAction::Bootstrap { .. } | PackageAction::Uninstall { .. } => continue,
+        };
+        wanted.insert(node_manager(registry, manager).to_string());
+    }
+    for (_, action) in module_routed {
+        let Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) = action
+        else {
+            continue;
+        };
+        for pkg in resolved {
+            if pkg.manager == SCRIPT_SENTINEL {
+                continue;
+            }
+            wanted.insert(node_manager(registry, &pkg.manager).to_string());
+        }
+    }
+    wanted.into_iter().collect()
+}
+
+/// Why a cascade cannot run, in the words of the tools it is blocked on.
+fn blocked_reason(tools: &[&String], installer: Option<&str>) -> String {
+    let list = tools
+        .iter()
+        .map(|t| t.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let is_are = if tools.len() == 1 { "is" } else { "are" };
+    match installer {
+        None => format!("{list} {is_are} missing and no system manager is available"),
+        Some(installer) => {
+            format!("{list} {is_are} missing and {installer} does not install it under that name")
+        }
+    }
+}
+
+/// Refuse every provision whose cascade installs through a manager this run
+/// will not end up with, transitively.
+///
+/// `npm` installs through brew; if brew is itself refused — or is registered
+/// with no cascade of its own — then `provision npm via brew` names a command
+/// that cannot run. Refusing it here is the same statement the blocked-tool arm
+/// makes, one link further down the chain.
+fn refuse_provisions_with_no_usable_installer(graph: &mut Graph) {
+    loop {
+        let newly_refused: Vec<(String, String)> = graph
+            .prefers
+            .iter()
+            .filter(|(manager, _)| {
+                graph
+                    .members
+                    .get(*manager)
+                    .is_some_and(|state| matches!(state, MemberState::Provision { .. }))
+            })
+            .filter(|(_, preferred)| {
+                !graph
+                    .members
+                    .get(*preferred)
+                    .is_some_and(MemberState::yields_a_usable_manager)
+            })
+            .map(|(manager, preferred)| {
+                (
+                    manager.clone(),
+                    format!("it installs through {preferred}, which cannot be provisioned"),
+                )
+            })
+            .collect();
+        if newly_refused.is_empty() {
+            return;
+        }
+        for (manager, reason) in newly_refused {
+            graph
+                .members
+                .insert(manager, MemberState::Refused { reason });
+        }
+    }
+}
+
+/// Drop the prerequisite entries of managers that ended up refused, and any
+/// tool left required by nobody — a run must not install a tool for a
+/// provisioning it is not going to attempt.
+fn drop_prerequisites_nothing_still_needs(graph: &mut Graph) {
+    let refused: BTreeSet<String> = graph
+        .members
+        .iter()
+        .filter(|(_, state)| matches!(state, MemberState::Refused { .. }))
+        .map(|(name, _)| name.clone())
+        .collect();
+    if refused.is_empty() {
+        return;
+    }
+    for manager in &refused {
+        graph.needs.remove(manager);
+    }
+    for required_by in graph.prerequisites.values_mut() {
+        required_by.retain(|manager| !refused.contains(manager));
+    }
+    graph
+        .prerequisites
+        .retain(|_, required_by| !required_by.is_empty());
 }
 
 /// Assemble the nodes in topological order, wiring each edge to the id of the
@@ -180,7 +326,7 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
         }
     }
 
-    for manager in provision_order(graph) {
+    for (manager, via) in provision_order(graph) {
         let mut depends_on: Vec<String> = graph
             .needs
             .get(manager)
@@ -193,40 +339,50 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
         {
             depends_on.push(state.node_id(preferred));
         }
-        let via = match graph.members.get(manager) {
-            Some(MemberState::Provision { via }) => via.clone(),
-            _ => String::new(),
-        };
         actions.push(Action::Manager(ManagerAction::Provision {
-            manager: manager.clone(),
-            via,
+            manager: manager.to_string(),
+            via: via.to_string(),
             depends_on,
         }));
+    }
+
+    // Last: a refusal blocks nothing and carries no edge, so it reads after the
+    // work the run will actually do.
+    for (manager, state) in &graph.members {
+        if let MemberState::Refused { reason } = state {
+            actions.push(Action::Manager(ManagerAction::Refuse {
+                manager: manager.clone(),
+                reason: reason.clone(),
+            }));
+        }
     }
 
     actions
 }
 
-/// The provisions in dependency order: a manager whose cascade installs through
-/// another provisioned manager follows it. Ties break by name, so the order is
-/// a function of the host rather than of iteration.
-fn provision_order(graph: &Graph) -> Vec<&String> {
-    let mut pending: Vec<&String> = graph
+/// The provisions in dependency order, each with the method it runs — read from
+/// the same lookup that classified it, so a provision naming no method is not
+/// representable. A manager whose cascade installs through another provisioned
+/// manager follows it. Ties break by name, so the order is a function of the
+/// host rather than of iteration.
+fn provision_order(graph: &Graph) -> Vec<(&str, &str)> {
+    let mut pending: Vec<(&str, &str)> = graph
         .members
         .iter()
-        .filter(|(_, state)| matches!(state, MemberState::Provision { .. }))
-        .map(|(name, _)| name)
+        .filter_map(|(name, state)| match state {
+            MemberState::Provision { via } => Some((name.as_str(), via.as_str())),
+            MemberState::Present | MemberState::Refused { .. } => None,
+        })
         .collect();
-    let mut ordered: Vec<&String> = Vec::with_capacity(pending.len());
+    let mut ordered: Vec<(&str, &str)> = Vec::with_capacity(pending.len());
     while !pending.is_empty() {
-        let ready: Vec<&String> = pending
+        let ready: Vec<(&str, &str)> = pending
             .iter()
             .copied()
-            .filter(|name| {
-                graph
-                    .prefers
-                    .get(*name)
-                    .is_none_or(|preferred| !pending.contains(&preferred))
+            .filter(|(name, _)| {
+                graph.prefers.get(*name).is_none_or(|preferred| {
+                    !pending.iter().any(|(pending, _)| pending == preferred)
+                })
             })
             .collect();
         // A cycle among provisions cannot be scheduled at all; take the
@@ -239,7 +395,7 @@ fn provision_order(graph: &Graph) -> Vec<&String> {
             ready
         };
         ordered.extend(ready.iter().copied());
-        pending.retain(|name| !ready.contains(name));
+        pending.retain(|entry| !ready.contains(entry));
     }
     ordered
 }
@@ -286,56 +442,152 @@ mod tests {
     use crate::test_helpers::{MockPackageManager, ReconcilerTestHarness};
 
     /// A tool name no host has on `PATH`, so a `requires` naming it is always
-    /// missing and the prerequisite arm is exercised on every platform.
+    /// missing, and one no system manager installs under that name, so the
+    /// refusal arm is exercised on every platform.
     const ABSENT_TOOL: &str = "cfgd-absent-prerequisite-tool";
 
-    /// The nodes `plan_managers` mints for `yaml` against `managers`, as their
-    /// persisted ids.
-    fn plan_ids(yaml: &str, managers: Vec<MockPackageManager>) -> Vec<String> {
-        let mut builder = ReconcilerTestHarness::builder().profile_yaml(yaml);
+    /// A planned install per named manager — the consumer that earns a manager
+    /// its node.
+    fn installs(managers: &[&str]) -> Vec<PackageAction> {
+        managers
+            .iter()
+            .map(|manager| PackageAction::Install {
+                manager: (*manager).to_string(),
+                packages: vec!["pkg".to_string()],
+                origin: "profile".to_string(),
+            })
+            .collect()
+    }
+
+    /// One module install of `package` through `manager`, routed to `Packages`
+    /// exactly as `plan_modules` routes it.
+    fn module_install(manager: &str, package: &str) -> Vec<(PhaseName, Action)> {
+        vec![(
+            PhaseName::Packages,
+            Action::Module(ModuleAction::with_origin(
+                "mod",
+                ModuleActionKind::InstallPackages {
+                    resolved: vec![crate::modules::ResolvedPackage {
+                        canonical_name: package.to_string(),
+                        resolved_name: package.to_string(),
+                        manager: manager.to_string(),
+                        version: None,
+                        script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
+                    }],
+                },
+                None,
+            )),
+        )]
+    }
+
+    /// Every action `plan_managers` mints for the given package work.
+    fn plan_actions(
+        package_actions: Vec<PackageAction>,
+        managers: Vec<MockPackageManager>,
+    ) -> Vec<Action> {
+        plan_actions_with_modules(package_actions, Vec::new(), managers)
+    }
+
+    fn plan_actions_with_modules(
+        package_actions: Vec<PackageAction>,
+        module_routed: Vec<(PhaseName, Action)>,
+        managers: Vec<MockPackageManager>,
+    ) -> Vec<Action> {
+        let mut builder = ReconcilerTestHarness::builder();
         for pm in managers {
             builder = builder.with_package_manager(pm);
         }
         let harness = builder.build();
-        plan_managers(&harness.registry, &harness.resolved.merged, &[])
+        plan_managers(&harness.registry, &package_actions, &module_routed)
+    }
+
+    /// The nodes `plan_managers` mints, as their persisted ids.
+    fn plan_ids(
+        package_actions: Vec<PackageAction>,
+        managers: Vec<MockPackageManager>,
+    ) -> Vec<String> {
+        plan_actions(package_actions, managers)
             .iter()
             .map(format_action_description)
             .collect()
     }
 
-    /// Every action `plan_managers` mints, for a test reading the node bodies
-    /// rather than only their ids.
-    fn plan_actions(yaml: &str, managers: Vec<MockPackageManager>) -> Vec<Action> {
-        let mut builder = ReconcilerTestHarness::builder().profile_yaml(yaml);
-        for pm in managers {
-            builder = builder.with_package_manager(pm);
-        }
-        let harness = builder.build();
-        plan_managers(&harness.registry, &harness.resolved.merged, &[])
-    }
-
     #[test]
-    fn membership_is_every_manager_the_desired_state_names() {
+    fn membership_is_every_manager_the_runs_own_work_names() {
         let ids = plan_ids(
-            "packages:\n  brew: [ripgrep]\n  cargo: [bat]\n",
+            installs(&["brew", "cargo"]),
             vec![
                 MockPackageManager::new("brew"),
                 MockPackageManager::new("cargo"),
-                // Registered but unnamed by the profile: no node.
+                // Registered, available, and named by no work in this run: an
+                // index nothing consumes is not worth a network round trip.
                 MockPackageManager::new("npm"),
             ],
         );
         assert_eq!(
             ids,
             vec!["manager:refresh:brew", "manager:refresh:cargo"],
-            "an available manager the desired state names refreshes, and only those"
+            "a manager this run installs through refreshes, and only those"
+        );
+    }
+
+    #[test]
+    fn a_converged_run_plans_no_manager_nodes() {
+        let ids = plan_ids(
+            Vec::new(),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("brew"),
+            ],
+        );
+        assert!(
+            ids.is_empty(),
+            "a host with nothing left to install plans nothing, so `apply` keeps its \
+             'nothing to do' answer and a daemon tick does not run `apt update` every \
+             interval: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn an_uninstall_alone_consumes_no_index() {
+        let ids = plan_ids(
+            vec![PackageAction::Uninstall {
+                manager: "brew".to_string(),
+                packages: vec!["ripgrep".to_string()],
+                origin: "profile".to_string(),
+            }],
+            vec![MockPackageManager::new("brew")],
+        );
+        assert!(
+            ids.is_empty(),
+            "removing a package reads no index, so it earns no refresh: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_module_package_is_a_consumer_of_its_managers_index() {
+        let ids = plan_actions_with_modules(
+            Vec::new(),
+            module_install("brew", "ripgrep"),
+            vec![MockPackageManager::new("brew")],
+        )
+        .iter()
+        .map(format_action_description)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec!["manager:refresh:brew"],
+            "a module's install names its manager as surely as the profile's does"
         );
     }
 
     #[test]
     fn an_absent_manager_provisions_and_pulls_its_cascade_parent_into_the_closure() {
         let actions = plan_actions(
-            "packages:\n  cargo: [bat]\n",
+            installs(&["cargo"]),
             vec![
                 MockPackageManager::new("cargo")
                     .unavailable()
@@ -366,15 +618,22 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn a_missing_required_tool_plans_a_prerequisite_from_the_system_manager() {
+        // `curl` is the one tool a system manager installs under its own name,
+        // so the prerequisite arm needs a host where it is genuinely absent.
+        let _path_lock = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", "");
+
         let actions = plan_actions(
-            "packages:\n  npm: [prettier]\n",
+            installs(&["npm"]),
             vec![
                 MockPackageManager::new("apt"),
                 MockPackageManager::new("npm")
                     .unavailable()
                     .bootstrappable_via("brew")
-                    .requiring(&[ABSENT_TOOL]),
+                    .requiring(&["curl"]),
                 MockPackageManager::new("brew"),
             ],
         );
@@ -384,7 +643,7 @@ mod tests {
             vec![
                 "manager:refresh:apt".to_string(),
                 "manager:refresh:brew".to_string(),
-                format!("manager:prereq:{ABSENT_TOOL}"),
+                "manager:prereq:curl".to_string(),
                 "manager:provision:npm".to_string(),
             ],
             "the missing tool becomes a node of its own, ahead of the provision needing it"
@@ -415,17 +674,28 @@ mod tests {
         assert_eq!(
             depends_on,
             &vec![
-                format!("manager:prereq:{ABSENT_TOOL}"),
+                "manager:prereq:curl".to_string(),
                 "manager:refresh:brew".to_string(),
             ],
             "a provision waits on both its tool and its installer"
         );
+        let items: Vec<String> = actions.iter().map(format_plan_item).collect();
+        assert_eq!(
+            items,
+            vec![
+                "refresh apt index".to_string(),
+                "refresh brew index".to_string(),
+                "apt install curl — required by npm".to_string(),
+                "provision npm via brew".to_string(),
+            ],
+            "every node says what it will do, naming the method it runs"
+        );
     }
 
     #[test]
-    fn a_missing_tool_no_system_manager_can_install_mints_no_node() {
-        let ids = plan_ids(
-            "packages:\n  npm: [prettier]\n",
+    fn a_missing_tool_no_system_manager_can_install_is_refused_with_the_cause_named() {
+        let actions = plan_actions(
+            installs(&["npm"]),
             vec![
                 MockPackageManager::new("npm")
                     .unavailable()
@@ -434,17 +704,91 @@ mod tests {
                 MockPackageManager::new("brew"),
             ],
         );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert_eq!(
+            ids,
+            vec!["manager:refuse:npm"],
+            "a manager this host cannot provision is still a node, so the refusal is \
+             visible in the phase the user is told to look at: {ids:?}"
+        );
+        assert_eq!(
+            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            vec![format!(
+                "cannot provision npm — {ABSENT_TOOL} is missing and no system manager is available"
+            )],
+            "and it names the cause rather than only the refusal"
+        );
+    }
+
+    #[test]
+    fn a_missing_tool_the_system_manager_does_not_install_names_that_installer() {
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .bootstrappable_via("brew")
+                    .requiring(&[ABSENT_TOOL]),
+                MockPackageManager::new("brew"),
+            ],
+        );
+        assert_eq!(
+            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            vec![format!(
+                "cannot provision npm — {ABSENT_TOOL} is missing and apt does not install it \
+                 under that name"
+            )],
+            "the host HAS a system manager; what it lacks is that manager's ability to \
+             install this tool, and the refusal says which"
+        );
+    }
+
+    #[test]
+    fn a_cascade_through_an_unprovisionable_manager_is_refused() {
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .bootstrappable_via("brew"),
+                // Registered, absent, and with no cascade of its own.
+                MockPackageManager::new("brew").unavailable(),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert_eq!(
+            ids,
+            vec!["manager:refuse:npm"],
+            "a provision whose installer this run will never have is refused rather than \
+             left promising `provision npm via brew` with no brew: {ids:?}"
+        );
+        assert_eq!(
+            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            vec![
+                "cannot provision npm — it installs through brew, which cannot be provisioned"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_manager_with_no_cascade_on_this_platform_mints_no_node() {
+        let ids = plan_ids(
+            installs(&["apt"]),
+            vec![MockPackageManager::new("apt").unavailable()],
+        );
         assert!(
             ids.is_empty(),
-            "a manager this host cannot provision plans nothing rather than a node that must \
-             fail, and its cascade's installer joins no closure it was never named by: {ids:?}"
+            "apt on macOS was never a candidate here; there is no cfgd decision to \
+             render and `Packages` reports the skip: {ids:?}"
         );
     }
 
     #[test]
     fn a_sub_manager_collapses_onto_its_familys_node() {
         let ids = plan_ids(
-            "packages:\n  brew:\n    formulae: [ripgrep]\n    casks: [firefox]\n",
+            installs(&["brew", "brew-cask"]),
             vec![
                 MockPackageManager::new("brew"),
                 MockPackageManager::new("brew-cask"),
@@ -460,7 +804,7 @@ mod tests {
     #[test]
     fn provisions_are_ordered_by_dependency_not_by_name() {
         let ids = plan_ids(
-            "packages:\n  apk: [ripgrep]\n",
+            installs(&["apk"]),
             vec![
                 MockPackageManager::new("apk")
                     .unavailable()
@@ -480,7 +824,6 @@ mod tests {
 
     #[test]
     fn planning_twice_against_one_host_plans_the_same_nodes() {
-        let yaml = "packages:\n  npm: [prettier]\n  cargo: [bat]\n  brew: [ripgrep]\n";
         let managers = || {
             vec![
                 MockPackageManager::new("apt"),
@@ -495,34 +838,9 @@ mod tests {
             ]
         };
         assert_eq!(
-            plan_ids(yaml, managers()),
-            plan_ids(yaml, managers()),
+            plan_ids(installs(&["npm", "cargo", "brew"]), managers()),
+            plan_ids(installs(&["npm", "cargo", "brew"]), managers()),
             "two runs against an unchanged host plan byte-identical nodes"
-        );
-    }
-
-    #[test]
-    fn a_manager_node_renders_what_it_will_do() {
-        let actions = plan_actions(
-            "packages:\n  npm: [prettier]\n",
-            vec![
-                MockPackageManager::new("apt"),
-                MockPackageManager::new("npm")
-                    .unavailable()
-                    .bootstrappable_via("brew")
-                    .requiring(&[ABSENT_TOOL]),
-                MockPackageManager::new("brew"),
-            ],
-        );
-        let items: Vec<String> = actions.iter().map(format_plan_item).collect();
-        assert_eq!(
-            items,
-            vec![
-                "refresh apt index".to_string(),
-                "refresh brew index".to_string(),
-                format!("apt install {ABSENT_TOOL} — required by npm"),
-                "provision npm via brew".to_string(),
-            ]
         );
     }
 
@@ -533,15 +851,7 @@ mod tests {
             .with_package_manager(MockPackageManager::new("brew"))
             .build();
         let plan = harness
-            .plan_with_actions(
-                Vec::new(),
-                vec![PackageAction::Install {
-                    manager: "brew".to_string(),
-                    packages: vec!["ripgrep".to_string()],
-                    origin: "profile".to_string(),
-                }],
-                Vec::new(),
-            )
+            .plan_with_actions(Vec::new(), installs(&["brew"]), Vec::new())
             .expect("plan");
         let phases: Vec<&PhaseName> = plan.phases.iter().map(|p| &p.name).collect();
         let index = |name: PhaseName| {
@@ -580,7 +890,9 @@ mod tests {
             .profile_yaml("env:\n  - name: EDITOR\n    value: nvim\npackages:\n  brew: [ripgrep]\n")
             .with_package_manager(MockPackageManager::new("brew"))
             .build();
-        let plan = harness.plan().expect("plan");
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["brew"]), Vec::new())
+            .expect("plan");
         let phase = plan
             .phases
             .iter()
@@ -618,11 +930,18 @@ mod tests {
         let plan = harness
             .plan_with_actions(
                 Vec::new(),
-                vec![PackageAction::Bootstrap {
-                    manager: "cargo".to_string(),
-                    method: "rustup".to_string(),
-                    origin: "profile".to_string(),
-                }],
+                vec![
+                    PackageAction::Bootstrap {
+                        manager: "cargo".to_string(),
+                        method: "rustup".to_string(),
+                        origin: "profile".to_string(),
+                    },
+                    PackageAction::Install {
+                        manager: "cargo".to_string(),
+                        packages: vec!["bat".to_string()],
+                        origin: "profile".to_string(),
+                    },
+                ],
                 Vec::new(),
             )
             .expect("plan");

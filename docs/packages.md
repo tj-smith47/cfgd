@@ -125,21 +125,22 @@ Phase: Prerequisites
     ✓ refresh npm index
 ```
 
-A run that filters that phase out (`--phase packages`) still refreshes ahead of
-the work it did select, collapsed into one line naming the managers that
-answered:
+Filters filter: a run that leaves the phase out (`--phase packages`) or drops one
+node from it (`--skip prerequisites.npm`) does not refresh that index behind your
+back. The refresh is the phase's, so excluding the phase excludes the refresh.
+
+A refresh that fails is reported as a warning naming the manager that failed and
+leaves its line `unchanged`; it never fails the run, because a stale index is a
+reason for an install to be out of date, not a reason to stop.
+
+A manager cfgd cannot provision on this host says so in the same phase, naming
+the cause rather than disappearing from the run:
 
 ```
-✓ Package indexes updated — toolbox (0.0s)
+Phase: Prerequisites
+  cfgd:managers
+    ✗ cannot provision pipx — pip3 is missing and apt does not install it under that name
 ```
-
-Most of those refresh concurrently. `npm` is the exception: its refresh reads
-cfgd's own state store, so it runs by itself after the concurrent group rather
-than sharing the store across threads.
-
-A refresh that fails is reported as a warning naming the manager that failed; it
-never fails the run, because a stale index is a reason for an install to be out
-of date, not a reason to stop.
 
 ## Profile Usage
 

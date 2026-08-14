@@ -34,9 +34,9 @@ pub trait PackageStateStore {
 /// `PackageManager` test whose subject never reaches `cx.state` (bootstrap,
 /// install, uninstall, a manager left on the default `update_needs_state`).
 /// Re-exported as `test_helpers::NullPackageState`; production code does not
-/// construct this — the concurrent index-refresh pre-pass backs its
-/// stateless lanes with [`IndexRefreshPackageState`] instead, which fails
-/// loudly rather than permissively on the same trait.
+/// construct this — an index refresh running on a spawned lane backs itself
+/// with [`IndexRefreshPackageState`] instead, which fails loudly rather than
+/// permissively on the same trait.
 pub struct NoOpPackageState;
 
 impl PackageStateStore for NoOpPackageState {
@@ -54,9 +54,9 @@ impl PackageStateStore for NoOpPackageState {
     }
 }
 
-/// The state handle for the concurrent index-refresh pre-pass's stateless
-/// lanes (`Reconciler::refresh_package_indexes`) — every manager left on the
-/// default `update_needs_state`, refreshed inside one `std::thread::scope`.
+/// The state handle for an index refresh running on a spawned lane — every
+/// manager left on the default `update_needs_state`, refreshed inside a
+/// `std::thread::scope` rather than on the thread that owns the state store.
 ///
 /// Zero fields, so it is auto-`Send + Sync` with no `unsafe`, unlike `&dyn
 /// PackageStateStore` backed by a real `StateStore` (whose `rusqlite::
@@ -68,7 +68,7 @@ impl PackageStateStore for NoOpPackageState {
 /// never supposed to reach `cx.state` from `update` — so a call that DOES
 /// reach it here means that manager's override is wrong (it should return
 /// `true` and refresh sequentially against the real store instead), and the
-/// pre-pass's never-fatal refresh line must degrade to report that rather
+/// refresh — which never fails a run — must degrade to report that rather
 /// than silently succeed on a write that never landed.
 pub struct IndexRefreshPackageState;
 
@@ -77,9 +77,9 @@ impl PackageStateStore for IndexRefreshPackageState {
         Err(crate::errors::PackageError::CommandFailed {
             manager: manager.to_string(),
             source: std::io::Error::other(
-                "concurrent index-refresh pre-pass carries no persisted package-manager \
-                 state; a manager reading cx.state here must override update_needs_state \
-                 to refresh sequentially instead",
+                "a concurrent index refresh carries no persisted package-manager state; \
+                 a manager reading cx.state here must override update_needs_state to \
+                 refresh sequentially instead",
             ),
         }
         .into())
@@ -94,9 +94,9 @@ impl PackageStateStore for IndexRefreshPackageState {
         Err(crate::errors::PackageError::CommandFailed {
             manager: manager.to_string(),
             source: std::io::Error::other(
-                "concurrent index-refresh pre-pass carries no persisted package-manager \
-                 state; a manager writing cx.state here must override update_needs_state \
-                 to refresh sequentially instead",
+                "a concurrent index refresh carries no persisted package-manager state; \
+                 a manager writing cx.state here must override update_needs_state to \
+                 refresh sequentially instead",
             ),
         }
         .into())
@@ -130,9 +130,8 @@ pub struct PackageContext<'a> {
     /// line for the same work. Set by [`PackageContext::caller_owns_status`];
     /// false everywhere else, where a manager's command IS the action.
     pub caller_owns_status: bool,
-    /// True only for the concurrent index-refresh pre-pass
-    /// (`Reconciler::refresh_package_indexes`), where N managers run
-    /// `update()` on N threads before any plan action opens a status line.
+    /// True only for an index refresh running on a spawned lane, where N
+    /// managers run `update()` on N threads with no status line of their own.
     /// Every manager's command run under this context executes through
     /// [`crate::command_output_with_timeout`] — captured, buffered,
     /// window-free — instead of the live [`Printer`] window every other
@@ -183,12 +182,11 @@ impl<'a> PackageContext<'a> {
         }
     }
 
-    /// The context for one lane of the concurrent index-refresh pre-pass: no
-    /// window (see [`PackageContext::windowless`]), no caller status line to
-    /// collapse into (the pre-pass runs before any action opens one), and
-    /// notes discarded rather than collected (a pre-pass note has no action
-    /// drain to settle under, so it must report itself immediately rather
-    /// than being silently attached to whichever action happens to run
+    /// The context for one lane of a concurrent index refresh: no window (see
+    /// [`PackageContext::windowless`]), no caller status line to collapse into,
+    /// and notes discarded rather than collected (a note raised here has no
+    /// action drain to settle under, so it must report itself immediately
+    /// rather than being silently attached to whichever action happens to run
     /// first).
     pub fn for_index_refresh(printer: &'a Printer, state: &'a dyn PackageStateStore) -> Self {
         Self {
@@ -486,14 +484,13 @@ pub trait PackageManager: Send + Sync {
     fn update(&self, cx: &PackageContext<'_>) -> Result<()>;
 
     /// Whether `update` reads `cx.state` (the persisted per-manager decision
-    /// store, e.g. npm's resolved global prefix). The concurrent index-refresh
-    /// pre-pass (`Reconciler::refresh_package_indexes`) runs every OTHER
-    /// manager's refresh inside `std::thread::scope`, backed by a no-op
-    /// `PackageStateStore` stub — safe only because `PackageStateStore` carries
-    /// no `Send + Sync` supertrait bound, so `&dyn PackageStateStore` can never
-    /// cross a spawned thread. A manager overriding this to `true` instead
-    /// refreshes sequentially, on the pre-pass's own thread, against the real
-    /// `StateStore`.
+    /// store, e.g. npm's resolved global prefix). A concurrent refresh runs
+    /// every OTHER manager's `update` inside `std::thread::scope`, backed by
+    /// [`IndexRefreshPackageState`] — safe only because `PackageStateStore`
+    /// carries no `Send + Sync` supertrait bound, so `&dyn PackageStateStore`
+    /// can never cross a spawned thread. A manager overriding this to `true`
+    /// refreshes sequentially instead, on the coordinating thread, against the
+    /// real `StateStore`.
     fn update_needs_state(&self) -> bool {
         false
     }
@@ -590,12 +587,55 @@ pub trait PackageManager: Send + Sync {
 /// candidate by [`crate::modules::resolve`] and then never provisioned.
 pub trait PackageManagerExt {
     fn can_bootstrap(&self) -> bool;
+    fn feasible_bootstrap_plan(&self) -> Option<BootstrapPlan>;
 }
 
 impl<T: PackageManager + ?Sized> PackageManagerExt for T {
     fn can_bootstrap(&self) -> bool {
-        self.bootstrap_plan().is_some()
+        self.feasible_bootstrap_plan().is_some()
     }
+
+    /// The plan this host can actually carry out: a cascade exists AND every
+    /// tool it shells out to is obtainable.
+    ///
+    /// Feasibility lives here rather than inside each `bootstrap_plan`, because
+    /// the planner needs the plan of an INFEASIBLE bootstrap too — it is the
+    /// only place the cause of the refusal is named (`curl is missing`). A
+    /// provider that answered `None` for a missing tool would leave the planner
+    /// unable to tell "no cascade on this platform" from "cascade blocked on a
+    /// tool", and the user would get silence either way.
+    fn feasible_bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        self.bootstrap_plan().filter(|plan| {
+            plan.requires
+                .iter()
+                .all(|tool| prerequisite_obtainable(tool))
+        })
+    }
+}
+
+/// The tools a system manager installs under a package of the same name — the
+/// closed population a `Prerequisites` node may run `<system manager> install
+/// <tool>` for.
+///
+/// Deliberately not "every tool a cascade names": `pip3` is a cascade
+/// prerequisite too, and no system manager ships a package called `pip3` (apt
+/// calls it `python3-pip`), so a node promising to install it would fail. A
+/// cascade blocked on such a tool is refused with the cause named instead.
+pub const SYSTEM_INSTALLABLE_TOOLS: &[&str] = &["curl"];
+
+/// Whether a tool a bootstrap cascade shells out to can be had on this host: it
+/// is on `PATH` already, or it is one of [`SYSTEM_INSTALLABLE_TOOLS`] and a
+/// system manager that would install it is available.
+///
+/// Gating a plan on the tool being present *right now* is what dropped a
+/// manager silently — `resolve_package` stopped treating it as a candidate and
+/// the package resolved elsewhere or not at all, with nothing said.
+pub fn prerequisite_obtainable(tool: &str) -> bool {
+    crate::command_available(tool)
+        || (SYSTEM_INSTALLABLE_TOOLS.contains(&tool)
+            && SYSTEM_MANAGER_NAMES
+                .iter()
+                .any(|manager| crate::command_available(manager)))
 }
 
 /// The registered names of the managers that ship with an operating system and
@@ -1053,6 +1093,9 @@ pub(crate) struct StubPackageManager {
     pub installed: HashSet<String>,
     pub versions: std::collections::HashMap<String, String>,
     pub bootstrap_capable: bool,
+    /// The tools the stub's bootstrap plan shells out to. Empty by default, so
+    /// a `bootstrappable()` stub describes a cascade every host can carry out.
+    pub bootstrap_requires: Vec<String>,
     /// When Some, `installed_packages()` returns an Err carrying this message.
     /// Lets tests drive the "cannot query" arms in compliance + reconciler code.
     pub installed_error: Option<String>,
@@ -1072,6 +1115,7 @@ impl StubPackageManager {
             installed: HashSet::new(),
             versions: std::collections::HashMap::new(),
             bootstrap_capable: false,
+            bootstrap_requires: Vec::new(),
             installed_error: None,
             fold_case: false,
         }
@@ -1091,6 +1135,15 @@ impl StubPackageManager {
 
     pub fn bootstrappable(mut self) -> Self {
         self.bootstrap_capable = true;
+        self
+    }
+
+    /// Name the tools this stub's cascade shells out to, for a test about
+    /// feasibility. A bare `bootstrappable()` stub names none, so it is
+    /// workable on every host.
+    pub fn requiring_tools(mut self, tools: &[&str]) -> Self {
+        self.bootstrap_capable = true;
+        self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
         self
     }
 
@@ -1122,7 +1175,7 @@ impl PackageManager for StubPackageManager {
     }
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
         self.bootstrap_capable
-            .then(|| BootstrapPlan::new("stub").requiring(["stub-tool"]))
+            .then(|| BootstrapPlan::new("stub").requiring(self.bootstrap_requires.clone()))
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -1162,6 +1215,10 @@ mod tests {
     // The trait layer must not depend on the store, but its own tests need a
     // real implementation to hand `PackageContext`; the import is test-only.
     use crate::state::StateStore;
+
+    /// A tool name no host has on `PATH` and no system manager installs under
+    /// that name, so the blocked-cascade arm is exercised on every platform.
+    const ABSENT_TOOL: &str = "cfgd-absent-prerequisite-tool";
 
     fn test_cx<'a>(printer: &'a Printer, state: &'a StateStore) -> PackageContext<'a> {
         PackageContext::new(printer, state)
@@ -1318,6 +1375,25 @@ mod tests {
         let planned = StubPackageManager::new("brew").bootstrappable();
         assert!(planned.bootstrap_plan().is_some());
         assert!(planned.can_bootstrap());
+    }
+
+    #[test]
+    fn a_cascade_blocked_on_an_unobtainable_tool_still_describes_itself() {
+        // The plan is what names the cause of a refusal, so it must survive the
+        // feasibility question rather than being erased by it.
+        let blocked = StubPackageManager::new("npm").requiring_tools(&[ABSENT_TOOL]);
+        let plan = blocked
+            .bootstrap_plan()
+            .expect("the cascade exists whatever this host has on PATH");
+        assert_eq!(plan.requires, [ABSENT_TOOL]);
+        assert!(
+            blocked.feasible_bootstrap_plan().is_none(),
+            "a tool nothing on this host installs makes the plan unworkable"
+        );
+        assert!(
+            !blocked.can_bootstrap(),
+            "and `can_bootstrap` answers from the feasible plan, so no caller              treats the manager as provisionable"
+        );
     }
 
     #[test]

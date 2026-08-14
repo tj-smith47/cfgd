@@ -86,10 +86,6 @@ impl<'a> super::Reconciler<'a> {
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
 
-        // Prerequisites: the managers that create binaries, then the env file
-        // that publishes where they live, then the live-session broadcast.
-        let manager_actions =
-            super::managers::plan_managers(self.registry, &resolved.merged, &module_actions);
         let path_dirs =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
         let (env_actions, warnings) = self.plan_env(
@@ -122,7 +118,7 @@ impl<'a> super::Reconciler<'a> {
         // `Phase::dispatch_order`, not by the phase list. Profile entries
         // already claimed by a module install are dropped here so the package
         // installs only once.
-        let package_actions = Self::filter_profile_packages(pkg_actions, &claimed)
+        let profile_packages = Self::filter_profile_packages(pkg_actions, &claimed)
             .into_iter()
             // Provisioning a manager is a `Prerequisites` node now, and one
             // reaching `Packages` as well would plan the same install twice —
@@ -131,6 +127,20 @@ impl<'a> super::Reconciler<'a> {
             // read a bare `PackageAction` list (`cfgd diff`, the drift-event
             // recorder) report an absent manager from it.
             .filter(|action| !matches!(action, PackageAction::Bootstrap { .. }))
+            .collect::<Vec<_>>();
+
+        // Prerequisites: the managers that create binaries, then the env file
+        // that publishes where they live, then the live-session broadcast. It
+        // is planned from the package work that SURVIVED dedup and filtering,
+        // because a manager whose every install was claimed elsewhere has no
+        // consumer left in this run and must not mint a node — a converged
+        // host plans nothing, which is what keeps a daemon tick from running
+        // `apt update` on every interval.
+        let manager_actions =
+            super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+
+        let package_actions = profile_packages
+            .into_iter()
             .map(Action::Package)
             .collect::<Vec<_>>();
 

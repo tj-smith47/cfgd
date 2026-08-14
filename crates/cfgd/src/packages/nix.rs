@@ -8,8 +8,8 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, prerequisite_obtainable, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, strip_version_suffix, tool_cmd_with_resolver,
+    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    strip_version_suffix, tool_cmd_with_resolver,
 };
 
 pub struct NixManager;
@@ -48,14 +48,14 @@ impl PackageManager for NixManager {
     }
 
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
-        prerequisite_obtainable("curl").then(|| {
-            // The multi-user (`--daemon`) install puts the nix binaries in the
-            // default profile; a per-user profile only appears once something is
-            // installed into it.
+        // The multi-user (`--daemon`) install puts the nix binaries in the
+        // default profile; a per-user profile only appears once something is
+        // installed into it.
+        Some(
             BootstrapPlan::new("nix installer")
                 .requiring(["curl"])
-                .creating(["/nix/var/nix/profiles/default/bin"])
-        })
+                .creating(["/nix/var/nix/profiles/default/bin"]),
+        )
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -270,7 +270,7 @@ pub(super) fn parse_nix_search_version(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use cfgd_core::command_available;
-    use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::{PackageManager, PackageManagerExt};
 
     use super::*;
 
@@ -365,10 +365,14 @@ mod tests {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let plan = NixManager.bootstrap_plan();
-        // Present already, or installable from an available system manager.
-        assert_eq!(plan.is_some(), prerequisite_obtainable("curl"));
-        let Some(plan) = plan else { return };
+        let plan = NixManager
+            .bootstrap_plan()
+            .expect("the cascade is unconditional");
+        // Feasibility is a separate question, asked of the same plan.
+        assert_eq!(
+            NixManager.feasible_bootstrap_plan().is_some(),
+            cfgd_core::providers::prerequisite_obtainable("curl")
+        );
         // What `bootstrap` runs: the nixos.org installer in --daemon mode,
         // fetched with curl, whose binaries land in the default profile.
         assert_eq!(plan.method, "nix installer");

@@ -272,7 +272,7 @@ pub fn plan_packages_observed(
             // it cannot read installed state to confirm presence, so it cannot
             // safely prune — leave its packages untouched.
             continue;
-        } else if let Some(plan) = manager.bootstrap_plan() {
+        } else if let Some(plan) = manager.feasible_bootstrap_plan() {
             // Unavailable but bootstrappable: add Bootstrap + Install all desired
             actions.push(PackageAction::Bootstrap {
                 manager: manager.name().to_string(),

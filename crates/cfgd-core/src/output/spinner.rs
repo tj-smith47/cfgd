@@ -77,9 +77,9 @@ impl<'p> Spinner<'p> {
     /// Retire the bar without printing a status line of its own.
     ///
     /// For a caller that collapses several concurrent spinners into one
-    /// combined status line elsewhere (the index-refresh pre-pass) — each
-    /// lane's own spinner must vanish silently, or every lane would print its
-    /// own line on top of the one summary line describing all of them.
+    /// combined status line elsewhere — each lane's own spinner must vanish
+    /// silently, or every lane would print its own line on top of the one
+    /// summary line describing all of them.
     /// Suppresses `Drop`'s `Status(Info)`, the same way an explicit
     /// `finish_*` does.
     pub(crate) fn finish_silent(mut self) {
