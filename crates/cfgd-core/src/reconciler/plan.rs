@@ -6,7 +6,7 @@ use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::providers::{FileAction, PackageAction, SecretAction};
+use crate::providers::{FileAction, PackageAction, PackageManagerExt, SecretAction};
 
 use super::restore::content_hash_if_exists;
 use super::types::{
@@ -522,7 +522,7 @@ impl<'a> super::Reconciler<'a> {
                 {
                     Some(m) if m.is_available() => 0, // available (native) first
                     // Bootstrappable second — a manager with a plan to provision it.
-                    Some(m) if m.bootstrap_plan().is_some() => 1,
+                    Some(m) if m.can_bootstrap() => 1,
                     _ => 2, // unknown last
                 };
                 (class, mgr.as_str())

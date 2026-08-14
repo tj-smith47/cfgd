@@ -23,7 +23,9 @@ use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::output::Role;
-use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageContext, PackageManager};
+use cfgd_core::providers::{
+    OrphanedPackage, PackageAction, PackageContext, PackageManager, PackageManagerExt,
+};
 use cfgd_core::reconciler::ActualPackages;
 
 mod brew;
@@ -172,7 +174,7 @@ pub fn plan_packages_observed(
         if desired.is_empty() {
             continue;
         }
-        if !manager.is_available() && manager.bootstrap_plan().is_some() {
+        if !manager.is_available() && manager.can_bootstrap() {
             bootstrapping.insert(manager.name().to_string());
         }
     }

@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::config::ModulePackageEntry;
 use crate::errors::{ModuleError, Result};
 use crate::platform::Platform;
-use crate::providers::PackageManager;
+use crate::providers::{PackageManager, PackageManagerExt};
 
 use crate::errors::CfgdError;
 
@@ -85,7 +85,7 @@ pub fn resolve_package(
             None => continue,
         };
 
-        let bootstrappable = !mgr.is_available() && mgr.bootstrap_plan().is_some();
+        let bootstrappable = !mgr.is_available() && mgr.can_bootstrap();
         if !mgr.is_available() && !bootstrappable {
             continue;
         }

@@ -6,7 +6,8 @@ use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{LaneOutput, Printer};
 use crate::providers::{
-    NoteSink, PackageAction, PackageContext, PackageManager, PackageStateStore, ProviderRegistry,
+    NoteSink, PackageAction, PackageContext, PackageManager, PackageManagerExt, PackageStateStore,
+    ProviderRegistry,
 };
 
 use super::scripts::{
@@ -403,7 +404,7 @@ impl<'x> PackageExec<'x> {
                     // an out-of-band append would be erased by the next
                     // wholesale rewrite of that file.
                     let was_available = pm.is_available();
-                    if !was_available && pm.bootstrap_plan().is_some() {
+                    if !was_available && pm.can_bootstrap() {
                         pm.bootstrap(&cx)?;
                         self.record_bootstrap(pm.as_ref());
                     }

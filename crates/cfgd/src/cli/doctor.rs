@@ -229,6 +229,10 @@ fn collect_doctor_output(
             if !seen.insert(name.to_string()) {
                 continue;
             }
+            // The one site that needs the plan itself rather than the question
+            // `PackageManagerExt::can_bootstrap` answers — it reports the method
+            // beside the flag, so asking the manager twice would re-derive a plan
+            // already in hand.
             let plan = mgr.bootstrap_plan();
             let can_bootstrap = plan.is_some();
             let bootstrap_method = plan.map(|p| p.method);
