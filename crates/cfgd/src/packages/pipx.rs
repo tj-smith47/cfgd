@@ -9,7 +9,7 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, detect_brew_system_method, home_relative_dir, pkg_run,
+    bootstrap_via_brew_then_system, detect_brew_system_method, pip_user_scripts_dir, pkg_run,
     resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
@@ -58,7 +58,7 @@ impl PackageManager for PipxManager {
                 .map(|tool| {
                     BootstrapPlan::new("pip")
                         .requiring([tool])
-                        .creating(home_relative_dir("~/.local/bin"))
+                        .creating(pip_user_scripts_dir(tool))
                 }),
             method => Some(BootstrapPlan::new(method)),
         }

@@ -1807,6 +1807,108 @@ fn detect_brew_system_method_returns_valid_manager() {
     );
 }
 
+// --- pip user-scripts directory (the pipx `pip` arm's declared dir) ---
+
+#[test]
+fn a_pip_version_banner_yields_the_interpreter_version() {
+    assert_eq!(
+        shared::parse_pip_python_version(
+            r"pip 25.2 from C:\Python314\Lib\site-packages\pip (python 3.14)"
+        )
+        .as_deref(),
+        Some("3.14")
+    );
+    assert_eq!(
+        shared::parse_pip_python_version(
+            "pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.12)"
+        )
+        .as_deref(),
+        Some("3.12")
+    );
+    // A banner without the tail names no version, and no version means no
+    // declared directory — never a guessed one.
+    assert_eq!(shared::parse_pip_python_version("pip 24.0"), None);
+    assert_eq!(shared::parse_pip_python_version("pip 24.0 (python )"), None);
+}
+
+#[test]
+fn the_windows_user_scripts_dir_is_appdata_plus_the_dotless_version() {
+    // The value that reaches the generated env file is the FOLDED one, so the
+    // assertion is made on the plan rather than on the composed `PathBuf`.
+    let plan = cfgd_core::providers::BootstrapPlan::new("pip").creating(
+        shared::compose_pip_user_scripts_dir(r"C:\Users\t\AppData\Roaming", "3.14"),
+    );
+    assert_eq!(
+        plan.creates_path_dirs,
+        vec!["C:/Users/t/AppData/Roaming/Python/Python314/Scripts".to_string()]
+    );
+}
+
+#[test]
+fn an_unreadable_windows_scripts_dir_is_declared_as_nothing() {
+    for (appdata, version) in [
+        (r"C:\Users\t\AppData\Roaming", "3"),   // no minor
+        (r"C:\Users\t\AppData\Roaming", "3.x"), // not a number
+        (r"C:\Users\t\AppData\Roaming", ""),    // nothing at all
+        ("", "3.14"),                           // no roaming root
+    ] {
+        assert_eq!(
+            shared::compose_pip_user_scripts_dir(appdata, version),
+            None,
+            "APPDATA {appdata:?} + version {version:?} must name no directory"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_unix_pip_arm_declares_the_home_local_bin() {
+    let home = tempfile::tempdir().unwrap();
+    cfgd_core::with_test_home(home.path(), || {
+        assert_eq!(
+            shared::pip_user_scripts_dir("pip3"),
+            Some(home.path().join(".local").join("bin")),
+            "the unix arm names one dir for every interpreter, and probes nothing"
+        );
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn the_windows_pip_arm_declares_a_scripts_dir_under_roaming_appdata() {
+    use cfgd_core::providers::PackageManager;
+
+    let _guard = cfgd_core::test_helpers::path_env_read_guard();
+    let pip_present = ["pip3", "pip"]
+        .iter()
+        .any(|t| cfgd_core::command_available(t));
+    let plan = super::pipx::PipxManager.bootstrap_plan();
+
+    match plan {
+        None => assert!(!pip_present, "a resolvable pip owes the pip arm a plan"),
+        Some(p) if p.method == "pip" => {
+            let appdata = std::env::var("APPDATA")
+                .unwrap_or_default()
+                .replace('\\', "/");
+            assert!(!appdata.is_empty(), "a Windows host without APPDATA");
+            assert_eq!(
+                p.creates_path_dirs.len(),
+                1,
+                "the pip arm declares exactly the user scripts dir: {:?}",
+                p.creates_path_dirs
+            );
+            let dir = &p.creates_path_dirs[0];
+            assert!(
+                dir.starts_with(&format!("{appdata}/Python/Python")) && dir.ends_with("/Scripts"),
+                "declared dir is not the nt_user scripts dir: {dir}"
+            );
+        }
+        // brew or a system manager answered the cascade first; that arm lands
+        // pipx on the system PATH and declares nothing of its own.
+        Some(_) => {}
+    }
+}
+
 // --- extract_caveats tests ---
 
 // --- strip_sudo_for_exec tests ---

@@ -554,6 +554,81 @@ pub(super) fn home_relative_dir(rel: &str) -> Option<std::path::PathBuf> {
     (expanded != rel).then_some(expanded)
 }
 
+/// The directory `pip install --user <tool>` writes console scripts into, or
+/// `None` when it cannot be named.
+///
+/// Unix hands every interpreter the same `~/.local/bin`. Windows does not: the
+/// scripts land under roaming AppData in a directory carrying the interpreter's
+/// OWN version (`%APPDATA%\Python\Python314\Scripts`, CPython's `nt_user`
+/// install scheme), so the answer has to come from the pip that will run the
+/// install. When the version cannot be read, the plan declares nothing rather
+/// than a guess — a declared directory reaches the generated env file, where a
+/// wrong one is worse than a missing one.
+pub(super) fn pip_user_scripts_dir(pip_tool: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        windows_pip_user_scripts_dir(pip_tool)
+    } else {
+        home_relative_dir("~/.local/bin")
+    }
+}
+
+/// The Windows arm of [`pip_user_scripts_dir`], split out so the composition it
+/// performs is reachable from a test on any host.
+fn windows_pip_user_scripts_dir(pip_tool: &str) -> Option<PathBuf> {
+    let appdata = std::env::var("APPDATA").ok()?;
+    compose_pip_user_scripts_dir(&appdata, &pip_python_version(pip_tool)?)
+}
+
+/// Join the roaming AppData root and a dotted `X.Y` interpreter version into the
+/// `nt_user` scripts directory. The version loses its dots there, so `3.14`
+/// names `Python314`.
+pub(super) fn compose_pip_user_scripts_dir(appdata: &str, python_version: &str) -> Option<PathBuf> {
+    let mut parts = python_version.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if appdata.is_empty() || !numeric(major) || !numeric(minor) {
+        return None;
+    }
+    Some(
+        PathBuf::from(appdata)
+            .join("Python")
+            .join(format!("Python{major}{minor}"))
+            .join("Scripts"),
+    )
+}
+
+/// The interpreter version a given pip belongs to, read from its `--version`
+/// banner.
+///
+/// Only a SUCCESSFUL answer is cached, for the process: a plan is derived once
+/// per manager on every planning run and again on every doctor pass, and the
+/// interpreter behind a resolved pip cannot change while cfgd runs, so the probe
+/// is worth exactly one spawn. A failure is deliberately not remembered — a test
+/// that empties `PATH` for its own assertion would otherwise pin every later
+/// plan in the binary to a dir-less answer it never asked for.
+fn pip_python_version(pip_tool: &str) -> Option<String> {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(cached) = VERSION.get() {
+        return Some(cached.clone());
+    }
+    let mut cmd = tool_cmd_with_resolver(pip_tool, || resolve_tool_with_fallbacks(pip_tool, &[]));
+    cmd.arg("--version");
+    let out = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
+    let probed = parse_pip_python_version(&cfgd_core::stdout_lossy_trimmed(&out))?;
+    Some(VERSION.get_or_init(|| probed).clone())
+}
+
+/// The `X.Y` inside the `(python X.Y)` tail of a `pip --version` banner
+/// (`pip 25.2 from C:\Python314\Lib\site-packages\pip (python 3.14)`).
+pub(super) fn parse_pip_python_version(banner: &str) -> Option<String> {
+    const MARKER: &str = "(python ";
+    let rest = &banner[banner.rfind(MARKER)? + MARKER.len()..];
+    let end = rest.find(')')?;
+    let version = rest[..end].trim();
+    (!version.is_empty()).then(|| version.to_string())
+}
+
 /// Return the brew bin/sbin directories for the current platform.
 /// Mirrors `BrewManager::path_dirs`; kept here so `path_with_brew` doesn't need
 /// to depend on the brew submodule.
