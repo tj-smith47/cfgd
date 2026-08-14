@@ -41,12 +41,12 @@
 //!    lane in the phase.
 //! 5. **The serial sub-gate** — any action whose manager is registered and not
 //!    currently available drains the phase. Evaluated at dispatch time, because
-//!    a manager bootstrapped earlier in the same phase becomes available
-//!    mid-run. It does NOT apply to a `Prerequisites` node: that gate exists to
-//!    serialize around an inline bootstrap nobody planned, and a node whose
-//!    whole job is to MAKE its manager available is unavailable by definition —
-//!    left in, it would drain the one phase whose purpose is that provisioning
-//!    runs concurrently.
+//!    a manager provisioned earlier in the same phase becomes available
+//!    mid-run. The predicate is keyed on the manager's own state rather than on
+//!    which action kind names it, so it does NOT apply to a `Prerequisites`
+//!    node: a node whose whole job is to MAKE its manager available is
+//!    unavailable by definition — left in, it would drain the one phase whose
+//!    purpose is that provisioning runs concurrently.
 //!
 //! ## The caller must not hold `path_env_mutation_guard()` across `apply()`
 //!
@@ -326,7 +326,7 @@ impl<'p> Slot<'p> {
         // A `Prerequisites` node is exempt: the gate asks "is this manager
         // missing", and a provision's answer is yes until the moment it
         // succeeds. Draining on it would serialize the whole graph — see the
-        // module doc's rule 6.
+        // module doc's rule 5.
         if self.node.is_some() {
             return false;
         }
@@ -642,8 +642,9 @@ impl super::Reconciler<'_> {
         let mut lanes_busy: HashSet<String> = HashSet::new();
         let mut owners_busy: HashMap<String, usize> = HashMap::new();
         // The slot of the draining action in flight, if any. Recorded by slot
-        // rather than recomputed at collection, because a bootstrap's whole
-        // point is that its manager IS available by the time it finishes.
+        // rather than recomputed at collection, because a Prerequisites
+        // `Provision` node's whole point is that its manager IS available by
+        // the time it finishes.
         let mut draining: Option<usize> = None;
         let mut running: usize = 0;
         let mut aborted: Option<u8> = None;

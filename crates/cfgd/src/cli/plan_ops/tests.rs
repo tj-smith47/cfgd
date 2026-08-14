@@ -1782,22 +1782,28 @@ impl cfgd_core::providers::PackageManager for AvailableManager {
     }
 }
 
-/// The plan the stranded-install warning is derived from: one bootstrap plus
-/// two installs that need the manager it would have provided, one of them
-/// through a sub-manager that has no bootstrap of its own.
-fn brew_bootstrap_plan() -> Plan {
-    make_plan(vec![(
-        PhaseName::Packages,
-        vec![
-            Action::Manager(ManagerAction::Provision {
+/// The plan the stranded-install warning is derived from: one Prerequisites
+/// provision plus two Packages installs that need the manager it would have
+/// provided, one of them through a sub-manager that has no provision of its
+/// own.
+fn brew_provision_plan() -> Plan {
+    make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 depends_on: vec![],
-            }),
-            pkg_install("brew", vec!["ripgrep"]),
-            pkg_install("brew-tap", vec!["homebrew/cask"]),
-        ],
-    )])
+            })],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["ripgrep"]),
+                pkg_install("brew-tap", vec!["homebrew/cask"]),
+            ],
+        ),
+    ])
 }
 
 #[test]
@@ -1997,7 +2003,7 @@ fn only_packages_module_brew_selects_the_module_not_the_manager() {
 
 #[test]
 fn skip_cfgd_managers_warns_once_about_stranded_installs() {
-    let mut plan = brew_bootstrap_plan();
+    let mut plan = brew_provision_plan();
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
@@ -2031,10 +2037,13 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
 }
 
 #[test]
-fn skip_packages_brew_strands_the_sub_manager_it_does_not_cover() {
+fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
     // `pattern_matches`' segment boundary means `packages.brew` never covers
-    // `packages.brew-tap`, so the tap install survives its parent's removal.
-    let mut plan = brew_bootstrap_plan();
+    // `packages.brew-tap`, so the tap install survives its parent's removal —
+    // and the pattern can never reach the shared provision node at all, since
+    // that node lives in `Prerequisites`, not `Packages`. Nothing is stranded:
+    // the manager stays provisioned and brew-tap applies normally.
+    let mut plan = brew_provision_plan();
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
@@ -2046,10 +2055,30 @@ fn skip_packages_brew_strands_the_sub_manager_it_does_not_cover() {
     printer.flush();
     let out = buf.lock().unwrap().clone();
 
-    assert!(out.contains("--skip packages.brew-tap"), "got: {out}");
     assert!(
-        !out.contains("--skip packages.brew "),
-        "brew's own install went with the pattern, so it is not stranded: {out}"
+        plan.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .any(|a| matches!(
+                a,
+                Action::Package(PackageAction::Install { manager, .. }) if manager == "brew-tap"
+            )),
+        "brew-tap's install survives its parent's removal: {:?}",
+        plan.phases
+    );
+    assert!(
+        !plan
+            .phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .any(|a| matches!(a, Action::Package(PackageAction::Install { manager, .. }) if manager == "brew")),
+        "brew's own install went with the pattern: {:?}",
+        plan.phases
+    );
+    assert!(
+        out.is_empty(),
+        "the provision node lives in Prerequisites, untouched by a \
+         `packages.*` pattern, so nothing is stranded: {out}"
     );
 }
 
@@ -2094,7 +2123,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
 
 #[test]
 fn no_stranded_warning_when_every_manager_is_available() {
-    let mut plan = brew_bootstrap_plan();
+    let mut plan = brew_provision_plan();
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers

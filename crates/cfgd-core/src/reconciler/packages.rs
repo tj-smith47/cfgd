@@ -270,10 +270,10 @@ impl<'x> PackageExec<'x> {
             }
             ManagerAction::Provision { manager, .. } => {
                 let pm = lookup(manager)?;
-                // An earlier node — or a module's own install — may have
-                // provisioned it already. What the node promises is an
-                // available manager, not a second run of an installer that is
-                // minutes of work and not idempotent for every manager.
+                // An earlier node may have provisioned it already. What the
+                // node promises is an available manager, not a second run of
+                // an installer that is minutes of work and not idempotent for
+                // every manager.
                 if !pm.is_available() {
                     pm.bootstrap(&cx)?;
                 }

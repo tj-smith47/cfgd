@@ -3797,11 +3797,21 @@ fn apply_with_phase_filter_runs_only_packages() {
     // The plan model always includes brew's index refresh in Prerequisites —
     // proving the assertion below is the filter excluding an existing node,
     // not the node having never been planned in the first place.
+    let prereq_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites);
     assert!(
-        plan.phases
-            .iter()
-            .any(|p| p.name == PhaseName::Prerequisites),
+        prereq_phase.is_some(),
         "the plan model always includes the manager refresh: {:?}",
+        plan.phases
+    );
+    assert!(
+        prereq_phase
+            .unwrap()
+            .actions()
+            .any(|a| format_action_description(a).starts_with("manager:")),
+        "the unfiltered plan must carry a manager: node for the filter to exclude: {:?}",
         plan.phases
     );
 
@@ -9000,7 +9010,7 @@ fn apply_module_skip_reports_skipped() {
 }
 
 #[test]
-fn apply_module_install_packages_bootstraps_when_needed() {
+fn apply_module_install_packages_provisions_manager_when_needed() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -16832,7 +16842,7 @@ fn owner_order_is_profile_first_in_every_phase() {
 }
 
 #[test]
-fn bootstrap_group_is_built_at_rank_one() {
+fn managers_group_is_built_at_rank_one() {
     let phase = Phase::from_actions(
         PhaseName::Prerequisites,
         &Owner::profile("work"),
@@ -16855,7 +16865,7 @@ fn bootstrap_group_is_built_at_rank_one() {
 }
 
 #[test]
-fn no_bootstrap_builds_no_managers_group() {
+fn no_manager_action_builds_no_managers_group() {
     let phase = Phase::from_actions(
         PhaseName::Packages,
         &Owner::profile("work"),
@@ -18245,45 +18255,41 @@ fn to_hash_string_is_stable_across_group_permutation() {
     // Group ORDER is not permutable — `Phase::from_actions` is the only
     // constructor and always sorts. What a caller still controls is the order
     // actions arrive in, which sets both the walk order and each group's
-    // internal order, so that is the permutation the hash must ignore.
-    let actions = || {
+    // internal order, so that is the permutation the hash must ignore. The
+    // Provision node lives in its own Prerequisites phase — the planner never
+    // puts one in Packages — so only the Packages actions are permuted here.
+    let prereq_actions = || vec![provision_node("brew", "homebrew installer", &[])];
+    let package_actions = || {
         vec![
             install_action("brew", &["ripgrep"]),
             module_install_action("nvim", "brew", "neovim"),
-            Action::Manager(ManagerAction::Provision {
-                manager: "brew".to_string(),
-                via: "homebrew installer".to_string(),
-                depends_on: vec![],
-            }),
             install_action("apt", &["fd"]),
         ]
     };
-    let permuted_actions = || {
-        let mut a = actions();
+    let permuted_package_actions = || {
+        let mut a = package_actions();
         a.reverse();
         a
     };
 
     let plan = Plan {
-        phases: vec![Phase::from_actions(
-            PhaseName::Packages,
-            &profile,
-            actions(),
-        )],
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &profile, prereq_actions()),
+            Phase::from_actions(PhaseName::Packages, &profile, package_actions()),
+        ],
         warnings: vec![],
     };
 
     let permuted = Plan {
-        phases: vec![Phase::from_actions(
-            PhaseName::Packages,
-            &profile,
-            permuted_actions(),
-        )],
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &profile, prereq_actions()),
+            Phase::from_actions(PhaseName::Packages, &profile, permuted_package_actions()),
+        ],
         warnings: vec![],
     };
 
-    let walk: Vec<String> = plan.phases[0].actions().map(format_plan_item).collect();
-    let permuted_walk: Vec<String> = permuted.phases[0].actions().map(format_plan_item).collect();
+    let walk: Vec<String> = plan.phases[1].actions().map(format_plan_item).collect();
+    let permuted_walk: Vec<String> = permuted.phases[1].actions().map(format_plan_item).collect();
     assert_ne!(
         walk, permuted_walk,
         "the fixture must actually permute the walk order, or the assertion below is vacuous"
@@ -18771,7 +18777,7 @@ fn resolved_for(profile: &str, brew_formulae: &[&str]) -> crate::config::Resolve
 }
 
 #[test]
-fn bootstrap_renders_in_cfgd_managers_group() {
+fn manager_action_renders_in_cfgd_managers_group() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
@@ -18817,7 +18823,7 @@ fn bootstrap_renders_in_cfgd_managers_group() {
 }
 
 #[test]
-fn bootstrap_group_is_display_only() {
+fn manager_action_group_is_display_only() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
@@ -18837,7 +18843,14 @@ fn bootstrap_group_is_display_only() {
         "the resource id reads no owner"
     );
 
-    let plan = packages_phase(vec![action]);
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            vec![action],
+        )],
+        warnings: vec![],
+    };
     let resolved = resolved_for("work", &["ripgrep"]);
     let (result, _) = apply_transcript(&reconciler, &plan, &resolved, &[]);
 
@@ -18846,7 +18859,7 @@ fn bootstrap_group_is_display_only() {
         result.action_results[0].description,
         "manager:provision:brew"
     );
-    assert_eq!(result.action_results[0].phase, "packages");
+    assert_eq!(result.action_results[0].phase, "prerequisites");
     assert_eq!(result.planned_total, 1);
 }
 

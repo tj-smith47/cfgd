@@ -301,6 +301,10 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
     let mut actions: Vec<Action> = Vec::new();
 
     for (manager, state) in &graph.members {
+        // Only an already-present manager gets a refresh node here. A manager
+        // this run is about to provision needs none: its installer just
+        // fetched the index as part of installing it, so a refresh would be a
+        // wasted network call for data that is already current.
         if matches!(state, MemberState::Present) {
             actions.push(Action::Manager(ManagerAction::RefreshIndex {
                 manager: manager.clone(),
