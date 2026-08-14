@@ -189,7 +189,7 @@ impl Printer {
             Verbosity::Normal,
             OutputFormat::Table,
             false,
-            Some(cap.clone_internal()),
+            Some(cap.clone()),
             None,
         );
         (p, cap)
@@ -286,7 +286,7 @@ impl Printer {
             Verbosity::Normal,
             format,
             false,
-            Some(cap.clone_internal()),
+            Some(cap.clone()),
             None,
         );
         (p, cap)
@@ -309,7 +309,7 @@ impl Printer {
             Verbosity::Normal,
             OutputFormat::Table,
             false,
-            Some(cap.clone_internal()),
+            Some(cap.clone()),
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
         );
         (p, cap)
@@ -317,13 +317,6 @@ impl Printer {
 }
 
 impl DocCapture {
-    pub(super) fn clone_internal(&self) -> Self {
-        Self {
-            human: self.human.clone(),
-            doc_json: self.doc_json.clone(),
-        }
-    }
-
     /// Snapshot helper: assert the captured human output matches the contents
     /// of `src/output/tests/snapshots/<name>`. Use `INSTA_UPDATE=always
     /// cargo test` to refresh.

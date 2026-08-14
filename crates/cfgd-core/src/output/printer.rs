@@ -26,6 +26,7 @@ pub enum PromptAnswer {
 
 /// Captured-output handle returned by `Printer::for_test_doc`. Available with
 /// the `test-helpers` feature.
+#[derive(Clone)]
 pub struct DocCapture {
     pub(crate) human: Arc<Mutex<String>>,
     pub(crate) doc_json: Arc<Mutex<Option<serde_json::Value>>>,
@@ -252,42 +253,89 @@ impl Printer {
     /// output cannot show the theme it just chose. Re-theming after the config
     /// is written closes that gap.
     ///
-    /// Carries no test capture or queued prompts: those belong to the printer a
-    /// test constructed, and a re-themed copy is only taken on a real run.
+    /// Inherits every ambient terminal decision and test channel from `self` —
+    /// see [`Printer::build_derived`]. `cmd_init` re-themes mid-run and keeps
+    /// using the derived printer for the apply that follows; a re-probed
+    /// `interactive_stdin`/`live_region` there is the pty-hang shape this
+    /// closes (a `prompt_queue` reset to `None` would also silently drop a
+    /// test's seeded answer).
     pub fn rethemed(&self, theme_name: &str) -> Self {
-        // The copy inherits the colour this printer resolved rather than
-        // re-resolving: re-reading the terminal would let the two disagree
-        // mid-run, which is the whole class of bug the field exists to close.
-        Self::build(
+        self.build_derived(
             self.verbosity(),
             Theme::from_preset(theme_name),
             self.output_format.clone(),
-            self.colors,
         )
-        .with_list_envelope(self.list_envelope)
     }
 
-    /// A copy of this printer at `verbosity`, inheriting the colour decision,
-    /// the theme (preset plus `spec.theme.overrides`) and the output format.
+    /// A copy of this printer at `verbosity`, inheriting the theme (preset plus
+    /// `spec.theme.overrides`) and every ambient terminal decision and test
+    /// channel from `self` — see [`Printer::build_derived`].
     ///
     /// The one way to mint the quiet sink a command hands to a library call, and
-    /// the daemon's own printer. A second `Printer::new` there re-resolves
-    /// colour from the terminal, so `--no-color` reached the process printer and
-    /// nothing else — the daemon drew a fully coloured reconcile tree into
-    /// journald — and re-resolves the theme from nothing, so the configured
-    /// `spec.theme` was dropped on the way.
-    ///
-    /// Carries no test capture or queued prompts, for the same reason
-    /// [`Printer::rethemed`] does not: those belong to the printer a test
-    /// constructed.
+    /// the daemon's own printer. Deriving `live_region`/`multi_progress` from
+    /// `self` rather than re-probing is what keeps the daemon's printer from
+    /// standing up a second `MultiProgress` against the same stderr as the
+    /// process printer's.
     pub fn at_verbosity(&self, verbosity: Verbosity) -> Self {
-        Self::build(
+        self.build_derived(
             verbosity,
             self.renderer.theme.clone(),
             self.output_format.clone(),
-            self.colors,
         )
-        .with_list_envelope(self.list_envelope)
+    }
+
+    /// The one way to derive a copy of `self`: only `verbosity`, `theme`, and
+    /// `output_format` are recomputed. Every ambient terminal decision this
+    /// printer already settled — its stdout/stderr sinks, its `MultiProgress`,
+    /// whether it has a live region, whether its stdin is interactive — and
+    /// every test-only channel (`test_doc_capture`, `prompt_queue`) carry over
+    /// unchanged rather than being re-probed from the real process.
+    ///
+    /// Re-probing any of those here is the leak F9 closes: a derived quiet
+    /// sink (`cli/compliance.rs`, `daemon/sync.rs`, …) would answer
+    /// `render_status`'s `Role::Fail` line to the REAL stderr instead of a
+    /// test's capture buffer even at `Verbosity::Quiet`, a re-themed printer
+    /// would regain a live region and a real stdin-tty mid-run and block on an
+    /// unanswered confirmation prompt under a pty, and a second `at_verbosity`
+    /// call (the daemon's own printer) would stand up a second
+    /// `MultiProgress` doing independent cursor arithmetic on the one real
+    /// stderr the process printer already owns.
+    fn build_derived(
+        &self,
+        verbosity: Verbosity,
+        theme: Theme,
+        output_format: OutputFormat,
+    ) -> Self {
+        // Auto-quiet under structured output, same as `build`.
+        let verbosity = if output_format.is_structured() {
+            Verbosity::Quiet
+        } else {
+            verbosity
+        };
+        // The copy inherits the colour this printer resolved rather than
+        // re-resolving: re-reading the terminal would let the two disagree
+        // mid-run, which is the whole class of bug the field exists to close.
+        let theme = theme.with_colors(self.colors);
+        Self {
+            renderer: Arc::new(Renderer::with_bars(
+                theme,
+                verbosity,
+                self.multi_progress.clone(),
+            )),
+            output_format,
+            sink_stderr: self.sink_stderr.clone(),
+            sink_stdout: self.sink_stdout.clone(),
+            multi_progress: self.multi_progress.clone(),
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: self.test_doc_capture.clone(),
+            prompt_queue: self.prompt_queue.clone(),
+            output_error: AtomicBool::new(false),
+            live_region: self.live_region,
+            interactive_stdin: self.interactive_stdin,
+            colors: self.colors,
+            list_envelope: self.list_envelope,
+        }
     }
 
     /// Enable or disable the KRM List envelope for top-level JSON arrays under
@@ -767,6 +815,83 @@ mod tests {
         );
         assert!(always.colors());
         assert!(always.at_verbosity(Verbosity::Quiet).colors());
+    }
+
+    /// F9: `rethemed`/`at_verbosity` used to rebuild every ambient terminal
+    /// decision via `build`, re-probing the REAL stderr/stdin/`MultiProgress`
+    /// and dropping the parent's test channels — colour was already proven
+    /// above; this extends the same shape to the five ambient inputs that
+    /// were not: the sinks, `live_region`, `interactive_stdin`,
+    /// `test_doc_capture`, and `prompt_queue`. A re-probe there is the
+    /// pty-hang shape (`cmd_init`'s re-theme regaining a live region + a real
+    /// stdin-tty mid-run and blocking on an unanswered confirmation prompt),
+    /// the vacuous-test-pass shape (a derived quiet sink's `Role::Fail` line
+    /// landing on the real terminal instead of the parent test's capture
+    /// buffer, at `Verbosity::Quiet`), and the double-`MultiProgress` shape
+    /// (the daemon's own `at_verbosity` call painting a second live region
+    /// over the process printer's).
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn derived_printers_inherit_ambient_terminal_and_test_channels() {
+        // Sinks, live_region, interactive_stdin, and the seeded prompt queue.
+        let (parent, _buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        for derived in [
+            parent.at_verbosity(Verbosity::Normal),
+            parent.rethemed("dracula"),
+        ] {
+            assert_eq!(
+                derived.live_region, parent.live_region,
+                "live_region must be inherited, not re-probed from the real stderr"
+            );
+            assert_eq!(
+                derived.interactive_stdin, parent.interactive_stdin,
+                "interactive_stdin must be inherited, not re-probed from the real stdin"
+            );
+            assert!(
+                Arc::ptr_eq(&derived.sink_stderr, &parent.sink_stderr),
+                "a derived printer must write into the SAME sink as its parent, not a fresh Term"
+            );
+            assert!(
+                Arc::ptr_eq(&derived.sink_stdout, &parent.sink_stdout),
+                "a derived printer must write into the SAME sink as its parent, not a fresh Term"
+            );
+            let queue = derived
+                .prompt_queue
+                .as_ref()
+                .expect("a derived printer must inherit the parent's seeded prompt answers");
+            assert!(
+                Arc::ptr_eq(queue, parent.prompt_queue.as_ref().unwrap()),
+                "the derived queue must be the SAME queue the parent was seeded with, not None"
+            );
+        }
+
+        // test_doc_capture: an emit on the DERIVED printer must land in the
+        // capture the PARENT test is holding, not on the real stdout.
+        let (doc_parent, cap) = Printer::for_test_doc();
+        let derived_doc = doc_parent.at_verbosity(Verbosity::Quiet);
+        derived_doc.emit(super::super::doc::Doc::new().with_data(serde_json::json!({"ok": true})));
+        assert_eq!(
+            cap.json(),
+            Some(serde_json::json!({"ok": true})),
+            "a derived printer must keep writing into the parent's test_doc_capture"
+        );
+
+        // multi_progress: a derived printer must draw into the SAME
+        // MultiProgress as its parent, not stand up a second one against a
+        // fresh (real) draw target.
+        let (live_parent, drawn) = Printer::for_test_with_live_bars();
+        let derived_live = live_parent.at_verbosity(Verbosity::Normal);
+        assert!(derived_live.live_bars());
+        let bar = derived_live.progress_bar(1, "deriving");
+        bar.inc(1);
+        bar.finish();
+        let out = drawn.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !out.is_empty(),
+            "a derived printer's progress bar never reached the parent's recording draw \
+             target — it stood up a fresh MultiProgress instead of inheriting one"
+        );
     }
 
     /// `spec.theme.overrides` is a documented field, and until the process

@@ -233,7 +233,6 @@ mod tests {
     use std::time::Duration;
 
     use super::super::Verbosity;
-    use super::super::renderer::StringSink;
     use super::*;
 
     /// Run `f` in a thread with a deadline; panic if it doesn't return in time.
@@ -246,12 +245,13 @@ mod tests {
         rx.recv_timeout(d).expect("test exceeded deadline")
     }
 
-    /// A Printer whose stderr sink is a capture buffer.
+    /// A Printer whose stderr sink is a capture buffer, with live_region,
+    /// interactive_stdin, and colour all pinned off rather than inherited from
+    /// however the suite was invoked — real `sh` children run under these
+    /// tests, already guarded by `with_deadline` against a hang; an inherited
+    /// stdin-tty would add a second, worse one (an unanswered prompt).
     fn capturing_printer(verbosity: Verbosity) -> (Printer, Arc<Mutex<String>>) {
-        let buf = Arc::new(Mutex::new(String::new()));
-        let mut p = Printer::new(verbosity);
-        p.sink_stderr = Arc::new(StringSink(buf.clone()));
-        (p, buf)
+        Printer::for_test_at(verbosity)
     }
 
     fn sh(script: &str) -> std::process::Command {

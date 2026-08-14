@@ -204,8 +204,11 @@ mod tests {
 
         let stdout_buf = Arc::new(Mutex::new(String::new()));
         let stderr_buf = Arc::new(Mutex::new(String::new()));
-        let mut p = Printer::new(Verbosity::Normal);
-        // Swap in capture sinks.
+        // `for_test_at` pins live_region/interactive_stdin/colors rather than
+        // probing the real terminal `Printer::new` would; the two sinks it
+        // hands back share one buffer, so this test — which asserts stdout and
+        // stderr stay separate — swaps in its own pair after construction.
+        let (mut p, _shared_buf) = Printer::for_test_at(Verbosity::Normal);
         p.sink_stdout = Arc::new(StringSink(stdout_buf.clone()));
         p.sink_stderr = Arc::new(StringSink(stderr_buf.clone()));
 

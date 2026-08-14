@@ -115,20 +115,17 @@ impl Printer {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::super::renderer::StringSink;
     use super::super::{Printer, Verbosity};
     use super::LaneOutput;
     use crate::output::strip_ansi;
 
-    /// A printer whose sink is a buffer and whose live region is pinned OFF,
-    /// which is the state a redirected run is in — asserted here rather than
-    /// inherited from however the suite happened to be invoked.
+    /// A printer whose sink is a buffer and whose live region, colour, and
+    /// stdin-tty are all pinned OFF — the state a redirected run is in —
+    /// asserted here rather than inherited from however the suite happened to
+    /// be invoked. `for_test_at` already pins all three; this wrapper exists
+    /// only to name the intent at each call site.
     fn capturing_printer(verbosity: Verbosity) -> (Printer, Arc<Mutex<String>>) {
-        let buf = Arc::new(Mutex::new(String::new()));
-        let mut p = Printer::new(verbosity);
-        p.sink_stderr = Arc::new(StringSink(buf.clone()));
-        p.live_region = false;
-        (p, buf)
+        Printer::for_test_at(verbosity)
     }
 
     #[test]
