@@ -12316,7 +12316,7 @@ fn apply_file_action_direct_update_replaces_existing() {
 // DeployFiles with no parent, RunScript with no module dir)
 // -----------------------------------------------------------------------
 
-/// A package manager that reports unavailable, can_bootstrap=true,
+/// A package manager that reports unavailable, carries a bootstrap plan,
 /// and emits path_dirs so the planner's PATH-entry branch fires.
 struct BootstrappingPackageManager {
     name: String,
@@ -13813,13 +13813,13 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
 }
 
 // ---------------------------------------------------------------------------
-// plan_modules: manager-priority sort exercises plan.rs's can_bootstrap arm
+// plan_modules: manager-priority sort exercises plan.rs's bootstrap-plan arm
 // when a manager is registered but not currently available.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
-    // brew = bootstrappable (not available now, but can_bootstrap=true) → 1
+    // brew = bootstrappable (not available now, but plans a bootstrap) → 1
     // unknown-mgr (not in registry) → 2
     // apt = available → 0
     let state = test_state();
