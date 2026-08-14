@@ -2134,6 +2134,18 @@ pub struct MockPackageManager {
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
+    /// Whether `bootstrap()` leaves this manager available, for a test that
+    /// must drive a `Provision` node through to a real success rather than
+    /// the default `BootstrapFailed` a fixed `available` flag always yields.
+    pub bootstrap_succeeds: bool,
+    /// Interior mutability because `PackageManager::bootstrap` takes `&self` —
+    /// `is_available()` is read again immediately after, and `available`
+    /// itself is a plain `bool` a `&self` call cannot flip.
+    became_available: std::sync::atomic::AtomicBool,
+    /// Sleep this long inside `install()` before returning — lets a test prove
+    /// two managers' lanes ran concurrently rather than serially, by timing a
+    /// wall-clock window against N-times the per-manager delay.
+    install_delay: Option<std::time::Duration>,
 }
 
 impl MockPackageManager {
@@ -2148,6 +2160,9 @@ impl MockPackageManager {
             installed: std::collections::HashSet::new(),
             install_calls: Mutex::new(Vec::new()),
             uninstall_calls: Mutex::new(Vec::new()),
+            bootstrap_succeeds: false,
+            became_available: std::sync::atomic::AtomicBool::new(false),
+            install_delay: None,
         }
     }
 
@@ -2189,6 +2204,22 @@ impl MockPackageManager {
         self.bootstrap_creates = dirs.iter().map(|d| (*d).to_string()).collect();
         self
     }
+
+    /// Make `bootstrap()` leave this manager available, so a `Provision` node
+    /// driven through a real `apply()` settles as a success instead of the
+    /// `BootstrapFailed` a manager stuck `unavailable()` always yields.
+    pub fn bootstrap_succeeds(mut self) -> Self {
+        self.bootstrap_succeeds = true;
+        self
+    }
+
+    /// Make `install()` sleep for `delay` before returning — for a test that
+    /// proves the lane dispatcher runs independent managers concurrently
+    /// rather than one after another.
+    pub fn with_install_delay(mut self, delay: std::time::Duration) -> Self {
+        self.install_delay = Some(delay);
+        self
+    }
 }
 
 impl crate::providers::PackageManager for MockPackageManager {
@@ -2198,6 +2229,9 @@ impl crate::providers::PackageManager for MockPackageManager {
 
     fn is_available(&self) -> bool {
         self.available
+            || self
+                .became_available
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
@@ -2209,7 +2243,15 @@ impl crate::providers::PackageManager for MockPackageManager {
     }
 
     fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
+        if self.bootstrap_succeeds {
+            self.became_available
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(())
+    }
+
+    fn path_dirs(&self, _cx: &crate::providers::PackageContext<'_>) -> Vec<String> {
+        self.bootstrap_creates.clone()
     }
 
     fn installed_packages(
@@ -2224,6 +2266,9 @@ impl crate::providers::PackageManager for MockPackageManager {
         packages: &[String],
         _cx: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<()> {
+        if let Some(delay) = self.install_delay {
+            std::thread::sleep(delay);
+        }
         self.install_calls.lock().unwrap().push(packages.to_vec());
         Ok(())
     }
@@ -2399,13 +2444,25 @@ impl ReconcilerTestHarness {
         plan: &crate::reconciler::Plan,
         printer: &Printer,
     ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+        self.apply_with_filter(plan, printer, None)
+    }
+
+    /// Apply a plan under an active `--phase`/`--skip` filter — the shape a
+    /// test needs to reproduce "this run never reached the `Prerequisites`
+    /// phase", since [`Self::apply`] always applies unfiltered.
+    pub fn apply_with_filter(
+        &self,
+        plan: &crate::reconciler::Plan,
+        printer: &Printer,
+        phase_filter: Option<&crate::reconciler::PhaseFilter>,
+    ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
         let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
         reconciler.apply(
             plan,
             &self.resolved,
             std::path::Path::new("."),
             printer,
-            None,
+            phase_filter,
             &[],
             crate::reconciler::ReconcileContext::Apply,
             false,

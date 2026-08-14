@@ -1912,4 +1912,67 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn packages_phase_runs_lanes_concurrently_when_all_managers_are_present() {
+        // Three independent, already-present managers each take a real
+        // wall-clock delay to install. A serial walk costs 3x the per-manager
+        // delay; the lane dispatcher costs ~1x, because nothing here shares a
+        // lane. Proving the wall-clock window rather than inspecting slot
+        // state is the only assertion that would fail if `dispatch_lanes`
+        // regressed to a sequential loop.
+        let delay = Duration::from_millis(200);
+        let harness = crate::test_helpers::ReconcilerTestHarness::builder()
+            .with_package_manager(
+                crate::test_helpers::MockPackageManager::new("brew").with_install_delay(delay),
+            )
+            .with_package_manager(
+                crate::test_helpers::MockPackageManager::new("cargo").with_install_delay(delay),
+            )
+            .with_package_manager(
+                crate::test_helpers::MockPackageManager::new("npm").with_install_delay(delay),
+            )
+            .build();
+
+        let pkg_actions = vec![
+            crate::providers::PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["neovim".to_string()],
+                origin: "local".to_string(),
+            },
+            crate::providers::PackageAction::Install {
+                manager: "cargo".to_string(),
+                packages: vec!["ripgrep".to_string()],
+                origin: "local".to_string(),
+            },
+            crate::providers::PackageAction::Install {
+                manager: "npm".to_string(),
+                packages: vec!["typescript".to_string()],
+                origin: "local".to_string(),
+            },
+        ];
+        let plan = harness
+            .plan_with_actions(Vec::new(), pkg_actions, Vec::new())
+            .expect("plan should succeed");
+
+        let printer = crate::test_helpers::test_printer();
+        let started = Instant::now();
+        let result = harness
+            .apply(&plan, &printer)
+            .expect("apply should succeed");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result.status,
+            crate::state::ApplyStatus::Success,
+            "all three installs should succeed: {result:?}"
+        );
+        assert!(
+            elapsed < delay * 2,
+            "three independent managers should install concurrently \
+             (elapsed {elapsed:?}, single-manager delay {delay:?}); \
+             a serial walk would cost at least {:?}",
+            delay * 3
+        );
+    }
 }

@@ -599,4 +599,26 @@ mod tests {
             "detail segment must contain no ANSI escapes; got: {detail_segment:?}"
         );
     }
+
+    #[test]
+    fn an_elapsed_time_never_occupies_its_own_line() {
+        // compose_status folds the duration into the same String as the
+        // subject before render_status_immediate makes its one push_line
+        // call — there is no second push for the "(Ns)" suffix. A duration
+        // stranded on a line of its own would read as disconnected from
+        // whatever it timed.
+        let (r, sink, buf) = capture();
+        r.render_status_immediate(&sink, 0, &timed("provision brew"));
+        let out = strip_ansi(&buf.lock().unwrap());
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "the duration must not wrap onto a line of its own: {lines:?}"
+        );
+        assert!(
+            lines[0].contains("provision brew") && lines[0].contains("(12.1s)"),
+            "subject and duration must share the one line: {lines:?}"
+        );
+    }
 }

@@ -203,7 +203,13 @@ pub enum FileError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
-    #[error("package manager '{manager}' not available")]
+    // The manager IS registered — `apply_package_action` reaches this only
+    // when a `--phase packages` (or similarly scoped) run bypassed the
+    // `Prerequisites` phase that would have provisioned it, so the recovery
+    // this names is always correct: run that phase, or drop the filter.
+    #[error(
+        "{manager} is not provisioned — run `cfgd apply --phase prerequisites`, or drop --phase"
+    )]
     ManagerNotAvailable { manager: String },
 
     #[error("{manager} install failed: {message}")]

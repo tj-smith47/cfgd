@@ -572,9 +572,12 @@ fn prerequisite_installer(registry: &ProviderRegistry) -> Option<&dyn PackageMan
 mod tests {
     use super::*;
     use crate::providers::PackageAction;
-    use crate::reconciler::types::{Owner, Phase};
-    use crate::reconciler::{PhaseName, format_action_description, format_plan_item};
-    use crate::test_helpers::{MockPackageManager, ReconcilerTestHarness};
+    use crate::reconciler::types::{EnvAction, Owner, Phase};
+    use crate::reconciler::{
+        PhaseFilter, PhaseName, apply as reconciler_apply, env as reconciler_env,
+        format_action_description, format_plan_item,
+    };
+    use crate::test_helpers::{MockPackageManager, ReconcilerTestHarness, test_printer};
 
     /// A tool name no host has on `PATH`, so a `requires` naming it is always
     /// missing, and one no system manager installs under that name, so the
@@ -1255,5 +1258,463 @@ mod tests {
             "both the curl prerequisite and pipx's provision survive: {:?}",
             prereq_phase.actions().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn every_named_manager_gets_a_managers_phase_action() {
+        let actions = plan_actions(
+            installs(&["brew", "cargo"]),
+            vec![
+                MockPackageManager::new("brew"),
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "manager:refresh:brew".to_string(),
+                "manager:provision:cargo".to_string(),
+            ],
+            "every manager this run names earns a Prerequisites-phase action, present or absent: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_present_manager_refreshes_its_index_and_does_not_provision() {
+        let actions = plan_actions(installs(&["brew"]), vec![MockPackageManager::new("brew")]);
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert_eq!(
+            ids,
+            vec!["manager:refresh:brew".to_string()],
+            "a present manager refreshes its index and mints no provision node: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_provisioned_manager_emits_no_second_index_refresh() {
+        let actions = plan_actions(
+            installs(&["cargo"]),
+            vec![
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert_eq!(
+            ids,
+            vec!["manager:provision:cargo".to_string()],
+            "a provisioned manager's own index refresh is implied by provisioning it — a \
+             second, separate refresh node would run `cargo update` against a manager that \
+             was not on PATH a moment before: {ids:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_missing_prerequisite_is_installed_from_a_system_manager() {
+        let _path_lock = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", "");
+
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .bootstrappable_via("brew")
+                    .requiring(&["curl"]),
+                MockPackageManager::new("brew"),
+            ],
+        );
+        let Some(Action::Manager(ManagerAction::Prerequisite {
+            installer, tool, ..
+        })) = actions
+            .iter()
+            .find(|a| format_action_description(a) == "manager:prereq:curl")
+        else {
+            panic!(
+                "a missing prerequisite tool must plan a Prerequisite node: {:?}",
+                actions
+                    .iter()
+                    .map(format_action_description)
+                    .collect::<Vec<_>>()
+            );
+        };
+        assert_eq!(tool, "curl");
+        assert_eq!(
+            installer, "apt",
+            "decision (a): a prerequisite installs from a system manager, never from the \
+             cascade's own installer"
+        );
+    }
+
+    #[test]
+    fn a_missing_prerequisite_with_no_system_manager_fails_the_manager_by_name() {
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .bootstrappable_via("brew")
+                    .requiring(&[ABSENT_TOOL]),
+                MockPackageManager::new("brew"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert_eq!(
+            ids,
+            vec!["manager:refuse:npm".to_string()],
+            "with no system manager registered to install the missing tool, the manager \
+             itself fails by name rather than the plan silently dropping it: {ids:?}"
+        );
+        let Some(Action::Manager(ManagerAction::Refuse { manager, reason })) = actions.first()
+        else {
+            panic!("the node must be a Refuse action: {ids:?}");
+        };
+        assert_eq!(manager, "npm");
+        assert!(
+            reason.contains(ABSENT_TOOL),
+            "the refusal names the missing tool: {reason}"
+        );
+    }
+
+    #[test]
+    fn provision_failure_fails_only_that_managers_packages() {
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml("packages:\n  cargo: [bat]\n  npm: [typescript]\n")
+            .with_package_manager(
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup"),
+            )
+            .with_package_manager(
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .bootstrappable_via("nvm")
+                    .bootstrap_succeeds(),
+            )
+            .build();
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["cargo", "npm"]), Vec::new())
+            .expect("plan");
+        let result = harness.apply(&plan, &test_printer()).expect("apply");
+
+        let cargo_install = result
+            .action_results
+            .iter()
+            .find(|r| r.description.starts_with("package:cargo:install"))
+            .expect("cargo's install is still planned even though its provision fails");
+        assert!(
+            !cargo_install.success,
+            "cargo's package install must fail because cargo's provision never became available"
+        );
+
+        let npm_install = result
+            .action_results
+            .iter()
+            .find(|r| r.description.starts_with("package:npm:install"))
+            .expect("npm's install must still be planned");
+        assert!(
+            npm_install.success,
+            "npm's own provision succeeded independently, so its packages install fine \
+             despite cargo's provision failing: {:?}",
+            npm_install.error
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn managers_phase_precedes_env_in_plan_order() {
+        let tmp_home = tempfile::tempdir().expect("temp home");
+        let _home = crate::with_test_home_guard(tmp_home.path());
+
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml("env:\n  - name: EDITOR\n    value: nvim\npackages:\n  brew: [ripgrep]\n")
+            .with_package_manager(MockPackageManager::new("brew"))
+            .build();
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["brew"]), Vec::new())
+            .expect("plan");
+        let phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Prerequisites)
+            .expect("the phase carries both the manager and the env work");
+
+        let managers_index = phase
+            .owned_actions()
+            .position(|(owner, _)| owner.token() == "cfgd:managers")
+            .expect("the manager node is present");
+        let env_index = phase
+            .owned_actions()
+            .position(|(owner, _)| owner.token() == "cfgd:env")
+            .expect("the env write is present");
+        assert!(
+            managers_index < env_index,
+            "a manager must be provisioned before the env file that publishes where its \
+             binaries live is written: managers at {managers_index}, env at {env_index}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_file_carries_bootstrapped_path_dirs_without_regeneration() {
+        let tmp_home = tempfile::tempdir().expect("temp home");
+        let _home = crate::with_test_home_guard(tmp_home.path());
+
+        let cargo_mgr = || {
+            MockPackageManager::new("cargo")
+                .unavailable()
+                .bootstrappable_via("rustup")
+                .bootstrap_succeeds()
+                .creating_dirs(&["/opt/cargo-bin"])
+        };
+
+        // What the plan folds in before cargo is ever bootstrapped.
+        let manager_actions = plan_actions(installs(&["cargo"]), vec![cargo_mgr()]);
+        let plan_registry = ReconcilerTestHarness::builder()
+            .with_package_manager(cargo_mgr())
+            .build()
+            .registry;
+        let path_dirs_at_plan =
+            fold_provision_path_dirs(&plan_registry, &manager_actions, Vec::new());
+        assert_eq!(
+            path_dirs_at_plan,
+            vec!["/opt/cargo-bin".to_string()],
+            "the not-yet-provisioned manager's declared dir is already folded into the \
+             plan before it is bootstrapped"
+        );
+
+        // What a real apply actually records once cargo is bootstrapped.
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml("packages:\n  cargo: [bat]\n")
+            .with_package_manager(cargo_mgr())
+            .build();
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["cargo"]), Vec::new())
+            .expect("plan");
+        harness.apply(&plan, &test_printer()).expect("apply");
+        let path_dirs_now = reconciler_env::recorded_manager_path_dirs(
+            harness.state_store(),
+            &harness.resolved_profile().merged,
+            &[],
+        );
+
+        assert!(
+            !reconciler_apply::path_dirs_changed(&path_dirs_now, &path_dirs_at_plan),
+            "what a real bootstrap recorded matches what planning already folded in, so \
+             the post-apply regeneration path this proves dead never has anything to react \
+             to: now={path_dirs_now:?} at_plan={path_dirs_at_plan:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_prerequisite_installer_outside_the_package_set_joins_the_phase() {
+        // `curl` is the one tool a system manager installs under its own
+        // name, so the missing-tool arm needs a host where it is genuinely
+        // absent — same fixture as
+        // `a_missing_required_tool_plans_a_prerequisite_from_the_system_manager`,
+        // whose real `PATH` this must not race with.
+        let _path_lock = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", "");
+
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .bootstrappable_via("brew")
+                    .requiring(&["curl"]),
+                MockPackageManager::new("brew"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert!(
+            ids.contains(&"manager:refresh:apt".to_string()),
+            "apt is named by no package action, yet the prerequisite it installs pulls it \
+             into the phase's closure: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_cascade_preferred_manager_outside_the_package_set_joins_the_phase() {
+        let actions = plan_actions(
+            installs(&["cargo"]),
+            vec![
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("brew"),
+                MockPackageManager::new("brew"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert!(
+            ids.contains(&"manager:refresh:brew".to_string()),
+            "brew is named by no package action, yet cargo's cascade installer pulls it \
+             into the phase's closure: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn provision_failure_fails_downstream_provisions_with_the_root_cause() {
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml("packages:\n  cargo: [bat]\n")
+            .with_package_manager(
+                MockPackageManager::new("brew")
+                    .unavailable()
+                    .bootstrappable_via("official installer"),
+            )
+            .with_package_manager(
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("brew"),
+            )
+            .build();
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["cargo"]), Vec::new())
+            .expect("plan");
+        let result = harness.apply(&plan, &test_printer()).expect("apply");
+
+        let brew_provision = result
+            .action_results
+            .iter()
+            .find(|r| r.description == "manager:provision:brew")
+            .expect("brew's provision must be planned as its own node");
+        assert!(
+            !brew_provision.success,
+            "brew never becomes available, so its own provision fails"
+        );
+
+        let cargo_provision = result
+            .action_results
+            .iter()
+            .find(|r| r.description == "manager:provision:cargo")
+            .expect("cargo's provision must be planned, waiting on brew's");
+        assert!(
+            !cargo_provision.success,
+            "a provision whose installer's own provision failed cannot itself run"
+        );
+        let error = cargo_provision.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("brew"),
+            "the transitive failure names brew — the root cause — not cargo's own node: {error}"
+        );
+    }
+
+    #[test]
+    fn phase_packages_with_an_unprovisioned_manager_fails_by_name_with_guidance() {
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml("packages:\n  cargo: [bat]\n")
+            .with_package_manager(
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup"),
+            )
+            .build();
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["cargo"]), Vec::new())
+            .expect("plan");
+        let phase_filter = PhaseFilter::Phase(PhaseName::Packages);
+        let result = harness
+            .apply_with_filter(&plan, &test_printer(), Some(&phase_filter))
+            .expect("apply");
+
+        let cargo_install = result
+            .action_results
+            .iter()
+            .find(|r| r.description.starts_with("package:cargo:install"))
+            .expect("the install is still planned under --phase packages");
+        assert!(
+            !cargo_install.success,
+            "a run that skips Prerequisites cannot have provisioned cargo, so the install fails"
+        );
+        let error = cargo_install.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("cargo") && error.contains("cfgd apply --phase prerequisites"),
+            "the failure names the manager and points at the fix: {error}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn planned_env_content_carries_declared_path_dirs_of_provisioned_managers() {
+        let tmp_home = tempfile::tempdir().expect("temp home");
+        let _home = crate::with_test_home_guard(tmp_home.path());
+
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml("packages:\n  cargo: [bat]\n")
+            .with_package_manager(
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup")
+                    .creating_dirs(&["/opt/cargo-bin"]),
+            )
+            .build();
+        let plan = harness
+            .plan_with_actions(Vec::new(), installs(&["cargo"]), Vec::new())
+            .expect("plan");
+        let phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Prerequisites)
+            .expect("the manager and env work are both planned");
+        let env_write = phase
+            .owned_actions()
+            .find_map(|(_, action)| match action {
+                Action::Env(EnvAction::WriteEnvFile { content, .. }) => Some(content),
+                _ => None,
+            })
+            .expect("cargo names a package, which earns the env write its non-empty path_dirs");
+        assert!(
+            env_write.contains("/opt/cargo-bin"),
+            "the manager's declared PATH dir is folded into the planned env content \
+             BEFORE it is ever provisioned: {env_write}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn prerequisite_obtainability_agrees_with_the_planners_installer_predicate() {
+        let _path_lock = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+        // No system manager anywhere on PATH: neither predicate can obtain curl.
+        {
+            let _path = crate::test_helpers::EnvVarGuard::set("PATH", "");
+            let registry = ReconcilerTestHarness::builder()
+                .with_package_manager(MockPackageManager::new("apt").unavailable())
+                .build()
+                .registry;
+            assert_eq!(
+                prerequisite_installer(&registry).is_some(),
+                crate::providers::prerequisite_obtainable("curl"),
+                "with no system manager reachable, both predicates must refuse curl"
+            );
+            assert!(!crate::providers::prerequisite_obtainable("curl"));
+        }
+
+        // A real `apt` on PATH: both predicates must agree curl is obtainable.
+        {
+            let (_bin_dir, _shim) = crate::test_helpers::install_named_path_shim("apt", 0, "", "");
+            let registry = ReconcilerTestHarness::builder()
+                .with_package_manager(MockPackageManager::new("apt"))
+                .build()
+                .registry;
+            assert_eq!(
+                prerequisite_installer(&registry).is_some(),
+                crate::providers::prerequisite_obtainable("curl"),
+                "with a system manager on PATH, both predicates must agree curl is obtainable"
+            );
+            assert!(crate::providers::prerequisite_obtainable("curl"));
+        }
     }
 }

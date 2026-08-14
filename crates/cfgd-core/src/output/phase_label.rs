@@ -85,4 +85,33 @@ mod tests {
             "Phase: Files"
         );
     }
+
+    /// Correlates the label's `: <name>` half directly against
+    /// `role_glyph(theme, Role::Warn)` — the production lookup `styled`
+    /// itself calls — rather than re-deriving the separator style by hand as
+    /// `the_name_takes_the_separator_slot_and_the_label_does_not` does. A
+    /// different preset (solarized-dark, not dracula) so this is not the same
+    /// render re-asserted under a second name.
+    #[test]
+    #[serial_test::serial]
+    fn phase_name_takes_the_separator_colour() {
+        let theme = Theme::from_preset("solarized-dark").with_colors(true);
+        let styled = PhaseLabel::new("Prerequisites").styled(&theme);
+
+        let (_, separator) = super::super::renderer::role_glyph(&theme, Role::Warn);
+        let expected_name_half = separator.apply_to(": Prerequisites").to_string();
+
+        assert!(
+            styled.ends_with(&expected_name_half),
+            "the `: <name>` half must be styled with exactly the separator \
+             role's glyph style: styled={styled:?} expected_tail={expected_name_half:?}"
+        );
+        // Not vacuous: solarized-dark's warning slot really does carry a
+        // colour, so a heading painted in the plain foreground instead would
+        // fail this `ends_with` rather than pass it by both sides being bare.
+        assert_ne!(
+            expected_name_half, ": Prerequisites",
+            "the separator role must actually carry a style under this preset"
+        );
+    }
 }

@@ -464,4 +464,34 @@ mod tests {
         assert!(plain.starts_with("Files\n"), "got: {plain:?}");
         assert!(plain.contains("\n  - foo.txt\n"), "got: {plain:?}");
     }
+
+    #[test]
+    fn no_action_in_a_phase_renders_before_its_heading() {
+        // `Printer::section_phase` commits the heading synchronously — before
+        // handing back the guard the first child status renders through —
+        // unlike a plain `section()`, which defers the header until the
+        // section is known to have content. A phase heading that lost that
+        // guarantee would let a live-region status window paint above a
+        // heading that hasn't reached the sink yet.
+        use crate::output::{PhaseLabel, Printer, Role, strip_ansi};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section_phase(&PhaseLabel::new("Packages"));
+            let _ = s.status(Role::Ok, "ripgrep").detail("installed");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+
+        let heading = out
+            .find("Phase: Packages")
+            .unwrap_or_else(|| panic!("phase heading missing from output: {out:?}"));
+        let action = out
+            .find("ripgrep")
+            .unwrap_or_else(|| panic!("action line missing from output: {out:?}"));
+        assert!(
+            heading < action,
+            "the phase heading must render before any action inside it: {out:?}"
+        );
+    }
 }

@@ -173,6 +173,30 @@ impl<'x> PackageExec<'x> {
         });
     }
 
+    /// The error for a manager an install/uninstall names that this exec
+    /// cannot run — distinguishing "never registered" from "registered but
+    /// not currently available", since only the latter names a recovery: a
+    /// name typo has none, while an unprovisioned manager's fix is always
+    /// the `Prerequisites` phase this run's filter skipped.
+    fn package_manager_missing_error(&self, manager: &str) -> crate::errors::CfgdError {
+        let registered = self
+            .registry
+            .package_managers
+            .iter()
+            .any(|pm| pm.name() == manager);
+        if registered {
+            crate::errors::PackageError::ManagerNotAvailable {
+                manager: manager.to_string(),
+            }
+            .into()
+        } else {
+            crate::errors::PackageError::ManagerNotFound {
+                manager: manager.to_string(),
+            }
+            .into()
+        }
+    }
+
     /// Apply one profile-owned package action.
     pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<String> {
         let cx = self.cx();
@@ -196,10 +220,7 @@ impl<'x> PackageExec<'x> {
                         ));
                     }
                 }
-                Err(crate::errors::PackageError::ManagerNotFound {
-                    manager: manager.clone(),
-                }
-                .into())
+                Err(self.package_manager_missing_error(manager))
             }
             PackageAction::Uninstall {
                 manager, packages, ..
@@ -214,10 +235,7 @@ impl<'x> PackageExec<'x> {
                         ));
                     }
                 }
-                Err(crate::errors::PackageError::ManagerNotFound {
-                    manager: manager.clone(),
-                }
-                .into())
+                Err(self.package_manager_missing_error(manager))
             }
             PackageAction::Skip { manager, .. } => Ok(format!("package:{}:skip", manager)),
         }
