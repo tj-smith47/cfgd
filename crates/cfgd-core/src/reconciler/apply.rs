@@ -271,6 +271,11 @@ fn hash_sorted_parts(mut parts: Vec<String>) -> String {
 /// `cfgd apply --module nvim --phase post-scripts` a no-op even when failed
 /// module scripts need re-attempting. Other filters keep strict
 /// phase-equality semantics.
+///
+/// `PhaseFilter::Selector(name, selector)` (the `<phase>.<selector>` grammar,
+/// e.g. `prerequisites.managers`) is stricter still: it never inherits the
+/// post/pre-scripts cross-phase leak above, because a selector already names
+/// something narrower than a whole phase.
 pub fn action_matches_phase_filter(
     phase_name: &PhaseName,
     owner: &Owner,
@@ -280,6 +285,9 @@ pub fn action_matches_phase_filter(
     let filter_phase = match filter {
         PhaseFilter::ModuleOwners => return owner.kind == OwnerKind::Module,
         PhaseFilter::Phase(name) => name,
+        PhaseFilter::Selector(name, selector) => {
+            return phase_name == name && selector_matches(owner, action, selector);
+        }
     };
     if phase_name == filter_phase {
         return true;
@@ -289,6 +297,22 @@ pub fn action_matches_phase_filter(
         PhaseName::PreScripts => is_pre_apply_script(action),
         _ => false,
     }
+}
+
+/// The `<selector>` half of a dotted phase filter: either one of the closed
+/// cfgd owner-group names (`managers`/`env`/`session`) or a manager name.
+///
+/// A manager selector matches on [`ManagerAction::manager`] directly rather
+/// than through `Owner`, because every [`ManagerAction`] shares the single
+/// `cfgd:managers` owner — the manager identity lives on the action, not the
+/// owner. Sub-managers are already collapsed onto their family at plan time
+/// (`managers.rs`), so `prerequisites.brew` matching `brew-cask`'s plan node
+/// costs nothing extra here.
+fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
+    if super::types::CFGD_GROUP_ORDER.contains(&selector) {
+        return owner.kind == OwnerKind::Cfgd && owner.name == selector;
+    }
+    matches!(action, Action::Manager(node) if node.manager() == selector)
 }
 
 /// Suffix `apply_env_action` appends to a description when the surface was

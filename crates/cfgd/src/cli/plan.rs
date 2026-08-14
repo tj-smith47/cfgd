@@ -47,8 +47,10 @@ pub fn cmd_plan(
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
 
-    // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
-    let phase_filter: Option<PhaseFilter> = resolve_phase_filter(args.phase, printer);
+    // `PhaseArg`'s base phase is clap-validated; a selector combined with
+    // `--phase modules` is the one combination `resolve_phase_filter` still
+    // has to reject at runtime (see its doc comment).
+    let phase_filter: Option<PhaseFilter> = resolve_phase_filter(args.phase.clone(), printer)?;
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.

@@ -14631,6 +14631,16 @@ fn action_matches_phase_filter_table() {
 
     let module_owner = Owner::module("m");
     let profile_owner = Owner::profile("work");
+    let managers_owner = Owner::cfgd(MANAGERS_GROUP);
+    let env_owner = Owner::cfgd("env");
+    let brew_provision = Action::Manager(ManagerAction::Provision {
+        manager: "brew".to_string(),
+        via: "curl".to_string(),
+        depends_on: vec![],
+    });
+    let npm_refresh = Action::Manager(ManagerAction::RefreshIndex {
+        manager: "npm".to_string(),
+    });
     let cases: Vec<(&str, bool, &PhaseName, &Owner, &Action, PhaseFilter)> = vec![
         // Strict phase-equality cases.
         (
@@ -14751,6 +14761,66 @@ fn action_matches_phase_filter_table() {
             &profile_owner,
             &pkg_install,
             PhaseFilter::ModuleOwners,
+        ),
+        // `--phase prerequisites.managers` / `.env` — the dotted group-selector
+        // grammar reaches the cfgd owner group by name, regardless of action kind.
+        (
+            "cfgd managers-group provision under prerequisites.managers",
+            true,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "managers".to_string()),
+        ),
+        (
+            "cfgd env-group action under prerequisites.env",
+            true,
+            &PhaseName::Prerequisites,
+            &env_owner,
+            &pkg_install,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "env".to_string()),
+        ),
+        (
+            "cfgd managers-group provision under prerequisites.env misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "env".to_string()),
+        ),
+        (
+            "cfgd managers-group under a foreign phase misses",
+            false,
+            &PhaseName::Packages,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "managers".to_string()),
+        ),
+        // `--phase prerequisites.brew` — a literal manager name selects that
+        // manager's own DAG nodes, already family-collapsed at plan time.
+        (
+            "brew provision under prerequisites.brew",
+            true,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "brew".to_string()),
+        ),
+        (
+            "npm refresh under prerequisites.brew misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &npm_refresh,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "brew".to_string()),
+        ),
+        (
+            "brew provision under prerequisites.npm misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "npm".to_string()),
         ),
     ];
 

@@ -392,6 +392,12 @@ impl ScriptPhase {
 pub enum PhaseFilter {
     Phase(PhaseName),
     ModuleOwners,
+    /// `<phase>.<selector>` — one cfgd-owned group (`managers`/`env`/`session`)
+    /// or one manager, scoped to `PhaseName` (`prerequisites.managers`,
+    /// `prerequisites.brew`). Resolved by [`crate::reconciler::action_matches_phase_filter`];
+    /// `ModuleOwners` never carries a selector because it already spans every
+    /// phase module work can land in, so nothing single-phase to scope it to.
+    Selector(PhaseName, String),
 }
 
 /// Who declared the work: the complete, closed vocabulary.
@@ -454,7 +460,7 @@ impl OwnerKind {
 /// Only cfgd's names are ordered this way, and only because cfgd mints all of
 /// them — a profile, module, backup or source name is a user string with no
 /// meaning to order by, so those still sort by name.
-const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, "env", "session"];
+pub(super) const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, "env", "session"];
 
 /// The cfgd-owned group every [`ManagerAction`] belongs to. Named once: a
 /// filter that keeps this group and a planner that mints into it must agree on

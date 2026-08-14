@@ -1611,6 +1611,23 @@ mod tests {
     }
 
     #[test]
+    fn an_edge_to_a_node_absent_from_the_plan_is_satisfied() {
+        // A `--skip` on the dependency prunes its node out of the plan
+        // entirely — `filter_plan` never rewrites a surviving node's
+        // `depends_on`, so the edge still names an id no slot carries. The
+        // dispatcher must treat that as already satisfied rather than wait
+        // on a node that will never arrive.
+        let managers = Owner::cfgd("managers");
+        let poetry = provision("poetry", "pipx", &[ManagerAction::provision_node("brew")]);
+        let slots = vec![node_slot(&managers, &poetry, 0)];
+
+        assert!(
+            dag_satisfied(&slots, 0),
+            "an edge to a node the plan no longer carries must not block dispatch"
+        );
+    }
+
+    #[test]
     fn two_unstarted_edges_are_ranked_by_plan_order_not_dispatch_order() {
         // Neither blocker has started, so the tie breaks on the PLAN: the node
         // planned later is the one still ahead of the dependent once the other

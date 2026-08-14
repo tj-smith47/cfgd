@@ -693,6 +693,234 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
 }
 
 #[test]
+fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands_nothing() {
+    // The dotted group-selector grammar (`prerequisites.session`) reaches the
+    // cfgd:session owner group by name via `phase_qualified_group_owner_token`
+    // — a colon-joined `Action::Env` path never matches this pattern literally,
+    // so this pins the alias rather than the fallback literal match. The
+    // Packages phase below is load-bearing, not incidental: with no package
+    // action consuming brew anywhere in the plan, `prune_to_surviving_consumers`
+    // would remove brew's `Provision` node as purposeless regardless of what
+    // `--skip` pattern ran, which would make this test pass or fail on a
+    // mechanism unrelated to the `.session` selector it actually exercises.
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![
+                Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    depends_on: vec![],
+                }),
+                env_write(),
+                Action::Env(EnvAction::RefreshLiveSession { vars: Vec::new() }),
+            ],
+        ),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["prerequisites.session".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    let prereq_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites)
+        .unwrap();
+    let remaining: Vec<&Action> = prereq_phase.actions().collect();
+    assert_eq!(
+        remaining.len(),
+        2,
+        "only the session broadcast should have been removed: {remaining:?}"
+    );
+    assert!(
+        !remaining
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. }))),
+        "the session broadcast must be gone: {remaining:?}"
+    );
+    assert!(
+        !out.contains("removes") || !out.contains("bootstrap"),
+        "skipping the broadcast half strands no package install, so no alert fires:\n{out}"
+    );
+}
+
+#[test]
+fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
+    // The group-selector grammar reaches the WHOLE cfgd:managers owner group —
+    // every registered manager's node — not one manager at a time, and each
+    // BOOTSTRAP (`Provision`) it takes down strands its own consumers. Both
+    // managers here are `Provision` (not `RefreshIndex`) deliberately: only a
+    // `Provision` node is a bootstrap the machine is telling the user it no
+    // longer creates, so only `Provision` removals feed the alert's count —
+    // a `RefreshIndex` removal means the manager was already present and
+    // needs no warning that it will still be there.
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![
+                Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    depends_on: vec![],
+                }),
+                Action::Manager(ManagerAction::Provision {
+                    manager: "npm".to_string(),
+                    via: "node installer".to_string(),
+                    depends_on: vec![],
+                }),
+            ],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["rg"]),
+                pkg_install("npm", vec!["typescript"]),
+            ],
+        ),
+    ]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["prerequisites.managers".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        !plan
+            .phases
+            .iter()
+            .any(|p| p.name == PhaseName::Prerequisites),
+        "both manager nodes should be gone, emptying the phase: {:?}",
+        plan.phases
+    );
+    assert!(
+        out.contains("`--skip prerequisites.managers` removes 2 bootstrap(s)")
+            && out.contains("--skip packages.brew")
+            && out.contains("--skip packages.npm"),
+        "the alert must name both stranded managers:\n{out}"
+    );
+}
+
+#[test]
+fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
+    // The literal manager-name selector already worked with zero new code,
+    // because `action_path` for a Manager node was already dot-joined as
+    // `<phase>.<manager>` and sub-managers are family-collapsed at plan time.
+    // Pinned here as a regression guard for the dotted grammar's manager arm.
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![
+                Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    depends_on: vec![],
+                }),
+                Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "npm".to_string(),
+                }),
+            ],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["rg"]),
+                pkg_install("npm", vec!["typescript"]),
+            ],
+        ),
+    ]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["prerequisites.brew".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    let prereq_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites)
+        .unwrap();
+    let remaining: Vec<&Action> = prereq_phase.actions().collect();
+    assert_eq!(
+        remaining.len(),
+        1,
+        "only brew's node should be removed, npm's must survive: {remaining:?}"
+    );
+    assert!(
+        matches!(
+            remaining[0],
+            Action::Manager(ManagerAction::RefreshIndex { manager }) if manager == "npm"
+        ),
+        "the surviving node must be npm's: {remaining:?}"
+    );
+    assert!(
+        out.contains("`--skip prerequisites.brew` removes 1 bootstrap(s)")
+            && out.contains("--skip packages.brew")
+            && !out.contains("--skip packages.npm"),
+        "the alert must name only the manager the pattern actually removed:\n{out}"
+    );
+}
+
+#[test]
+fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_manager_node() {
+    // Distinct from skipping the MANAGER: skipping the CONSUMERS that were
+    // its last reason to run prunes the manager's Provision node too, via
+    // `prune_to_surviving_consumers` — but silently, since a refresh with
+    // zero surviving consumers is the machine's own bookkeeping, not a
+    // stranding the user needs to be told about.
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            })],
+        ),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["packages.brew.rg".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        plan.phases.is_empty(),
+        "the package was brew's last consumer, so its Provision node is now \
+         purposeless and the plan should be empty: {:?}",
+        plan.phases
+    );
+    assert!(
+        !out.contains("removes") || !out.contains("bootstrap"),
+        "a consumer-side skip prunes its manager silently, never through the \
+         stranded-install alert:\n{out}"
+    );
+}
+
+#[test]
 fn filter_plan_only_keeps_matching_actions() {
     let mut plan = make_plan(vec![
         (

@@ -821,6 +821,34 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
     }
 }
 
+/// cfgd's own closed owner-group vocabulary (spec §4): the three groups the
+/// `Prerequisites` phase always carries. Mirrors
+/// `cfgd_core::reconciler::MANAGERS_GROUP` plus the two sibling group names
+/// that have no dedicated const (`Owner::cfgd("env")` / `Owner::cfgd("session")`
+/// are minted the same way at plan time).
+const CFGD_PHASE_GROUPS: &[&str] = &[reconciler::MANAGERS_GROUP, "env", "session"];
+
+/// The owner token a phase-qualified group alias (`prerequisites.managers`,
+/// `prerequisites.env`, `prerequisites.session`) resolves to, if `pattern`
+/// spells one — the alternate grammar for the `kind:name` owner-token check
+/// `pattern_matches_action` already understands directly.
+///
+/// Boundary-checked against `action_path`'s own phase segment (everything
+/// before its first `.`/`:`), so `foo.env` cannot alias `cfgd:env` for an
+/// action that did not actually land in phase `foo` — the phase name is part
+/// of what the user selected, not just the group.
+fn phase_qualified_group_owner_token(pattern: &str, action_path: &str) -> Option<String> {
+    let (phase, group) = pattern.split_once('.')?;
+    if !CFGD_PHASE_GROUPS.contains(&group) {
+        return None;
+    }
+    let phase_end = action_path.find(['.', ':'])?;
+    if &action_path[..phase_end] != phase {
+        return None;
+    }
+    Some(reconciler::Owner::cfgd(group).token())
+}
+
 /// Check if a pattern matches an action path.
 /// A pattern is a prefix match: "packages.brew" matches "packages.brew.ripgrep".
 /// For file/script paths using `:`, "files:" matches all files.
@@ -839,11 +867,18 @@ pub(in crate::cli) fn pattern_matches(pattern: &str, action_path: &str) -> bool 
 
 /// Does `pattern` select this action? `owner` is the enclosing group's.
 ///
-/// The three rules are ordered and total. Rule 1 cannot shadow rule 3 because
-/// every `action_path` begins with a `PhaseName::as_str()` and none of those is
-/// an `OwnerKind` token; rule 2 cannot shadow it either, because after the
+/// The four rules are ordered; none but the last is total, and the last
+/// (`pattern_matches`) is the fallback every earlier rule that declines to
+/// match falls through to. Rule 1 cannot shadow rule 3 because every
+/// `action_path` begins with a `PhaseName::as_str()` and none of those is an
+/// `OwnerKind` token; rule 2 cannot shadow it either, because after the
 /// kind-phase routing the only paths starting with `modules.` are the
-/// platform-gated skips rule 2 selects anyway.
+/// platform-gated skips rule 2 selects anyway. Rule 4 (the phase-qualified
+/// group alias, `prerequisites.managers`/`.env`/`.session`) falls through
+/// rather than returning `false` on a miss, so a pattern that only
+/// COINCIDENTALLY looks like a group alias (a system configurator that
+/// happens to be named `env`) still gets the literal match it would have
+/// gotten without this rule existing.
 pub(in crate::cli) fn pattern_matches_action(
     pattern: &str,
     owner: &reconciler::Owner,
@@ -859,6 +894,11 @@ pub(in crate::cli) fn pattern_matches_action(
     }
     if let Some(name) = pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
         return owner.kind == reconciler::OwnerKind::Module && owner.name == name;
+    }
+    if let Some(token) = phase_qualified_group_owner_token(pattern, action_path)
+        && owner.token() == token
+    {
+        return true;
     }
     pattern_matches(pattern, action_path)
 }
@@ -1257,6 +1297,14 @@ pub(in crate::cli) fn filter_plan(
     // A `--skip`/`--only` pattern can empty a group without touching its
     // siblings, and can empty a phase outright, so both must be re-checked here
     // rather than assumed empty-safe from `Reconciler::plan` alone.
+    plan.phases.retain(|p| !p.is_empty());
+
+    // Skipping a PACKAGE that was a manager's last surviving consumer leaves
+    // that manager's Provision/RefreshIndex nodes with nothing left to serve —
+    // silently prune them (the machine's own bookkeeping), distinct from
+    // skipping the manager ITSELF, which strands its consumers and earns the
+    // alert below.
+    reconciler::prune_to_surviving_consumers(plan);
     plan.phases.retain(|p| !p.is_empty());
 
     warn_stranded_installs(plan, printer, registry, &removals);

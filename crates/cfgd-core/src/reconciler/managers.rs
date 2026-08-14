@@ -380,7 +380,7 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
 /// node depends on it: the prerequisite installing the tool a kept provision
 /// waits on, and the refresh of the manager that installs that prerequisite,
 /// are all still work the run needs.
-pub(crate) fn prune_to_surviving_consumers(plan: &mut Plan) {
+pub fn prune_to_surviving_consumers(plan: &mut Plan) {
     let consumers = surviving_consumers(plan);
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut keep: BTreeSet<String> = BTreeSet::new();

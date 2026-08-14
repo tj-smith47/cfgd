@@ -121,11 +121,14 @@ cfgd apply --dry-run                # preview without applying
 cfgd apply --yes                    # skip confirmation
 cfgd apply --phase packages         # single phase
 cfgd apply --phase modules          # every module-owned action, in every phase
+cfgd apply --phase prerequisites.managers  # one owner group within a phase
 cfgd apply --module nvim            # single module + deps (no profile required)
 cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
 cfgd apply --skip module:nvim       # one module, every phase
 cfgd apply --skip cfgd:managers     # every package-manager bootstrap
+cfgd apply --skip prerequisites.session  # skip the live-session broadcast
+cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl     # skip specific items
 cfgd apply --skip-scripts           # apply without running any hooks
 ```
@@ -134,7 +137,7 @@ cfgd apply --skip-scripts           # apply without running any hooks
 |---|---|
 | `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
-| `--phase <name>` | Apply only a specific phase |
+| `--phase <name>` | Apply only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--yes`, `-y` | Skip confirmation prompt |
 | `--module <name>` | Apply only this module and its dependencies |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
@@ -160,6 +163,8 @@ Preview the reconciliation plan without applying. This is the canonical preview 
 cfgd plan                               # preview with default (apply) context
 cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # plan for a single module
+cfgd plan --phase prerequisites.managers  # one owner group within a phase
+cfgd plan --skip prerequisites.session  # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
 ```
@@ -167,7 +172,7 @@ cfgd plan -o json                       # structured plan output
 | Flag | Description |
 |---|---|
 | `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
-| `--phase <name>` | Show only a specific phase |
+| `--phase <name>` | Show only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--module <name>` | Plan only this module and its dependencies |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Plan only items matching dot-notation paths (repeatable) |
@@ -224,10 +229,31 @@ the `brew` package manager never collide:
 | `profile:work` | everything the `work` profile declares |
 | `cfgd:managers` | every package-manager bootstrap |
 
+`--phase`/`--skip` accept the same dot-notation one level up, scoped to a single
+phase: `<phase>.<selector>`, where the selector is either an owner group
+(`managers`, `env`, `session` — the three `Prerequisites` always carries) or a
+manager name (family-collapsed, so `prerequisites.brew` also covers
+`brew-tap`/`brew-cask`):
+
+| Pattern | Selects |
+|---|---|
+| `prerequisites.managers` | every provisioned/refreshed package manager (equivalent to `cfgd:managers`, scoped to `Prerequisites`) |
+| `prerequisites.env` | the `~/.cfgd.env`/rc-file write group |
+| `prerequisites.session` | the live-session broadcast (`RefreshLiveSession`) |
+| `prerequisites.brew` | just the brew manager's own node |
+
 `modules` and `modules.<name>` still work and print a deprecation naming their
-replacement. Skipping a bootstrap leaves the installs that needed it in the
-plan; cfgd warns and prints the `--skip packages.<manager>` flags that would
-drop those too.
+replacement.
+
+Skipping a manager's **bootstrap** (`prerequisites.managers`, `prerequisites.brew`,
+`cfgd:managers`) leaves the package installs that needed it in the plan —
+`cfgd` cannot know whether you meant to drop those too, so it strands them,
+warns with `printer.alert(...)`, and prints the `--skip packages.<manager>`
+flags that would drop those too. Skipping the other direction — the last
+package install that named a manager (`--skip packages.brew.ripgrep` when
+it's the only brew package left) — silently prunes that manager's now-purposeless
+bootstrap node instead: nothing in the plan needs it anymore, so there is
+nothing to warn about.
 
 The `-o json` payload carries the same axes the tree draws: a phase holds owner
 groups, each group holds its actions. `token` is the rendered owner label, so a

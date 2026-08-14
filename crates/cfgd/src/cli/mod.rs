@@ -468,9 +468,12 @@ pub struct ApplyArgs {
     /// Preview changes without applying
     #[arg(long)]
     pub dry_run: bool,
-    /// Apply only a specific phase
-    #[arg(long, value_enum)]
-    pub phase: Option<ApplyPhase>,
+    /// Apply only a specific phase, optionally scoped to `<phase>.<selector>`
+    /// (an owner group — `prerequisites.managers` — or a manager name —
+    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// packages, system, files, secrets, post-scripts
+    #[arg(long)]
+    pub phase: Option<PhaseArg>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
     pub yes: bool,
@@ -502,9 +505,12 @@ pub struct PlanArgs {
     /// to an existing config directory (an existing path wins over the shorthand)
     #[arg(long)]
     pub from: Option<String>,
-    /// Plan only a specific phase
-    #[arg(long, value_enum)]
-    pub phase: Option<ApplyPhase>,
+    /// Plan only a specific phase, optionally scoped to `<phase>.<selector>`
+    /// (an owner group — `prerequisites.managers` — or a manager name —
+    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// packages, system, files, secrets, post-scripts
+    #[arg(long)]
+    pub phase: Option<PhaseArg>,
     /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
     #[arg(long)]
     pub skip: Vec<String>,
@@ -583,13 +589,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
@@ -1925,7 +1931,7 @@ pub enum SourceOverrideAction {
 /// Clap-facing phase selector for `apply --phase` / `plan --phase`.
 /// Mirrors `cfgd_core::reconciler::PhaseName`; lives in the CLI layer so
 /// the help text can use kebab-case consistently with the rest of cfgd.
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ApplyPhase {
     PreScripts,
     Prerequisites,
@@ -1959,6 +1965,58 @@ impl ApplyPhase {
     }
 }
 
+/// Clap value type for `--phase` (spec §4's dotted grammar):
+/// `<phase>[.<selector>]`, e.g. `prerequisites`, `prerequisites.managers`,
+/// `prerequisites.brew`. Not a `ValueEnum` because the selector half is open
+/// (any owner-group name or any registered manager name); [`ApplyPhase`]
+/// still gates the phase half to the closed, typo-checked vocabulary.
+#[derive(Clone, Debug)]
+pub struct PhaseArg {
+    pub phase: ApplyPhase,
+    pub selector: Option<String>,
+}
+
+impl PhaseArg {
+    /// A selector-less `PhaseArg`, for call sites (mostly tests) that only
+    /// ever named a bare phase before this grammar existed.
+    pub fn bare(phase: ApplyPhase) -> Self {
+        PhaseArg {
+            phase,
+            selector: None,
+        }
+    }
+}
+
+impl std::str::FromStr for PhaseArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (phase_str, selector) = match s.split_once('.') {
+            Some((p, "")) => {
+                return Err(format!(
+                    "invalid phase '{s}': a trailing '.' has no selector after it — \
+                     write '{p}' alone, or name one (e.g. '{p}.managers')"
+                ));
+            }
+            Some((p, sel)) => (p, Some(sel.to_string())),
+            None => (s, None),
+        };
+        let phase = <ApplyPhase as clap::ValueEnum>::from_str(phase_str, true).map_err(|_| {
+            let variants: Vec<String> = <ApplyPhase as clap::ValueEnum>::value_variants()
+                .iter()
+                .filter_map(clap::ValueEnum::to_possible_value)
+                .filter(|pv| !pv.is_hide_set())
+                .map(|pv| pv.get_name().to_string())
+                .collect();
+            format!(
+                "invalid phase '{phase_str}' [possible values: {}]",
+                variants.join(", ")
+            )
+        })?;
+        Ok(PhaseArg { phase, selector })
+    }
+}
+
 /// Map a clap-validated ApplyPhase to the reconciler's plan filter.
 ///
 /// `--phase modules` is an owner filter rather than a phase name: module work
@@ -1982,17 +2040,36 @@ fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
 /// The ONE resolution of `--phase` for both `apply` and `plan`: a spelling
 /// deprecated in one of them and silently accepted in the other would teach the
 /// user the old name is fine wherever they happened not to read it.
+///
+/// Fallible because a selector combined with `--phase modules` has nothing to
+/// scope to: `ApplyPhase::Modules` maps to `PhaseFilter::ModuleOwners`, which
+/// already spans every phase module work can land in, not a single phase a
+/// selector could narrow.
 fn resolve_phase_filter(
-    phase: Option<ApplyPhase>,
+    phase: Option<PhaseArg>,
     printer: &cfgd_core::output::Printer,
-) -> Option<PhaseFilter> {
-    if matches!(phase, Some(ApplyPhase::Env)) {
+) -> anyhow::Result<Option<PhaseFilter>> {
+    let Some(PhaseArg { phase, selector }) = phase else {
+        return Ok(None);
+    };
+    if matches!(phase, ApplyPhase::Env) {
         printer.deprecation(
             "`--phase env` is deprecated: that phase now provisions package managers as well \
              as writing the env file. Use `--phase prerequisites`.",
         );
     }
-    phase.map(apply_phase_to_filter)
+    let base = apply_phase_to_filter(phase);
+    let Some(selector) = selector else {
+        return Ok(Some(base));
+    };
+    let PhaseFilter::Phase(name) = base else {
+        anyhow::bail!(
+            "`--phase modules.{selector}` is not valid: `modules` has no single phase to scope \
+             a selector to — module work applies in whichever phase it landed in. Use \
+             `--module {selector}` instead."
+        );
+    };
+    Ok(Some(PhaseFilter::Selector(name, selector)))
 }
 
 /// Clap-facing interpreter selector for `apply --shell`. Mirrors

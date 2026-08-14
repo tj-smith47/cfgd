@@ -184,11 +184,14 @@ installs, then `module:nvim`. Execution reverses those two — see the note abov
 ```sh
 cfgd apply --phase packages              # single phase
 cfgd apply --phase modules               # every module-owned action, in every phase
+cfgd apply --phase prerequisites.managers  # one owner group within a phase
 cfgd apply --module nvim                 # single module + deps
 cfgd apply --only packages.brew          # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim   # a module's package work
 cfgd apply --skip module:nvim            # one module, every phase
 cfgd apply --skip cfgd:managers          # every index refresh and manager cfgd provisions
+cfgd apply --skip prerequisites.session  # skip the live-session broadcast
+cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl          # skip specific items
 ```
 
@@ -197,9 +200,19 @@ The owner segment (`module:nvim`) is what keeps a module named `brew` distinct f
 packages.module:brew` selects the module. The pre-routing spellings `modules` and
 `modules.<name>` still work and print a deprecation naming their replacement.
 
-Skipping the managers group leaves the installs that needed a provisioned manager in the
-plan; cfgd warns when that happens and prints the `--skip packages.<manager>` flags that
-would drop them too.
+`--phase`/`--skip` also take the dotted grammar one level up, scoped to a single phase:
+`<phase>.<selector>`, where the selector names an owner group (`managers`, `env`,
+`session` — the three `Prerequisites` always carries) or a manager (family-collapsed,
+so `prerequisites.brew` also covers `brew-tap`/`brew-cask`). `prerequisites.managers`
+is the whole-group equivalent of `cfgd:managers`, scoped to that one phase.
+
+Skipping a manager's bootstrap (`prerequisites.managers`, `prerequisites.brew`,
+`cfgd:managers`) leaves the installs that needed a provisioned manager in the plan —
+cfgd cannot drop those on your behalf, so it strands them, warns, and prints the
+`--skip packages.<manager>` flags that would drop them too. The opposite direction is
+silent: dropping the last package install that named a manager prunes that manager's
+now-purposeless bootstrap node with no warning, since nothing in the plan needs it
+anymore.
 
 ## Failure Handling
 

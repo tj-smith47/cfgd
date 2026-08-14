@@ -4765,7 +4765,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
     let args = ApplyArgs {
         from: None,
         dry_run: true,
-        phase: Some(ApplyPhase::Packages),
+        phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
         yes: true,
         skip: vec![],
         only: vec![],
@@ -6059,7 +6059,7 @@ fn cmd_apply_dry_run_each_phase() {
         let args = ApplyArgs {
             from: None,
             dry_run: true,
-            phase: Some(phase),
+            phase: Some(PhaseArg::bare(phase)),
             yes: true,
             skip: vec![],
             only: vec![],
@@ -6300,7 +6300,7 @@ fn cmd_plan_with_phase_filter() {
     let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
-        phase: Some(ApplyPhase::Packages),
+        phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
         skip: vec![],
         only: vec![],
         module: None,
@@ -12488,7 +12488,7 @@ spec:
     let args = ApplyArgs {
         from: None,
         dry_run: false,
-        phase: Some(ApplyPhase::PostScripts),
+        phase: Some(PhaseArg::bare(ApplyPhase::PostScripts)),
         yes: true,
         skip: vec![],
         only: vec![],
@@ -12648,7 +12648,7 @@ spec:
     let args = ApplyArgs {
         from: None,
         dry_run: false,
-        phase: Some(ApplyPhase::Files),
+        phase: Some(PhaseArg::bare(ApplyPhase::Files)),
         yes: true,
         skip: vec![],
         only: vec![],
@@ -19573,7 +19573,11 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     use cfgd_core::reconciler::{PhaseFilter, PhaseName};
 
     let (printer, buf) = test_printer_capture();
-    let filter = super::resolve_phase_filter(Some(super::ApplyPhase::Env), &printer);
+    let filter = super::resolve_phase_filter(
+        Some(super::PhaseArg::bare(super::ApplyPhase::Env)),
+        &printer,
+    )
+    .unwrap();
     printer.flush();
     let out = buf.lock().unwrap().clone();
 
@@ -19584,11 +19588,119 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     );
 
     let (printer, buf) = test_printer_capture();
-    super::resolve_phase_filter(Some(super::ApplyPhase::Prerequisites), &printer);
+    super::resolve_phase_filter(
+        Some(super::PhaseArg::bare(super::ApplyPhase::Prerequisites)),
+        &printer,
+    )
+    .unwrap();
     printer.flush();
     assert!(
         buf.lock().unwrap().is_empty(),
         "the current spelling earns no notice"
+    );
+}
+
+#[test]
+fn phase_arg_parses_the_dotted_grammar() {
+    use std::str::FromStr;
+
+    let bare = super::PhaseArg::from_str("prerequisites").unwrap();
+    assert!(matches!(bare.phase, super::ApplyPhase::Prerequisites));
+    assert_eq!(bare.selector, None);
+
+    let dotted = super::PhaseArg::from_str("prerequisites.managers").unwrap();
+    assert!(matches!(dotted.phase, super::ApplyPhase::Prerequisites));
+    assert_eq!(dotted.selector.as_deref(), Some("managers"));
+
+    let manager_selector = super::PhaseArg::from_str("prerequisites.brew").unwrap();
+    assert!(matches!(
+        manager_selector.phase,
+        super::ApplyPhase::Prerequisites
+    ));
+    assert_eq!(manager_selector.selector.as_deref(), Some("brew"));
+
+    // The deprecated `env` spelling still parses, bare and dotted, unchanged.
+    let legacy = super::PhaseArg::from_str("env").unwrap();
+    assert!(matches!(legacy.phase, super::ApplyPhase::Env));
+    assert_eq!(legacy.selector, None);
+    let legacy_dotted = super::PhaseArg::from_str("env.session").unwrap();
+    assert!(matches!(legacy_dotted.phase, super::ApplyPhase::Env));
+    assert_eq!(legacy_dotted.selector.as_deref(), Some("session"));
+}
+
+#[test]
+fn phase_arg_rejects_an_unknown_phase_and_lists_the_visible_vocabulary() {
+    use std::str::FromStr;
+
+    let err = super::PhaseArg::from_str("bogus").unwrap_err();
+    assert!(
+        err.contains("invalid phase 'bogus'") && err.contains("possible values:"),
+        "error must name the rejected token and list the vocabulary:\n{err}"
+    );
+    // The deprecated `env` spelling still parses (pinned above) but must not be
+    // advertised in the possible-values listing shown for a typo.
+    assert!(
+        !err.contains("env"),
+        "the hidden legacy spelling must not appear in the possible-values listing:\n{err}"
+    );
+    assert!(
+        err.contains("prerequisites"),
+        "the current spelling must appear in the possible-values listing:\n{err}"
+    );
+}
+
+#[test]
+fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
+    use std::str::FromStr;
+
+    // "prerequisites." names no selector after the dot — a likely typo, so it
+    // errors with a message naming the bare-phase and dotted alternatives
+    // rather than silently swallowing the dangling '.' or misreporting the
+    // whole string (including the dot) as an unrecognized phase name.
+    let err = super::PhaseArg::from_str("prerequisites.").unwrap_err();
+    assert!(
+        err.contains("prerequisites.") && err.contains("prerequisites.managers"),
+        "error must name the input and show a valid dotted example:\n{err}"
+    );
+}
+
+#[test]
+fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+
+    let (printer, _buf) = test_printer_capture();
+    let filter = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("managers".to_string()),
+        }),
+        &printer,
+    )
+    .unwrap();
+    assert_eq!(
+        filter,
+        Some(PhaseFilter::Selector(
+            PhaseName::Prerequisites,
+            "managers".to_string()
+        ))
+    );
+}
+
+#[test]
+fn resolve_phase_filter_rejects_a_selector_on_the_modules_owner_filter() {
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Modules,
+            selector: Some("vim-config".to_string()),
+        }),
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--phase modules.vim-config") && msg.contains("--module vim-config"),
+        "error must name the rejected combo and the --module alternative:\n{msg}"
     );
 }
 
