@@ -517,6 +517,27 @@ pub(super) fn any_system_manager_available() -> bool {
         || command_available("scoop")
 }
 
+/// Whether a tool a bootstrap cascade shells out to can be had on this host:
+/// it is on PATH already, or a system manager that could install it is
+/// available.
+///
+/// The widening a `BootstrapPlan` is judged by. Gating a plan on the tool being
+/// present *right now* is what dropped a manager silently — `resolve_package`
+/// stopped treating it as a candidate and the package resolved elsewhere or not
+/// at all, with nothing said. A plan that names the tool instead lets the
+/// planner mint a visible prerequisite node for it, and `None` goes back to
+/// meaning what it says: nothing on this host can provision this manager.
+///
+/// The population is [`cfgd_core::providers::SYSTEM_MANAGER_NAMES`] — the same
+/// list the planner picks the installing manager from, so a plan cannot promise
+/// an install the planner then has no manager to schedule.
+pub(super) fn prerequisite_obtainable(tool: &str) -> bool {
+    command_available(tool)
+        || cfgd_core::providers::SYSTEM_MANAGER_NAMES
+            .iter()
+            .any(|manager| command_available(manager))
+}
+
 /// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
 /// them is available. The name a `BootstrapPlan` carries as its method, resolved
 /// through the same probes `bootstrap_via_brew_then_system` runs.

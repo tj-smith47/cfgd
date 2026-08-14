@@ -10,8 +10,8 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, report_abandoned_step,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, prerequisite_obtainable,
+    report_abandoned_step, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
@@ -490,9 +490,8 @@ impl PackageManager for NpmManager {
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
         match detect_brew_system_method("nvm") {
-            "nvm" => {
-                command_available("curl").then(|| BootstrapPlan::new("nvm").requiring(["curl"]))
-            }
+            "nvm" => prerequisite_obtainable("curl")
+                .then(|| BootstrapPlan::new("nvm").requiring(["curl"])),
             method => Some(BootstrapPlan::new(method)),
         }
     }

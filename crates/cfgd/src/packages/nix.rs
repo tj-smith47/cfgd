@@ -4,13 +4,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    strip_version_suffix, tool_cmd_with_resolver,
+    bootstrap_via_shell_script, prerequisite_obtainable, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, strip_version_suffix, tool_cmd_with_resolver,
 };
 
 pub struct NixManager;
@@ -49,7 +48,7 @@ impl PackageManager for NixManager {
     }
 
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
-        command_available("curl").then(|| {
+        prerequisite_obtainable("curl").then(|| {
             // The multi-user (`--daemon`) install puts the nix binaries in the
             // default profile; a per-user profile only appears once something is
             // installed into it.
@@ -367,7 +366,8 @@ mod tests {
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let plan = NixManager.bootstrap_plan();
-        assert_eq!(plan.is_some(), command_available("curl"));
+        // Present already, or installable from an available system manager.
+        assert_eq!(plan.is_some(), prerequisite_obtainable("curl"));
         let Some(plan) = plan else { return };
         // What `bootstrap` runs: the nixos.org installer in --daemon mode,
         // fetched with curl, whose binaries land in the default profile.

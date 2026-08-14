@@ -3149,6 +3149,17 @@ fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
                 ["curl", "pip3", "pip"].contains(&tool.as_str()),
                 "{name}: unknown prerequisite {tool}"
             );
+            // A tool that is MISSING when the plan is minted becomes a
+            // `Prerequisites` node running `<system manager> install <tool>`,
+            // so for those the tool's name has to be the package's name as
+            // well. `pip3`/`pip` are not — apt calls that package
+            // `python3-pip` — which is why the only plan naming them is minted
+            // when they are already on the machine.
+            assert!(
+                tool == "curl" || cfgd_core::command_available(tool),
+                "{name}: plans a bootstrap around missing {tool}, which no system \
+                 manager installs under that name"
+            );
         }
         for dir in &plan.creates_path_dirs {
             assert!(
