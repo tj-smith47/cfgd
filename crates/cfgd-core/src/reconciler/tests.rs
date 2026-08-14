@@ -5097,6 +5097,123 @@ fn apply_failed_when_all_actions_fail() {
     assert_eq!(last.status, ApplyStatus::Failed);
 }
 
+/// A package manager whose `install` panics mid-call, standing in for a lane
+/// worker that unwinds instead of returning — the shape a real bug (an
+/// indexing slip, a `.unwrap()` a provider was never supposed to reach) takes
+/// in production.
+struct PanickingPackageManager {
+    name: String,
+}
+
+impl PackageManager for PanickingPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        panic!("simulated lane worker panic");
+    }
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn apply_survives_a_panicking_lane_worker_instead_of_hanging() {
+    // F12 regression: a panic anywhere in a lane worker used to leave
+    // `Finished` unsent, `running` never decrementing, and the coordinator
+    // blocked in `inbox.recv()` forever. `apply` must still return (failed,
+    // not hanging), so the whole call runs on a detached thread and the test
+    // bounds it with `recv_timeout`: a regression here fails the assertion
+    // instead of hanging the suite.
+    //
+    // This panic is caught by `run_one_action`'s own (pre-existing) inner
+    // `catch_unwind` before it ever reaches the outer worker-closure guard
+    // added in the same fix (the one around `lane.finish()`/`notes.take()`/
+    // `tx.send`). That outer arm has no black-box trigger: every
+    // `Printer::for_test*` constructor pins `live_region: false`, so
+    // `LaneHandle::finish()` reduces to `Mutex::into_inner`/`lock` calls that
+    // already recover from poisoning and cannot panic under test. What this
+    // test proves instead — and what a hang here would still catch — is the
+    // end-to-end contract: a worker panic anywhere in the dispatch loop
+    // fails the run rather than wedging the coordinator, exercising the
+    // coordinator's `tx`-drop and `inbox.recv()` disconnect path along with
+    // it.
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(PanickingPackageManager {
+            name: "panicky".to_string(),
+        }));
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "panicky".to_string(),
+        packages: vec!["whatever".to_string()],
+        origin: "local".to_string(),
+    }];
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let state = test_state();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+        let printer = test_printer();
+        let result = reconciler.apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        );
+        let last_status = state.last_apply().unwrap().map(|a| a.status);
+        let _ = tx.send(result.map(|r| (r.status.clone(), r.succeeded(), r.failed(), last_status)));
+    });
+
+    let (status, succeeded, failed, last_status) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect(
+            "apply did not complete within 10s — a lane worker panic outside \
+             run_one_action's catch_unwind hung the coordinator in inbox.recv()",
+        )
+        .unwrap();
+
+    assert_eq!(status, ApplyStatus::Failed);
+    assert_eq!(succeeded, 0);
+    assert_eq!(failed, 1);
+    assert_eq!(last_status, Some(ApplyStatus::Failed));
+}
+
 // --- continueOnError script tests ---
 
 #[test]

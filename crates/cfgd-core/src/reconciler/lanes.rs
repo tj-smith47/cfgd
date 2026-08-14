@@ -496,6 +496,12 @@ impl super::Reconciler<'_> {
         };
 
         let (tx, inbox) = channel::<LaneMessage>();
+        // `None` once no `Waiting` slot remains (or the run aborts): the
+        // coordinator will never clone a sender again, so it drops its own
+        // handle and lets `inbox.recv()` disconnect instead of blocking
+        // forever behind a worker that dies without sending `Finished` — see
+        // the drop below and the `Err(_)` arm at the bottom of this loop.
+        let mut tx: Option<Sender<LaneMessage>> = Some(tx);
 
         std::thread::scope(|scope| {
             loop {
@@ -538,7 +544,16 @@ impl super::Reconciler<'_> {
                         // observe its directories is dispatched.
                         let path_dirs = super::all_recorded_path_dirs(self.state);
                         let lane = run.printer.lane_at(run.action_depth, subject);
-                        let tx = tx.clone();
+                        let Some(worker_tx) = tx.clone() else {
+                            // Unreachable: `pick_next` returns an index only
+                            // while some slot is still `Waiting`, which is
+                            // exactly the condition under which the
+                            // coordinator still holds `tx` (see the drop
+                            // below). No slot state has been mutated yet, so
+                            // breaking here costs nothing but a redundant
+                            // dispatch pass rather than panicking.
+                            break;
+                        };
 
                         slots[index].state = SlotState::Running;
                         running += 1;
@@ -552,18 +567,59 @@ impl super::Reconciler<'_> {
                         let manager = slots[index].manager.clone().unwrap_or_default();
                         journal_ids.insert(index, journal_id);
                         scope.spawn(move || {
-                            let finished = run_one_action(
-                                registry, run, action, &lane, &tx, &manager, &path_dirs,
-                            );
-                            let body = lane.finish();
-                            let _ = tx.send(LaneMessage::Finished(Box::new(LaneFinished {
-                                slot: index,
-                                result: finished.result,
-                                elapsed: finished.elapsed,
-                                notes: finished.notes,
-                                body,
-                                bootstrapped: finished.bootstrapped,
-                            })));
+                            // The whole worker, not just the action body, must
+                            // be panic-safe: `run_one_action` already
+                            // catch_unwinds the action itself, but
+                            // `lane.finish()` runs OUTSIDE that boundary. Two
+                            // separate guards, not one wrapping both calls,
+                            // because `finished` (and the bootstrap PATH rows
+                            // inside it) must survive a panic in
+                            // `lane.finish()` — folding both calls into one
+                            // `catch_unwind` would drop `finished` along with
+                            // the unwind and lose them even though
+                            // `run_one_action` already returned successfully.
+                            // Either guard tripping still sends a `Finished`
+                            // message, so `running` always decrements and the
+                            // coordinator never blocks in `inbox.recv()`
+                            // waiting on a worker that died silently.
+                            let started = Instant::now();
+                            let panic_manager = manager.clone();
+                            let action_tx = worker_tx.clone();
+                            let executed =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    run_one_action(
+                                        registry, run, action, &lane, &action_tx, &manager,
+                                        &path_dirs,
+                                    )
+                                }));
+                            let message = match executed {
+                                Ok(finished) => {
+                                    let body = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(|| lane.finish()),
+                                    )
+                                    .unwrap_or_default();
+                                    LaneFinished {
+                                        slot: index,
+                                        result: finished.result,
+                                        elapsed: finished.elapsed,
+                                        notes: finished.notes,
+                                        body,
+                                        bootstrapped: finished.bootstrapped,
+                                    }
+                                }
+                                Err(_) => LaneFinished {
+                                    slot: index,
+                                    result: Err(PackageError::LanePanicked {
+                                        manager: panic_manager,
+                                    }
+                                    .into()),
+                                    elapsed: started.elapsed(),
+                                    notes: Vec::new(),
+                                    body: Vec::new(),
+                                    bootstrapped: Vec::new(),
+                                },
+                            };
+                            let _ = worker_tx.send(LaneMessage::Finished(Box::new(message)));
                         });
                     }
                     refresh_wait_bars(
@@ -584,6 +640,19 @@ impl super::Reconciler<'_> {
                     // itself skipped while aborting.
                     bars.groups.clear();
                     bars.actions.clear();
+                }
+
+                // Nothing will ever clone `tx` again once no slot remains
+                // `Waiting` (or the run has aborted, which stops new
+                // dispatch outright). Dropping the coordinator's own handle
+                // here is what lets `inbox.recv()` below actually
+                // disconnect if `running` is ever wrong — a worker killed by
+                // something `catch_unwind` cannot see — instead of blocking
+                // on a channel only the coordinator itself still holds open.
+                if tx.is_some()
+                    && (aborted.is_some() || !slots.iter().any(|s| s.state == SlotState::Waiting))
+                {
+                    tx = None;
                 }
 
                 if running == 0 {
@@ -635,8 +704,14 @@ impl super::Reconciler<'_> {
                             },
                         );
                     }
-                    // Every worker holds a sender and the coordinator holds
-                    // one, so this is unreachable while anything is running.
+                    // Reachable only once the coordinator has dropped its own
+                    // `tx` above AND every worker's clone is also gone
+                    // without a `Finished` ever landing — a worker killed by
+                    // something the panic guard in the spawned closure
+                    // cannot see. Whatever is still `Waiting` or `Running` is
+                    // left uncollected; the caller reports the run as not
+                    // having reached that work, the same as any other
+                    // aborted dispatch.
                     Err(_) => break,
                 }
             }
@@ -780,49 +855,53 @@ fn run_one_action(
     // action's: a shared one would attach a lane's caveat to whichever
     // action happened to be collected next.
     let notes = NoteSink::default();
-    let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let exec = PackageExec::new(registry, &proxy, run.printer, &notes).in_lane(lane);
-        let result = match action {
-            Action::Package(pkg) => exec.apply_package_action(pkg).map(|desc| (desc, true)),
-            Action::Module(
-                module @ ModuleAction {
-                    kind: ModuleActionKind::InstallPackages { resolved },
-                    ..
-                },
-            ) => exec.install_module_packages(
-                module,
-                resolved,
-                &ModuleInstallContext {
-                    config_dir: run.config_dir,
-                    resolved: run.resolved,
-                    module_actions: run.module_actions,
-                    context: run.context,
-                    shell_override: run.shell_override,
-                    abort: run.abort,
-                    path_dirs,
-                },
-            ),
-            // The phase holds only package work by construction
-            // (`phase_for_module_kind`), so this arm exists for totality.
-            other => Ok((format_action_description(other), false)),
-        };
-        (result, exec.take_bootstrapped())
-    }));
-    let (result, bootstrapped) = match executed {
-        Ok(pair) => pair,
-        Err(_) => (
-            Err(PackageError::LanePanicked {
-                manager: manager.to_string(),
-            }
-            .into()),
-            Vec::new(),
+    // Built OUTSIDE the panic guard, and only borrowed inside it: a bootstrap
+    // this exec already performed lands on disk (and on this process's PATH
+    // registry) before the panic that might follow it, so `exec` — and the
+    // records inside it — must survive the unwind for `take_bootstrapped()`
+    // below to still see them. Moving construction inside the guarded
+    // closure, as it once did, drops `exec` along with the panic and loses
+    // every bootstrap the action performed just before failing.
+    let exec = PackageExec::new(registry, &proxy, run.printer, &notes).in_lane(lane);
+    let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
+        Action::Package(pkg) => exec.apply_package_action(pkg).map(|desc| (desc, true)),
+        Action::Module(
+            module @ ModuleAction {
+                kind: ModuleActionKind::InstallPackages { resolved },
+                ..
+            },
+        ) => exec.install_module_packages(
+            module,
+            resolved,
+            &ModuleInstallContext {
+                config_dir: run.config_dir,
+                resolved: run.resolved,
+                module_actions: run.module_actions,
+                context: run.context,
+                shell_override: run.shell_override,
+                abort: run.abort,
+                path_dirs,
+            },
         ),
+        // The phase holds only package work by construction
+        // (`phase_for_module_kind`), so this arm exists for totality.
+        other => Ok((format_action_description(other), false)),
+    }));
+    let result = match executed {
+        Ok(result) => result,
+        Err(_) => Err(PackageError::LanePanicked {
+            manager: manager.to_string(),
+        }
+        .into()),
     };
     LaneWorkerResult {
         result,
         elapsed: started.elapsed(),
         notes: notes.take(),
-        bootstrapped,
+        // Read unconditionally: `exec` was never moved into the guarded
+        // closure, so it — and whatever it recorded before a panic — is
+        // still here to drain whether or not the action itself panicked.
+        bootstrapped: exec.take_bootstrapped(),
     }
 }
 
