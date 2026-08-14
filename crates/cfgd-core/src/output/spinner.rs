@@ -32,9 +32,15 @@ pub(crate) fn stderr_is_terminal() -> bool {
 /// follow are an `OutputWindow` tail, already clamped at their own indent.
 fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> String {
     let width = wrap::available_width(sink, depth);
+    // The bar carries its own indent: indicatif draws a bar's message at
+    // column 0 whatever else is on screen, so a step inside a section would
+    // otherwise sit outside the tree it belongs to while running and jump
+    // into it the moment it settles — and its own output window, which
+    // indents one level deeper still, would hang under nothing.
+    let indent = "  ".repeat(depth);
     match message.split_once('\n') {
-        Some((head, rest)) => format!("{}\n{}", wrap::clamp(head, width), rest),
-        None => wrap::clamp(message, width),
+        Some((head, rest)) => format!("{indent}{}\n{}", wrap::clamp(head, width), rest),
+        None => format!("{indent}{}", wrap::clamp(message, width)),
     }
 }
 

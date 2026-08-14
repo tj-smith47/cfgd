@@ -221,13 +221,19 @@ struct Slot<'p> {
     state: SlotState,
 }
 
-/// The ONE wait-line grammar: `<owner token> · waiting on <thing>`.
+/// The ONE wait-line grammar: `<head> · waiting on <thing>`.
 ///
-/// One sentence for both cardinalities — the manager for a blocked action, the
-/// tier in flight for a blocked group — because they are the same statement at
-/// two levels and reading them side by side is the point.
-fn wait_subject(owner: &Owner, thing: &str) -> String {
-    format!("{} · waiting on {}", owner.token(), thing)
+/// One sentence for every cardinality — the tier in flight for a blocked
+/// group, the family lane for a blocked package action, the node ahead of it
+/// for a blocked manager node — because they are the same statement at
+/// different levels and reading them side by side is the point.
+///
+/// The head is the owner token wherever the owner is what distinguishes the
+/// line, and the action's own display subject where it is not: every node of
+/// the `cfgd:managers` group belongs to ONE owner, so a token there would
+/// print the same six characters above every line and name none of them.
+fn wait_subject(head: &str, thing: &str) -> String {
+    format!("{head} · waiting on {thing}")
 }
 
 /// The tier currently in flight, given each tier's count of actions that have
@@ -276,7 +282,7 @@ fn tier_waits<'g>(groups: &[GroupWait<'g>], in_flight: Option<Tier>) -> Vec<(&'g
     groups
         .iter()
         .filter(|g| g.pending && g.tier > in_flight)
-        .map(|g| (g.owner, wait_subject(g.owner, word)))
+        .map(|g| (g.owner, wait_subject(&g.owner.token(), word)))
         .collect()
 }
 
@@ -383,11 +389,34 @@ fn depends_satisfied(
 /// downstream of a failure before the next dispatch pass, so a slot whose
 /// dependency failed is already `Done` and is never offered here.
 fn dag_satisfied(slots: &[Slot<'_>], index: usize) -> bool {
-    slots[index].depends_on.iter().all(|dependency| {
-        !slots
-            .iter()
-            .any(|s| s.state != SlotState::Done && s.node.as_deref() == Some(dependency.as_str()))
-    })
+    blocking_node(slots, index).is_none()
+}
+
+/// The node `slots[index]` must wait for, and the one its wait line NAMES:
+/// the last of its unsatisfied edges to finish.
+///
+/// The last, not the first in flight — a line naming a blocker that clears
+/// while the node stays put has named something that was not in the way. What
+/// finishes last is not knowable from here, so it is ordered by how far each
+/// blocker still is from done: one that has not started finishes after one
+/// already running, and a tie goes to the later of them in plan order. Edges
+/// are direct, so a node behind a chain names the node immediately ahead of
+/// it and that node names the one ahead of IT — each line stating the next
+/// thing that has to happen rather than three lines repeating the root.
+///
+/// Also the whole of [`dag_satisfied`], so the dispatcher's gate and the
+/// renderer's attribution can never disagree about whether a node is held.
+fn blocking_node<'s, 'p>(slots: &'s [Slot<'p>], index: usize) -> Option<&'s Slot<'p>> {
+    slots[index]
+        .depends_on
+        .iter()
+        .filter_map(|dependency| {
+            slots.iter().enumerate().find(|(_, s)| {
+                s.state != SlotState::Done && s.node.as_deref() == Some(dependency.as_str())
+            })
+        })
+        .max_by_key(|(position, slot)| (slot.state == SlotState::Waiting, *position))
+        .map(|(_, slot)| slot)
 }
 
 /// What a node is CALLED on the line of a node it takes down.
@@ -544,6 +573,9 @@ struct WaitInputs<'a, 'p> {
     groups: &'a [(&'p Owner, Tier)],
     deps: &'a HashMap<&'a str, HashSet<&'a str>>,
     lanes_busy: &'a HashSet<String>,
+    /// Depth the phase's action lines render at — the column a wait line
+    /// standing in for one of them has to occupy.
+    depth: usize,
 }
 
 /// The wait bars currently on screen, each keyed by what replaces it: a group's
@@ -809,6 +841,7 @@ impl super::Reconciler<'_> {
                             groups: &groups,
                             deps: &deps,
                             lanes_busy: &lanes_busy,
+                            depth: run.action_depth,
                         },
                         &mut bars,
                     );
@@ -1020,7 +1053,8 @@ fn refresh_wait_bars<'x>(
             // lines accumulating.
             Some(bar) => bar.set_subject(&subject),
             None => {
-                bars.groups.insert(token, printer.wait_bar(&subject));
+                bars.groups
+                    .insert(token, printer.wait_bar(inputs.depth, &subject));
             }
         }
     }
@@ -1041,30 +1075,46 @@ fn refresh_wait_bars<'x>(
         if !depends_satisfied(slots, index, inputs.deps) {
             continue;
         }
-        // A node still waiting on an edge is not waiting on its lane, and
-        // saying so would name the wrong blocker. What such a node IS waiting
-        // on is the node ahead of it — attribution the renderer owns.
-        if !dag_satisfied(slots, index) {
-            continue;
-        }
-        // An owner mid-action in another lane still gets this line: one
-        // bar per in-flight action AND one per blocked action is the whole
-        // point of the grammar, and the window it describes — a module
-        // holding brew while another holds apt — is the one the wait line
-        // exists for.
-        let Some(lane) = slot.lane() else {
-            continue;
-        };
-        if inputs.lanes_busy.contains(lane) {
-            // The lane, not the registered name: an action for `brew-cask`
-            // held back by a running `brew` is waiting on brew. Keying on
-            // `(owner, lane)` collapses the several actions of one owner that
-            // are all held behind the same binary into the one line they all
-            // say.
-            let key = (slot.owner.token(), lane.to_string());
-            if blocked_seen.insert(key.clone()) {
-                blocked.push((key, wait_subject(slot.owner, lane)));
+        // What holds this slot, in the order the dispatcher applies: an edge
+        // it has not cleared, else the family lane something else is running
+        // in. A node behind an edge is NOT waiting on its lane — it may not
+        // even have one yet — so naming the lane there would name a blocker
+        // that is not in the way, and saying nothing at all would leave the
+        // node absent from the live region for the whole of its wait.
+        let (key, subject) = match blocking_node(slots, index) {
+            Some(blocker) => {
+                let on = node_subject(blocker.action).unwrap_or_default();
+                // Keyed per node: the nodes of the `cfgd:managers` group share
+                // one owner and one lane, so an owner-keyed line would let the
+                // first of them speak for all of them.
+                (
+                    (slot.owner.token(), slot.node.clone().unwrap_or_default()),
+                    wait_subject(&action_display_subject(slot.action).to_string(), on),
+                )
             }
+            None => {
+                // An owner mid-action in another lane still gets this line:
+                // one bar per in-flight action AND one per blocked action is
+                // the whole point of the grammar, and the window it describes
+                // — a module holding brew while another holds apt — is the one
+                // the wait line exists for.
+                let Some(lane) = slot.lane().filter(|lane| inputs.lanes_busy.contains(*lane))
+                else {
+                    continue;
+                };
+                // The lane, not the registered name: an action for `brew-cask`
+                // held back by a running `brew` is waiting on brew. Keying on
+                // `(owner, lane)` collapses the several actions of one owner
+                // that are all held behind the same binary into the one line
+                // they all say.
+                (
+                    (slot.owner.token(), lane.to_string()),
+                    wait_subject(&slot.owner.token(), lane),
+                )
+            }
+        };
+        if blocked_seen.insert(key.clone()) {
+            blocked.push((key, subject));
         }
     }
     let blocked_keys: HashSet<&(String, String)> = blocked.iter().map(|(k, _)| k).collect();
@@ -1073,7 +1123,8 @@ fn refresh_wait_bars<'x>(
         match bars.actions.get(&key) {
             Some(bar) => bar.set_subject(&subject),
             None => {
-                bars.actions.insert(key, printer.wait_bar(&subject));
+                bars.actions
+                    .insert(key, printer.wait_bar(inputs.depth, &subject));
             }
         }
     }
@@ -1262,12 +1313,12 @@ mod tests {
         // cannot drift apart.
         let nvim = Owner::module("nvim");
         assert_eq!(
-            wait_subject(&nvim, "apt"),
+            wait_subject(&nvim.token(), "apt"),
             "module:nvim · waiting on apt",
             "the blocked-action cardinality"
         );
         assert_eq!(
-            wait_subject(&nvim, Tier::Modules.wait_word().unwrap_or_default()),
+            wait_subject(&nvim.token(), Tier::Modules.wait_word().unwrap_or_default()),
             "module:nvim · waiting on modules",
             "the blocked-group cardinality"
         );
@@ -1312,6 +1363,7 @@ mod tests {
                 groups,
                 deps,
                 lanes_busy,
+                depth: 0,
             },
             bars,
         );
@@ -1472,6 +1524,202 @@ mod tests {
         refresh(&printer, &slots, &groups, &deps, &busy(&["apt"]), &mut bars);
 
         assert!(on_screen(&bars).is_empty(), "{:?}", on_screen(&bars));
+    }
+
+    /// One node of the `cfgd:managers` DAG, built the way the dispatcher
+    /// builds it: id and edges are read off the action rather than restated
+    /// here, so a test cannot describe a graph the planner could not emit.
+    fn node_slot<'p>(owner: &'p Owner, action: &'p Action, plan_index: usize) -> Slot<'p> {
+        let Action::Manager(node) = action else {
+            panic!("node_slot takes a manager action")
+        };
+        Slot {
+            owner,
+            action,
+            plan_index,
+            tier: Tier::of(owner),
+            manager: crate::reconciler::packages::action_manager(action).map(str::to_string),
+            module: None,
+            node: Some(node.node_id()),
+            depends_on: node.depends_on(),
+            state: SlotState::Waiting,
+        }
+    }
+
+    fn provision(manager: &str, via: &str, depends_on: &[String]) -> Action {
+        Action::Manager(ManagerAction::Provision {
+            manager: manager.to_string(),
+            via: via.to_string(),
+            depends_on: depends_on.to_vec(),
+        })
+    }
+
+    #[test]
+    fn an_edge_blocked_node_names_the_last_thing_that_has_to_finish() {
+        // Two blockers: one already running and LATER in the plan, one not
+        // started and earlier. The line names the unstarted one, because that
+        // is what the node is still behind once the running one clears — an
+        // attribution by "first in flight" would name brew and then have to
+        // take it back a second later.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let managers = Owner::cfgd("managers");
+        let pipx = provision("pipx", "brew", &[]);
+        let brew = provision("brew", "curl", &[]);
+        let poetry = provision(
+            "poetry",
+            "pipx",
+            &[
+                ManagerAction::provision_node("brew"),
+                ManagerAction::provision_node("pipx"),
+            ],
+        );
+        let mut slots = vec![
+            node_slot(&managers, &pipx, 0),
+            node_slot(&managers, &brew, 1),
+            node_slot(&managers, &poetry, 2),
+        ];
+        slots[1].state = SlotState::Running;
+        let groups = groups_of(&slots);
+        let mut bars = empty_bars();
+
+        refresh(
+            &printer,
+            &slots,
+            &groups,
+            &HashMap::new(),
+            &busy(&["brew"]),
+            &mut bars,
+        );
+
+        // The head is the node's own display subject, not the owner token:
+        // every node here belongs to `cfgd:managers`, so a token would print
+        // the same six characters above each line and name none of them.
+        assert_eq!(
+            on_screen(&bars),
+            vec!["provision poetry via pipx · waiting on pipx"],
+            "a node held by an edge is in the live region for the whole of its wait"
+        );
+    }
+
+    #[test]
+    fn two_unstarted_edges_are_ranked_by_plan_order_not_declaration_order() {
+        // Neither blocker has started, so the tie breaks on the plan: the one
+        // dispatched later is the one still ahead of the dependent when the
+        // other is done. The edges are declared in the opposite order to the
+        // one the line must pick, so a ranking that took the first edge
+        // written would say brew here.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let managers = Owner::cfgd("managers");
+        let brew = provision("brew", "curl", &[]);
+        let pipx = provision("pipx", "brew", &[]);
+        let poetry = provision(
+            "poetry",
+            "pipx",
+            &[
+                ManagerAction::provision_node("brew"),
+                ManagerAction::provision_node("pipx"),
+            ],
+        );
+        let slots = vec![
+            node_slot(&managers, &brew, 0),
+            node_slot(&managers, &pipx, 1),
+            node_slot(&managers, &poetry, 2),
+        ];
+        let groups = groups_of(&slots);
+        let mut bars = empty_bars();
+
+        refresh(
+            &printer,
+            &slots,
+            &groups,
+            &HashMap::new(),
+            &busy(&[]),
+            &mut bars,
+        );
+
+        assert!(
+            on_screen(&bars).contains(&"provision poetry via pipx · waiting on pipx".to_string()),
+            "{:?}",
+            on_screen(&bars)
+        );
+    }
+
+    #[test]
+    fn a_blocking_prerequisite_is_named_by_its_tool() {
+        // `apt install curl` is curl arriving, and curl is what the dependent
+        // is waiting for — naming apt would name the installer of the thing
+        // rather than the thing.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let managers = Owner::cfgd("managers");
+        let curl = Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["brew".to_string()],
+            depends_on: Vec::new(),
+        });
+        let curl_node = match &curl {
+            Action::Manager(node) => node.node_id(),
+            _ => panic!("built a manager action"),
+        };
+        let brew = provision("brew", "curl", &[curl_node]);
+        let mut slots = vec![
+            node_slot(&managers, &curl, 0),
+            node_slot(&managers, &brew, 1),
+        ];
+        slots[0].state = SlotState::Running;
+        let groups = groups_of(&slots);
+        let mut bars = empty_bars();
+
+        refresh(
+            &printer,
+            &slots,
+            &groups,
+            &HashMap::new(),
+            &busy(&["apt"]),
+            &mut bars,
+        );
+
+        assert_eq!(
+            on_screen(&bars),
+            vec!["provision brew via curl · waiting on curl"]
+        );
+    }
+
+    #[test]
+    fn an_edge_blocked_node_does_not_name_the_lane_it_has_not_reached_for() {
+        // The node's own manager is busy AND an edge is unsatisfied. The edge
+        // is what the dispatcher checks first, so it is what the line says;
+        // naming the lane would name a blocker the node is not yet behind.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let managers = Owner::cfgd("managers");
+        let brew = provision("brew", "curl", &[]);
+        let brew_cask = Action::Manager(ManagerAction::Provision {
+            manager: "brew-cask".to_string(),
+            via: "brew".to_string(),
+            depends_on: vec![ManagerAction::provision_node("brew")],
+        });
+        let mut slots = vec![
+            node_slot(&managers, &brew, 0),
+            node_slot(&managers, &brew_cask, 1),
+        ];
+        slots[0].state = SlotState::Running;
+        let groups = groups_of(&slots);
+        let mut bars = empty_bars();
+
+        refresh(
+            &printer,
+            &slots,
+            &groups,
+            &HashMap::new(),
+            &busy(&["brew"]),
+            &mut bars,
+        );
+
+        assert_eq!(
+            on_screen(&bars),
+            vec!["provision brew-cask via brew · waiting on brew"]
+        );
+        assert_eq!(bars.actions.len(), 1, "one blocker, one line");
     }
 
     #[test]

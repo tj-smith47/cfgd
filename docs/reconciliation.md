@@ -82,8 +82,14 @@ success. `cfgd:env` and `cfgd:session` run after that group finishes, in order, 
 they publish what it created.
 
 While a lane is held back, the live region shows one dimmed line per waiting group or
-action naming what it is waiting on (`module:nvim · waiting on apt`). Those lines exist
-only on a terminal — they are never logged, never in `-o json`, and never in scrollback.
+action naming what it is waiting on (`module:nvim · waiting on apt`). A node held by an
+**edge** rather than by a lane names the node ahead of it, and heads the line with its own
+subject rather than with an owner token — every node in `cfgd:managers` shares one owner,
+so a token there would name none of them (`provision npm via brew · waiting on brew`).
+With more than one edge outstanding it names the last of them to finish, so the line never
+has to take back what it said. Those lines exist only on a terminal — they are never
+logged, never in `-o json`, and never in scrollback.
+
 Because the lanes finish out of order, the `Packages` and `Prerequisites` trees are each
 written once, when the phase closes, in the displayed group order rather than the order
 things happened.
