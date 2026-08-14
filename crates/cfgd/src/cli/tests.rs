@@ -4789,7 +4789,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("actions exist in phase(s): Environment"),
+        output.contains("actions exist in phase(s): Prerequisites"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -6047,7 +6047,7 @@ fn cmd_apply_dry_run_each_phase() {
 
     let all_phases = [
         ApplyPhase::PreScripts,
-        ApplyPhase::Env,
+        ApplyPhase::Prerequisites,
         ApplyPhase::Modules,
         ApplyPhase::Packages,
         ApplyPhase::System,
@@ -15095,8 +15095,8 @@ fn action_path_env_write() {
         path: PathBuf::from("/home/user/.config/cfgd/env.sh"),
         content: String::new(),
     });
-    let path = super::action_path(&PhaseName::Env, &action);
-    assert_eq!(path, "env:/home/user/.config/cfgd/env.sh");
+    let path = super::action_path(&PhaseName::Prerequisites, &action);
+    assert_eq!(path, "prerequisites:/home/user/.config/cfgd/env.sh");
 }
 
 // -----------------------------------------------------------------------
@@ -15864,8 +15864,8 @@ fn action_path_env_inject_source_line() {
         rc_path: PathBuf::from("/home/user/.zshrc"),
         line: ". ~/.cfgd.env".into(),
     });
-    let path = super::action_path(&PhaseName::Env, &action);
-    assert_eq!(path, "env:/home/user/.zshrc");
+    let path = super::action_path(&PhaseName::Prerequisites, &action);
+    assert_eq!(path, "prerequisites:/home/user/.zshrc");
 }
 
 #[test]
@@ -19470,6 +19470,7 @@ mod cmd_source_add_local {
 fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
     let cases = [
         (super::ApplyPhase::PreScripts, "pre-scripts"),
+        (super::ApplyPhase::Prerequisites, "prerequisites"),
         (super::ApplyPhase::Env, "env"),
         (super::ApplyPhase::Modules, "modules"),
         (super::ApplyPhase::Packages, "packages"),
@@ -19478,6 +19479,11 @@ fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
         (super::ApplyPhase::Secrets, "secrets"),
         (super::ApplyPhase::PostScripts, "post-scripts"),
     ];
+    assert_eq!(
+        cases.len(),
+        <super::ApplyPhase as clap::ValueEnum>::value_variants().len(),
+        "every phase spelling the CLI accepts needs a label pinned here"
+    );
     for (phase, label) in cases {
         assert_eq!(phase.as_str(), label);
     }
@@ -19491,7 +19497,16 @@ fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
             super::ApplyPhase::PreScripts,
             PhaseFilter::Phase(PhaseName::PreScripts),
         ),
-        (super::ApplyPhase::Env, PhaseFilter::Phase(PhaseName::Env)),
+        (
+            super::ApplyPhase::Prerequisites,
+            PhaseFilter::Phase(PhaseName::Prerequisites),
+        ),
+        // The deprecated spelling resolves to the same phase, so a script
+        // written against it keeps selecting the work it always selected.
+        (
+            super::ApplyPhase::Env,
+            PhaseFilter::Phase(PhaseName::Prerequisites),
+        ),
         // The one variant that is NOT a plan phase: module work applies in the
         // phase whose kind it is.
         (super::ApplyPhase::Modules, PhaseFilter::ModuleOwners),
@@ -19516,9 +19531,38 @@ fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
             PhaseFilter::Phase(PhaseName::PostScripts),
         ),
     ];
+    assert_eq!(
+        cases.len(),
+        <super::ApplyPhase as clap::ValueEnum>::value_variants().len(),
+        "every phase spelling the CLI accepts needs a filter pinned here"
+    );
     for (input, expected) in cases {
         assert_eq!(super::apply_phase_to_filter(input), expected);
     }
+}
+
+#[test]
+fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+
+    let (printer, buf) = test_printer_capture();
+    let filter = super::resolve_phase_filter(Some(super::ApplyPhase::Env), &printer);
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Prerequisites)));
+    assert!(
+        out.contains("`--phase env` is deprecated") && out.contains("--phase prerequisites"),
+        "the notice must name both the spelling and its replacement:\n{out}"
+    );
+
+    let (printer, buf) = test_printer_capture();
+    super::resolve_phase_filter(Some(super::ApplyPhase::Prerequisites), &printer);
+    printer.flush();
+    assert!(
+        buf.lock().unwrap().is_empty(),
+        "the current spelling earns no notice"
+    );
 }
 
 #[test]

@@ -598,6 +598,22 @@ impl<T: PackageManager + ?Sized> PackageManagerExt for T {
     }
 }
 
+/// The registered names of the managers that ship with an operating system and
+/// so are the only source a cfgd prerequisite may be installed from.
+///
+/// The ONE population, because two questions have to agree on it and neither
+/// can see the other's inputs: a provider's `bootstrap_plan` asks "could this
+/// host obtain the tool my cascade needs" holding no registry, and the planner
+/// asks "which registered manager installs it" holding no PATH probes of its
+/// own. A list on one side only means a plan that promises a provisioning the
+/// planner then cannot schedule.
+pub const SYSTEM_MANAGER_NAMES: &[&str] = &["apt", "dnf", "yum", "zypper", "pacman", "apk", "pkg"];
+
+/// Whether a registered manager name is one of [`SYSTEM_MANAGER_NAMES`].
+pub fn is_system_manager(name: &str) -> bool {
+    SYSTEM_MANAGER_NAMES.contains(&name)
+}
+
 // --- SystemConfigurator trait ---
 
 /// One setting a [`SystemConfigurator`] found diverging from the desired state.

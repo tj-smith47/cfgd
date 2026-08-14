@@ -534,7 +534,14 @@ Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
-  Phases   Packages, Files, Post-Scripts
+  Phases   Prerequisites, Packages, Files, Post-Scripts
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh apt index
+    - refresh brew index
+    - refresh npm index
+    - refresh pipx index
 
 Phase: Packages
   profile:work
@@ -556,7 +563,7 @@ Phase: Post-Scripts
     - postApply: nvim --headless "+Lazy! sync" +qa
     - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 
-⊙ 9 action(s) planned
+⊙ 13 action(s) planned
 ```
 
 A module's package line names the manager that won resolution, the manager-specific package

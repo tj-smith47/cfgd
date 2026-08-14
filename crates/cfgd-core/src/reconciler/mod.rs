@@ -11,6 +11,7 @@ mod file_action;
 mod files;
 mod format;
 mod lanes;
+mod managers;
 mod modules;
 mod packages;
 mod patch;
@@ -55,9 +56,9 @@ pub use run::{
     render_plan_tree, render_run_rollup,
 };
 pub use types::{
-    Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Owner,
-    OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext, RollbackResult,
-    ScriptAction, ScriptPhase, SystemAction, Tier, package_owner,
+    Action, ActionResult, ApplyResult, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
+    Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
+    RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier, package_owner,
 };
 pub use verify::{VerifyResult, verify};
 

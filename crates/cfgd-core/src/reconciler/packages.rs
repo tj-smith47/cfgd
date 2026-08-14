@@ -14,7 +14,7 @@ use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env, execute_script,
     script_default_workdir,
 };
-use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
+use super::types::{ManagerAction, ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
 
 /// Compute stale package-tracking rows to garbage-collect: cfgd-tracked packages
 /// whose identity is no longer reported by their manager's `installed_packages`.
@@ -205,7 +205,7 @@ impl<'x> PackageExec<'x> {
                         if !pm.is_available() {
                             return Err(crate::errors::PackageError::BootstrapFailed {
                                 manager: manager.clone(),
-                                message: format!("{} still not available after bootstrap", manager),
+                                message: format!("{manager} still not available after bootstrap"),
                             }
                             .into());
                         }
@@ -269,6 +269,51 @@ impl<'x> PackageExec<'x> {
             }
             PackageAction::Skip { manager, .. } => Ok(format!("package:{}:skip", manager)),
         }
+    }
+
+    /// Apply one `cfgd:managers` node.
+    ///
+    /// Each node does exactly what its plan line said and nothing else — a
+    /// provision installs, and does not also refresh, because a manager it just
+    /// installed carries a fresh index. The description returned is the node's
+    /// own id, so the journal row and the DAG edge naming it are the same
+    /// string.
+    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<String> {
+        let cx = self.cx();
+        // A provision's manager is by definition not available yet, so the
+        // lookup spans every registered manager rather than the available ones.
+        let pm = self
+            .registry
+            .package_managers
+            .iter()
+            .find(|pm| pm.name() == action.manager())
+            .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
+                manager: action.manager().to_string(),
+            })?;
+        match action {
+            ManagerAction::RefreshIndex { .. } => pm.update(&cx)?,
+            ManagerAction::Provision { manager, .. } => {
+                // An earlier node — or a module's own install — may have
+                // provisioned it already. What the node promises is an
+                // available manager, not a second run of an installer that is
+                // minutes of work and not idempotent for every manager.
+                if !pm.is_available() {
+                    pm.bootstrap(&cx)?;
+                }
+                self.record_bootstrap(pm.as_ref());
+                if !pm.is_available() {
+                    return Err(crate::errors::PackageError::BootstrapFailed {
+                        manager: manager.clone(),
+                        message: format!("{manager} still not available after bootstrap"),
+                    }
+                    .into());
+                }
+            }
+            ManagerAction::Prerequisite { tool, .. } => {
+                pm.install(std::slice::from_ref(tool), &cx)?;
+            }
+        }
+        Ok(action.node_id())
     }
 
     /// Apply one module-owned `InstallPackages` action.
@@ -474,6 +519,18 @@ impl super::Reconciler<'_> {
     ) -> Result<String> {
         let exec = PackageExec::new(self.registry, self.state, printer, notes);
         let result = exec.apply_package_action(action);
+        self.persist_bootstraps(exec.take_bootstrapped());
+        result
+    }
+
+    pub(super) fn apply_manager_action(
+        &self,
+        action: &ManagerAction,
+        printer: &Printer,
+        notes: &NoteSink,
+    ) -> Result<String> {
+        let exec = PackageExec::new(self.registry, self.state, printer, notes);
+        let result = exec.apply_manager_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());
         result
     }

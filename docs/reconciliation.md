@@ -8,7 +8,7 @@ Apply runs in a fixed phase order:
 
 1. **Modules** — modules skipped because they do not apply to this host (a `platform:` gate that excluded it), reported before any work starts
 2. **Pre-Scripts** — `preApply` or `preReconcile` hooks (context-dependent)
-3. **Env** — write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`; inject shell rc source lines
+3. **Prerequisites** — everything the run needs before it can install anything: refresh each package manager's index, provision the managers that are missing (and install the tools their installers shell out to), then write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`, and inject shell rc source lines
 4. **Packages** — install/uninstall across all package managers
 5. **Files** — copy, template, set permissions
 6. **System** — shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
@@ -31,14 +31,15 @@ is labelled `kind:name`:
 |---|---|
 | `profile:<name>` | declared by the active profile |
 | `module:<name>` | declared by that module |
-| `cfgd:managers` | a package-manager bootstrap cfgd runs on its own initiative |
+| `cfgd:managers` | package-manager work cfgd runs on its own initiative: an index refresh, a manager it provisions, a tool that provisioning needs |
 | `cfgd:env` / `cfgd:session` | the generated env file / the live-session refresh |
 
-Groups read profile-first, then `cfgd:`, then modules by name. **Execution order in
-`Packages` is deliberately not that order**: module-owned package work runs first, then
-package-manager bootstraps, then profile-owned package work — so a module's dependency is
-present before a module's own hooks need it, and a manager is installed before the profile
-package that needs it. Everywhere else, execution follows the displayed order.
+Groups read profile-first, then `cfgd:`, then modules by name — except cfgd's own three
+groups, which read producer-before-consumer: `cfgd:managers` creates the binaries,
+`cfgd:env` publishes where they live, `cfgd:session` broadcasts it. **Execution order in
+`Packages` is deliberately not the displayed order**: module-owned package work runs first,
+then profile-owned package work, so a module's dependency is present before a module's own
+hooks need it. Everywhere else, execution follows the displayed order.
 
 Those three tiers are also a barrier: a tier starts only once every action in the tier
 above it has *finished*. Inside a tier, package work runs **concurrently — one lane per
@@ -60,17 +61,10 @@ The concurrency bound is the number of distinct manager families with work in th
 There is nothing to tune: a machine that declares only `brew` packages still runs one
 `brew` at a time, and one that declares `brew`, `apt` and `cargo` runs three.
 
-Before the first phase, cfgd refreshes the package index of every manager already on the
-machine — concurrently, except `npm`, whose refresh reads cfgd's own state store and so
-runs by itself afterwards — collapsed into one line naming them:
-
-```
-✓ Package indexes updated — toolbox (0.0s)
-```
-
-A manager cfgd bootstraps later in the run is not in that pre-pass; it refreshes once,
-inline, right after its bootstrap succeeds. A refresh that fails degrades the line to a
-warning and never fails the run.
+Index refreshes and manager provisioning are actions in the `Prerequisites` phase, named in
+the plan and reported where they ran — see [packages.md](packages.md#index-refresh). A run
+that filters that phase out still refreshes ahead of the work it selected, collapsed into
+one line. A refresh that fails is a warning and never fails the run.
 
 While a lane is held back, the live region shows one dimmed line per waiting group or
 action naming what it is waiting on (`module:nvim · waiting on apt`). Those lines exist
@@ -84,9 +78,9 @@ surfaces that phase owns: bootstrapping a package manager under `--phase package
 its PATH entries but leaves `~/.cfgd.env` and your shell rc files alone. The record is
 durable, so the next full `cfgd apply` folds those entries in.
 
-A full apply needs no second run for that: the Env phase runs before Packages, so cfgd
-regenerates `~/.cfgd.env` once at the end of the apply that bootstrapped the manager, and
-the file is correct when that run finishes.
+A full apply needs no second run for that: the `Prerequisites` phase provisions the manager
+and regenerates `~/.cfgd.env` before `Packages` runs, so the file is correct when that run
+finishes.
 
 ## Apply vs Reconcile Context
 
@@ -110,14 +104,17 @@ Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
-  Phases   Packages, Files, System, Post-Scripts
+  Phases   Prerequisites, Packages, Files, System, Post-Scripts
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
+    - provision nix via nix installer
 
 Phase: Packages
   profile:work
     - brew install extra-tool
     - nix install hello
-  cfgd:managers
-    - bootstrap nix via nix installer
   module:nvim
     - brew install neovim (0.12.4)
 
@@ -138,7 +135,7 @@ Phase: Post-Scripts
 Backups (run on apply)
   ⊙ mydata
 
-⊙ 8 action(s) planned
+⊙ 9 action(s) planned
 ```
 
 The header block states the scope every line below is read against: which
@@ -147,8 +144,7 @@ hold in-scope work, and — on an executing run (`cfgd apply`) — an
 `Actions  N planned` row in place of the closing count.
 
 The `Packages` bullets are the group order in miniature: the profile's own
-install, then `cfgd:managers`' bootstrap, then `module:nvim`. Execution reverses
-the first and last of those — see the note above.
+installs, then `module:nvim`. Execution reverses those two — see the note above.
 
 ## Filtering
 
@@ -159,7 +155,7 @@ cfgd apply --module nvim                 # single module + deps
 cfgd apply --only packages.brew          # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim   # a module's package work
 cfgd apply --skip module:nvim            # one module, every phase
-cfgd apply --skip cfgd:managers          # every package-manager bootstrap
+cfgd apply --skip cfgd:managers          # every index refresh and manager cfgd provisions
 cfgd apply --skip system.sysctl          # skip specific items
 ```
 
@@ -168,8 +164,9 @@ The owner segment (`module:nvim`) is what keeps a module named `brew` distinct f
 packages.module:brew` selects the module. The pre-routing spellings `modules` and
 `modules.<name>` still work and print a deprecation naming their replacement.
 
-Skipping a bootstrap leaves the installs that needed it in the plan; cfgd warns when that
-happens and prints the `--skip packages.<manager>` flags that would drop them too.
+Skipping the managers group leaves the installs that needed a provisioned manager in the
+plan; cfgd warns when that happens and prints the `--skip packages.<manager>` flags that
+would drop them too.
 
 ## Failure Handling
 

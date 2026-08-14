@@ -159,6 +159,11 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::EnvAction::InjectSourceLine { .. } => "inject",
             reconciler::EnvAction::RefreshLiveSession { .. } => "refresh",
         },
+        reconciler::Action::Manager(ma) => match ma {
+            reconciler::ManagerAction::RefreshIndex { .. } => "refresh",
+            reconciler::ManagerAction::Provision { .. } => "provision",
+            reconciler::ManagerAction::Prerequisite { .. } => "prerequisite",
+        },
     }
 }
 
@@ -197,6 +202,7 @@ pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String>
         },
         reconciler::Action::Package(_)
         | reconciler::Action::System(_)
+        | reconciler::Action::Manager(_)
         | reconciler::Action::Script(_) => vec![],
     }
 }
@@ -244,7 +250,8 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
         reconciler::Action::Script(sa) => match sa {
             reconciler::ScriptAction::Run { origin, .. } => norm(origin),
         },
-        reconciler::Action::Env(_) => None,
+        // cfgd needed the manager; no source delivered it.
+        reconciler::Action::Env(_) | reconciler::Action::Manager(_) => None,
     }
 }
 
@@ -748,6 +755,19 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
                 format!("{}:live-session", prefix)
             }
         },
+        // The node's subject, so `--skip prerequisites.brew` reaches brew's
+        // provision and `--skip prerequisites.curl` its prerequisite. A
+        // sub-manager is already folded onto its family's node at plan time, so
+        // the family name is what a pattern has to name.
+        reconciler::Action::Manager(ma) => match ma {
+            reconciler::ManagerAction::RefreshIndex { manager }
+            | reconciler::ManagerAction::Provision { manager, .. } => {
+                format!("{}.{}", prefix, manager)
+            }
+            reconciler::ManagerAction::Prerequisite { tool, .. } => {
+                format!("{}.{}", prefix, tool)
+            }
+        },
     }
 }
 
@@ -797,6 +817,53 @@ pub(in crate::cli) fn pattern_matches_action(
 /// generation and announced as deprecated when it is used.
 const LEGACY_MODULE_PATTERN: &str = "modules";
 const LEGACY_MODULE_PREFIX: &str = "modules.";
+
+/// The pre-merge spelling of the phase that now also provisions package
+/// managers, as the leading segment of a `--skip`/`--only` path.
+const LEGACY_ENV_PHASE: &str = "env";
+
+/// `pattern` with a leading `env` phase segment rewritten to the phase's
+/// current name, or `None` when it opens with anything else.
+///
+/// A path's phase segment ends at the first `.` (`env.something`) or `:`
+/// (`env:/home/you/.bashrc`), so the whole grammar is covered by finding
+/// either. An owner token (`cfgd:env`) opens with its kind and is untouched.
+fn legacy_env_pattern_rewritten(pattern: &str) -> Option<String> {
+    let end = pattern.find(['.', ':']).unwrap_or(pattern.len());
+    (&pattern[..end] == LEGACY_ENV_PHASE)
+        .then(|| format!("{}{}", PhaseName::Prerequisites.as_str(), &pattern[end..]))
+}
+
+/// Rewrite every legacy `env` phase segment to the phase's current name,
+/// announcing each distinct pattern once.
+///
+/// Left alone, such a pattern would stop matching the moment the phase was
+/// renamed — silently, since a pattern that selects nothing is indistinguishable
+/// from one whose work is absent, and a run meaning to SKIP the env writes would
+/// perform them.
+fn normalize_legacy_phase_patterns(
+    printer: &Printer,
+    flag: &str,
+    patterns: &[String],
+) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::with_capacity(patterns.len());
+    for pattern in patterns {
+        let Some(rewritten) = legacy_env_pattern_rewritten(pattern) else {
+            out.push(pattern.clone());
+            continue;
+        };
+        if !seen.contains(pattern) {
+            seen.push(pattern.clone());
+            printer.deprecation(format!(
+                "`{flag} {pattern}` is deprecated: that phase now provisions package managers \
+                 as well as writing the env file. Use `{flag} {rewritten}`."
+            ));
+        }
+        out.push(rewritten);
+    }
+    out
+}
 
 fn is_legacy_module_pattern(pattern: &str) -> bool {
     pattern == LEGACY_MODULE_PATTERN || pattern.starts_with(LEGACY_MODULE_PREFIX)
@@ -1042,6 +1109,8 @@ pub(in crate::cli) fn filter_plan(
         return;
     }
     warn_legacy_module_patterns(printer, skip, only);
+    let skip = &normalize_legacy_phase_patterns(printer, "--skip", skip);
+    let only = &normalize_legacy_phase_patterns(printer, "--only", only);
 
     let mut removals = BootstrapRemovals::default();
     for phase in &mut plan.phases {
@@ -1119,10 +1188,17 @@ pub(in crate::cli) fn filter_plan(
                     filtered_actions.push(action);
                     continue;
                 }
-                if let reconciler::Action::Package(PackageAction::Bootstrap { manager, .. }) =
-                    &action
-                {
-                    removals.record(manager, matched_skip.map(String::as_str));
+                // Both spellings of "cfgd would have provided this manager":
+                // the `Prerequisites` node that provisions it, and the package
+                // bootstrap the drift surfaces still mint. Either one filtered
+                // away strands the installs that needed the manager.
+                match &action {
+                    reconciler::Action::Package(PackageAction::Bootstrap { manager, .. })
+                    | reconciler::Action::Manager(reconciler::ManagerAction::Provision {
+                        manager,
+                        ..
+                    }) => removals.record(manager, matched_skip.map(String::as_str)),
+                    _ => {}
                 }
             }
 

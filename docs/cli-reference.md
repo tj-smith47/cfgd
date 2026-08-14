@@ -191,7 +191,11 @@ Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  dev-tools, localmod
-  Phases   Packages, Post-Scripts
+  Phases   Prerequisites, Packages, Post-Scripts
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
 
 Phase: Packages
   module:dev-tools
@@ -203,7 +207,7 @@ Phase: Post-Scripts
   module:localmod
     - postApply: jq --version
 
-⊙ 3 action(s) planned
+⊙ 4 action(s) planned
 ```
 
 `--phase modules` selects every module-owned action wherever it was planned, so

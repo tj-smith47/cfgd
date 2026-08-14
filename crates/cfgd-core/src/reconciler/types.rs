@@ -18,7 +18,12 @@ pub enum ReconcileContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PhaseName {
     PreScripts,
-    Env,
+    /// Everything the rest of the run consumes but no user document declares:
+    /// the package managers themselves (`cfgd:managers`), the generated env
+    /// file that publishes where their binaries live (`cfgd:env`), and the live
+    /// session broadcast (`cfgd:session`) — in that producer-before-consumer
+    /// order.
+    Prerequisites,
     Modules,
     Packages,
     System,
@@ -31,7 +36,7 @@ impl PhaseName {
     pub fn as_str(&self) -> &str {
         match self {
             PhaseName::PreScripts => "pre-scripts",
-            PhaseName::Env => "env",
+            PhaseName::Prerequisites => "prerequisites",
             PhaseName::Modules => "modules",
             PhaseName::Packages => "packages",
             PhaseName::System => "system",
@@ -44,7 +49,7 @@ impl PhaseName {
     pub fn display_name(&self) -> &str {
         match self {
             PhaseName::PreScripts => "Pre-Scripts",
-            PhaseName::Env => "Environment",
+            PhaseName::Prerequisites => "Prerequisites",
             PhaseName::Modules => "Modules",
             PhaseName::Packages => "Packages",
             PhaseName::System => "System",
@@ -70,7 +75,10 @@ impl FromStr for PhaseName {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "pre-scripts" => Ok(PhaseName::PreScripts),
-            "env" => Ok(PhaseName::Env),
+            // `env` is the phase's pre-merge spelling: it now names the
+            // `cfgd:env` group of a wider phase, and a filter written against
+            // it still selects the phase that holds that work.
+            "prerequisites" | "env" => Ok(PhaseName::Prerequisites),
             "modules" => Ok(PhaseName::Modules),
             "system" => Ok(PhaseName::System),
             "packages" => Ok(PhaseName::Packages),
@@ -102,6 +110,124 @@ pub enum EnvAction {
     RefreshLiveSession { vars: Vec<(String, String)> },
 }
 
+/// Work on a package manager itself, rather than on a package: the
+/// `cfgd:managers` owner group of the [`PhaseName::Prerequisites`] phase.
+///
+/// The group is a DAG, not a list. Each node carries the ids of the nodes it
+/// must follow ([`ManagerAction::depends_on`]), so a scheduler reads the edges
+/// off the plan instead of re-deriving them from provider probes that may
+/// answer differently by the time it runs — and a failed node fails its
+/// dependents transitively by the same edges.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ManagerAction {
+    /// A manager already present on the host: refresh its package index.
+    /// Always emitted for a present manager — the default system manager is
+    /// almost always user-installed, and skipping its refresh fails most runs.
+    RefreshIndex { manager: String },
+    /// A manager this run will install, and the method its own cascade picks.
+    /// A provisioned manager's index is fresh by construction, so it never also
+    /// carries a [`ManagerAction::RefreshIndex`].
+    Provision {
+        manager: String,
+        via: String,
+        depends_on: Vec<String>,
+    },
+    /// A tool a manager's bootstrap cascade shells out to, missing from this
+    /// host and installed from an available system manager.
+    ///
+    /// Never drawn from the user's declared package set, never recorded as a
+    /// user-managed resource and never removed later: it is a tool cfgd needed.
+    Prerequisite {
+        tool: String,
+        installer: String,
+        /// The managers that named the tool, in sorted order — one node serves
+        /// all of them, and the line says so.
+        required_by: Vec<String>,
+        depends_on: Vec<String>,
+    },
+}
+
+/// The `resource_type` half of every [`ManagerAction`]'s persisted identity.
+const MANAGER_RESOURCE_TYPE: &str = "manager";
+
+fn refresh_id(manager: &str) -> String {
+    format!("refresh:{manager}")
+}
+
+fn provision_id(manager: &str) -> String {
+    format!("provision:{manager}")
+}
+
+fn prereq_id(tool: &str) -> String {
+    format!("prereq:{tool}")
+}
+
+fn node_of(resource_id: &str) -> String {
+    format!("{MANAGER_RESOURCE_TYPE}:{resource_id}")
+}
+
+impl ManagerAction {
+    /// The node's persisted id, without its `manager:` type prefix —
+    /// `refresh:<manager>`, `provision:<manager>`, `prereq:<tool>`.
+    ///
+    /// The ONE derivation: the journal `resource_id`, the `managed_resources`
+    /// id, the description [`crate::reconciler::format_action_description`]
+    /// returns and the DAG edges below are all this string, so an edge can
+    /// never name a node no record was written under.
+    pub fn resource_id(&self) -> String {
+        match self {
+            ManagerAction::RefreshIndex { manager } => refresh_id(manager),
+            ManagerAction::Provision { manager, .. } => provision_id(manager),
+            ManagerAction::Prerequisite { tool, .. } => prereq_id(tool),
+        }
+    }
+
+    /// The node's id in the phase's DAG — the full `manager:<resource_id>`
+    /// string, identical to this action's `format_action_description`.
+    pub fn node_id(&self) -> String {
+        node_of(&self.resource_id())
+    }
+
+    /// The DAG id of a refresh on `manager`, for the planner wiring an edge to
+    /// a node it does not hold.
+    pub fn refresh_node(manager: &str) -> String {
+        node_of(&refresh_id(manager))
+    }
+
+    /// The DAG id of a provision of `manager`.
+    pub fn provision_node(manager: &str) -> String {
+        node_of(&provision_id(manager))
+    }
+
+    /// The DAG id of the prerequisite installing `tool`.
+    pub fn prereq_node(tool: &str) -> String {
+        node_of(&prereq_id(tool))
+    }
+
+    /// The nodes this one must follow, as [`ManagerAction::node_id`] values.
+    /// Empty for a refresh, which is always a root.
+    pub fn depends_on(&self) -> &[String] {
+        match self {
+            ManagerAction::RefreshIndex { .. } => &[],
+            ManagerAction::Provision { depends_on, .. }
+            | ManagerAction::Prerequisite { depends_on, .. } => depends_on,
+        }
+    }
+
+    /// The REGISTERED manager whose command this node runs — the manager itself
+    /// for a refresh or a provision, and the installing system manager for a
+    /// prerequisite, since `apt install curl` is apt's command.
+    pub fn manager(&self) -> &str {
+        match self {
+            ManagerAction::RefreshIndex { manager } | ManagerAction::Provision { manager, .. } => {
+                manager
+            }
+            ManagerAction::Prerequisite { installer, .. } => installer,
+        }
+    }
+}
+
 /// A unified action across all resource types.
 #[derive(Debug, Serialize)]
 pub enum Action {
@@ -112,6 +238,7 @@ pub enum Action {
     Script(ScriptAction),
     Module(ModuleAction),
     Env(EnvAction),
+    Manager(ManagerAction),
 }
 
 /// Module-level action — first-class phase, not flattened into packages/files.
@@ -296,6 +423,28 @@ impl OwnerKind {
     }
 }
 
+/// The order cfgd's own groups run and render in, which is causal rather than
+/// alphabetical: `managers` is the only group that changes what binaries exist,
+/// `env` publishes where they live, `session` broadcasts that to the running
+/// login session. Producer before consumer.
+///
+/// Only cfgd's names are ordered this way, and only because cfgd mints all of
+/// them — a profile, module, backup or source name is a user string with no
+/// meaning to order by, so those still sort by name.
+const CFGD_GROUP_ORDER: &[&str] = &["managers", "env", "session"];
+
+/// Where a cfgd-owned group sits in [`CFGD_GROUP_ORDER`]; `0` for every other
+/// owner kind, and last for a cfgd group the list does not name.
+fn cfgd_group_rank(kind: &OwnerKind, name: &str) -> u8 {
+    if *kind != OwnerKind::Cfgd {
+        return 0;
+    }
+    CFGD_GROUP_ORDER
+        .iter()
+        .position(|group| *group == name)
+        .unwrap_or(CFGD_GROUP_ORDER.len()) as u8
+}
+
 /// Who declared an action: a kind plus the name of the thing that declared it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -347,12 +496,17 @@ impl Owner {
     }
 
     /// The ONE owner comparator: `Profile`(0) `Cfgd`(1) `Module`(2)
-    /// `Backup`(3) `Source`(4), then name. It orders **every** phase — there is
+    /// `Backup`(3) `Source`(4), then — for cfgd's own closed vocabulary —
+    /// [`CFGD_GROUP_ORDER`], then name. It orders **every** phase — there is
     /// no phase-scoped override and none may be added. Rule P's
     /// module-before-profile execution barrier is a scheduling rule
     /// ([`Phase::dispatch_order`]) and never touches this ordering.
-    pub fn sort_key(&self) -> (u8, &str) {
-        (self.kind.rank(), self.name.as_str())
+    pub fn sort_key(&self) -> (u8, u8, &str) {
+        (
+            self.kind.rank(),
+            cfgd_group_rank(&self.kind, &self.name),
+            self.name.as_str(),
+        )
     }
 
     /// Put a loose owner list in display order and drop repeats.
@@ -388,6 +542,9 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
         // and cfgd owns it.
         Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd("session"),
         Action::Env(_) => Owner::cfgd("env"),
+        // A manager is a prerequisite every owner may be waiting on; cfgd
+        // provisions it, and no user document declares it.
+        Action::Manager(_) => Owner::cfgd("managers"),
         _ => profile.clone(),
     }
 }
@@ -828,6 +985,7 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 }
             }
         }
+        Action::Manager(ma) => (MANAGER_RESOURCE_TYPE.to_string(), ma.resource_id()),
     }
 }
 
@@ -837,7 +995,10 @@ mod tests {
 
     #[test]
     fn phase_name_from_str_round_trips() {
-        assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Env);
+        assert_eq!(
+            "env".parse::<PhaseName>().unwrap(),
+            PhaseName::Prerequisites
+        );
         assert_eq!("files".parse::<PhaseName>().unwrap(), PhaseName::Files);
         assert_eq!(
             "packages".parse::<PhaseName>().unwrap(),

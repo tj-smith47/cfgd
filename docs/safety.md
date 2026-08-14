@@ -95,16 +95,18 @@ $ cfgd apply --yes            # Ctrl-C pressed during the package install
 Apply
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  abortdemo
-  Phases   Packages, Files
-  Actions  2 planned
+  Phases   Prerequisites, Packages, Files
+  Actions  3 planned
 
-✓ Package indexes updated — slowbox (0.0s)
+Phase: Prerequisites
+  cfgd:managers
+    ✓ refresh slowbox index
 
 Phase: Packages
   profile:abortdemo
     ✓ slowbox install epsilon (6.0s)
 
-⚠ apply aborted by signal — 1 of 2 action(s) applied; no partial writes, rerun to converge
+⚠ apply aborted by signal — 2 of 3 action(s) applied; no partial writes, rerun to converge
 ⊙ 1 action(s) not attempted (6.0s)
 $ echo $?
 130
@@ -117,9 +119,9 @@ phase never opened. The same run under `-o json` carries the counts as a payload
 $ cfgd apply --yes -o json   # same run, interrupted the same way
 {
   "aborted": true,
-  "applied": 1,
+  "applied": 2,
   "signal": "SIGINT",
-  "total": 2
+  "total": 3
 }
 ```
 

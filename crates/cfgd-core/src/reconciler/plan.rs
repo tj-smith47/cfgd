@@ -86,9 +86,10 @@ impl<'a> super::Reconciler<'a> {
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
 
-        // Env: write ~/.cfgd.env and inject shell rc source line.
-        // Runs early so that env vars (including PATH for bootstrapped managers)
-        // are available to all subsequent phases.
+        // Prerequisites: the managers that create binaries, then the env file
+        // that publishes where they live, then the live-session broadcast.
+        let manager_actions =
+            super::managers::plan_managers(self.registry, &resolved.merged, &module_actions);
         let path_dirs =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
         let (env_actions, warnings) = self.plan_env(
@@ -123,6 +124,13 @@ impl<'a> super::Reconciler<'a> {
         // installs only once.
         let package_actions = Self::filter_profile_packages(pkg_actions, &claimed)
             .into_iter()
+            // Provisioning a manager is a `Prerequisites` node now, and one
+            // reaching `Packages` as well would plan the same install twice —
+            // once above the packages that need it and once beside them. The
+            // planner still MINTS bootstraps, because the drift surfaces that
+            // read a bare `PackageAction` list (`cfgd diff`, the drift-event
+            // recorder) report an absent manager from it.
+            .filter(|action| !matches!(action, PackageAction::Bootstrap { .. }))
             .map(Action::Package)
             .collect::<Vec<_>>();
 
@@ -134,7 +142,14 @@ impl<'a> super::Reconciler<'a> {
             // is first so a "not for this host" answer precedes every step.
             (PhaseName::Modules, Vec::new()),
             (PhaseName::PreScripts, pre_script_actions),
-            (PhaseName::Env, env_actions),
+            // One phase, three cfgd-owned groups in producer-before-consumer
+            // order: `cfgd:managers` creates the binaries, `cfgd:env` publishes
+            // where they live, `cfgd:session` broadcasts. `Owner::sort_key`
+            // orders the groups; the concatenation order here is irrelevant.
+            (
+                PhaseName::Prerequisites,
+                manager_actions.into_iter().chain(env_actions).collect(),
+            ),
             (PhaseName::Packages, package_actions),
             // `Files` precedes `System` so a file is materialised before
             // anything that consumes it: a unit file deployed through `files:`

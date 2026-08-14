@@ -6,8 +6,8 @@ use cfgd_core::providers::{FileAction, PackageAction, SecretAction};
 use cfgd_core::reconciler::ActionResult;
 use cfgd_core::reconciler::ApplyResult;
 use cfgd_core::reconciler::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ScriptAction,
-    ScriptPhase, SystemAction,
+    Action, EnvAction, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName,
+    Plan, ScriptAction, ScriptPhase, SystemAction,
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
@@ -414,14 +414,14 @@ fn action_path_module() {
 
 #[test]
 fn action_path_env_write() {
-    let path = action_path(&PhaseName::Env, &env_write());
-    assert_eq!(path, "env:/home/user/.cfgd.env");
+    let path = action_path(&PhaseName::Prerequisites, &env_write());
+    assert_eq!(path, "prerequisites:/home/user/.cfgd.env");
 }
 
 #[test]
 fn action_path_env_inject() {
-    let path = action_path(&PhaseName::Env, &env_inject());
-    assert_eq!(path, "env:/home/user/.zshrc");
+    let path = action_path(&PhaseName::Prerequisites, &env_inject());
+    assert_eq!(path, "prerequisites:/home/user/.zshrc");
 }
 
 #[test]
@@ -502,6 +502,98 @@ fn filter_plan_skip_removes_matching_file_actions() {
         pkg_phase.action_count(),
         1,
         "package actions should be untouched"
+    );
+}
+
+#[test]
+fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_out() {
+    let mut plan = make_plan(vec![
+        (PhaseName::Prerequisites, vec![env_write(), env_inject()]),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["env".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        !plan
+            .phases
+            .iter()
+            .any(|p| p.name == PhaseName::Prerequisites),
+        "the pre-merge spelling must still select the phase it always selected: {:?}",
+        plan.phases
+    );
+    assert!(
+        plan.phases.iter().any(|p| p.name == PhaseName::Packages),
+        "and nothing else: {:?}",
+        plan.phases
+    );
+    assert!(
+        out.contains("`--skip env` is deprecated") && out.contains("--skip prerequisites"),
+        "the notice must name both the spelling and its replacement:\n{out}"
+    );
+}
+
+#[test]
+fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
+    let mut plan = make_plan(vec![(PhaseName::Prerequisites, vec![env_write()])]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["cfgd:env".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        plan.phases.is_empty(),
+        "the owner token still selects the group it names: {:?}",
+        plan.phases
+    );
+    assert!(
+        !out.contains("deprecated"),
+        "an owner token is not the phase segment and earns no notice:\n{out}"
+    );
+}
+
+#[test]
+fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_it() {
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            })],
+        ),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let (printer, buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["prerequisites".to_string()],
+        &[],
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    printer.flush();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        out.contains("`--skip prerequisites` removes 1 bootstrap(s)")
+            && out.contains("--skip packages.brew"),
+        "dropping the node that would have installed brew must name the work it strands:\n{out}"
     );
 }
 

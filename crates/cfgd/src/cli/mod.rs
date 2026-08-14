@@ -1928,6 +1928,11 @@ pub enum SourceOverrideAction {
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum ApplyPhase {
     PreScripts,
+    Prerequisites,
+    /// The pre-merge spelling of `prerequisites`, from before the phase also
+    /// provisioned package managers. Still selects that phase, and says once
+    /// per run that it is on the way out.
+    #[value(name = "env", hide = true)]
     Env,
     Modules,
     Packages,
@@ -1942,6 +1947,7 @@ impl ApplyPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             ApplyPhase::PreScripts => "pre-scripts",
+            ApplyPhase::Prerequisites => "prerequisites",
             ApplyPhase::Env => "env",
             ApplyPhase::Modules => "modules",
             ApplyPhase::Packages => "packages",
@@ -1962,13 +1968,31 @@ fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
     match p {
         ApplyPhase::Modules => PhaseFilter::ModuleOwners,
         ApplyPhase::PreScripts => PhaseFilter::Phase(PhaseName::PreScripts),
-        ApplyPhase::Env => PhaseFilter::Phase(PhaseName::Env),
+        ApplyPhase::Prerequisites | ApplyPhase::Env => PhaseFilter::Phase(PhaseName::Prerequisites),
         ApplyPhase::Packages => PhaseFilter::Phase(PhaseName::Packages),
         ApplyPhase::System => PhaseFilter::Phase(PhaseName::System),
         ApplyPhase::Files => PhaseFilter::Phase(PhaseName::Files),
         ApplyPhase::Secrets => PhaseFilter::Phase(PhaseName::Secrets),
         ApplyPhase::PostScripts => PhaseFilter::Phase(PhaseName::PostScripts),
     }
+}
+
+/// The phase filter a run was given, plus the notice a legacy spelling earns.
+///
+/// The ONE resolution of `--phase` for both `apply` and `plan`: a spelling
+/// deprecated in one of them and silently accepted in the other would teach the
+/// user the old name is fine wherever they happened not to read it.
+fn resolve_phase_filter(
+    phase: Option<ApplyPhase>,
+    printer: &cfgd_core::output::Printer,
+) -> Option<PhaseFilter> {
+    if matches!(phase, Some(ApplyPhase::Env)) {
+        printer.deprecation(
+            "`--phase env` is deprecated: that phase now provisions package managers as well \
+             as writing the env file. Use `--phase prerequisites`.",
+        );
+    }
+    phase.map(apply_phase_to_filter)
 }
 
 /// Clap-facing interpreter selector for `apply --shell`. Mirrors

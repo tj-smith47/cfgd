@@ -17,8 +17,9 @@ use super::scripts::{
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
-    Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, Owner, OwnerKind,
-    PhaseFilter, PhaseName, Plan, ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
+    Action, ActionResult, ApplyResult, ManagerAction, ModuleAction, ModuleActionKind, Owner,
+    OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext, ScriptAction, ScriptPhase,
+    SystemAction,
 };
 use crate::providers::{
     ActionNote, FileAction, IndexRefreshPackageState, NoteSink, PackageAction, PackageContext,
@@ -297,7 +298,7 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
         // `env:write:`/`env:inject:` result sits.
-        phase: PhaseName::Env.as_str().to_string(),
+        phase: PhaseName::Prerequisites.as_str().to_string(),
         description,
         success: true,
         error: None,
@@ -407,7 +408,9 @@ impl<'a> super::Reconciler<'a> {
     }
 
     /// The distinct package managers this plan will actually touch, filtered
-    /// to `phase_filter` scope and to managers reporting available right now.
+    /// to `phase_filter` scope, to managers reporting available right now, and
+    /// to those the `Prerequisites` phase does not already refresh under a node
+    /// of its own.
     ///
     /// Walks both action shapes a manager name can arrive in — the
     /// profile-level `PackageAction::Install`/`Bootstrap` and the module-level
@@ -425,6 +428,11 @@ impl<'a> super::Reconciler<'a> {
     ) -> Vec<&'a dyn PackageManager> {
         let mut seen = std::collections::HashSet::new();
         let mut names = Vec::new();
+        // Managers the `Prerequisites` phase refreshes itself, under a node of
+        // their own. A pre-pass that also refreshed them would run the same
+        // `apt update` twice in one run. Filter-aware, so a run that excluded
+        // that phase still gets its indexes refreshed here.
+        let mut covered = std::collections::HashSet::new();
         for phase in &plan.phases {
             for (owner, action) in phase.owned_actions() {
                 if let Some(filter) = phase_filter
@@ -433,6 +441,12 @@ impl<'a> super::Reconciler<'a> {
                     continue;
                 }
                 match action {
+                    Action::Manager(
+                        ManagerAction::RefreshIndex { manager }
+                        | ManagerAction::Provision { manager, .. },
+                    ) => {
+                        covered.insert(manager.clone());
+                    }
                     Action::Package(
                         PackageAction::Install { manager, .. }
                         | PackageAction::Bootstrap { manager, .. },
@@ -460,6 +474,7 @@ impl<'a> super::Reconciler<'a> {
         }
         names
             .into_iter()
+            .filter(|name| !covered.contains(name))
             .filter_map(|name| {
                 self.registry
                     .package_managers
@@ -1116,7 +1131,7 @@ impl<'a> super::Reconciler<'a> {
                                 format!("Failed to regenerate shell env files: {}", e),
                             );
                             results.push(ActionResult {
-                                phase: PhaseName::Env.as_str().to_string(),
+                                phase: PhaseName::Prerequisites.as_str().to_string(),
                                 description: "env:write:regenerate".to_string(),
                                 success: false,
                                 error: Some(e.to_string()),
@@ -1586,6 +1601,9 @@ impl<'a> super::Reconciler<'a> {
                     notes,
                 )
                 .map(|(d, c)| (d, c, None)),
+            Action::Manager(manager) => self
+                .apply_manager_action(manager, printer, notes)
+                .map(|d| (d, true, None)),
             Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
                 let changed = !d.contains(ENV_SKIPPED_SUFFIX);
                 (d, changed, None)

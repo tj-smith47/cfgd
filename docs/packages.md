@@ -87,12 +87,22 @@ packages:
       - pynvim      # resolves through brew's prefix, same apply
 ```
 
-An install that has to bootstrap its manager first runs alone: the `Packages`
-phase otherwise runs one lane per manager family concurrently, but it drains
-around a manager that is not yet on `PATH`, so nothing can start before the
-prefix it would need exists. The lane is per *family* rather than per name
-because `brew`, `brew-tap` and `brew-cask` drive one binary — formulae, taps and
-casks queue behind each other so only one `brew` process ever runs.
+A manager that is not on the machine yet is provisioned in the `Prerequisites`
+phase, which runs before any package work:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    - refresh apt index
+    - refresh npm index
+    - provision nix via nix installer
+```
+
+so every prefix an install needs exists before the `Packages` phase starts.
+Inside `Packages`, work runs one lane per manager family concurrently. The lane
+is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
+drive one binary — formulae, taps and casks queue behind each other so only one
+`brew` process ever runs.
 
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)) and the generated env file, so a
@@ -103,9 +113,21 @@ by naming the file to source.
 
 ## Index refresh
 
-Before the first phase of an apply, cfgd refreshes the package index of every
-manager that already exists on the machine and has work in this run, reported as
-a single line naming the ones that answered:
+cfgd refreshes the package index of every manager already on the machine that
+has work in this run. The refresh is an action of its own in the `Prerequisites`
+phase, so it is named in the plan before it happens and reported where it ran:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    ◐ npm update -g
+      up to date in 131ms
+    ✓ refresh npm index
+```
+
+A run that filters that phase out (`--phase packages`) still refreshes ahead of
+the work it did select, collapsed into one line naming the managers that
+answered:
 
 ```
 ✓ Package indexes updated — toolbox (0.0s)
@@ -113,13 +135,11 @@ a single line naming the ones that answered:
 
 Most of those refresh concurrently. `npm` is the exception: its refresh reads
 cfgd's own state store, so it runs by itself after the concurrent group rather
-than sharing the store across threads. Either way the pre-pass reports one line.
+than sharing the store across threads.
 
-A manager cfgd bootstraps later in the same run is not in that pre-pass: it
-refreshes once, inline, immediately after its own bootstrap, so no manager is ever
-refreshed twice. A refresh that fails downgrades the line to a warning and names
-the manager that failed; it never fails the run, because a stale index is a reason
-for an install to be out of date, not a reason to stop.
+A refresh that fails is reported as a warning naming the manager that failed; it
+never fails the run, because a stale index is a reason for an install to be out
+of date, not a reason to stop.
 
 ## Profile Usage
 
@@ -316,7 +336,12 @@ Each manager supports querying available package versions without installing:
 Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  pkgdemo
-  Phases   Packages
+  Phases   Prerequisites, Packages
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
+    - refresh toolbox index
 
 Phase: Packages
   profile:pkgdemo
@@ -325,7 +350,7 @@ Phase: Packages
     - toolbox uninstall beta
     - skip absent: 'absent' not available — cannot auto-install on this platform
 
-⊙ 4 action(s) planned
+⊙ 6 action(s) planned
 ```
 
 Every manager's work is one line per operation: an install names the manager and the

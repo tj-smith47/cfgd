@@ -401,7 +401,7 @@ fn aborted_planned_total_counts_only_filtered_actions() {
 fn phase_name_roundtrip() {
     for name in &[
         PhaseName::PreScripts,
-        PhaseName::Env,
+        PhaseName::Prerequisites,
         PhaseName::Modules,
         PhaseName::Packages,
         PhaseName::System,
@@ -2322,10 +2322,18 @@ fn plan_env_generates_file_matching_expected() {
 }
 
 #[test]
-fn phase_name_env_roundtrip() {
-    assert_eq!(PhaseName::Env.as_str(), "env");
-    assert_eq!(PhaseName::Env.display_name(), "Environment");
-    assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Env);
+fn phase_name_prerequisites_roundtrip() {
+    assert_eq!(PhaseName::Prerequisites.as_str(), "prerequisites");
+    assert_eq!(PhaseName::Prerequisites.display_name(), "Prerequisites");
+    assert_eq!(
+        "prerequisites".parse::<PhaseName>().unwrap(),
+        PhaseName::Prerequisites
+    );
+    // The pre-merge spelling still selects the phase that holds the env work.
+    assert_eq!(
+        "env".parse::<PhaseName>().unwrap(),
+        PhaseName::Prerequisites
+    );
 }
 
 #[test]
@@ -3731,7 +3739,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseFilter::Phase(PhaseName::Env)),
+            Some(&PhaseFilter::Phase(PhaseName::Prerequisites)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6199,6 +6207,39 @@ fn parse_resource_from_description_cases() {
 }
 
 #[test]
+fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
+    use super::types::{ManagerAction, action_resource_info};
+
+    let actions = [
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        }),
+        Action::Manager(ManagerAction::Provision {
+            manager: "npm".to_string(),
+            via: "brew".to_string(),
+            depends_on: vec![ManagerAction::refresh_node("brew")],
+        }),
+        Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["nix".to_string()],
+            depends_on: vec![ManagerAction::refresh_node("apt")],
+        }),
+    ];
+    for action in &actions {
+        let desc = super::format_action_description(action);
+        // The journal writes one of these and the restore path reads the
+        // other; a manager node whose description parsed back to a different
+        // id would be recorded under a row nothing can find again.
+        assert_eq!(
+            action_resource_info(action),
+            super::parse_resource_from_description(&desc),
+            "the recorded id and the id parsed back out of {desc:?} must agree"
+        );
+    }
+}
+
+#[test]
 fn parse_resource_from_description_keeps_module_name_in_the_id() {
     // `module:{name}:{verb}` puts the module NAME where other prefixes put a
     // verb. Dropping that segment gave every module the same id, and
@@ -6900,7 +6941,7 @@ fn format_plan_items_secret_actions() {
 #[test]
 fn format_plan_items_env_actions() {
     let phase = Phase::from_actions(
-        PhaseName::Env,
+        PhaseName::Prerequisites,
         &Owner::profile("test"),
         vec![
             Action::Env(EnvAction::WriteEnvFile {
@@ -10227,7 +10268,7 @@ fn format_action_description_file_set_permissions() {
 fn phase_name_all_variants_roundtrip() {
     let variants = [
         ("pre-scripts", PhaseName::PreScripts, "Pre-Scripts"),
-        ("env", PhaseName::Env, "Environment"),
+        ("prerequisites", PhaseName::Prerequisites, "Prerequisites"),
         ("modules", PhaseName::Modules, "Modules"),
         ("packages", PhaseName::Packages, "Packages"),
         ("system", PhaseName::System, "System"),
@@ -12556,7 +12597,7 @@ fn record_brew_bootstrap(state: &crate::state::StateStore) {
 fn planned_env_file_content(plan: &Plan) -> Option<String> {
     plan.phases
         .iter()
-        .find(|p| p.name == PhaseName::Env)?
+        .find(|p| p.name == PhaseName::Prerequisites)?
         .actions()
         .find_map(|a| match a {
             Action::Env(EnvAction::WriteEnvFile { path, content })
@@ -12644,7 +12685,7 @@ fn plan_env_injects_source_line_for_bootstrap_only_profile() {
     let env_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Env)
+        .find(|p| p.name == PhaseName::Prerequisites)
         .expect("env phase");
     assert!(
         env_phase
@@ -12684,8 +12725,14 @@ fn plan_env_writes_nothing_for_a_manager_cfgd_never_bootstrapped() {
     // Rewriting a user's `.bashrc` because a profile happens to name a manager
     // the user installed themselves claims ownership of a machine change cfgd
     // never made. No env actions ⇒ the phase is dropped entirely.
-    assert!(
-        !plan.phases.iter().any(|p| p.name == PhaseName::Env),
+    let env_actions = plan
+        .phases
+        .iter()
+        .flat_map(|phase| phase.actions())
+        .filter(|action| matches!(action, Action::Env(_)))
+        .count();
+    assert_eq!(
+        env_actions, 0,
         "an unbootstrapped manager must earn no env file and no rc source line: {:?}",
         plan.phases
     );
@@ -15984,7 +16031,7 @@ fn apply_env_inject_stores_a_file_backup_for_the_rc() {
     let resolved = make_empty_resolved();
     let plan = Plan {
         phases: vec![Phase::from_actions(
-            PhaseName::Env,
+            PhaseName::Prerequisites,
             &Owner::profile("test"),
             vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
@@ -16039,7 +16086,7 @@ fn apply_env_records_one_managed_resource_across_a_converged_second_run() {
     let resolved = make_empty_resolved();
     let plan = Plan {
         phases: vec![Phase::from_actions(
-            PhaseName::Env,
+            PhaseName::Prerequisites,
             &Owner::profile("test"),
             vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
@@ -16221,7 +16268,7 @@ fn apply_env_inject_backs_up_and_rolls_back_through_a_symlinked_rc() {
     let resolved = make_empty_resolved();
     let plan = Plan {
         phases: vec![Phase::from_actions(
-            PhaseName::Env,
+            PhaseName::Prerequisites,
             &Owner::profile("test"),
             vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
@@ -18696,7 +18743,7 @@ fn metadata_detail_is_muted_and_error_detail_is_not() {
     let plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Env,
+                PhaseName::Prerequisites,
                 &Owner::cfgd("env"),
                 vec![Action::Env(EnvAction::RefreshLiveSession { vars: vec![] })],
             ),

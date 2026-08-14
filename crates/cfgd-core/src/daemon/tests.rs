@@ -9113,14 +9113,15 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     );
 
     // What the tick REPORTED: one set — header, trigger and rollup all count
-    // the pruned plan.
+    // the pruned plan. Three, not two: the decided package and file, plus the
+    // `cfgd:managers` index refresh the Prerequisites phase plans for cargo.
     let out = harness::captured_text(&buf);
     assert!(
-        out.contains("Trigger  drift (2 resources)") && out.contains("Actions  2 planned"),
+        out.contains("Trigger  drift (3 resources)") && out.contains("Actions  3 planned"),
         "the header must count the pruned plan, not the withheld resources:\n{out}"
     );
     assert!(
-        out.contains("Reconcile complete — 2 action(s) succeeded"),
+        out.contains("Reconcile complete — 3 action(s) succeeded"),
         "the rollup must agree with the header:\n{out}"
     );
     // The tmp root is substituted first: a random temp-dir name could otherwise
@@ -9149,7 +9150,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     indexes.sort_unstable();
     assert_eq!(
         indexes,
-        vec![0, 1],
+        vec![0, 1, 2],
         "`action_index` stays dense from 0 over the pruned plan"
     );
     assert!(

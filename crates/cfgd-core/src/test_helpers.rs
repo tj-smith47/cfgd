@@ -2133,6 +2133,7 @@ pub struct MockPackageManager {
     pub available: bool,
     pub bootstrap_capable: bool,
     pub bootstrap_method: String,
+    pub bootstrap_requires: Vec<String>,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
@@ -2145,6 +2146,7 @@ impl MockPackageManager {
             available: true,
             bootstrap_capable: false,
             bootstrap_method: "mock".to_string(),
+            bootstrap_requires: Vec::new(),
             installed: std::collections::HashSet::new(),
             install_calls: Mutex::new(Vec::new()),
             uninstall_calls: Mutex::new(Vec::new()),
@@ -2174,6 +2176,13 @@ impl MockPackageManager {
         self.bootstrap_method = method.to_string();
         self
     }
+
+    /// Name the tools this manager's bootstrap plan shells out to — the
+    /// population the `Prerequisites` phase draws a prerequisite node from.
+    pub fn requiring(mut self, tools: &[&str]) -> Self {
+        self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
+        self
+    }
 }
 
 impl crate::providers::PackageManager for MockPackageManager {
@@ -2186,8 +2195,10 @@ impl crate::providers::PackageManager for MockPackageManager {
     }
 
     fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
-        self.bootstrap_capable
-            .then(|| crate::providers::BootstrapPlan::new(self.bootstrap_method.clone()))
+        self.bootstrap_capable.then(|| {
+            crate::providers::BootstrapPlan::new(self.bootstrap_method.clone())
+                .requiring(self.bootstrap_requires.clone())
+        })
     }
 
     fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
@@ -2254,6 +2265,14 @@ impl ReconcilerTestHarnessBuilder {
     pub fn package_manager(mut self, name: &str, installed: &[&str]) -> Self {
         self.package_managers
             .push(MockPackageManager::new(name).with_installed(installed));
+        self
+    }
+
+    /// Add an already-built mock package manager, for a test that configures
+    /// availability or a bootstrap plan the `(name, installed)` shorthand
+    /// cannot express.
+    pub fn with_package_manager(mut self, pm: MockPackageManager) -> Self {
+        self.package_managers.push(pm);
         self
     }
 

@@ -203,7 +203,7 @@ pub fn run_apply(
     registry.set_system_config_dir(&config_dir);
 
     // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
-    let phase_filter: Option<PhaseFilter> = args.phase.map(apply_phase_to_filter);
+    let phase_filter: Option<PhaseFilter> = resolve_phase_filter(args.phase, printer);
 
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths

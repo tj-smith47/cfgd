@@ -4,8 +4,8 @@ use crate::providers::{FileAction, PackageAction, SecretAction};
 use crate::to_posix_string;
 
 use super::types::{
-    Action, EnvAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction, ScriptPhase,
-    SystemAction,
+    Action, EnvAction, ManagerAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction,
+    ScriptPhase, SystemAction,
 };
 
 /// Resource id of the live-session env refresh. The planner and
@@ -179,6 +179,10 @@ pub fn format_action_description(action: &Action) -> String {
             }
             EnvAction::RefreshLiveSession { .. } => LIVE_SESSION_RESOURCE_ID.to_string(),
         },
+        // The DAG's own node id: an edge names the string the journal row was
+        // written under, so a dependent can be resolved against a completed
+        // node without a second naming scheme.
+        Action::Manager(ma) => ma.node_id(),
     }
 }
 
@@ -509,6 +513,29 @@ pub fn format_plan_item(action: &Action) -> String {
                 format!("refresh live session ({} var(s))", vars.len())
             }
         },
+        Action::Manager(ma) => format_manager_action_item(ma),
+    }
+}
+
+/// Format a manager action for plan display.
+///
+/// Imperative like every other plan item, so the preview and the executed line
+/// read as the same statement about the same work. A prerequisite names who
+/// needed it: the tool is not in the user's package set and the line is the
+/// only place that explains why cfgd is installing it.
+fn format_manager_action_item(action: &ManagerAction) -> String {
+    match action {
+        ManagerAction::RefreshIndex { manager } => format!("refresh {manager} index"),
+        ManagerAction::Provision { manager, via, .. } => format!("provision {manager} via {via}"),
+        ManagerAction::Prerequisite {
+            tool,
+            installer,
+            required_by,
+            ..
+        } => format!(
+            "{installer} install {tool} — required by {}",
+            required_by.join(", ")
+        ),
     }
 }
 
