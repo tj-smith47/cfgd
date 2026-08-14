@@ -191,7 +191,11 @@ pub(crate) fn yaml_value_with_numeric_bools(value: &serde_yaml::Value) -> String
 /// those are persisted, undoubling one later costs a state migration. Every
 /// configurator's diff test calls this against its own fixture, so the shape is
 /// pinned per configurator rather than only where an exact key is asserted.
-#[cfg(test)]
+// Unix-only because every caller is: the configurator test modules that run this
+// check (gpg's shim tests, ssh_keys, node) are themselves `#[cfg(unix)]`, and an
+// item with no caller on a platform is dead code there — which `-D warnings`
+// makes a build failure rather than a warning.
+#[cfg(all(test, unix))]
 pub(crate) fn assert_keys_undoubled(
     configurator: &dyn cfgd_core::providers::SystemConfigurator,
     drifts: &[SystemDrift],
@@ -208,7 +212,10 @@ pub(crate) fn assert_keys_undoubled(
     }
 }
 
-#[cfg(test)]
+// Both bridges that drive this capture (`systemd_unit`'s and `node`'s) are
+// `#[cfg(target_os = "linux")]`, so the shared half follows them rather than
+// standing dead on every other platform.
+#[cfg(all(test, target_os = "linux"))]
 mod tests_snapshot_bridge;
 
 #[cfg(test)]
