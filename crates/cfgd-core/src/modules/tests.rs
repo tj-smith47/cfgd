@@ -4563,7 +4563,7 @@ fn extract_registry_name_trailing_slash() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn resolve_package_bootstrappable_manager() {
+fn module_resolution_keeps_a_manager_whose_bootstrap_plan_is_satisfiable() {
     let mgr = MockManager::new("cargo").unavailable().bootstrappable();
     let managers = make_manager_map(&[("cargo", &mgr)]);
     let platform = linux_ubuntu_platform();
