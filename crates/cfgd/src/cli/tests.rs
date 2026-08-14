@@ -378,6 +378,34 @@ fn cli_output_flag_has_short_alias() {
 }
 
 #[test]
+fn resolve_color_choice_no_color_wins_over_color_always() {
+    // `--no-color --color always` is a contradiction only in spelling; the
+    // user's intent is unambiguous because `--no-color` cannot have been
+    // typed to mean anything but "off". Both the primary CLI and the kubectl
+    // plugin route through this one function so they can't disagree.
+    assert_eq!(
+        resolve_color_choice(true, ColorWhen::Always),
+        cfgd_core::output::ColorChoice::Never
+    );
+}
+
+#[test]
+fn resolve_color_choice_without_no_color_follows_the_color_flag() {
+    assert_eq!(
+        resolve_color_choice(false, ColorWhen::Always),
+        cfgd_core::output::ColorChoice::Always
+    );
+    assert_eq!(
+        resolve_color_choice(false, ColorWhen::Never),
+        cfgd_core::output::ColorChoice::Never
+    );
+    assert_eq!(
+        resolve_color_choice(false, ColorWhen::Auto),
+        cfgd_core::output::ColorChoice::Auto
+    );
+}
+
+#[test]
 fn cli_init_has_apply_flag() {
     use clap::CommandFactory;
     let cmd = Cli::command();

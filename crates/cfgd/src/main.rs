@@ -244,13 +244,7 @@ fn main() -> anyhow::Result<()> {
     // than re-reading the terminal. NO_COLOR and TERM=dumb are read inside the
     // `Auto` arm, so the convention needs no second spelling here — and
     // `--color always` deliberately outranks them.
-    // `--no-color` is the older spelling of `--color never`; it wins when both
-    // appear, because it can only ever have been typed to turn colour off.
-    let color_choice = if cli.no_color {
-        cfgd_core::output::ColorChoice::Never
-    } else {
-        cli.color.into()
-    };
+    let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
     // Try loading config for theme settings; fall back to default theme if
     // unavailable. The whole block travels, not just its name: `overrides`

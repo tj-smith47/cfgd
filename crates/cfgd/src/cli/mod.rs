@@ -262,6 +262,18 @@ impl From<ColorWhen> for cfgd_core::output::ColorChoice {
     }
 }
 
+/// Resolve the two colour flags every entry point (the primary CLI, the
+/// kubectl plugin) exposes into the one choice the printer is built from.
+/// `--no-color` is the older spelling of `--color never` and wins when both
+/// appear, because it can only ever have been typed to turn colour off.
+pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::output::ColorChoice {
+    if no_color {
+        cfgd_core::output::ColorChoice::Never
+    } else {
+        color.into()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
