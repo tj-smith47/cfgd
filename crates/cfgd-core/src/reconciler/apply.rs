@@ -995,9 +995,15 @@ impl<'a> super::Reconciler<'a> {
 
             // The deferred tree, written against recorded outcomes: the same
             // group/`live_column`/status walk a streaming phase runs live, in
-            // `Owner::sort_key` order. A group whose actions never dispatched
-            // produces nothing — the shortfall is the rollup's to name, not an
-            // empty heading's.
+            // `Owner::sort_key` order. A group an abort reached before any of
+            // its actions were ever considered for dispatch produces nothing
+            // — the shortfall is the rollup's to name, not an empty heading's.
+            // A STALLED action (`dispatch_package_lanes` ran out of runnable
+            // work with this one still `Waiting`) is different: it was
+            // handed to `collect` as a synthetic failure before dispatch
+            // returned, so it IS in `recorded` and renders here like any
+            // other failed action — never dispatching is itself the failure
+            // being reported, not a reason to say nothing.
             if deferred && let Some(section) = phase_section.as_ref() {
                 for group in phase.groups() {
                     let mut group_section: Option<SectionGuard<'_>> = None;

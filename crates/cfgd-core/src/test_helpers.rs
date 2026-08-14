@@ -1627,6 +1627,19 @@ pub fn path_env_read_guard() -> SpawnEnvGuard {
     SpawnEnvGuard(Some(guard))
 }
 
+/// Whether THIS thread currently holds [`path_env_mutation_guard`]'s exclusive
+/// guard. For a coordinator (`reconciler::lanes::dispatch_package_lanes`, say)
+/// about to spawn helper threads: a helper carries neither of this lock's
+/// thread-locals — they are per-thread, and a freshly spawned thread starts
+/// with both at their default — so a helper's own [`path_env_read_guard`]
+/// genuinely blocks on [`PATH_ENV_LOCK`] rather than short-circuiting as a
+/// re-entrant no-op, and never unblocks if the exclusive holder is the same
+/// thread that is now waiting on the helper. Check this BEFORE spawning, so
+/// that precondition fails fast instead of hanging.
+pub fn path_env_exclusive_guard_held() -> bool {
+    SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
+}
+
 /// Shared read guard returned by [`path_env_read_guard`].
 pub struct SpawnEnvGuard(Option<RwLockReadGuard<'static, ()>>);
 

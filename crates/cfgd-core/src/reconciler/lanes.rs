@@ -37,6 +37,21 @@
 //!    currently available drains the phase. Evaluated at dispatch time, because
 //!    a manager bootstrapped earlier in the same phase becomes available
 //!    mid-run.
+//!
+//! ## The caller must not hold `path_env_mutation_guard()` across `apply()`
+//!
+//! `dispatch_package_lanes` spawns worker threads that read the process `PATH`
+//! (a package manager resolving its own binary, `git`, a script interpreter),
+//! each guarded by `cfgd_core::test_helpers::path_env_read_guard()` at the
+//! actual point of spawn. That guard's thread-locals are per-thread, so a
+//! freshly spawned worker carries neither flag and takes a REAL read lock on
+//! `PATH_ENV_LOCK`. If the thread that called `apply()` already holds the
+//! exclusive `path_env_mutation_guard()` (a test fixture driving `apply()`
+//! from inside a `CwdGuard`/`PathShimGuard` window) that thread goes on to
+//! park in `inbox.recv()` waiting for the very worker that is blocked behind
+//! its own write guard — deadlock, with no timeout. `dispatch_package_lanes`
+//! asserts against exactly that precondition before spawning anything, so the
+//! violation fails fast instead of hanging.
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
@@ -329,7 +344,11 @@ fn depends_satisfied(
 /// What the dispatcher holds while it decides.
 struct DispatchState<'a> {
     lanes_busy: &'a HashSet<String>,
-    owners_busy: &'a HashSet<String>,
+    /// Occupancy count per owner token, not a set: an owner can hold two
+    /// lanes at once (a module declaring both brew and apt work), and the
+    /// fairness rule at `:31-35` must keep treating it as busy until BOTH
+    /// finish, not just the first.
+    owners_busy: &'a HashMap<String, usize>,
     /// An action whose manager is not currently available is in flight, so the
     /// phase is drained until it completes.
     draining: bool,
@@ -385,7 +404,7 @@ fn pick_next(
         if slot.lane().is_some_and(|l| state.lanes_busy.contains(l)) {
             continue;
         }
-        if state.owners_busy.contains(&slot.owner.token()) {
+        if state.owners_busy.contains_key(&slot.owner.token()) {
             owner_busy.get_or_insert(index);
             continue;
         }
@@ -462,6 +481,19 @@ impl super::Reconciler<'_> {
         run: &PackageRun<'_>,
         collect: &mut dyn FnMut(&Action, LaneCollected),
     ) -> Option<u8> {
+        // See the module doc's "caller must not hold `path_env_mutation_guard()`"
+        // section: a worker's own `path_env_read_guard()` would block forever
+        // behind this thread's write guard once this thread parks in
+        // `inbox.recv()` below. Fail fast here rather than hang there.
+        #[cfg(any(test, feature = "test-helpers"))]
+        debug_assert!(
+            !crate::test_helpers::path_env_exclusive_guard_held(),
+            "dispatch_package_lanes() called while this thread already holds \
+             path_env_mutation_guard() — a lane worker's path_env_read_guard() \
+             would deadlock behind it once this thread parks in inbox.recv(). \
+             Release the mutation guard before calling apply()."
+        );
+
         let mut slots: Vec<Slot<'p>> = dispatch
             .iter()
             .map(|(owner, action, plan_index)| Slot {
@@ -482,7 +514,7 @@ impl super::Reconciler<'_> {
         let registry = self.registry;
 
         let mut lanes_busy: HashSet<String> = HashSet::new();
-        let mut owners_busy: HashSet<String> = HashSet::new();
+        let mut owners_busy: HashMap<String, usize> = HashMap::new();
         // The slot of the draining action in flight, if any. Recorded by slot
         // rather than recomputed at collection, because a bootstrap's whole
         // point is that its manager IS available by the time it finishes.
@@ -563,10 +595,31 @@ impl super::Reconciler<'_> {
                         if let Some(lane) = slots[index].lane() {
                             lanes_busy.insert(lane.to_string());
                         }
-                        owners_busy.insert(slots[index].owner.token());
+                        *owners_busy.entry(slots[index].owner.token()).or_insert(0) += 1;
                         let manager = slots[index].manager.clone().unwrap_or_default();
                         journal_ids.insert(index, journal_id);
+                        // Captured on the coordinator's thread and re-installed
+                        // as the worker's first statement, the same shape as
+                        // `spawn_blocking_with_test_home`: `TEST_HOME_OVERRIDE`
+                        // is a thread-local, so a `scope.spawn` worker — a
+                        // fresh thread — does not inherit it, and a test's
+                        // `Packages` action would otherwise resolve `~` against
+                        // the developer's real `$HOME`.
+                        let test_home = crate::test_home_override();
                         scope.spawn(move || {
+                            let _test_home_guard =
+                                test_home.as_deref().map(crate::with_test_home_guard);
+                            // Held across `run_one_action` below, which resolves
+                            // a package manager's own binary, `git`, and script
+                            // interpreters — all PATH reads. See the module
+                            // doc's "caller must not hold
+                            // `path_env_mutation_guard()`" section: this is the
+                            // read half of the lock that debug_assert checks
+                            // for at the top of this function. Compiled out of
+                            // release builds, like every other PATH-reading
+                            // call site.
+                            #[cfg(any(test, feature = "test-helpers"))]
+                            let _path_guard = crate::test_helpers::path_env_read_guard();
                             // The whole worker, not just the action body, must
                             // be panic-safe: `run_one_action` already
                             // catch_unwinds the action itself, but
@@ -656,11 +709,40 @@ impl super::Reconciler<'_> {
                 }
 
                 if running == 0 {
-                    if aborted.is_none() && slots.iter().any(|s| s.state == SlotState::Waiting) {
-                        tracing::warn!(
-                            "package dispatch stalled with actions still waiting; \
-                             they will be reported as not applied"
-                        );
+                    // `pick_next` returned nothing runnable and no worker is
+                    // in flight to unblock it — a coordinator invariant
+                    // failure (a family lane held by a slot that will never
+                    // finish, an owner-fairness rule with no other owner
+                    // left to alternate to). An abort in progress already
+                    // explains an empty `running`; this is the OTHER way to
+                    // get here, and every slot still `Waiting` never enters
+                    // `collect` on its own, so without this loop it vanishes
+                    // from both the exit code (`results` never sees it) and
+                    // the rendered tree (`recorded` never sees it) — a run
+                    // that reached none of its plan would otherwise print
+                    // `✓ Apply complete` and exit 0. `bars.groups` /
+                    // `bars.actions` are cleared for the same reason the
+                    // abort branch above clears them: no further
+                    // `refresh_wait_bars` call follows this `break`, so a
+                    // wait line for a slot this loop just failed would
+                    // otherwise be the last thing drawn for it.
+                    if aborted.is_none() {
+                        bars.groups.clear();
+                        bars.actions.clear();
+                        for slot in slots.iter_mut().filter(|s| s.state == SlotState::Waiting) {
+                            slot.state = SlotState::Done;
+                            let manager = slot.manager.clone().unwrap_or_default();
+                            collect(
+                                slot.action,
+                                LaneCollected {
+                                    journal_id: None,
+                                    result: Err(PackageError::LaneStalled { manager }.into()),
+                                    elapsed: Duration::ZERO,
+                                    notes: Vec::new(),
+                                    body: Vec::new(),
+                                },
+                            );
+                        }
                     }
                     break;
                 }
@@ -691,7 +773,14 @@ impl super::Reconciler<'_> {
                         if let Some(lane) = slots[index].lane() {
                             lanes_busy.remove(lane);
                         }
-                        owners_busy.remove(&slots[index].owner.token());
+                        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+                            owners_busy.entry(slots[index].owner.token())
+                        {
+                            *entry.get_mut() -= 1;
+                            if *entry.get() == 0 {
+                                entry.remove();
+                            }
+                        }
                         self.persist_bootstraps(done.bootstrapped);
                         collect(
                             slots[index].action,

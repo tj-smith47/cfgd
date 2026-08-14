@@ -232,6 +232,14 @@ pub enum PackageError {
     // catches its own unwind and fails the action instead of hanging the run.
     #[error("{manager} package work panicked")]
     LanePanicked { manager: String },
+
+    // A coordinator invariant failure, not a package failure: `pick_next`
+    // left this action `Waiting` with nothing running and nothing left to
+    // dispatch, so no lane will ever run it. Reported as a failed action
+    // (rather than silently dropped) so the run's status — and its exit
+    // code — cannot read `Success` over a shortfall it walked away from.
+    #[error("{manager} dispatch stalled — no lane ever became available for this action")]
+    LaneStalled { manager: String },
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -17182,6 +17182,92 @@ fn one_owners_actions_still_fill_every_free_lane() {
 }
 
 #[test]
+fn an_owners_second_lane_keeps_it_busy_after_its_first_finishes() {
+    // `nvim` holds two lanes at once (brew:neovim, apt:ripgrep) and has a
+    // third, still-pending action on brew (tree-sitter) that can only become
+    // eligible once brew frees. `zsh`'s only action also wants brew and is
+    // blocked the same way. Occupancy accounting is what decides who gets the
+    // lane brew frees: correct accounting still counts nvim as busy — its
+    // apt:ripgrep lane is still running — so zsh, the owner with no lane at
+    // all, takes it. A `HashSet` that dropped nvim from `owners_busy` the
+    // moment its FIRST lane finished would hand the freed lane back to nvim's
+    // own tree-sitter action instead, since that action is earlier in
+    // dispatch order than zsh's.
+    let probe = LaneProbe::holding(&[
+        "brew:neovim",
+        "apt:ripgrep",
+        "brew:tree-sitter",
+        "brew:zshpkg",
+    ]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("nvim", "apt", "ripgrep"),
+        module_install_action("nvim", "brew", "tree-sitter"),
+        module_install_action("zsh", "brew", "zshpkg"),
+    ]);
+    let modules = vec![
+        module_with(
+            "nvim",
+            &[
+                ("brew", "neovim"),
+                ("apt", "ripgrep"),
+                ("brew", "tree-sitter"),
+            ],
+        ),
+        module_for("zsh", "brew", "zshpkg"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(
+                driver.await_in_flight(2),
+                "nvim holds both lanes at once: {:?}",
+                driver.events()
+            );
+            assert!(driver.started("brew:neovim") && driver.started("apt:ripgrep"));
+            assert!(
+                !driver.started("brew:tree-sitter") && !driver.started("brew:zshpkg"),
+                "brew is fully occupied by neovim: {:?}",
+                driver.events()
+            );
+
+            // Free brew, but leave apt (nvim's second lane) running.
+            driver.release("brew:neovim");
+            assert!(driver.await_finished("brew:neovim"));
+            assert!(
+                driver.await_started("brew:zshpkg"),
+                "zsh must take the freed lane; nvim is still busy on apt: {:?}",
+                driver.events()
+            );
+            assert!(
+                !driver.started("brew:tree-sitter"),
+                "brew is exclusive: nvim's own pending action cannot also be running: {:?}",
+                driver.events()
+            );
+
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:brew:zshpkg") < event_at(&events, "start:brew:tree-sitter"),
+        "the fresh owner takes the freed lane before nvim's own remaining action: {events:?}"
+    );
+    assert!(
+        event_at(&events, "start:brew:tree-sitter") > event_at(&events, "end:brew:zshpkg"),
+        "brew is one lane: nvim's third action only starts once zsh's is done: {events:?}"
+    );
+}
+
+#[test]
 fn profile_packages_never_dispatch_before_module_packages_complete() {
     // The assertion a partition cannot make and a barrier must: the profile's
     // lane is free the whole time and it still does not start.
@@ -17215,6 +17301,60 @@ fn profile_packages_never_dispatch_before_module_packages_complete() {
     assert!(
         event_at(&events, "start:brew:fd") > event_at(&events, "end:apt:neovim"),
         "a tier is released when the tier above COMPLETES: {events:?}"
+    );
+}
+
+#[test]
+fn a_lane_worker_resolves_tilde_against_the_callers_test_home() {
+    // `dispatch_package_lanes` spawns each action on a fresh `thread::scope`
+    // worker, and a fresh thread does not inherit `TEST_HOME_OVERRIDE` — a
+    // thread-local — unless the coordinator explicitly carries it across. A
+    // `prefer: [script]` package install resolves its default working
+    // directory from `~` (`script_default_workdir`) ON the worker thread, so
+    // it is the one production call this dispatcher makes that can prove the
+    // override actually made the trip: run the apply synchronously (so this
+    // test thread is the one `dispatch_package_lanes` spawns FROM, the same
+    // thread the guard below is installed on) and assert the script's own
+    // child process actually ran with that directory as its CWD — proof at
+    // the OS level, not just a re-read of the Rust-side thread-local.
+    let home = tempfile::tempdir().expect("tempdir");
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let registry = lane_registry(vec![]);
+    let modules = vec![make_resolved_module("toolbox")];
+    let plan = packages_phase(vec![module_script_install_action(
+        "toolbox",
+        "widget",
+        "touch marker.txt",
+    )]);
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        home.path().join("marker.txt").exists(),
+        "the lane worker's script did not run against the test home {:?}: {:?}",
+        home.path(),
+        std::fs::read_dir(home.path())
+            .map(|entries| entries
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
     );
 }
 
@@ -17254,6 +17394,101 @@ fn a_dependents_packages_wait_for_its_dependencys_packages_to_complete() {
         "{events:?}"
     );
     assert_eq!(probe.peak(), 1, "a declared edge is not concurrency");
+}
+
+#[test]
+fn a_dispatch_stall_fails_the_run_and_names_the_stuck_action() {
+    // Two modules whose `depends` point at each other: neither's
+    // `depends_satisfied` can ever be true, so nothing is ever dispatched —
+    // `pick_next` returns `None` forever with no worker in flight to unblock
+    // it. Before this fix that silently ended the run `Success` (the
+    // `running == 0` branch only logged a `tracing::warn!`); the fix collects
+    // every still-`Waiting` slot as a failed action, so a stall reads as the
+    // failed run it is and names the manager it never got a lane on. Run on a
+    // bounded channel rather than joined directly: a regression that turned
+    // this back into a real loop must fail the test, not hang the suite.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = packages_phase(vec![
+        module_install_action("alpha", "brew", "alpha-pkg"),
+        module_install_action("beta", "brew", "beta-pkg"),
+    ]);
+    let mut alpha = module_for("alpha", "brew", "alpha-pkg");
+    alpha.depends = vec!["beta".to_string()];
+    let mut beta = module_for("beta", "brew", "beta-pkg");
+    beta.depends = vec!["alpha".to_string()];
+    let modules = vec![alpha, beta];
+    let state = test_state();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let reconciler = Reconciler::new(&registry, &state);
+        let outcome = run_apply(&reconciler, &plan, &modules, None);
+        let _ = tx.send(outcome);
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("a dispatch stall must terminate the run, not hang it");
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert_eq!(
+        result.action_results.len(),
+        2,
+        "{:?}",
+        result.action_results
+    );
+    for stuck in &result.action_results {
+        assert!(!stuck.success, "{stuck:?}");
+        assert!(
+            stuck
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("brew") && e.contains("stalled")),
+            "the stuck action's own manager must be named: {stuck:?}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
+    // The write half of `PATH_ENV_LOCK` is taken here, on the TEST thread,
+    // before `ConcurrentApply` ever spawns the worker that runs
+    // `dispatch_package_lanes` — so `path_env_exclusive_guard_held()`'s
+    // own-thread precondition check (evaluated on the worker thread) never
+    // trips, and the write guard is provably held for the worker's entire
+    // dispatch window. If the lane worker takes its own
+    // `path_env_read_guard()` before running the action (the fix), it blocks
+    // on `PATH_ENV_LOCK` for as long as this thread holds the write half, so
+    // `install` cannot have recorded anything by the time `drive()` checks.
+    // A worker missing that guard races straight past the held lock and
+    // finishes near-instantly instead.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = packages_phase(vec![module_install_action("alpha", "brew", "alpha-pkg")]);
+    let modules = vec![module_for("alpha", "brew", "alpha-pkg")];
+
+    let excl = crate::test_helpers::path_env_mutation_guard();
+    let drive_log = std::sync::Arc::clone(&log);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            assert!(
+                dispatch_log(&drive_log).is_empty(),
+                "a lane worker without its own path_env_read_guard() raced \
+                 ahead of the held write lock and ran the action anyway: {:?}",
+                dispatch_log(&drive_log)
+            );
+            drop(excl);
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:alpha-pkg".to_string()],
+        "the action must still run to completion once the lock is released"
+    );
 }
 
 #[test]
