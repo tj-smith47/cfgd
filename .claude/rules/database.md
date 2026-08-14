@@ -1,5 +1,5 @@
 ---
-paths: ["**/state/**/*.rs", "**/gateway/**/*.rs", "**/*db*.rs"]
+paths: ["crates/**/state/**/*.rs", "crates/**/gateway/**/*.rs", "crates/**/*db*.rs"]
 ---
 # cfgd Database Conventions
 

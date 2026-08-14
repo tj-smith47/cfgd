@@ -1,5 +1,5 @@
 ---
-paths: ["**/*.rs"]
+paths: ["crates/**/*.rs"]
 ---
 # cfgd Module Boundaries — `std::process::Command` allow-list
 

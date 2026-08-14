@@ -1,5 +1,5 @@
 ---
-paths: ["**/*.rs"]
+paths: ["crates/**/*.rs"]
 ---
 # cfgd Hard Rules — violations must be fixed immediately
 

@@ -1,5 +1,5 @@
 ---
-paths: ["**/*.rs"]
+paths: ["crates/**/*.rs"]
 ---
 # cfgd Output System — critical design constraint
 

@@ -1,5 +1,5 @@
 ---
-paths: ["**/*.rs"]
+paths: ["crates/**/*.rs"]
 ---
 # cfgd Path Handling — fold to `/` at every cross-OS string boundary
 
