@@ -784,7 +784,7 @@ pub(in crate::cli) struct ComplianceDiffOutput {
     pub changed: Vec<ComplianceCheckChange>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceCheckChange {
     pub key: String,

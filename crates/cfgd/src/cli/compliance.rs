@@ -199,6 +199,7 @@ pub(super) fn check_key(c: &ComplianceCheck) -> String {
     format!("{}:{}", c.category, id)
 }
 
+#[derive(Debug)]
 pub struct ComplianceDiff {
     pub added: Vec<ComplianceCheck>,
     pub removed: Vec<ComplianceCheck>,
@@ -206,23 +207,47 @@ pub struct ComplianceDiff {
 }
 
 /// Compute added/removed/changed between two snapshots; deterministically sorted.
+///
+/// `check_key` is not unique within a single snapshot — e.g. two `file`
+/// category checks (a permissions check and a "present" check) can share one
+/// target, or `effective_files` can list the same target twice (profile +
+/// module). Grouping by key into a `Vec` (rather than collapsing into a single
+/// map entry) and pairing positionally within each key's group keeps every
+/// check in either snapshot present in the diff exactly once: paired entries
+/// are compared for a status change, and any surplus on one side falls out as
+/// added/removed instead of being silently dropped.
 pub fn compute_compliance_diff(
     snap1: &ComplianceSnapshot,
     snap2: &ComplianceSnapshot,
 ) -> ComplianceDiff {
     use std::collections::HashMap;
 
-    let map1: HashMap<String, &ComplianceCheck> =
-        snap1.checks.iter().map(|c| (check_key(c), c)).collect();
-    let map2: HashMap<String, &ComplianceCheck> =
-        snap2.checks.iter().map(|c| (check_key(c), c)).collect();
+    let mut map1: HashMap<String, Vec<&ComplianceCheck>> = HashMap::new();
+    for c in &snap1.checks {
+        map1.entry(check_key(c)).or_default().push(c);
+    }
+    let mut map2: HashMap<String, Vec<&ComplianceCheck>> = HashMap::new();
+    for c in &snap2.checks {
+        map2.entry(check_key(c)).or_default().push(c);
+    }
 
     let mut added: Vec<ComplianceCheck> = Vec::new();
     let mut removed: Vec<ComplianceCheck> = Vec::new();
     let mut changed: Vec<ComplianceCheckChange> = Vec::new();
 
-    for (key, check2) in &map2 {
-        if let Some(check1) = map1.get(key) {
+    let empty: Vec<&ComplianceCheck> = Vec::new();
+    let mut keys: Vec<&String> = map1.keys().chain(map2.keys()).collect();
+    keys.sort();
+    keys.dedup();
+
+    for key in keys {
+        let list1 = map1.get(key).unwrap_or(&empty);
+        let list2 = map2.get(key).unwrap_or(&empty);
+        let paired = list1.len().min(list2.len());
+
+        for i in 0..paired {
+            let check1 = list1[i];
+            let check2 = list2[i];
             if check1.status != check2.status {
                 changed.push(ComplianceCheckChange {
                     key: key.clone(),
@@ -231,12 +256,11 @@ pub fn compute_compliance_diff(
                     detail: check2.detail.clone(),
                 });
             }
-        } else {
+        }
+        for check2 in &list2[paired..] {
             added.push((*check2).clone());
         }
-    }
-    for (key, check1) in &map1 {
-        if !map2.contains_key(key) {
+        for check1 in &list1[paired..] {
             removed.push((*check1).clone());
         }
     }
@@ -659,6 +683,65 @@ mod tests {
             output.contains("Compliant") && output.contains("Violation"),
             "changed line should include old + new status, got: {output}"
         );
+    }
+
+    // --- compute_compliance_diff: duplicate check_key within one snapshot ---
+
+    #[test]
+    fn compute_compliance_diff_pairs_duplicate_keys_instead_of_collapsing() {
+        // Two checks share `file:/a` in each snapshot (e.g. `effective_files`
+        // listing the same target twice via profile + module). A HashMap
+        // collapse keyed on `check_key` would silently drop every check but
+        // the last inserted per key before a diff is ever computed — this
+        // pins that the first-in-snap1/first-in-snap2 pair is compared too,
+        // not just whichever pair a map's last-write-wins happened to keep.
+        let snap1 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Compliant),
+            check("file", "/a", ComplianceStatus::Compliant),
+        ]);
+        let snap2 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Violation),
+            check("file", "/a", ComplianceStatus::Compliant),
+        ]);
+
+        let diff = compute_compliance_diff(&snap1, &snap2);
+
+        assert!(diff.added.is_empty(), "no surplus checks: {diff:?}");
+        assert!(diff.removed.is_empty(), "no surplus checks: {diff:?}");
+        assert_eq!(
+            diff.changed.len(),
+            1,
+            "the first pair (Compliant -> Violation) must be reported; the \
+             second pair (Compliant -> Compliant) is unchanged: {diff:?}"
+        );
+        assert_eq!(diff.changed[0].key, "file:/a");
+        assert_eq!(diff.changed[0].new_status, "Violation");
+    }
+
+    #[test]
+    fn compute_compliance_diff_reports_duplicate_key_surplus_as_added() {
+        // snap2 carries one extra check under a key snap1 has only once. The
+        // shared instance pairs and compares; the surplus must surface as
+        // `added`, not vanish because a map already had that key occupied.
+        let snap1 = sample_snapshot(vec![check("file", "/a", ComplianceStatus::Compliant)]);
+        let snap2 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Compliant),
+            check("file", "/a", ComplianceStatus::Violation),
+        ]);
+
+        let diff = compute_compliance_diff(&snap1, &snap2);
+
+        assert!(
+            diff.changed.is_empty(),
+            "the shared pair is unchanged: {diff:?}"
+        );
+        assert!(diff.removed.is_empty(), "{diff:?}");
+        assert_eq!(
+            diff.added.len(),
+            1,
+            "the surplus check must be added, not dropped: {diff:?}"
+        );
+        assert_eq!(diff.added[0].status, ComplianceStatus::Violation);
     }
 
     #[test]
