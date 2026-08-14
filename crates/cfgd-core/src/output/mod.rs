@@ -22,6 +22,9 @@ pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};
 pub mod owner_label;
 pub use owner_label::OwnerLabel;
 
+pub mod phase_label;
+pub use phase_label::PhaseLabel;
+
 pub mod section_guard;
 pub use section_guard::SectionGuard;
 

@@ -90,7 +90,8 @@ pub fn cmd_rollback(
     // A rollback restores a file set, so it reports under the phase name file
     // work carries everywhere else in cfgd.
     let result = {
-        let rb_sec = printer.section(cfgd_core::reconciler::PhaseName::Files.section_title());
+        let rb_sec =
+            printer.section_phase(&cfgd_core::reconciler::PhaseName::Files.section_label());
         // `restore_file_from_backup` warns through a bare `&Printer`; without
         // inheritance its warnings would land at column 0, outside the phase
         // whose files they are about.

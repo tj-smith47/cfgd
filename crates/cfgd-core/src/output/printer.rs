@@ -671,6 +671,34 @@ impl Printer {
         }
     }
 
+    /// Open a run phase's section (`Phase: Packages`).
+    ///
+    /// The ONE way to open one, so every phase heading in the workspace takes
+    /// the same two theme slots — and commits to scrollback before anything
+    /// the phase does. A phase's work can open a live region (a lane's output
+    /// window, a wait line), and the live region paints below the last
+    /// committed line: a heading still deferred to its first status would be
+    /// written *after* the output it introduces.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_phase(
+        &self,
+        label: &super::PhaseLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ true,
+        );
+        self.renderer
+            .render_section_commit_header(&*self.sink_stderr);
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
     /// Open a section headed by a styled owner token (`module:nvim`).
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_owner(

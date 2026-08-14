@@ -90,6 +90,33 @@ impl Renderer {
         s.indent_depth += 1;
     }
 
+    /// Write the open sections' not-yet-written headers now, instead of at
+    /// their first child.
+    ///
+    /// Distinct from [`Renderer::flush_pending_section_headers`] in what it
+    /// leaves behind: the flush also marks every frame as having children,
+    /// which is right for a caller that is *about* to write one and wrong for a
+    /// caller that only wants the heading on screen ahead of a live region. A
+    /// section committed here and then left empty still renders its empty
+    /// state at close.
+    pub(crate) fn render_section_commit_header(&self, w: &dyn Writer) {
+        self.emit_with(w, |e| {
+            let mut headers = Vec::new();
+            for f in e.state.section_stack.iter_mut() {
+                if !f.header_emitted {
+                    headers.push((header_line(e.theme, f), f.header_depth));
+                    f.header_emitted = true;
+                }
+            }
+            if e.verbosity == Verbosity::Quiet {
+                return;
+            }
+            for (styled, depth) in headers {
+                e.push_line(depth, &styled);
+            }
+        });
+    }
+
     /// Mark the innermost open section live: its statuses render as they
     /// arrive, padded to `width`.
     pub(crate) fn render_section_live_column(&self, width: usize) {
@@ -142,8 +169,11 @@ impl Renderer {
                     // Quiet. Don't mark_blank_pending — there's nothing to space.
                     return;
                 }
-                // Plain `section`: emit header + empty_state placeholder.
-                self.emit_section_header_now(w, &frame);
+                // Plain `section`: emit header + empty_state placeholder. A
+                // header already committed at open time is not written twice.
+                if !frame.header_emitted {
+                    self.emit_section_header_now(w, &frame);
+                }
                 let placeholder = frame.empty_state.as_deref().unwrap_or("(none)");
                 let dim = self.theme.muted.apply_to(placeholder).to_string();
                 self.write_line(w, frame.header_depth + 1, &dim);
@@ -189,19 +219,26 @@ impl Renderer {
             .max()
             .unwrap_or(0);
         for s in statuses {
-            let padded =
-                super::status::pad_subject(&s.subject, max_subject_width, s.has_trailing());
+            let fields = super::StatusFields {
+                role: s.role,
+                subject: &s.subject,
+                detail: s.detail.as_deref(),
+                duration: s.duration,
+                target: s.target.as_deref(),
+                subject_style: s.subject_style.clone(),
+                detail_style: s.detail_style.clone(),
+            };
+            // Per line, not once for the set: capping the shared column by the
+            // tightest line in it would drop every line's alignment because
+            // one of them carries a long detail.
+            let column = self.affordable_column(w, s.depth, &fields, max_subject_width);
+            let padded = super::status::pad_subject(&s.subject, column, s.has_trailing());
             self.render_status_immediate(
                 w,
                 s.depth,
                 &super::StatusFields {
-                    role: s.role,
                     subject: padded.as_deref().unwrap_or(&s.subject),
-                    detail: s.detail.as_deref(),
-                    duration: s.duration,
-                    target: s.target.as_deref(),
-                    subject_style: s.subject_style.clone(),
-                    detail_style: s.detail_style.clone(),
+                    ..fields
                 },
             );
         }
@@ -274,6 +311,66 @@ mod tests {
         let s = buf.lock().unwrap();
         assert!(s.contains("Files"));
         assert!(s.contains("(none)"));
+    }
+
+    #[test]
+    fn a_committed_header_reaches_the_sink_before_any_child_does() {
+        // The live region paints below the last committed line, so a heading
+        // still deferred when an action opens an output window is written
+        // after the output it introduces.
+        let (r, sink, buf) = capture();
+        r.render_section_open("Phase: Packages", /*keep_when_empty=*/ true);
+        r.render_section_commit_header(&sink);
+        assert!(
+            buf.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains("Phase: Packages"),
+            "the header is on screen before the section has a child"
+        );
+        r.render_section_close(&sink);
+    }
+
+    #[test]
+    fn a_committed_header_is_not_written_twice() {
+        let (r, sink, buf) = capture();
+        r.render_section_open("Phase: Packages", true);
+        r.render_section_commit_header(&sink);
+        r.render_section_commit_header(&sink);
+        r.render_section_close(&sink);
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(out.matches("Phase: Packages").count(), 1, "got: {out}");
+    }
+
+    #[test]
+    fn a_committed_header_still_renders_its_empty_state() {
+        // Committing the heading says nothing about whether the section found
+        // anything to put under it; a flush that also marked the frame as
+        // having children would swallow the `(none)`.
+        let (r, sink, buf) = capture();
+        r.render_section_open("Files", true);
+        r.render_section_commit_header(&sink);
+        r.render_section_close(&sink);
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(out.contains("(none)"), "got: {out}");
+    }
+
+    #[test]
+    fn committing_an_inner_header_commits_the_ones_above_it() {
+        // An owner group inside a phase: the phase's heading cannot be left
+        // behind, or the group's would be the first line of the block.
+        let (r, sink, buf) = capture();
+        r.render_section_open("Phase: Packages", true);
+        r.render_section_open("profile:work", true);
+        r.render_section_commit_header(&sink);
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let phase = out.find("Phase: Packages");
+        let group = out.find("profile:work");
+        assert!(
+            phase.is_some() && group.is_some() && phase < group,
+            "got: {out}"
+        );
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
     }
 
     #[test]

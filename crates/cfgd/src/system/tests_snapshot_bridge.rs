@@ -54,7 +54,7 @@ pub(crate) fn capture_attached_apply<D: serde::Serialize>(
     let (printer, cap) = Printer::for_test_doc();
 
     {
-        let phase = printer.section(PhaseName::System.section_title());
+        let phase = printer.section_phase(&PhaseName::System.section_label());
         let owner = phase.section_owner(&OwnerLabel::new("profile", "snapshot"));
 
         apply

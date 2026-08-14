@@ -90,9 +90,10 @@ With more than one edge outstanding it names the last of them to finish, so the 
 has to take back what it said. Those lines exist only on a terminal — they are never
 logged, never in `-o json`, and never in scrollback.
 
-Because the lanes finish out of order, the `Packages` and `Prerequisites` trees are each
-written once, when the phase closes, in the displayed group order rather than the order
-things happened.
+Because the lanes finish out of order, a phase's lane half is written as a tree the moment
+the lanes drain, in the displayed group order rather than the order things happened.
+Whatever the phase then runs serially — `cfgd:env` and `cfgd:session` in `Prerequisites` —
+streams its own lines below that tree as each action settles.
 
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the

@@ -237,7 +237,7 @@ fn rollback_bridge_one_blank_line() {
         ("File backups to restore".to_string(), "1".to_string()),
     ]);
     {
-        let rb_sec = printer.section(PhaseName::Files.section_title());
+        let rb_sec = printer.section_phase(&PhaseName::Files.section_label());
         rb_sec.status_simple(Role::Ok, "1 file(s) processed");
     }
 

@@ -170,6 +170,46 @@ fn emit_action_line(printer: &Printer, section: &SectionGuard<'_>, outcome: &Act
     }
 }
 
+/// Write the outcomes a concurrent dispatch held back as the phase's tree: the
+/// same group / `live_column` / status walk a streaming phase runs live, with
+/// the groups in `Owner::sort_key` order and each group's actions in plan
+/// order. Every outcome it renders is taken out of `recorded`, so what remains
+/// is exactly what nothing rendered.
+///
+/// A group whose actions an abort reached before any of them were considered
+/// for dispatch produces nothing — the shortfall is the rollup's to name, not
+/// an empty heading's. A STALLED action (`dispatch_lanes` ran out of runnable
+/// work with this one still `Waiting`) is different: it was handed to
+/// `collect` as a synthetic failure before dispatch returned, so it IS in
+/// `recorded` and renders here like any other failed action — never
+/// dispatching is itself the failure being reported, not a reason to say
+/// nothing.
+fn emit_phase_tree(
+    printer: &Printer,
+    section: &SectionGuard<'_>,
+    phase: &super::types::Phase,
+    width: usize,
+    recorded: &mut std::collections::HashMap<usize, ActionOutcome>,
+) {
+    for group in phase.groups() {
+        let mut group_section: Option<SectionGuard<'_>> = None;
+        for action in &group.actions {
+            let Some(outcome) = recorded.remove(&action_key(action)) else {
+                continue;
+            };
+            let group_section = group_section.get_or_insert_with(|| {
+                let opened = section.section_owner(&OwnerLabel::new(
+                    group.owner.kind.as_str(),
+                    group.owner.name.as_str(),
+                ));
+                opened.live_column(width);
+                opened
+            });
+            emit_action_line(printer, group_section, &outcome);
+        }
+    }
+}
+
 /// Identity of one planned action, for correlating the plan-order walk with the
 /// dispatch-order walk over the same `OwnerGroup::actions` storage.
 ///
@@ -556,20 +596,34 @@ impl<'a> super::Reconciler<'a> {
             let (lane_dispatch, serial_dispatch): (Vec<_>, Vec<_>) = dispatch
                 .into_iter()
                 .partition(|(owner, _, _)| dispatched_in_lanes(&phase.name, owner));
+            // The lane half's tree is written the moment the lanes drain, and
+            // the serial half streams after it, so the phase reads in
+            // `Owner::sort_key` order only while every lane group sorts above
+            // every serial one. `Packages` hands everything to a lane and
+            // `Prerequisites` leads with `cfgd:managers`; a third partition
+            // that did not would print its groups out of order.
+            debug_assert!(
+                lane_dispatch.iter().all(|(lane_owner, _, _)| {
+                    serial_dispatch
+                        .iter()
+                        .all(|(serial_owner, _, _)| lane_owner.renders_above(serial_owner))
+                }),
+                "a serially dispatched group sorts above a lane group in {}",
+                phase.name.as_str()
+            );
 
-            // A phase whose dispatch order is not its reading order writes its
-            // tree at phase close instead of streaming: `Packages` because Rule
-            // P dispatches `0 -> B -> 1` while the groups read in
-            // `Owner::sort_key` order, `Prerequisites` because its first group
-            // finishes in whatever order its lanes do. Every other phase
-            // streams, because there the two walks are the same one.
-            let deferred = matches!(phase.name, PhaseName::Packages | PhaseName::Prerequisites);
+            // The lane half's dispatch order is not its reading order — Rule P
+            // dispatches `Packages` `0 -> B -> 1` while its groups read in
+            // `Owner::sort_key` order, and the `cfgd:managers` nodes finish in
+            // whatever order their lanes do — so it holds its outcomes and
+            // writes them as a tree the moment the lanes drain. The serial
+            // half streams, because there the two walks are the same one.
             let mut recorded: std::collections::HashMap<usize, ActionOutcome> =
                 std::collections::HashMap::new();
             // Platform-gated skips are the header's `Modules`-row annotation,
             // so the phase holding them opens no block at all.
             let phase_section = (phase.name != PhaseName::Modules)
-                .then(|| printer.section(phase.name.section_title()));
+                .then(|| printer.section_phase(&phase.name.section_label()));
             // The flat dispatch stream converted back to the nested render
             // shape: a new group guard opens whenever the owner changes, and
             // the previous one closes first. Outside `Packages` an owner's
@@ -587,7 +641,7 @@ impl<'a> super::Reconciler<'a> {
                 // action's journal row at its dispatch point, runs the work in
                 // a per-manager lane, and hands every finish back HERE, on this
                 // thread, in completion order. No status line streams — the
-                // tree below is written once the phase closes.
+                // tree is written once the lanes drain, below.
                 let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
@@ -622,7 +676,7 @@ impl<'a> super::Reconciler<'a> {
                         }
                         // An action that reported its own status carries its
                         // notes beside the outcome rather than inside it, and a
-                        // deferred phase has no line open to attach them under.
+                        // held-back tree has no line open to attach them under.
                         // Unreachable: only the two script shapes self-report,
                         // and neither is ever dispatched into a lane.
                         None => debug_assert!(
@@ -632,6 +686,15 @@ impl<'a> super::Reconciler<'a> {
                     }
                 };
                 abort_stop = self.dispatch_lanes(&lane_dispatch, &run, &mut collect);
+                // Written HERE, not at phase close: the lanes are drained and
+                // the live region is empty, and whatever the phase does next
+                // renders after them. `Prerequisites` is the phase that needs
+                // it — its `cfgd:env` and `cfgd:session` groups run in the
+                // serial half below and stream their own lines, which would
+                // land ABOVE the managers group they follow if this waited.
+                if let Some(section) = phase_section.as_ref() {
+                    emit_phase_tree(printer, section, phase, width, &mut recorded);
+                }
             }
 
             // Whatever the phase did not hand to a lane, in plan order. An
@@ -646,8 +709,7 @@ impl<'a> super::Reconciler<'a> {
                         abort_stop = Some(code);
                         break;
                     }
-                    if !deferred
-                        && let Some(section) = phase_section.as_ref()
+                    if let Some(section) = phase_section.as_ref()
                         && owner_open != Some(owner)
                     {
                         // Explicit close before the next open: assigning over the
@@ -659,6 +721,13 @@ impl<'a> super::Reconciler<'a> {
                             owner.name.as_str(),
                         ));
                         group.live_column(width);
+                        // The label lands before the action does: an action
+                        // that opens an output window or a spinner paints it
+                        // into the live region, which draws below whatever has
+                        // been committed — so a label still deferred to this
+                        // action's status line would be written after the
+                        // output of the action it introduces.
+                        group.commit_header();
                         owner_section = Some(group);
                         owner_open = Some(owner);
                     }
@@ -772,16 +841,14 @@ impl<'a> super::Reconciler<'a> {
                                 emit_action_notes(section, &settled.notes);
                             }
                         }
-                        Some(outcome) => match (deferred, owner_section.as_ref()) {
-                            (true, _) => {
-                                recorded.insert(action_key(action), outcome);
+                        // `PhaseName::Modules` opens no block: its only actions
+                        // are platform-gated skips, which the header's
+                        // `Modules` row already annotates.
+                        Some(outcome) => {
+                            if let Some(section) = owner_section.as_ref() {
+                                emit_action_line(printer, section, &outcome);
                             }
-                            (false, Some(section)) => emit_action_line(printer, section, &outcome),
-                            // `PhaseName::Modules` opens no block: its only actions
-                            // are platform-gated skips, which the header's
-                            // `Modules` row already annotates.
-                            (false, None) => {}
-                        },
+                        }
                     }
 
                     // If a signal arrived while the action was running, the execute_script
@@ -812,36 +879,10 @@ impl<'a> super::Reconciler<'a> {
                 }
             }
 
-            // The deferred tree, written against recorded outcomes: the same
-            // group/`live_column`/status walk a streaming phase runs live, in
-            // `Owner::sort_key` order. A group an abort reached before any of
-            // its actions were ever considered for dispatch produces nothing
-            // — the shortfall is the rollup's to name, not an empty heading's.
-            // A STALLED action (`dispatch_package_lanes` ran out of runnable
-            // work with this one still `Waiting`) is different: it was
-            // handed to `collect` as a synthetic failure before dispatch
-            // returned, so it IS in `recorded` and renders here like any
-            // other failed action — never dispatching is itself the failure
-            // being reported, not a reason to say nothing.
-            if deferred && let Some(section) = phase_section.as_ref() {
-                for group in phase.groups() {
-                    let mut group_section: Option<SectionGuard<'_>> = None;
-                    for action in &group.actions {
-                        let Some(outcome) = recorded.remove(&action_key(action)) else {
-                            continue;
-                        };
-                        let group_section = group_section.get_or_insert_with(|| {
-                            let opened = section.section_owner(&OwnerLabel::new(
-                                group.owner.kind.as_str(),
-                                group.owner.name.as_str(),
-                            ));
-                            opened.live_column(width);
-                            opened
-                        });
-                        emit_action_line(printer, group_section, &outcome);
-                    }
-                }
-            }
+            debug_assert!(
+                recorded.is_empty(),
+                "a lane outcome outlived the tree that was to render it"
+            );
 
             // Guards close in declaration order's reverse, so the phase's tree
             // is complete before the run unwinds past it.

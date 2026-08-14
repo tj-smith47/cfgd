@@ -111,7 +111,7 @@ pub fn cmd_diff(
     let mut has_system_drift = false;
 
     let has_file_drift = {
-        let files_phase = printer.section(PhaseName::Files.section_title());
+        let files_phase = printer.section_phase(&PhaseName::Files.section_label());
         // The file renderers take a bare `&Printer` and know nothing of the
         // tree; depth inheritance is what lands their per-file lines inside
         // the owner group opened around them.
@@ -147,7 +147,7 @@ pub fn cmd_diff(
     };
 
     let has_pkg_drift = {
-        let pkg_sec = printer.section(PhaseName::Packages.section_title());
+        let pkg_sec = printer.section_phase(&PhaseName::Packages.section_label());
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
             .iter()
@@ -169,7 +169,7 @@ pub fn cmd_diff(
     };
 
     {
-        let sys_sec = printer.section(PhaseName::System.section_title());
+        let sys_sec = printer.section_phase(&PhaseName::System.section_label());
         // Every system key resolves against the merged profile ⊕ module view,
         // which is what puts a system action under the profile owner in the
         // plan too (`owner_of`'s fall-through arm).
@@ -311,7 +311,7 @@ fn cmd_diff_module(
         // `module:<name>` group per module, the shared per-file inline-diff
         // renderer, then the phase's summary line. Module sources carry no
         // tera origin (None).
-        let files_phase = printer.section(PhaseName::Files.section_title());
+        let files_phase = printer.section_phase(&PhaseName::Files.section_label());
         let _inherit = printer.depth_inheritance();
         let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
@@ -334,7 +334,7 @@ fn cmd_diff_module(
     }
 
     {
-        let pkg_sec = printer.section(PhaseName::Packages.section_title());
+        let pkg_sec = printer.section_phase(&PhaseName::Packages.section_label());
         let mut emitted = false;
         for module in &resolved_modules {
             let group = pkg_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
@@ -506,7 +506,7 @@ mod tests {
             origin: "profile".into(),
         }];
         {
-            let section = printer.section(PhaseName::Packages.section_title());
+            let section = printer.section_phase(&PhaseName::Packages.section_label());
             let has_drift =
                 print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
             assert!(!has_drift, "all-skip should report no drift");
@@ -571,7 +571,7 @@ mod tests {
     fn a_failed_system_check_is_never_reported_as_clean() {
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         {
-            let sec = printer.section(PhaseName::System.section_title());
+            let sec = printer.section_phase(&PhaseName::System.section_label());
             close_system_phase(&sec, false, 1);
         }
         drop(printer);
@@ -628,7 +628,7 @@ mod tests {
     fn a_clean_run_reports_its_clean_verdict_on_every_channel() {
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         {
-            let sec = printer.section(PhaseName::System.section_title());
+            let sec = printer.section_phase(&PhaseName::System.section_label());
             close_system_phase(&sec, false, 0);
         }
         drop(printer);
@@ -676,7 +676,7 @@ mod tests {
             },
         ];
         {
-            let section = printer.section(PhaseName::Packages.section_title());
+            let section = printer.section_phase(&PhaseName::Packages.section_label());
             let has_drift =
                 print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
             assert!(has_drift, "non-Skip actions count as drift");
@@ -704,7 +704,7 @@ mod tests {
             },
         ];
         {
-            let section = printer.section(PhaseName::Packages.section_title());
+            let section = printer.section_phase(&PhaseName::Packages.section_label());
             let has_drift =
                 print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
             assert!(has_drift, "non-Skip actions should report drift");

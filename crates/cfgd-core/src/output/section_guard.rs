@@ -146,6 +146,19 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
+    /// Write this section's header now rather than at its first child.
+    ///
+    /// For a section whose content can open a live region before it settles a
+    /// line — an owner group whose first action runs a command in an output
+    /// window. The live region paints below the last committed line, so a
+    /// header still deferred at that point is written after the output it
+    /// introduces.
+    pub fn commit_header(&self) -> &Self {
+        self.renderer
+            .render_section_commit_header(self.sink.as_ref());
+        self
+    }
+
     /// Mark this section live: its statuses render as they complete rather
     /// than at close, right-padded to `width` so the trailing muted column
     /// still aligns. `width` is computed from the plan before the run, because

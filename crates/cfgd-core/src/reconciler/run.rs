@@ -704,7 +704,7 @@ pub fn in_scope_tree<'p>(
 /// empty — a fabricated context is a header waiting to be printed by accident.
 pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Printer) {
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
-        let phase_section = printer.section(phase.name.section_title());
+        let phase_section = printer.section_phase(&phase.name.section_label());
         for (group, actions) in groups {
             let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
             let owner_section = phase_section.section_owner(&label);

@@ -64,8 +64,12 @@ impl PhaseName {
     /// the drift surfaces (`cfgd diff`, `cfgd rollback`) all head their trees
     /// with it, so a reader matching a drift report against the plan that would
     /// fix it is matching identical strings.
-    pub fn section_title(&self) -> String {
-        format!("Phase: {}", self.display_name())
+    ///
+    /// A label rather than a string, because the heading is two theme slots:
+    /// handing back the plain title let every call site open it as an ordinary
+    /// section, and an ordinary section paints its whole header in one slot.
+    pub fn section_label(&self) -> crate::output::PhaseLabel {
+        crate::output::PhaseLabel::new(self.display_name())
     }
 }
 
@@ -539,6 +543,18 @@ impl Owner {
             cfgd_group_rank(&self.kind, &self.name),
             self.name.as_str(),
         )
+    }
+
+    /// Whether this owner's group renders above `other`'s.
+    ///
+    /// The comparison itself, so an invariant about display order is ASKED of
+    /// the comparator rather than re-derived from its key: a phase whose lane
+    /// half is written as a tree while its serial half streams below reads in
+    /// group order only while every lane owner is above every serial one, and
+    /// a second `sort_key()` comparison spelled out at that check is how two
+    /// orderings begin.
+    pub fn renders_above(&self, other: &Owner) -> bool {
+        self.sort_key() < other.sort_key()
     }
 
     /// Put a loose owner list in display order and drop repeats.
@@ -1090,5 +1106,18 @@ mod tests {
     fn owner_sort_key_breaks_rank_ties_by_name() {
         assert!(Owner::module("apt").sort_key() < Owner::module("brew").sort_key());
         assert!(Owner::cfgd("env").sort_key() < Owner::cfgd("session").sort_key());
+    }
+
+    #[test]
+    fn renders_above_answers_from_the_comparator_it_is_asked_of() {
+        // The prerequisites shape the apply path depends on: the lane group is
+        // written as a tree, and the serial groups stream below it.
+        assert!(Owner::cfgd("managers").renders_above(&Owner::cfgd("env")));
+        assert!(Owner::cfgd("env").renders_above(&Owner::cfgd("session")));
+        assert!(!Owner::cfgd("session").renders_above(&Owner::cfgd("managers")));
+        assert!(
+            !Owner::cfgd("env").renders_above(&Owner::cfgd("env")),
+            "an owner does not render above itself"
+        );
     }
 }

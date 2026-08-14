@@ -19158,6 +19158,44 @@ fn manager_action_group_is_display_only() {
 }
 
 #[test]
+fn the_prerequisites_serial_groups_render_below_the_managers_tree() {
+    // `cfgd:managers` runs in lanes and writes its tree the moment they drain;
+    // `cfgd:session` runs serially and streams its own line as it settles.
+    // Held back to phase close, the tree would print under a group that
+    // follows it in the plan and in every other phase.
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "homebrew installer", &[]),
+        Action::Env(EnvAction::RefreshLiveSession { vars: vec![] }),
+    ]);
+    let resolved = make_empty_resolved();
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+    let lines = transcript_lines(&out);
+
+    let position = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle} in: {out}"))
+    };
+    let managers = position("cfgd:managers");
+    let provision = position("provision brew via homebrew installer");
+    let session = position("cfgd:session");
+
+    assert!(
+        managers < provision && provision < session,
+        "the lane tree is written before the serial half streams: {out}"
+    );
+}
+
+#[test]
 fn metadata_detail_is_muted_and_error_detail_is_not() {
     /// Whether the detail beginning at `needle` is preceded by styling — the
     /// separator-to-text window carries an escape only when a detail style was
