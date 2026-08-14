@@ -129,6 +129,10 @@ Filters filter: a run that leaves the phase out (`--phase packages`) or drops on
 node from it (`--skip prerequisites.npm`) does not refresh that index behind your
 back. The refresh is the phase's, so excluding the phase excludes the refresh.
 
+The rule holds for anything else that narrows a run: a per-module daemon tick
+(`reconcile.modules`) and a package withheld awaiting a source decision both take
+the refresh with them once nothing left in the run reads that index.
+
 A refresh that fails is reported as a warning naming the manager that failed and
 leaves its line `unchanged`; it never fails the run, because a stale index is a
 reason for an install to be out of date, not a reason to stop.

@@ -209,10 +209,13 @@ impl<'x> PackageExec<'x> {
                             }
                             .into());
                         }
-                        // The `Prerequisites` phase refreshed every manager that was
-                        // available when the run was planned; a manager bootstrapped
-                        // just above was not, so it still needs this one inline
-                        // update — mirrors the module-package bootstrap arm below.
+                        // A manager bootstrapped just above did not exist when
+                        // the run was planned, so no `Prerequisites` node names
+                        // it and its index is whatever its installer left
+                        // behind. That is the whole of what this inline update
+                        // covers — never a refresh a filter or a prune removed,
+                        // which is the caller's decision to leave alone.
+                        // Mirrors the module-package bootstrap arm below.
                         if !was_available && pm.is_available() {
                             pm.update(&cx)?;
                         }
@@ -491,10 +494,12 @@ impl<'x> PackageExec<'x> {
                         self.record_bootstrap(pm.as_ref());
                     }
 
-                    // The `Prerequisites` phase refreshed every
-                    // manager that was available when the run was
-                    // planned; a manager bootstrapped just above was
-                    // not, so it still needs this one inline update.
+                    // A manager bootstrapped just above did not
+                    // exist when the run was planned, so no
+                    // `Prerequisites` node names it and its index is
+                    // whatever its installer left behind. That is the
+                    // whole of what this inline update covers — never
+                    // a refresh a filter or a prune removed.
                     if !was_available && pm.is_available() {
                         pm.update(&cx)?;
                     }

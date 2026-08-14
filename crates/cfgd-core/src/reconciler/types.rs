@@ -450,7 +450,12 @@ impl OwnerKind {
 /// Only cfgd's names are ordered this way, and only because cfgd mints all of
 /// them — a profile, module, backup or source name is a user string with no
 /// meaning to order by, so those still sort by name.
-const CFGD_GROUP_ORDER: &[&str] = &["managers", "env", "session"];
+const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, "env", "session"];
+
+/// The cfgd-owned group every [`ManagerAction`] belongs to. Named once: a
+/// filter that keeps this group and a planner that mints into it must agree on
+/// the spelling, and a mismatch drops the whole phase silently.
+pub const MANAGERS_GROUP: &str = "managers";
 
 /// Where a cfgd-owned group sits in [`CFGD_GROUP_ORDER`]; `0` for every other
 /// owner kind, and last for a cfgd group the list does not name.
@@ -485,6 +490,14 @@ impl Owner {
             kind: OwnerKind::Cfgd,
             name: name.into(),
         }
+    }
+
+    /// Whether this is the group every [`ManagerAction`] belongs to. A filter
+    /// narrowing a plan to one owner's work asks this rather than matching the
+    /// kind and the name itself, so no caller can keep `cfgd:env` by accident
+    /// while meaning the managers.
+    pub fn is_managers(&self) -> bool {
+        self.kind == OwnerKind::Cfgd && self.name == MANAGERS_GROUP
     }
 
     pub fn module(name: impl Into<String>) -> Self {
@@ -563,7 +576,7 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
         Action::Env(_) => Owner::cfgd("env"),
         // A manager is a prerequisite every owner may be waiting on; cfgd
         // provisions it, and no user document declares it.
-        Action::Manager(_) => Owner::cfgd("managers"),
+        Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
         _ => profile.clone(),
     }
 }
@@ -579,7 +592,7 @@ pub fn package_owner(action: &PackageAction, profile: &Owner) -> Owner {
         // A `Bootstrap` installs a package *manager*, a prerequisite any owner
         // may be waiting on, so it belongs to cfgd rather than to the profile
         // whose planner happened to emit it.
-        PackageAction::Bootstrap { .. } => Owner::cfgd("managers"),
+        PackageAction::Bootstrap { .. } => Owner::cfgd(MANAGERS_GROUP),
         _ => profile.clone(),
     }
 }
@@ -1048,7 +1061,7 @@ mod tests {
     #[test]
     fn owner_token_covers_every_kind() {
         assert_eq!(Owner::profile("work").token(), "profile:work");
-        assert_eq!(Owner::cfgd("managers").token(), "cfgd:managers");
+        assert_eq!(Owner::cfgd(MANAGERS_GROUP).token(), "cfgd:managers");
         assert_eq!(Owner::module("nvim").token(), "module:nvim");
         assert_eq!(Owner::backup("dotfiles").token(), "backup:dotfiles");
         assert_eq!(Owner::source("team").token(), "source:team");
@@ -1093,7 +1106,7 @@ mod tests {
             Owner::source("team"),
             Owner::module("nvim"),
             Owner::backup("dotfiles"),
-            Owner::cfgd("managers"),
+            Owner::cfgd(MANAGERS_GROUP),
             Owner::profile("work"),
         ];
         owners.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));

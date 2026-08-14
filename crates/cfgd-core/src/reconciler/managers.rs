@@ -8,7 +8,7 @@ use crate::providers::{
     PackageAction, PackageManager, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS, is_system_manager,
 };
 
-use super::types::{Action, ManagerAction, ModuleAction, ModuleActionKind, PhaseName};
+use super::types::{Action, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan};
 
 /// The manager name a module package carries when its "install" is an inline
 /// script rather than a manager command. It names no registry entry.
@@ -358,6 +358,92 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
     }
 
     actions
+}
+
+/// Drop the manager nodes the work left in `plan` no longer consumes, after
+/// something else has pruned an already-planned plan.
+///
+/// [`plan_managers`] mints a node only for a manager the run's own work names,
+/// and every later prune has to preserve that property or the phase promises
+/// work nothing asked for. Two prunes reach a planner-built plan: the daemon's
+/// per-module tick keeps one module's groups, and the pending-decision prune
+/// (`withhold_from_plan`) drops whatever awaits a source decision. Either can
+/// otherwise leave an `apt update` behind with no install left to read the
+/// index it refreshed.
+///
+/// A node survives when a surviving install names its manager — sub-manager
+/// folded onto its family, the way the planner seeded it — or when a surviving
+/// node depends on it: the prerequisite installing the tool a kept provision
+/// waits on, and the refresh of the manager that installs that prerequisite,
+/// are all still work the run needs.
+pub(crate) fn prune_to_surviving_consumers(plan: &mut Plan) {
+    let consumers = surviving_consumers(plan);
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut keep: BTreeSet<String> = BTreeSet::new();
+    for phase in &plan.phases {
+        for action in phase.actions() {
+            let Action::Manager(node) = action else {
+                continue;
+            };
+            let id = node.node_id();
+            if consumers.contains(node.manager()) {
+                keep.insert(id.clone());
+            }
+            edges.insert(id, node.depends_on().to_vec());
+        }
+    }
+    if edges.is_empty() {
+        return;
+    }
+    let mut queue: VecDeque<String> = keep.iter().cloned().collect();
+    while let Some(id) = queue.pop_front() {
+        for dependency in edges.get(&id).into_iter().flatten() {
+            if keep.insert(dependency.clone()) {
+                queue.push_back(dependency.clone());
+            }
+        }
+    }
+    for phase in &mut plan.phases {
+        phase.retain_actions(|action| match action {
+            Action::Manager(node) => keep.contains(&node.node_id()),
+            _ => true,
+        });
+    }
+    plan.phases.retain(|phase| !phase.is_empty());
+}
+
+/// The managers the package work still in `plan` would run a command through,
+/// each recorded under the name it was declared with AND under its family, so
+/// a `brew-cask` install keeps the `brew` node the planner folded it onto.
+fn surviving_consumers(plan: &Plan) -> BTreeSet<String> {
+    let mut consumers = BTreeSet::new();
+    for phase in &plan.phases {
+        for action in phase.actions() {
+            match action {
+                Action::Package(
+                    PackageAction::Install { manager, .. } | PackageAction::Skip { manager, .. },
+                ) => note_consumer(&mut consumers, manager),
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::InstallPackages { resolved },
+                    ..
+                }) => {
+                    for package in resolved {
+                        note_consumer(&mut consumers, &package.manager);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    consumers
+}
+
+fn note_consumer(consumers: &mut BTreeSet<String>, manager: &str) {
+    if manager == SCRIPT_SENTINEL {
+        return;
+    }
+    consumers.insert(manager.to_string());
+    consumers.insert(crate::manager_family(manager).to_string());
 }
 
 /// The provisions in dependency order, each with the method it runs — read from

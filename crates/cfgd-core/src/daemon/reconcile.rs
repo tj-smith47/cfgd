@@ -484,16 +484,7 @@ pub(crate) fn handle_reconcile(
     // just that one module's packages/files/scripts and avoids reaching into
     // unrelated profile state.
     if let Some(name) = module_filter {
-        for phase in &mut plan.phases {
-            phase.retain_groups(|owner| {
-                owner.kind == crate::reconciler::OwnerKind::Module && owner.name == name
-            });
-        }
-        // Every group owned by anything else, and every module group for a
-        // different module, is dropped by the retain above — drop the emptied
-        // phases too so drift recording and `reconciler.apply` below only ever
-        // see the filtered module's own work.
-        plan.phases.retain(|p| !p.is_empty());
+        narrow_to_module(&mut plan, name);
     }
 
     // A resource whose source change is still awaiting a decision is not the
@@ -931,6 +922,31 @@ pub(crate) fn handle_reconcile(
             tracing::warn!(error = %e, "failed to load pending server config");
         }
     }
+}
+
+/// Narrow a planned tick down to one module's own work.
+///
+/// Keeps that module's groups, and the manager nodes whose consumers are among
+/// the actions that survived — nothing else. A module's packages install
+/// through managers no module group contains, so dropping `cfgd:managers`
+/// wholesale would install them against an index this tick never refreshed:
+/// the only refresh cfgd runs outside the phase covers a manager it bootstraps
+/// mid-run, which a manager already present never reaches. Narrowing by
+/// consumer rather than keeping the group whole is the same rule the planner
+/// mints by, so a tick for a module with no packages still plans nothing.
+pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str) {
+    for phase in &mut plan.phases {
+        phase.retain_groups(|owner| {
+            (owner.kind == crate::reconciler::OwnerKind::Module && owner.name == module)
+                || owner.is_managers()
+        });
+    }
+    // Every group owned by anything else, and every module group for a
+    // different module, is dropped by the retain above — drop the emptied
+    // phases too so drift recording and `reconciler.apply` only ever see the
+    // filtered module's own work.
+    plan.phases.retain(|p| !p.is_empty());
+    crate::reconciler::prune_to_surviving_consumers(plan);
 }
 
 /// Whether `plan` contains a non-Skip `Action::Module` targeting `module_name`.

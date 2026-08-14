@@ -1788,6 +1788,184 @@ fn pending_package_decision_withholds_from_a_module_batch_too() {
 }
 
 #[test]
+fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
+    // The per-module narrow drops every group but the module's own. Dropping
+    // `cfgd:managers` with them installs that module's packages against an
+    // index the tick never refreshed — the inline post-bootstrap refresh only
+    // covers a manager cfgd installs mid-run, and a manager already present
+    // never reaches it.
+    use crate::reconciler::{
+        Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan,
+    };
+
+    let package = |name: &str, manager: &str| crate::modules::ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    let module = |name: &str, resolved: Vec<crate::modules::ResolvedPackage>| {
+        Action::Module(ModuleAction {
+            module_name: name.to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved },
+            origin: None,
+        })
+    };
+    let mut plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("default"),
+                vec![
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "cargo".to_string(),
+                    }),
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "npm".to_string(),
+                    }),
+                ],
+            ),
+            packages_phase_of(vec![
+                module("cli-tools", vec![package("bat", "cargo")]),
+                module("web", vec![package("tldr", "npm")]),
+            ]),
+        ],
+        warnings: Vec::new(),
+    };
+
+    super::reconcile::narrow_to_module(&mut plan, "cli-tools");
+
+    let nodes: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node) => Some(node.node_id()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        nodes,
+        vec!["manager:refresh:cargo".to_string()],
+        "cargo installs this module's package, so its refresh stays; npm's \
+         consumer left with the other module's group"
+    );
+    assert_eq!(
+        installed_batches(&plan.phases[1]),
+        Vec::<(String, Vec<String>)>::new(),
+        "the module batch is a module action, not a bare install"
+    );
+    assert!(
+        module_has_drift(&plan, "cli-tools"),
+        "the module's own work survives the narrow"
+    );
+    assert!(
+        !module_has_drift(&plan, "web"),
+        "the other module's work does not"
+    );
+}
+
+#[test]
+fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
+    // The same rule from the other side: keeping the managers group through
+    // the narrow must not resurrect work for a tick that consumes nothing, or
+    // every module's interval runs `apt update`.
+    use crate::reconciler::{
+        Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan,
+    };
+
+    let mut plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("default"),
+                vec![Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "cargo".to_string(),
+                })],
+            ),
+            packages_phase_of(vec![
+                Action::Module(ModuleAction {
+                    module_name: "docs".to_string(),
+                    kind: ModuleActionKind::DeployFiles { files: Vec::new() },
+                    origin: None,
+                }),
+                install_of("cargo", &["ripgrep"]),
+            ]),
+        ],
+        warnings: Vec::new(),
+    };
+
+    super::reconcile::narrow_to_module(&mut plan, "docs");
+
+    assert!(
+        plan.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .all(|action| !matches!(action, Action::Manager(_))),
+        "the profile install that wanted the cargo index left with the profile group"
+    );
+}
+
+#[test]
+fn an_all_withheld_manager_is_withheld_with_its_packages() {
+    // `withhold_from_plan` prunes the installs; the node that exists to serve
+    // them has to go with them, or a run whose every package awaits a decision
+    // still refreshes an index nothing left will read.
+    use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+    let mut plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("default"),
+                vec![
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "cargo".to_string(),
+                    }),
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "npm".to_string(),
+                    }),
+                ],
+            ),
+            packages_phase_of(vec![
+                install_of("cargo", &["bat"]),
+                install_of("npm", &["tldr"]),
+            ]),
+        ],
+        warnings: Vec::new(),
+    };
+
+    let withheld = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+
+    let nodes: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node) => Some(node.node_id()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        nodes,
+        vec!["manager:refresh:npm".to_string()],
+        "cargo lost its only consumer to the decision; npm keeps its own"
+    );
+    assert_eq!(
+        withheld, 2,
+        "the count the header renders covers the refresh that left with the install"
+    );
+}
+
+#[test]
 fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
     // The documented consequence of the prune, now that it actually matches:
     // `module_has_drift` reads the pruned plan, so a module left with nothing

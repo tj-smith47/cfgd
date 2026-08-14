@@ -1554,6 +1554,10 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
         );
     }
     plan.phases.retain(|p| !p.is_empty());
+    // A manager node exists to serve the installs below it. Withholding the
+    // last of them withholds the refresh with them, before the count is taken,
+    // so the header never names a number the run disagrees with.
+    super::managers::prune_to_surviving_consumers(plan);
     let withheld = before.saturating_sub(plan.total_actions());
     if withheld > 0 {
         tracing::info!(

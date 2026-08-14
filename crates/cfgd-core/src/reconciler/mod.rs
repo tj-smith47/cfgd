@@ -56,13 +56,14 @@ pub use run::{
     render_plan_tree, render_run_rollup,
 };
 pub use types::{
-    Action, ActionResult, ApplyResult, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
-    Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier, package_owner,
+    Action, ActionResult, ApplyResult, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction,
+    ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan,
+    ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier, package_owner,
 };
 pub use verify::{VerifyResult, verify};
 
 pub(crate) use env::all_recorded_path_dirs;
+pub(crate) use managers::prune_to_surviving_consumers;
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
