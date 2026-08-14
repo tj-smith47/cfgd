@@ -35,7 +35,7 @@ use pretty_assertions::assert_eq;
 
 use common::{
     apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
-    tiny_profile_setup,
+    profile_with_packages_setup, tiny_profile_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -242,6 +242,41 @@ fn apply_with_failures_human() {
         "apply/with_failures.txt",
         &stripped,
     );
+}
+
+/// The phase tree at the CLI boundary: a `Prerequisites` phase whose one lane
+/// group is labelled above its nodes, a `Packages` phase whose install renders
+/// under the profile's own label, and a serial `Files` phase below both. The
+/// golden pins structure, order and labels — a capture sink never wraps, so
+/// the per-line alignment budget stays a renderer unit test.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn apply_phase_tree_human() {
+    // Every brew invocation — availability probe, index refresh, install —
+    // lands on a shim that exits 0 and says nothing, so the plan and the
+    // transcript are the same on a host with brew and a host without.
+    let _brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let (config_dir, state_dir, target) = profile_with_packages_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let outcome = run_apply(&cli, &printer, &apply_args()).unwrap();
+    drop(printer);
+
+    assert_eq!(
+        outcome.status,
+        cfgd_core::state::ApplyStatus::Success,
+        "every action in the fixture succeeds: {}",
+        cap.human()
+    );
+    assert!(target.exists(), "the file action must write its target");
+
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = normalize_duration(&strip_ansi(&normalized));
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/phase_tree.txt", &stripped);
 }
 
 #[test]

@@ -17379,7 +17379,15 @@ impl ConcurrentApply {
     }
 
     fn run(self, drive: impl FnOnce()) -> ConcurrentOutcome {
+        self.run_watching(|_| drive())
+    }
+
+    /// [`ConcurrentApply::run`] with the transcript readable from the driving
+    /// thread, for an assertion about what is on screen WHILE the lanes are
+    /// still holding rather than about what the run left behind.
+    fn run_watching(self, drive: impl FnOnce(&crate::output::DocCapture)) -> ConcurrentOutcome {
         let (printer, cap) = crate::output::Printer::for_test_doc();
+        let watch = cap.clone();
         let Self {
             registry,
             state,
@@ -17407,7 +17415,7 @@ impl ConcurrentApply {
             };
             (result, state, crate::output::strip_ansi(&cap.human()))
         });
-        drive();
+        drive(&watch);
         let (result, state, transcript) = worker.join().expect("apply thread");
         ConcurrentOutcome {
             result,
@@ -19192,6 +19200,48 @@ fn the_prerequisites_serial_groups_render_below_the_managers_tree() {
     assert!(
         managers < provision && provision < session,
         "the lane tree is written before the serial half streams: {out}"
+    );
+    assert!(
+        lines[managers].contains("cfgd:managers") && managers > position("Phase: Prerequisites"),
+        "the group label sits under its phase heading: {out}"
+    );
+}
+
+#[test]
+fn the_managers_label_is_on_screen_while_its_lanes_run() {
+    // `Prerequisites` carries exactly ONE lane group, so its label is written
+    // when the lanes start rather than when they drain: the wait bars and
+    // command windows of those nodes paint below the last committed line, so a
+    // label still deferred at that point lands under the very work it
+    // introduces. Read while a node is held mid-bootstrap, which is precisely
+    // the window a drain-time label is absent for.
+    let probe = LaneProbe::holding(&["bootstrap:brew"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![provision_node("brew", "homebrew installer", &[])]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run_watching(move |screen| {
+        assert!(
+            driver.await_started("bootstrap:brew"),
+            "the node never reached its lane: {:?}",
+            driver.events()
+        );
+        let on_screen = crate::output::strip_ansi(&screen.human());
+        assert!(
+            on_screen.contains("cfgd:managers"),
+            "the group label must be committed before its lanes paint: {on_screen}"
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(
+        outcome.result.succeeded(),
+        1,
+        "the held node still completes: {}",
+        outcome.transcript
     );
 }
 

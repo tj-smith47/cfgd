@@ -153,6 +153,11 @@ impl<'p> SectionGuard<'p> {
     /// window. The live region paints below the last committed line, so a
     /// header still deferred at that point is written after the output it
     /// introduces.
+    ///
+    /// Valid only on a section that keeps its header when empty (`section`,
+    /// `section_phase`, `section_owner`): one opened to collapse if empty
+    /// leaves no trace at close, so a header committed ahead of content that
+    /// never arrives is orphaned. Debug builds assert it.
     pub fn commit_header(&self) -> &Self {
         self.renderer
             .render_section_commit_header(self.sink.as_ref());

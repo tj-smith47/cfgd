@@ -95,6 +95,12 @@ the lanes drain, in the displayed group order rather than the order things happe
 Whatever the phase then runs serially — `cfgd:env` and `cfgd:session` in `Prerequisites` —
 streams its own lines below that tree as each action settles.
 
+A phase whose lane work belongs to a single owner — `Prerequisites`, always — names that
+group before its lanes start, so the wait lines and command output paint underneath the
+label they belong to. A phase running several groups at once (`Packages`, with a group per
+module) labels each one above its own tree instead: scrollback is append-only, so labels
+committed upfront would end up separated from the actions they introduce.
+
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the
 surfaces that phase owns: manager provisioning and index refresh both belong to the

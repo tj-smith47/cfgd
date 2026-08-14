@@ -184,28 +184,45 @@ fn emit_action_line(printer: &Printer, section: &SectionGuard<'_>, outcome: &Act
 /// `recorded` and renders here like any other failed action — never
 /// dispatching is itself the failure being reported, not a reason to say
 /// nothing.
+///
+/// `preopened` is the group whose label the caller already committed — the
+/// single-owner case, where the label belongs above the live region rather
+/// than above the tree written after it. Its outcomes render into that guard
+/// instead of opening a second one under the same name.
 fn emit_phase_tree(
     printer: &Printer,
     section: &SectionGuard<'_>,
     phase: &super::types::Phase,
     width: usize,
     recorded: &mut std::collections::HashMap<usize, ActionOutcome>,
+    preopened: Option<(&Owner, &SectionGuard<'_>)>,
 ) {
     for group in phase.groups() {
+        let already_open =
+            preopened.and_then(|(owner, guard)| (owner == &group.owner).then_some(guard));
         let mut group_section: Option<SectionGuard<'_>> = None;
         for action in &group.actions {
             let Some(outcome) = recorded.remove(&action_key(action)) else {
                 continue;
             };
-            let group_section = group_section.get_or_insert_with(|| {
-                let opened = section.section_owner(&OwnerLabel::new(
-                    group.owner.kind.as_str(),
-                    group.owner.name.as_str(),
-                ));
-                opened.live_column(width);
-                opened
-            });
-            emit_action_line(printer, group_section, &outcome);
+            // Opened HERE, beneath the content it introduces, and that is the
+            // right place for it whenever the phase runs several groups at
+            // once: scrollback is append-only, so a label committed before the
+            // dispatch would be separated from its own tree by every other
+            // group's, and each live window is headed by its owner's name
+            // already — nothing paints unlabelled while the lanes run.
+            let target = match already_open {
+                Some(guard) => guard,
+                None => group_section.get_or_insert_with(|| {
+                    let opened = section.section_owner(&OwnerLabel::new(
+                        group.owner.kind.as_str(),
+                        group.owner.name.as_str(),
+                    ));
+                    opened.live_column(width);
+                    opened
+                }),
+            };
+            emit_action_line(printer, target, &outcome);
         }
     }
 }
@@ -636,6 +653,28 @@ impl<'a> super::Reconciler<'a> {
             let mut abort_stop: Option<u8> = None;
             let mut pre_script_stop: Option<String> = None;
 
+            // The one owner every lane action of this phase belongs to, when
+            // there is one. `Prerequisites` always has one (`cfgd:managers`);
+            // `Packages` has one per module plus the profile's.
+            let mut lane_owners = lane_dispatch.iter().map(|(owner, _, _)| *owner);
+            let sole_lane_owner = lane_owners
+                .next()
+                .filter(|first| lane_owners.all(|owner| owner == *first));
+            // A single-owner lane phase commits that label BEFORE its lanes
+            // paint anything. The live region draws below the last committed
+            // line, so a label held back until the tree is written lands under
+            // the very windows and wait bars it introduces.
+            let lane_group = phase_section
+                .as_ref()
+                .zip(sole_lane_owner)
+                .map(|(section, owner)| {
+                    let group = section
+                        .section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+                    group.live_column(width);
+                    group.commit_header();
+                    group
+                });
+
             if !lane_dispatch.is_empty() {
                 // The concurrent dispatcher owns these actions: it opens each
                 // action's journal row at its dispatch point, runs the work in
@@ -693,9 +732,20 @@ impl<'a> super::Reconciler<'a> {
                 // serial half below and stream their own lines, which would
                 // land ABOVE the managers group they follow if this waited.
                 if let Some(section) = phase_section.as_ref() {
-                    emit_phase_tree(printer, section, phase, width, &mut recorded);
+                    emit_phase_tree(
+                        printer,
+                        section,
+                        phase,
+                        width,
+                        &mut recorded,
+                        sole_lane_owner.zip(lane_group.as_ref()),
+                    );
                 }
             }
+            // Closed before the serial half opens a group of its own: the
+            // renderer's section stack unwinds in order, and a lane group left
+            // open would nest the phase's remaining groups inside it.
+            drop(lane_group);
 
             // Whatever the phase did not hand to a lane, in plan order. An
             // abort during the lane half stops here: the phase's remaining work

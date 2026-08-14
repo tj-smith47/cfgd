@@ -99,11 +99,20 @@ impl Renderer {
     /// caller that only wants the heading on screen ahead of a live region. A
     /// section committed here and then left empty still renders its empty
     /// state at close.
+    ///
+    /// Only a `keep_when_empty` section may commit: a collapse-if-empty one
+    /// leaves no trace at close, so a header written ahead of its content
+    /// would stand over nothing if the content never arrived.
     pub(crate) fn render_section_commit_header(&self, w: &dyn Writer) {
         self.emit_with(w, |e| {
             let mut headers = Vec::new();
             for f in e.state.section_stack.iter_mut() {
                 if !f.header_emitted {
+                    debug_assert!(
+                        f.keep_when_empty,
+                        "committing the header of a collapse-if-empty section: {}",
+                        f.name
+                    );
                     headers.push((header_line(e.theme, f), f.header_depth));
                     f.header_emitted = true;
                 }

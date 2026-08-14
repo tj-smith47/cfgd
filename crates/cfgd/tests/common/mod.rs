@@ -47,6 +47,39 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// Build a tempdir-backed profile whose plan carries every shape the phase
+/// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
+/// serially-applied file write.
+///
+/// The caller must have a `CFGD_BREW_BIN` shim installed, which is what makes
+/// the plan the same on every host — brew answers "present" through the seam,
+/// so the graph plans an index refresh rather than a bootstrap, and no real
+/// package manager is reached.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn profile_with_packages_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
+
+    let target = config_dir.path().join("out").join("hello.txt");
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("tiny.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir, target)
+}
+
 /// Build a tempdir-backed profile with two file actions: one whose target
 /// directory exists and is writable (succeeds), and one whose target's
 /// parent is a regular file (so `create_dir_all` errors at apply time —
