@@ -53,6 +53,7 @@ fn happy_plan_output() -> PlanOutput {
                     action_type: "create".to_string(),
                     targets: vec!["/etc/hosts".to_string()],
                     origin: None,
+                    manager: None,
                 }],
             )],
         }],
@@ -80,6 +81,7 @@ fn owner_groups_plan_output() -> PlanOutput {
                         action_type: "install".to_string(),
                         targets: vec!["sl".to_string(), "cowsay".to_string()],
                         origin: None,
+                        manager: None,
                     }],
                 ),
                 PlanGroupOutput::new(
@@ -89,6 +91,7 @@ fn owner_groups_plan_output() -> PlanOutput {
                         action_type: "install".to_string(),
                         targets: vec!["neovim".to_string()],
                         origin: Some("team".to_string()),
+                        manager: None,
                     }],
                 ),
             ],

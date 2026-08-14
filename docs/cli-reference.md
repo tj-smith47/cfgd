@@ -261,6 +261,61 @@ therefore sees that a module was gated out on one of them.
 }
 ```
 
+A `Prerequisites` action carries a structured `manager` sub-object beside its
+`description`, so a consumer classifies a manager's state without parsing the
+sentence: `state` is `present` (an already-installed manager's index refresh),
+`provisioned` (a manager this run installs, `via` naming its bootstrap method),
+`prerequisite` (a tool a provision's installer shells out to — `manager` names
+the tool, `via` names the installer), or `refused` (a manager that can't be
+provisioned, `reason` naming why — a fourth state added on top of the 3-value
+enum spec'd for `provisioned`/`prerequisite`/`present`, since a refusal is
+still something the run decided and `-o json` must not drop it silently).
+`requires` holds the full node ids of the actions this one depends on,
+resolving one-to-one against a sibling action's own `description`:
+
+```jsonc
+// cfgd plan -o json  →  phases[] entry for Prerequisites
+{
+  "phase": "Prerequisites",
+  "groups": [
+    {
+      "owner": { "kind": "cfgd", "name": "managers" },
+      "token": "cfgd:managers",
+      "actions": [
+        {
+          "type": "refresh",
+          "description": "refresh brew index",
+          "manager": { "manager": "brew", "state": "present" }
+        },
+        {
+          "type": "provision",
+          "description": "provision pipx via pip install pipx",
+          "manager": {
+            "manager": "pipx",
+            "state": "provisioned",
+            "via": "pip install pipx",
+            "requires": ["manager:prereq:curl"]
+          }
+        },
+        {
+          "type": "refuse",
+          "description": "cannot provision snap — no available system manager",
+          "manager": {
+            "manager": "snap",
+            "state": "refused",
+            "reason": "no available system manager"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`PackageAction::Bootstrap`'s payload shape is gone with the variant; `provision`/
+`refuse` rows replace it, planned as `cfgd:managers` DAG nodes rather than an
+inline package-install tier.
+
 Actions moved one level down, and a phase's module identity is now the group's
 owner rather than a `module`/`section` key on the phase:
 
@@ -446,6 +501,9 @@ Phase: Packages
   profile:work
     ⚠ brew: missing — extra-tool
     ⚠ nix: missing  — hello
+  cfgd:managers
+    ⚠ pipx: not installed — can bootstrap via pip install pipx
+    ⚠ snap: not installed — cannot bootstrap — no available system manager
 
 Phase: System
   profile:work
@@ -453,6 +511,14 @@ Phase: System
 
 ⚠ Drift detected
 ```
+
+`cfgd:managers` reports package **managers** the plan itself would provision or
+refuse — not something the profile declared missing, but something `apply` would
+still change. It draws from the same planner the `Prerequisites` phase uses (see
+[Reconciliation](reconciliation.md#phases)), so a manager never reads
+"converged" here while `apply` still has work to do on it. A manager `apply` can
+self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
+`not installed — cannot bootstrap — <reason>`.
 
 File bodies render at column 0 under the file they belong to, so a diff hunk stays
 copy-pasteable.
@@ -476,6 +542,18 @@ The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files
 A file cfgd could not evaluate — an unparseable target, a filter that exited non-zero, a patch script a source is [barred from running](sources.md#noscripts) — appears with the reason as its `actual`, so the cause is visible without reading the terminal rendering.
 
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
+
+`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `bootstrap` | `refused`), and `packages` (empty for the two manager-drift shapes). A `bootstrap` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead — the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
+
+```json
+{
+  "packages": [
+    { "manager": "cargo", "shape": "missing", "packages": ["ripgrep"] },
+    { "manager": "pipx", "shape": "bootstrap", "bootstrapMethod": "pip install pipx" },
+    { "manager": "snap", "shape": "refused", "reason": "no available system manager" }
+  ]
+}
+```
 
 ### `cfgd verify`
 

@@ -9,7 +9,7 @@
 use cfgd_core::config::ResolvedProfile;
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::providers::{PackageAction, ProviderRegistry};
-use cfgd_core::reconciler::VerifyResult;
+use cfgd_core::reconciler::{Action, ManagerAction, VerifyResult};
 
 use crate::files::{CfgdFileManager, module_patch_binding};
 use crate::packages;
@@ -121,10 +121,22 @@ pub(super) fn live_drift_results(
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    for action in
-        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?
-    {
-        if let Some(result) = package_action_drift(&action) {
+    let pkg_actions =
+        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
+    for action in &pkg_actions {
+        if let Some(result) = package_action_drift(action) {
+            drift.push(result);
+        }
+    }
+
+    // Managers: a manager the plan would provision or refuse is itself drift —
+    // the same signal `diff`'s `cfgd:managers` group renders, from the same
+    // planner, so `verify`/`status -e` cannot disagree with `diff` about
+    // whether a missing manager is live drift.
+    for action in cfgd_core::reconciler::plan_managers(registry, &pkg_actions, &[]) {
+        if let Action::Manager(ma) = action
+            && let Some(result) = manager_action_drift(&ma)
+        {
             drift.push(result);
         }
     }
@@ -182,6 +194,32 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             matches: false,
             expected: "absent".to_string(),
             actual: "to remove".to_string(),
+        }),
+    }
+}
+
+/// Map a [`ManagerAction`] to a drift `VerifyResult`. Returns `None` for
+/// `RefreshIndex`/`Prerequisite`: neither is something the user declared and
+/// can be *missing* — they run every apply regardless of drift, so surfacing
+/// them here would flag a fresh clone as drifted even when nothing diverges.
+/// Only `Provision` (a manager that can self-heal) and `Refuse` (one that
+/// can't) name an actual gap between desired and live state.
+fn manager_action_drift(action: &ManagerAction) -> Option<VerifyResult> {
+    match action {
+        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
+        ManagerAction::Provision { manager, via, .. } => Some(VerifyResult {
+            resource_type: "package".to_string(),
+            resource_id: manager.clone(),
+            matches: false,
+            expected: "installed".to_string(),
+            actual: format!("not installed (bootstrap via {via})"),
+        }),
+        ManagerAction::Refuse { manager, reason } => Some(VerifyResult {
+            resource_type: "package".to_string(),
+            resource_id: manager.clone(),
+            matches: false,
+            expected: "installed".to_string(),
+            actual: format!("not installed (cannot bootstrap — {reason})"),
         }),
     }
 }
@@ -593,6 +631,87 @@ mod tests {
                 .iter()
                 .any(|r| r.resource_type == "package" && r.resource_id.contains("ripgrep")),
             "module-only package must register as live drift: {drift:?}"
+        );
+    }
+
+    #[test]
+    fn live_drift_results_includes_a_provisionable_manager() {
+        // A missing manager the plan CAN self-heal must still surface as live
+        // drift — otherwise `verify`/`status -e` say "converged" on a host
+        // `apply` would still change, the same gap `diff` closed for its own
+        // `cfgd:managers` group.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .unavailable()
+                .bootstrappable_via("pip install npm-bootstrap"),
+        ));
+
+        let modules = vec![module_with_package("dev", "npm", "left-pad")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &cx,
+        )
+        .unwrap();
+
+        let manager_row = drift
+            .iter()
+            .find(|r| r.resource_type == "package" && r.resource_id == "npm")
+            .unwrap_or_else(|| panic!("a provisionable manager must register as drift: {drift:?}"));
+        assert_eq!(
+            manager_row.actual, "not installed (bootstrap via pip install npm-bootstrap)",
+            "must name the method `diff` would show, got: {manager_row:?}"
+        );
+    }
+
+    #[test]
+    fn live_drift_results_includes_a_refused_manager() {
+        // A manager the plan cannot self-heal (no path to its prerequisite
+        // tool) must still register as drift, distinguishable from the
+        // provisionable case by its reason rather than being silently dropped.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .unavailable()
+                .bootstrappable_via("pip install npm-bootstrap")
+                .requiring(&["a-tool-nothing-provides"]),
+        ));
+
+        let modules = vec![module_with_package("dev", "npm", "left-pad")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &cx,
+        )
+        .unwrap();
+
+        let manager_row = drift
+            .iter()
+            .find(|r| r.resource_type == "package" && r.resource_id == "npm")
+            .unwrap_or_else(|| panic!("a refused manager must register as drift too: {drift:?}"));
+        assert!(
+            manager_row.actual.contains("cannot bootstrap")
+                && manager_row.actual.contains("a-tool-nothing-provides"),
+            "must name why, distinct from the provisionable wording, got: {manager_row:?}"
         );
     }
 

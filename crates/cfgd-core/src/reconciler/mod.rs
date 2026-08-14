@@ -38,6 +38,7 @@ pub use format::{
     format_action_description, format_plan_item, format_plan_items, hook_script_subject,
     module_script_subject, script_run_subject, system_key_doubling_error, system_resource_key,
 };
+pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use pending::{

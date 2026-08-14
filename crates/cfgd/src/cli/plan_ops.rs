@@ -167,6 +167,55 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
     }
 }
 
+/// The `cfgd:managers` group's structured detail for a plan action —
+/// `Some` only for `Action::Manager`, `None` (omitted from the wire) for every
+/// other action kind.
+///
+/// `requires` is [`reconciler::ManagerAction::depends_on`] verbatim: full
+/// `manager:...` node ids, identical in shape to a sibling row's
+/// `description` — a consumer resolves an edge against another action in the
+/// same phase without a second id scheme (see `ManagerActionOutput`'s doc).
+pub(in crate::cli) fn manager_action_output(
+    action: &reconciler::Action,
+) -> Option<ManagerActionOutput> {
+    let reconciler::Action::Manager(ma) = action else {
+        return None;
+    };
+    let requires = ma.depends_on().to_vec();
+    Some(match ma {
+        reconciler::ManagerAction::RefreshIndex { manager } => ManagerActionOutput {
+            manager: manager.clone(),
+            state: "present".to_string(),
+            via: None,
+            requires,
+            reason: None,
+        },
+        reconciler::ManagerAction::Provision { manager, via, .. } => ManagerActionOutput {
+            manager: manager.clone(),
+            state: "provisioned".to_string(),
+            via: Some(via.clone()),
+            requires,
+            reason: None,
+        },
+        reconciler::ManagerAction::Prerequisite {
+            tool, installer, ..
+        } => ManagerActionOutput {
+            manager: tool.clone(),
+            state: "prerequisite".to_string(),
+            via: Some(installer.clone()),
+            requires,
+            reason: None,
+        },
+        reconciler::ManagerAction::Refuse { manager, reason } => ManagerActionOutput {
+            manager: manager.clone(),
+            state: "refused".to_string(),
+            via: None,
+            requires,
+            reason: Some(reason.clone()),
+        },
+    })
+}
+
 /// Absolute filesystem target path(s) a plan action writes, for structured
 /// (`-o json`) consumers and blast-radius tooling. Empty for actions with no
 /// direct filesystem target (package installs, system-configurator writes,
@@ -387,6 +436,7 @@ pub(in crate::cli) fn build_plan_output(
                                     action_type: action_type_str(action).to_string(),
                                     targets: action_targets(action),
                                     origin: action_origin(action),
+                                    manager: manager_action_output(action),
                                 })
                                 .collect(),
                         )

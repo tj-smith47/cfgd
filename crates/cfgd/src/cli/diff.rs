@@ -2,7 +2,7 @@ use super::*;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
-use cfgd_core::reconciler::{Owner, PhaseName};
+use cfgd_core::reconciler::{Action, MANAGERS_GROUP, ManagerAction, Owner, PhaseName};
 
 /// Render one module-deployed file's inline diff and report whether it drifts.
 ///
@@ -165,7 +165,26 @@ pub fn cmd_diff(
             &cfgd_installed,
             &pkg_cx,
         )?;
-        print_package_drift(&pkg_actions, &pkg_sec, &profile_owner, &mut diff_payload)
+        // Same planner the Prerequisites phase runs, so a manager `diff` calls
+        // out as drift is exactly the one `apply` would provision or refuse —
+        // no second membership rule to keep in sync with the reconciler's.
+        let manager_actions: Vec<ManagerAction> =
+            cfgd_core::reconciler::plan_managers(&registry, &pkg_actions, &[])
+                .into_iter()
+                .filter_map(|a| match a {
+                    Action::Manager(
+                        ma @ (ManagerAction::Provision { .. } | ManagerAction::Refuse { .. }),
+                    ) => Some(ma),
+                    _ => None,
+                })
+                .collect();
+        print_package_drift(
+            &pkg_actions,
+            &manager_actions,
+            &pkg_sec,
+            &profile_owner,
+            &mut diff_payload,
+        )
     };
 
     {
@@ -395,57 +414,111 @@ fn package_missing_drift(
         manager: pkg.manager.clone(),
         shape: "missing".to_string(),
         packages: vec![pkg.resolved_name.clone()],
+        bootstrap_method: None,
+        reason: None,
     })
 }
 
 /// Render the package half of a drift report, one owner group per owner.
+/// Render the package half of a drift report, one owner group per owner.
+///
+/// `manager_actions` is the same `ManagerAction` planner output the
+/// Prerequisites phase runs (`reconciler::plan_managers`) — a missing manager
+/// this run would provision, or refuses to, is drift the same way a missing
+/// package is, and reads under `cfgd:managers` exactly as it would in the
+/// plan that fixes it. `RefreshIndex`/`Prerequisite` nodes are not drift (an
+/// index refresh and a tool install are not something the user declared and
+/// can be missing) and never reach this function's caller.
 fn print_package_drift(
     pkg_actions: &[PackageAction],
+    manager_actions: &[ManagerAction],
     section: &SectionGuard<'_>,
     profile: &Owner,
     payload: &mut DiffOutput,
 ) -> bool {
-    let pkg_diffs: Vec<(&PackageAction, Owner)> = pkg_actions
+    let pkg_diffs: Vec<&PackageAction> = pkg_actions
         .iter()
         .filter(|a| !matches!(a, PackageAction::Skip { .. }))
-        .map(|a| (a, profile.clone()))
         .collect();
-    let has_drift = !pkg_diffs.is_empty();
-    if pkg_diffs.is_empty() {
+    let has_drift = !pkg_diffs.is_empty() || !manager_actions.is_empty();
+    if !has_drift {
         section.status_simple(Role::Ok, "No package drift");
-    } else {
-        let mut owners: Vec<Owner> = pkg_diffs.iter().map(|(_, o)| o.clone()).collect();
-        Owner::order(&mut owners);
-        for owner in &owners {
-            let group = section.section_owner(&owner_label(owner));
-            for (action, _) in pkg_diffs.iter().filter(|(_, o)| o == owner) {
-                match action {
-                    PackageAction::Install {
-                        manager, packages, ..
-                    } => {
+        return false;
+    }
+    let managers_owner = Owner::cfgd(MANAGERS_GROUP);
+    let mut owners: Vec<Owner> = Vec::new();
+    if !pkg_diffs.is_empty() {
+        owners.push(profile.clone());
+    }
+    if !manager_actions.is_empty() {
+        owners.push(managers_owner.clone());
+    }
+    Owner::order(&mut owners);
+    for owner in &owners {
+        let group = section.section_owner(&owner_label(owner));
+        if *owner == managers_owner {
+            for ma in manager_actions {
+                match ma {
+                    ManagerAction::Provision { manager, via, .. } => {
                         group
-                            .status(Role::Warn, format!("{}: missing", manager))
-                            .detail(packages.join(", "));
+                            .status(Role::Warn, format!("{manager}: not installed"))
+                            .detail(format!("can bootstrap via {via}"));
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
-                            shape: "missing".to_string(),
-                            packages: packages.clone(),
+                            shape: "bootstrap".to_string(),
+                            packages: Vec::new(),
+                            bootstrap_method: Some(via.clone()),
+                            reason: None,
                         });
                     }
-                    PackageAction::Uninstall {
-                        manager, packages, ..
-                    } => {
+                    ManagerAction::Refuse { manager, reason } => {
                         group
-                            .status(Role::Warn, format!("{}: extra", manager))
-                            .detail(packages.join(", "));
+                            .status(Role::Warn, format!("{manager}: not installed"))
+                            .detail(format!("cannot bootstrap — {reason}"));
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
-                            shape: "extra".to_string(),
-                            packages: packages.clone(),
+                            shape: "refused".to_string(),
+                            packages: Vec::new(),
+                            bootstrap_method: None,
+                            reason: Some(reason.clone()),
                         });
                     }
-                    PackageAction::Skip { .. } => {}
+                    ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {}
                 }
+            }
+            continue;
+        }
+        for action in &pkg_diffs {
+            match action {
+                PackageAction::Install {
+                    manager, packages, ..
+                } => {
+                    group
+                        .status(Role::Warn, format!("{}: missing", manager))
+                        .detail(packages.join(", "));
+                    payload.packages.push(PackageDrift {
+                        manager: manager.clone(),
+                        shape: "missing".to_string(),
+                        packages: packages.clone(),
+                        bootstrap_method: None,
+                        reason: None,
+                    });
+                }
+                PackageAction::Uninstall {
+                    manager, packages, ..
+                } => {
+                    group
+                        .status(Role::Warn, format!("{}: extra", manager))
+                        .detail(packages.join(", "));
+                    payload.packages.push(PackageDrift {
+                        manager: manager.clone(),
+                        shape: "extra".to_string(),
+                        packages: packages.clone(),
+                        bootstrap_method: None,
+                        reason: None,
+                    });
+                }
+                PackageAction::Skip { .. } => {}
             }
         }
     }
@@ -507,8 +580,13 @@ mod tests {
         }];
         {
             let section = printer.section_phase(&PhaseName::Packages.section_label());
-            let has_drift =
-                print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
+            let has_drift = print_package_drift(
+                &actions,
+                &[],
+                &section,
+                &Owner::profile("tiny"),
+                &mut payload,
+            );
             assert!(!has_drift, "all-skip should report no drift");
         }
         drop(printer);
@@ -677,8 +755,13 @@ mod tests {
         ];
         {
             let section = printer.section_phase(&PhaseName::Packages.section_label());
-            let has_drift =
-                print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
+            let has_drift = print_package_drift(
+                &actions,
+                &[],
+                &section,
+                &Owner::profile("tiny"),
+                &mut payload,
+            );
             assert!(has_drift, "non-Skip actions count as drift");
         }
         drop(printer);
@@ -705,8 +788,13 @@ mod tests {
         ];
         {
             let section = printer.section_phase(&PhaseName::Packages.section_label());
-            let has_drift =
-                print_package_drift(&actions, &section, &Owner::profile("tiny"), &mut payload);
+            let has_drift = print_package_drift(
+                &actions,
+                &[],
+                &section,
+                &Owner::profile("tiny"),
+                &mut payload,
+            );
             assert!(has_drift, "non-Skip actions should report drift");
         }
         drop(printer);
@@ -725,6 +813,95 @@ mod tests {
             "package drift must group under its profile owner, got: {output}"
         );
         assert_eq!(payload.packages.len(), 2);
+    }
+
+    #[test]
+    fn print_package_drift_reports_bootstrap_and_refusal() {
+        // Ground truth for the wording: the deleted `PackageAction::Bootstrap`
+        // arm (git show ef490085), carried into the `ManagerAction` vocabulary
+        // that replaced it. `Refuse` is new — no manager surfaced a refusal
+        // before this phase existed — so its line has no prior wording to
+        // match and is asserted only for shape.
+        let (printer, cap) = Printer::for_test_doc();
+        let mut payload = DiffOutput::default();
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "cargo".into(),
+            packages: vec!["ripgrep".into()],
+            origin: "profile".into(),
+        }];
+        let manager_actions = vec![
+            ManagerAction::Provision {
+                manager: "pipx".into(),
+                via: "pip install pipx".into(),
+                depends_on: vec![],
+            },
+            ManagerAction::Refuse {
+                manager: "snap".into(),
+                reason: "no available system manager".into(),
+            },
+        ];
+        {
+            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let has_drift = print_package_drift(
+                &pkg_actions,
+                &manager_actions,
+                &section,
+                &Owner::profile("tiny"),
+                &mut payload,
+            );
+            assert!(has_drift, "a bootstrap or a refusal is drift");
+        }
+        drop(printer);
+
+        let output = strip_ansi(&cap.human());
+        assert!(
+            output.contains("pipx: not installed")
+                && output.contains("can bootstrap via pip install pipx"),
+            "should show the bootstrap need and its method, got: {output}"
+        );
+        assert!(
+            output.contains("snap: not installed")
+                && output.contains("cannot bootstrap")
+                && output.contains("no available system manager"),
+            "should show the refusal and its reason, got: {output}"
+        );
+        // A manager installs a manager, so it belongs to cfgd — same
+        // attribution the plan that would provision it uses — and the
+        // profile's own group (the declared package) still precedes it.
+        let profile_at = output.find("profile:tiny").unwrap_or_else(|| {
+            panic!("package drift must group under its profile owner, got: {output}")
+        });
+        let cfgd_at = output.find("cfgd:managers").unwrap_or_else(|| {
+            panic!("a bootstrap/refusal must group under cfgd:managers, got: {output}")
+        });
+        assert!(
+            profile_at < cfgd_at,
+            "profile precedes cfgd in owner order, got: {output}"
+        );
+
+        assert_eq!(payload.packages.len(), 3);
+        let bootstrap = payload
+            .packages
+            .iter()
+            .find(|p| p.shape == "bootstrap")
+            .expect("a bootstrap row must be in the json payload");
+        assert_eq!(bootstrap.manager, "pipx");
+        assert_eq!(
+            bootstrap.bootstrap_method.as_deref(),
+            Some("pip install pipx")
+        );
+        assert!(bootstrap.packages.is_empty());
+        let refused = payload
+            .packages
+            .iter()
+            .find(|p| p.shape == "refused")
+            .expect("a refused row must be in the json payload");
+        assert_eq!(refused.manager, "snap");
+        assert_eq!(
+            refused.reason.as_deref(),
+            Some("no available system manager")
+        );
+        assert!(refused.packages.is_empty());
     }
 
     /// Minimal package-manager double: a fixed installed set plus an optional

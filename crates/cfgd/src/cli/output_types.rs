@@ -213,9 +213,21 @@ pub struct DiffSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PackageDrift {
     pub manager: String,
+    /// `missing` | `extra` | `bootstrap` | `refused`. `bootstrap`/`refused` are
+    /// package-less rows: the manager itself is what drifts, not a package it
+    /// would install, so `packages` stays empty for both.
     pub shape: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
+    /// The method a `shape: "bootstrap"` row would self-install with — naming
+    /// precedent: `DoctorManagerCheck.bootstrap_method`. `Some` only when
+    /// `shape == "bootstrap"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_method: Option<String>,
+    /// Why a `shape: "refused"` row cannot self-install. `Some` only when
+    /// `shape == "refused"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,6 +353,35 @@ impl PlanGroupOutput {
     }
 }
 
+/// The `cfgd:managers` group's per-action structured payload — spec §7's
+/// `{manager, state, via, requires}` shape, populated only for
+/// `Action::Manager` rows (`PlanActionOutput.manager`).
+///
+/// `manager` names the row's subject: the manager itself for
+/// `RefreshIndex`/`Provision`/`Refuse`, and the TOOL for `Prerequisite` — the
+/// installer goes in `via` instead, mirroring the human line's "{installer}
+/// install {tool}" subject/actor split. `requires` is `ManagerAction::depends_on`
+/// verbatim (full `manager:...` node ids), so a consumer resolves an entry
+/// against a sibling row's `description` with no second id scheme.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerActionOutput {
+    pub manager: String,
+    /// `present` (refresh) | `provisioned` | `prerequisite` | `refused`.
+    /// `refused` is not in spec §7's literal enum — the spec's variant list
+    /// names `Refuse` as a node this task must give a payload, and a state
+    /// enum a refusal cannot express in is a payload that silently drops it.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Why this host cannot provision the manager. `Some` only when
+    /// `state == "refused"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanActionOutput {
@@ -361,6 +402,9 @@ pub struct PlanActionOutput {
     /// `description`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// The row's `cfgd:managers` detail, `Some` only for `Action::Manager`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager: Option<ManagerActionOutput>,
 }
 
 #[derive(Serialize)]
@@ -1103,6 +1147,8 @@ mod tests {
                 manager: "brew".to_string(),
                 shape: "missing".to_string(),
                 packages: vec!["ripgrep".to_string()],
+                bootstrap_method: None,
+                reason: None,
             }],
             system: vec![SystemDriftOutput {
                 key: "sysctl.kernel.x".to_string(),
@@ -1183,6 +1229,8 @@ mod tests {
             manager: "apt".to_string(),
             shape: "extra".to_string(),
             packages: vec![],
+            bootstrap_method: None,
+            reason: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["manager"], json!("apt"));
@@ -1199,6 +1247,8 @@ mod tests {
             manager: "cargo".to_string(),
             shape: "missing".to_string(),
             packages: vec!["bat".to_string(), "fd-find".to_string()],
+            bootstrap_method: None,
+            reason: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["packages"], json!(["bat", "fd-find"]));
@@ -1246,6 +1296,7 @@ mod tests {
                         action_type: "package".to_string(),
                         targets: vec![],
                         origin: None,
+                        manager: None,
                     }],
                 )],
             }],
@@ -1315,6 +1366,7 @@ mod tests {
                     action_type: "file".to_string(),
                     targets: vec!["/etc/hosts".to_string()],
                     origin: None,
+                    manager: None,
                 }],
             )],
         };
@@ -1344,6 +1396,7 @@ mod tests {
             action_type: "system".to_string(),
             targets: vec![],
             origin: None,
+            manager: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["description"], json!("configure systemd"));
@@ -1369,6 +1422,7 @@ mod tests {
             action_type: "file.create".to_string(),
             targets: vec!["/etc/hosts".to_string()],
             origin: None,
+            manager: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(

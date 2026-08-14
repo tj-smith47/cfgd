@@ -88,7 +88,7 @@ struct Graph {
 /// the refusals, each tier sorted by name. Two runs against an unchanged host
 /// therefore plan byte-identical actions, and a scheduler walking the list in
 /// order never reaches a node before its dependencies.
-pub(super) fn plan_managers(
+pub fn plan_managers(
     registry: &ProviderRegistry,
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],

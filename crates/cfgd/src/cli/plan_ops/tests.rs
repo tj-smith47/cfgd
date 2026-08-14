@@ -279,6 +279,76 @@ fn action_type_str_manager_variants() {
 }
 
 #[test]
+fn manager_action_output_none_for_non_manager_action() {
+    assert!(manager_action_output(&file_create("/etc/foo")).is_none());
+}
+
+#[test]
+fn manager_action_output_refresh_index_is_present_with_no_via_or_requires() {
+    let out = manager_action_output(&Action::Manager(ManagerAction::RefreshIndex {
+        manager: "brew".to_string(),
+    }))
+    .expect("RefreshIndex must carry a manager payload");
+    assert_eq!(out.manager, "brew");
+    assert_eq!(out.state, "present");
+    assert_eq!(out.via, None);
+    assert!(out.requires.is_empty());
+    assert_eq!(out.reason, None);
+}
+
+#[test]
+fn manager_action_output_provision_carries_via_and_requires() {
+    let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
+        manager: "pipx".to_string(),
+        via: "pip install pipx".to_string(),
+        depends_on: vec!["manager:prereq:curl".to_string()],
+    }))
+    .expect("Provision must carry a manager payload");
+    assert_eq!(out.manager, "pipx");
+    assert_eq!(out.state, "provisioned");
+    assert_eq!(out.via.as_deref(), Some("pip install pipx"));
+    assert_eq!(out.requires, vec!["manager:prereq:curl".to_string()]);
+    assert_eq!(out.reason, None);
+}
+
+#[test]
+fn manager_action_output_prerequisite_names_the_tool_and_installer() {
+    // manager=tool, via=installer mirrors the human line's subject/actor
+    // split ("{installer} install {tool}") — the installer is the "manager"
+    // command that runs, but the tool is what this row is about.
+    let out = manager_action_output(&Action::Manager(ManagerAction::Prerequisite {
+        tool: "curl".to_string(),
+        installer: "apt".to_string(),
+        required_by: vec!["brew-cask".to_string(), "pipx".to_string()],
+        depends_on: vec!["manager:refresh:apt".to_string()],
+    }))
+    .expect("Prerequisite must carry a manager payload");
+    assert_eq!(out.manager, "curl");
+    assert_eq!(out.state, "prerequisite");
+    assert_eq!(out.via.as_deref(), Some("apt"));
+    assert_eq!(out.requires, vec!["manager:refresh:apt".to_string()]);
+    assert_eq!(out.reason, None);
+}
+
+#[test]
+fn manager_action_output_refuse_extends_spec_with_a_refused_state_and_reason() {
+    // Spec §7's literal `state` enum is present|provisioned|prerequisite —
+    // it does not name Refuse. This task's own scope names `Refuse` as a
+    // node requiring a payload, so a fourth state carries the reason rather
+    // than the row silently disappearing from `-o json`.
+    let out = manager_action_output(&Action::Manager(ManagerAction::Refuse {
+        manager: "snap".to_string(),
+        reason: "no available system manager".to_string(),
+    }))
+    .expect("Refuse must carry a manager payload");
+    assert_eq!(out.manager, "snap");
+    assert_eq!(out.state, "refused");
+    assert_eq!(out.via, None);
+    assert!(out.requires.is_empty());
+    assert_eq!(out.reason.as_deref(), Some("no available system manager"));
+}
+
+#[test]
 fn action_type_str_secret_variants() {
     assert_eq!(action_type_str(&secret_decrypt()), "decrypt");
     assert_eq!(action_type_str(&secret_resolve()), "resolve");
@@ -1054,6 +1124,88 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
     assert!(
         !json.to_string().contains("cfgd:managers"),
         "no bootstrap planned, so no managers group anywhere in the payload: {json}"
+    );
+}
+
+#[test]
+fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
+    // Spec §7: `phases[]` gains a `managers` phase object with one group,
+    // `cfgd:managers`, whose actions carry `{manager, state, via, requires}`.
+    let plan = make_plan(vec![(
+        PhaseName::Prerequisites,
+        vec![
+            Action::Manager(ManagerAction::RefreshIndex {
+                manager: "brew".to_string(),
+            }),
+            Action::Manager(ManagerAction::Provision {
+                manager: "pipx".to_string(),
+                via: "pip install pipx".to_string(),
+                depends_on: vec!["manager:prereq:curl".to_string()],
+            }),
+            Action::Manager(ManagerAction::Refuse {
+                manager: "snap".to_string(),
+                reason: "no available system manager".to_string(),
+            }),
+        ],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let json = serde_json::to_value(&output).unwrap();
+    let groups = json["phases"][0]["groups"].as_array().expect("groups");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["token"], serde_json::json!("cfgd:managers"));
+    let actions = groups[0]["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 3);
+
+    let refresh = &actions[0];
+    assert_eq!(refresh["manager"]["manager"], serde_json::json!("brew"));
+    assert_eq!(refresh["manager"]["state"], serde_json::json!("present"));
+    assert!(
+        refresh["manager"].get("via").is_none(),
+        "refresh carries no via: {refresh}"
+    );
+    assert!(
+        refresh["manager"].get("requires").is_none(),
+        "refresh depends on nothing, so requires is omitted: {refresh}"
+    );
+
+    let provision = &actions[1];
+    assert_eq!(provision["manager"]["manager"], serde_json::json!("pipx"));
+    assert_eq!(
+        provision["manager"]["state"],
+        serde_json::json!("provisioned")
+    );
+    assert_eq!(
+        provision["manager"]["via"],
+        serde_json::json!("pip install pipx")
+    );
+    assert_eq!(
+        provision["manager"]["requires"],
+        serde_json::json!(["manager:prereq:curl"]),
+        "requires resolves against a sibling row's description one-to-one"
+    );
+
+    let refuse = &actions[2];
+    assert_eq!(refuse["manager"]["manager"], serde_json::json!("snap"));
+    assert_eq!(refuse["manager"]["state"], serde_json::json!("refused"));
+    assert_eq!(
+        refuse["manager"]["reason"],
+        serde_json::json!("no available system manager")
+    );
+
+    // A non-manager row never carries the key at all.
+    let other = build_plan_output(
+        &make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]),
+        "ctx",
+        None,
+        &[],
+        &no_decisions(),
+    );
+    let other_json = serde_json::to_value(&other).unwrap();
+    assert!(
+        other_json["phases"][0]["groups"][0]["actions"][0]
+            .get("manager")
+            .is_none(),
+        "a file action must not carry the manager key: {other_json}"
     );
 }
 
