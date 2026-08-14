@@ -81,15 +81,17 @@ impl StateStore {
     /// tracking — most-recent-first.
     ///
     /// Ordered by `completion_index`, because once package work runs in lanes
-    /// `action_index DESC` stops meaning "most recent first". `COALESCE` is for
-    /// in-flight rows, not for old databases: every `StateStore` open migrates
-    /// before returning, so no binary reads a pre-migration schema, but a run
-    /// killed between [`Self::journal_begin`] and its collection leaves rows
-    /// NULL forever and the report across them must still order by something.
+    /// `action_index DESC` stops meaning "most recent first". No `COALESCE`
+    /// fallback is needed: the `status = 'completed'` filter admits only rows
+    /// [`Self::journal_complete`] wrote, and that call sets `completion_index`
+    /// in the very same `UPDATE` that sets the status, so every row this query
+    /// can return already has one. A run killed between [`Self::journal_begin`]
+    /// and its collection leaves its row at `status = 'pending'` forever —
+    /// excluded by the `WHERE` clause before ordering ever sees it.
     pub fn journal_entries_after_apply(&self, after_apply_id: i64) -> Result<Vec<JournalEntry>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {JOURNAL_COLUMNS} FROM apply_journal WHERE apply_id > ?1 AND status = 'completed'
-             ORDER BY apply_id DESC, COALESCE(completion_index, action_index) DESC"
+             ORDER BY apply_id DESC, completion_index DESC"
         ))?;
 
         let records = stmt

@@ -1313,7 +1313,7 @@ fn update_apply_status_works() {
 #[test]
 fn schema_version_advances_to_migration_count() {
     let store = StateStore::open_in_memory().unwrap();
-    let version = store.schema_version();
+    let version = store.schema_version().unwrap();
     assert_eq!(
         version,
         super::MIGRATIONS.len(),
@@ -2288,9 +2288,13 @@ fn journal_entries_after_apply_reports_in_completion_order_not_plan_order() {
 }
 
 #[test]
-fn journal_entry_with_no_completion_index_still_orders_by_action_index() {
-    // A run killed between `journal_begin` and collection leaves the column
-    // NULL forever; the report across those rows must still order.
+fn journal_complete_always_pairs_completion_index_with_completed_status() {
+    // `journal_entries_after_apply` filters to `status = 'completed'` and
+    // orders by `completion_index` with no NULL fallback; that is only sound
+    // because `journal_complete` is the sole writer of `status = 'completed'`
+    // and it sets `completion_index` in the same `UPDATE`. A `pending` row
+    // (a run killed before collection) never reaches this query at all — the
+    // `WHERE` clause excludes it before ordering is evaluated.
     let store = StateStore::open_in_memory().unwrap();
     let apply1 = store
         .record_apply("default", "hash1", ApplyStatus::Success, None)
@@ -2299,31 +2303,26 @@ fn journal_entry_with_no_completion_index_still_orders_by_action_index() {
         .record_apply("default", "hash2", ApplyStatus::Success, None)
         .unwrap();
 
-    for (index, resource) in [(0usize, "brew:first"), (1, "brew:second")] {
-        let id = store
-            .journal_begin(apply2, index, "Packages", "install", resource, None)
-            .unwrap();
-        store
-            .conn
-            .execute(
-                "UPDATE apply_journal SET status = 'completed', completion_index = NULL WHERE id = ?1",
-                params![id],
-            )
-            .unwrap();
-    }
+    let completed = store
+        .journal_begin(apply2, 0, "Packages", "install", "brew:done", None)
+        .unwrap();
+    store.journal_complete(completed, 0, None, None).unwrap();
+    // Left pending — never collected, so it must stay excluded.
+    store
+        .journal_begin(apply2, 1, "Packages", "install", "brew:stuck", None)
+        .unwrap();
 
     let entries = store.journal_entries_after_apply(apply1).unwrap();
-    assert!(
-        entries.iter().all(|e| e.completion_index.is_none()),
-        "the fixture's whole point is NULL rows: {entries:?}"
-    );
     assert_eq!(
-        entries
-            .iter()
-            .map(|e| e.resource_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["brew:second", "brew:first"],
-        "COALESCE falls back to the plan position"
+        entries.len(),
+        1,
+        "a pending row must not surface via journal_entries_after_apply"
+    );
+    assert_eq!(entries[0].resource_id, "brew:done");
+    assert_eq!(
+        entries[0].completion_index,
+        Some(0),
+        "journal_complete always writes completion_index alongside status"
     );
 }
 
@@ -2381,10 +2380,41 @@ fn concurrent_in_memory_stores_are_independent() {
 #[test]
 fn schema_version_after_open() {
     let store = StateStore::open_in_memory().unwrap();
-    let version = store.schema_version();
+    let version = store.schema_version().unwrap();
     assert!(
         version >= 4,
         "schema version should be at least 4 after migrations: got {version}"
+    );
+}
+
+#[test]
+fn schema_version_read_error_propagates_instead_of_replaying_migrations() {
+    // A `schema_version` table that EXISTS but has lost its row is not a
+    // fresh database (a fresh database is one that never created the table
+    // at all) — it is exactly the transient/corrupt-read shape the fix
+    // guards. `StateStore::open` must surface an error rather than folding
+    // it to `0` and replaying every migration, several of which are
+    // non-idempotent `ALTER TABLE ... ADD COLUMN` and abort on replay with
+    // "duplicate column name".
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        store
+            .conn
+            .execute("DELETE FROM schema_version", [])
+            .unwrap();
+    }
+
+    let message = match StateStore::open(&path) {
+        Ok(_) => {
+            panic!("a schema_version table with no row must error, not silently read as version 0")
+        }
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        !message.contains("duplicate column name"),
+        "a genuine read failure must be reported as itself, not surface as a replayed migration's own failure: {message}"
     );
 }
 
@@ -2410,7 +2440,7 @@ fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point(
         state.backup_runs("any").unwrap().is_empty(),
         "backup_runs must exist and be readable after replaying the tail migration"
     );
-    assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+    assert_eq!(state.schema_version().unwrap(), MIGRATIONS.len());
 }
 
 fn doubled_prefix_snapshot(key: &str) -> crate::compliance::ComplianceSnapshot {
@@ -2651,13 +2681,13 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
         }
     }
 
-    assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+    assert_eq!(state.schema_version().unwrap(), MIGRATIONS.len());
 }
 
 #[test]
 fn migration_14_is_a_no_op_on_a_fresh_store() {
     let store = StateStore::open_in_memory().unwrap();
-    assert_eq!(store.schema_version(), MIGRATIONS.len());
+    assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len());
     assert!(store.managed_resources().unwrap().is_empty());
     assert!(store.unresolved_drift().unwrap().is_empty());
     assert!(store.compliance_history(None, 10).unwrap().is_empty());
