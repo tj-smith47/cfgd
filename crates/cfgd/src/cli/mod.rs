@@ -472,7 +472,7 @@ pub struct ApplyArgs {
     /// (an owner group — `prerequisites.managers` — or a manager name —
     /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
     /// packages, system, files, secrets, post-scripts
-    #[arg(long)]
+    #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
@@ -509,7 +509,7 @@ pub struct PlanArgs {
     /// (an owner group — `prerequisites.managers` — or a manager name —
     /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
     /// packages, system, files, secrets, post-scripts
-    #[arg(long)]
+    #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
     /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
     #[arg(long)]
@@ -1965,7 +1965,7 @@ impl ApplyPhase {
     }
 }
 
-/// Clap value type for `--phase` (spec §4's dotted grammar):
+/// Clap value type for `--phase`'s dotted grammar:
 /// `<phase>[.<selector>]`, e.g. `prerequisites`, `prerequisites.managers`,
 /// `prerequisites.brew`. Not a `ValueEnum` because the selector half is open
 /// (any owner-group name or any registered manager name); [`ApplyPhase`]
@@ -1979,6 +1979,7 @@ pub struct PhaseArg {
 impl PhaseArg {
     /// A selector-less `PhaseArg`, for call sites (mostly tests) that only
     /// ever named a bare phase before this grammar existed.
+    #[cfg(test)]
     pub fn bare(phase: ApplyPhase) -> Self {
         PhaseArg {
             phase,
@@ -2017,6 +2018,56 @@ impl std::str::FromStr for PhaseArg {
     }
 }
 
+/// The `value_parser` for `--phase`, standing in for a derive-generated one.
+///
+/// `PhaseArg` cannot derive `clap::ValueEnum` — the selector half of its
+/// grammar is open — but a bare `#[arg(long)]` relying on `FromStr` alone
+/// drops the possible-values list `--help` and `cfgd completions <shell>`
+/// read from. Implementing `TypedValueParser` restores it: `parse_ref`
+/// delegates to `FromStr`, and `possible_values` republishes `ApplyPhase`'s
+/// own vocabulary so the bare-phase half stays visible even though the
+/// selector half cannot be enumerated ahead of a loaded `ProviderRegistry`.
+#[derive(Clone)]
+struct PhaseArgValueParser;
+
+impl clap::builder::TypedValueParser for PhaseArgValueParser {
+    type Value = PhaseArg;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let inner = clap::builder::StringValueParser::new();
+        let s = inner.parse_ref(cmd, arg, value)?;
+        s.parse::<PhaseArg>().map_err(|e| {
+            let mut err = clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd);
+            if let Some(arg) = arg {
+                err.insert(
+                    clap::error::ContextKind::InvalidArg,
+                    clap::error::ContextValue::String(arg.to_string()),
+                );
+            }
+            err.insert(
+                clap::error::ContextKind::InvalidValue,
+                clap::error::ContextValue::String(e),
+            );
+            err
+        })
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            <ApplyPhase as clap::ValueEnum>::value_variants()
+                .iter()
+                .filter_map(clap::ValueEnum::to_possible_value),
+        ))
+    }
+}
+
 /// Map a clap-validated ApplyPhase to the reconciler's plan filter.
 ///
 /// `--phase modules` is an owner filter rather than a phase name: module work
@@ -2044,9 +2095,14 @@ fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
 /// Fallible because a selector combined with `--phase modules` has nothing to
 /// scope to: `ApplyPhase::Modules` maps to `PhaseFilter::ModuleOwners`, which
 /// already spans every phase module work can land in, not a single phase a
-/// selector could narrow.
+/// selector could narrow. Also fallible on a selector that names neither a
+/// cfgd owner group nor a registered package manager: validated here against
+/// `registry`, which the caller must have already extended with any
+/// config-declared custom managers, so the vocabulary this checks against is
+/// the same one the plan itself will match selectors against.
 fn resolve_phase_filter(
     phase: Option<PhaseArg>,
+    registry: &ProviderRegistry,
     printer: &cfgd_core::output::Printer,
 ) -> anyhow::Result<Option<PhaseFilter>> {
     let Some(PhaseArg { phase, selector }) = phase else {
@@ -2069,6 +2125,37 @@ fn resolve_phase_filter(
              `--module {selector}` instead."
         );
     };
+    if name != PhaseName::Prerequisites {
+        let phase_label = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
+            .map(|pv| pv.get_name().to_string())
+            .unwrap_or_default();
+        if name == PhaseName::Packages {
+            anyhow::bail!(
+                "`--phase packages.{selector}` is not valid: package manager work lives in \
+                 `prerequisites`, not `packages`. Use `--phase prerequisites.{selector}` instead."
+            );
+        }
+        anyhow::bail!(
+            "`--phase {phase_label}.{selector}` is not valid: `{phase_label}` has no dotted \
+             selector grammar. Selectors are only valid on `--phase prerequisites`."
+        );
+    }
+    let mut legal: Vec<String> = reconciler::CFGD_GROUP_ORDER
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let families: std::collections::BTreeSet<String> = registry
+        .manager_names()
+        .iter()
+        .map(|m| cfgd_core::manager_family(m).to_string())
+        .collect();
+    legal.extend(families);
+    if !legal.contains(&selector) {
+        anyhow::bail!(
+            "unknown selector '{selector}' for `--phase prerequisites`: legal values are {}",
+            legal.join(", ")
+        );
+    }
     Ok(Some(PhaseFilter::Selector(name, selector)))
 }
 

@@ -229,18 +229,22 @@ the `brew` package manager never collide:
 | `profile:work` | everything the `work` profile declares |
 | `cfgd:managers` | every package-manager bootstrap |
 
-`--phase`/`--skip` accept the same dot-notation one level up, scoped to a single
-phase: `<phase>.<selector>`, where the selector is either an owner group
-(`managers`, `env`, `session` — the three `Prerequisites` always carries) or a
-manager name (family-collapsed, so `prerequisites.brew` also covers
-`brew-tap`/`brew-cask`):
+`--phase`/`--skip`/`--only` all accept the same dot-notation one level up,
+scoped to a single phase: `<phase>.<selector>`, where the selector is either
+an owner group (`managers`, `env`, `session` — the three `Prerequisites`
+always carries) or a manager name (family-collapsed, so `prerequisites.brew`
+also covers `brew-tap`/`brew-cask`). A selector is only valid on
+`prerequisites` — a group or manager name after any other phase errors,
+naming the input and the legal shapes; `--phase packages.brew` errors
+pointing at `--phase prerequisites.brew` instead, since manager work lives in
+`Prerequisites`, not `Packages`:
 
 | Pattern | Selects |
 |---|---|
-| `prerequisites.managers` | every provisioned/refreshed package manager (equivalent to `cfgd:managers`, scoped to `Prerequisites`) |
+| `prerequisites.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Prerequisites`) |
 | `prerequisites.env` | the `~/.cfgd.env`/rc-file write group |
 | `prerequisites.session` | the live-session broadcast (`RefreshLiveSession`) |
-| `prerequisites.brew` | just the brew manager's own node |
+| `prerequisites.brew` | just the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`prerequisites.curl`) rather than on whichever manager's installer happens to need it |
 
 `modules` and `modules.<name>` still work and print a deprecation naming their
 replacement.
@@ -249,11 +253,23 @@ Skipping a manager's **bootstrap** (`prerequisites.managers`, `prerequisites.bre
 `cfgd:managers`) leaves the package installs that needed it in the plan —
 `cfgd` cannot know whether you meant to drop those too, so it strands them,
 warns with `printer.alert(...)`, and prints the `--skip packages.<manager>`
-flags that would drop those too. Skipping the other direction — the last
-package install that named a manager (`--skip packages.brew.ripgrep` when
-it's the only brew package left) — silently prunes that manager's now-purposeless
-bootstrap node instead: nothing in the plan needs it anymore, so there is
-nothing to warn about.
+flags that would drop those too. A prerequisite tool that existed only to
+satisfy the skipped manager's own bootstrap (`curl` for `brew`, say) is
+silently pruned along with it — nothing still depends on it, so there is
+nothing to strand. Skipping the other direction — the last package install
+that named a manager (`--skip packages.brew.ripgrep` when it's the only brew
+package left) — silently prunes that manager's now-purposeless bootstrap node
+instead: nothing in the plan needs it anymore, so there is nothing to warn
+about.
+
+**`--only` never prunes for lack of consumers.** `--only prerequisites.managers`
+(the recovery command the alert above prints) keeps every manager bootstrap
+node even though it drops every package install that used to justify them —
+an `--only` selector is explicit selection, and a node you named directly is
+its own justification. The consumer-prune described above applies to the
+`--skip` direction alone; `--only cfgd:managers` and `--only
+prerequisites.managers` both keep the full manager set with an empty
+`Packages` phase, never an empty plan.
 
 The `-o json` payload carries the same axes the tree draws: a phase holds owner
 groups, each group holds its actions. `token` is the rendered owner label, so a

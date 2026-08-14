@@ -19575,6 +19575,7 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     let (printer, buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg::bare(super::ApplyPhase::Env)),
+        &ProviderRegistry::new(),
         &printer,
     )
     .unwrap();
@@ -19590,6 +19591,7 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     let (printer, buf) = test_printer_capture();
     super::resolve_phase_filter(
         Some(super::PhaseArg::bare(super::ApplyPhase::Prerequisites)),
+        &ProviderRegistry::new(),
         &printer,
     )
     .unwrap();
@@ -19664,6 +19666,76 @@ fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
     );
 }
 
+// `PhaseArg::from_str` is only half the contract: `--phase` must actually
+// reach it through clap's `value_parser`, and a bad token must fail as a
+// clap USAGE error (exit code 2 in main.rs's mapping), not merely as an
+// `Err` returned from a unit-tested free function.
+#[test]
+fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
+    use super::Command;
+
+    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.brew", "--yes"])
+        .expect("--phase prerequisites.brew must parse");
+    match cli.command {
+        Some(Command::Apply(args)) => {
+            let phase = args.phase.expect("--phase must be Some after parse");
+            assert!(matches!(phase.phase, super::ApplyPhase::Prerequisites));
+            assert_eq!(phase.selector.as_deref(), Some("brew"));
+        }
+        _ => panic!("expected Command::Apply"),
+    }
+}
+
+#[test]
+fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
+    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.", "--yes"]) {
+        Ok(_) => panic!("a trailing '.' must fail parsing"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        err.kind(),
+        clap::error::ErrorKind::ValueValidation,
+        "must surface as a clap value-validation error, not merely an Err(String):\n{err}"
+    );
+    assert_eq!(
+        err.exit_code(),
+        2,
+        "a clap usage error exits 2, the shape a script branches on"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("prerequisites.") && rendered.contains("prerequisites.managers"),
+        "the rendered clap error must still carry the FromStr message:\n{rendered}"
+    );
+}
+
+#[test]
+fn phase_flag_help_lists_the_phase_vocabulary() {
+    use clap::CommandFactory;
+
+    let cmd = Cli::command();
+    let apply = cmd
+        .find_subcommand("apply")
+        .expect("apply subcommand must exist");
+    let phase_arg = apply
+        .get_arguments()
+        .find(|a| a.get_id() == "phase")
+        .expect("--phase must be a defined argument");
+    let rendered = apply.clone().render_help().to_string();
+    assert!(
+        phase_arg.get_value_parser().possible_values().is_some(),
+        "--phase must carry a possible-values list for --help / completions"
+    );
+    assert!(
+        rendered.contains("prerequisites") && rendered.contains("packages"),
+        "--help must list the phase vocabulary:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("[possible values: env"),
+        "the hidden legacy 'env' spelling must not appear in --help:\n{rendered}"
+    );
+}
+
 #[test]
 fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
     use cfgd_core::reconciler::{PhaseFilter, PhaseName};
@@ -19674,6 +19746,7 @@ fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
             phase: super::ApplyPhase::Prerequisites,
             selector: Some("managers".to_string()),
         }),
+        &ProviderRegistry::new(),
         &printer,
     )
     .unwrap();
@@ -19694,6 +19767,7 @@ fn resolve_phase_filter_rejects_a_selector_on_the_modules_owner_filter() {
             phase: super::ApplyPhase::Modules,
             selector: Some("vim-config".to_string()),
         }),
+        &ProviderRegistry::new(),
         &printer,
     )
     .unwrap_err();
@@ -19701,6 +19775,100 @@ fn resolve_phase_filter_rejects_a_selector_on_the_modules_owner_filter() {
     assert!(
         msg.contains("--phase modules.vim-config") && msg.contains("--module vim-config"),
         "error must name the rejected combo and the --module alternative:\n{msg}"
+    );
+}
+
+#[test]
+fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites() {
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Packages,
+            selector: Some("brew".to_string()),
+        }),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--phase packages.brew") && msg.contains("--phase prerequisites.brew"),
+        "error must name the rejected combo and point at the prerequisites spelling:\n{msg}"
+    );
+}
+
+/// A named, always-available package manager, for tests that need
+/// `ProviderRegistry::manager_names()` to answer with a specific set without
+/// depending on a real `PackageManager` implementation.
+struct NamedManagerStub(&'static str);
+
+impl cfgd_core::providers::PackageManager for NamedManagerStub {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+        Ok(std::collections::HashSet::new())
+    }
+    fn install(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn update(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabulary() {
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(NamedManagerStub("brew")));
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("bogus".to_string()),
+        }),
+        &registry,
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown selector 'bogus'") && msg.contains("brew") && msg.contains("env"),
+        "error must name the rejected selector and list groups + manager families:\n{msg}"
     );
 }
 

@@ -369,17 +369,26 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
 ///
 /// [`plan_managers`] mints a node only for a manager the run's own work names,
 /// and every later prune has to preserve that property or the phase promises
-/// work nothing asked for. Two prunes reach a planner-built plan: the daemon's
-/// per-module tick keeps one module's groups, and the pending-decision prune
-/// (`withhold_from_plan`) drops whatever awaits a source decision. Either can
-/// otherwise leave an `apt update` behind with no install left to read the
-/// index it refreshed.
+/// work nothing asked for. Three prunes reach a planner-built plan: the
+/// daemon's per-module tick keeps one module's groups, the pending-decision
+/// prune (`withhold_from_plan`) drops whatever awaits a source decision, and
+/// `cfgd`'s own `filter_plan` (the widest caller — it runs after every
+/// `--skip`-only pass, so a skip that removed a manager's `Provision` node
+/// directly also drops the prerequisite tool that node alone needed). Left
+/// unpruned, any of the three can leave an `apt update` behind with no install
+/// left to read the index it refreshed.
 ///
-/// A node survives when a surviving install names its manager — sub-manager
-/// folded onto its family, the way the planner seeded it — or when a surviving
-/// node depends on it: the prerequisite installing the tool a kept provision
-/// waits on, and the refresh of the manager that installs that prerequisite,
-/// are all still work the run needs.
+/// A `RefreshIndex`/`Provision`/`Refuse` node survives when a surviving
+/// install still names its manager — sub-manager folded onto its family, the
+/// way the planner seeded it. A `Prerequisite` node is never seeded this way,
+/// even when its own installer still has surviving package consumers: it
+/// survives only when a node that is ITSELF surviving depends on it (the
+/// `Provision`/`RefreshIndex` that named the tool as a requirement). A skip
+/// that removes a manager's `Provision` node directly leaves its prerequisite
+/// with no surviving dependent, so the tool that manager alone needed is
+/// pruned along with it — the same silent, alert-free bookkeeping as a
+/// purposeless refresh, never the stranded-install alert (that fires only for
+/// a `Provision` a `--skip` pattern matched directly).
 pub fn prune_to_surviving_consumers(plan: &mut Plan) {
     let consumers = surviving_consumers(plan);
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -390,7 +399,9 @@ pub fn prune_to_surviving_consumers(plan: &mut Plan) {
                 continue;
             };
             let id = node.node_id();
-            if consumers.contains(node.manager()) {
+            let directly_consumed = !matches!(node, ManagerAction::Prerequisite { .. })
+                && consumers.contains(node.manager());
+            if directly_consumed {
                 keep.insert(id.clone());
             }
             edges.insert(id, node.depends_on().to_vec());

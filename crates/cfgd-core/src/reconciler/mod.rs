@@ -57,13 +57,25 @@ pub use run::{
     render_plan_tree, render_run_rollup,
 };
 pub use types::{
-    Action, ActionResult, ApplyResult, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction,
-    ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan,
-    ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
+    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, EnvAction, MANAGERS_GROUP, ManagerAction,
+    ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
+    Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
 };
 pub use verify::{VerifyResult, verify};
 
 pub(crate) use env::all_recorded_path_dirs;
+/// Widened past this crate for `cfgd::cli::plan_ops::filter_plan`, the one
+/// caller outside `cfgd-core` (the other two — the daemon's per-module tick
+/// and `pending::withhold_from_plan` — are intra-crate and would need only
+/// `pub(crate)`). Safe to call on any already-planned [`Plan`]: it mutates in
+/// place, dropping a manager node no surviving package/module install still
+/// consumes and no surviving manager node still depends on. Callers own one
+/// invariant this function does not enforce itself: an EXPLICITLY selected
+/// node (a `--only` match) must never reach here still present alongside an
+/// empty consumer set, since "nothing consumes it" and "the user asked for it
+/// by name" are different questions and this function only answers the
+/// first — `filter_plan` satisfies that by calling it only after a
+/// `--skip`-only pass, never after `--only` narrowed the plan.
 pub use managers::prune_to_surviving_consumers;
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,

@@ -802,31 +802,15 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
                 format!("{}:live-session", prefix)
             }
         },
-        // The node's subject, so `--skip prerequisites.brew` reaches brew's
-        // provision and `--skip prerequisites.curl` its prerequisite. A
-        // sub-manager is already folded onto its family's node at plan time, so
-        // the family name is what a pattern has to name.
-        reconciler::Action::Manager(ma) => match ma {
-            reconciler::ManagerAction::RefreshIndex { manager }
-            | reconciler::ManagerAction::Provision { manager, .. } => {
-                format!("{}.{}", prefix, manager)
-            }
-            reconciler::ManagerAction::Prerequisite { tool, .. } => {
-                format!("{}.{}", prefix, tool)
-            }
-            reconciler::ManagerAction::Refuse { manager, .. } => {
-                format!("{}.{}", prefix, manager)
-            }
-        },
+        // `ManagerAction::filter_subject`, so `--skip prerequisites.brew`
+        // reaches brew's provision and `--skip prerequisites.curl` its
+        // prerequisite — keyed on the TOOL, not the installer, in agreement
+        // with `reconciler::action_matches_phase_filter`'s `--phase` matcher.
+        // A sub-manager is already folded onto its family's node at plan
+        // time, so the family name is what a pattern has to name.
+        reconciler::Action::Manager(ma) => format!("{}.{}", prefix, ma.filter_subject()),
     }
 }
-
-/// cfgd's own closed owner-group vocabulary (spec §4): the three groups the
-/// `Prerequisites` phase always carries. Mirrors
-/// `cfgd_core::reconciler::MANAGERS_GROUP` plus the two sibling group names
-/// that have no dedicated const (`Owner::cfgd("env")` / `Owner::cfgd("session")`
-/// are minted the same way at plan time).
-const CFGD_PHASE_GROUPS: &[&str] = &[reconciler::MANAGERS_GROUP, "env", "session"];
 
 /// The owner token a phase-qualified group alias (`prerequisites.managers`,
 /// `prerequisites.env`, `prerequisites.session`) resolves to, if `pattern`
@@ -839,7 +823,7 @@ const CFGD_PHASE_GROUPS: &[&str] = &[reconciler::MANAGERS_GROUP, "env", "session
 /// of what the user selected, not just the group.
 fn phase_qualified_group_owner_token(pattern: &str, action_path: &str) -> Option<String> {
     let (phase, group) = pattern.split_once('.')?;
-    if !CFGD_PHASE_GROUPS.contains(&group) {
+    if !reconciler::CFGD_GROUP_ORDER.contains(&group) {
         return None;
     }
     let phase_end = action_path.find(['.', ':'])?;
@@ -1304,8 +1288,18 @@ pub(in crate::cli) fn filter_plan(
     // silently prune them (the machine's own bookkeeping), distinct from
     // skipping the manager ITSELF, which strands its consumers and earns the
     // alert below.
-    reconciler::prune_to_surviving_consumers(plan);
-    plan.phases.retain(|p| !p.is_empty());
+    //
+    // Skip-direction only: `--only` is explicit selection, and a node the
+    // user named directly is its own justification. `--only
+    // prerequisites.managers` (the docs' own recovery command) keeps every
+    // manager node and nothing else — running the consumer-prune against
+    // that plan would see zero surviving package installs (`--only` dropped
+    // them all) and delete every manager node it just kept, which is not a
+    // prune, it is undoing the selection.
+    if only.is_empty() {
+        reconciler::prune_to_surviving_consumers(plan);
+        plan.phases.retain(|p| !p.is_empty());
+    }
 
     warn_stranded_installs(plan, printer, registry, &removals);
 }

@@ -519,6 +519,67 @@ fn action_path_env_inject() {
     assert_eq!(path, "prerequisites:/home/user/.zshrc");
 }
 
+/// `action_path` keys a Prerequisite node on its TOOL (`curl`), not its
+/// installer (`brew`), agreeing with `reconciler::action_matches_phase_filter`'s
+/// `--phase` matcher — the two independent matchers finding 3 brought back
+/// into agreement.
+#[test]
+fn action_path_manager_prerequisite_keys_on_its_tool_not_its_installer() {
+    let prereq = Action::Manager(ManagerAction::Prerequisite {
+        tool: "curl".to_string(),
+        installer: "brew".to_string(),
+        required_by: vec!["brew".to_string()],
+        depends_on: vec![],
+    });
+    let path = action_path(&PhaseName::Prerequisites, &prereq);
+    assert_eq!(
+        path, "prerequisites.curl",
+        "a prerequisite's path names the tool, not the installer that provisions it"
+    );
+}
+
+/// The four `--phase`/`--skip` × `prerequisites.brew`/`prerequisites.curl`
+/// combinations for a curl-via-brew prerequisite node: only the TOOL spelling
+/// reaches it under either flag, and the installer spelling reaches brew's
+/// own provision node instead.
+#[test]
+fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
+    let managers_owner = reconciler::Owner::cfgd(reconciler::MANAGERS_GROUP);
+    let prereq = Action::Manager(ManagerAction::Prerequisite {
+        tool: "curl".to_string(),
+        installer: "brew".to_string(),
+        required_by: vec!["brew".to_string()],
+        depends_on: vec![],
+    });
+    let prereq_path = action_path(&PhaseName::Prerequisites, &prereq);
+
+    assert!(
+        pattern_matches_action("prerequisites.curl", &managers_owner, &prereq_path),
+        "`prerequisites.curl` (the tool) must reach the prerequisite node"
+    );
+    assert!(
+        !pattern_matches_action("prerequisites.brew", &managers_owner, &prereq_path),
+        "`prerequisites.brew` (the installer) must NOT reach the prerequisite node — \
+         it names brew's own provision, a different plan node"
+    );
+
+    let brew_provision = Action::Manager(ManagerAction::Provision {
+        manager: "brew".to_string(),
+        via: "curl".to_string(),
+        depends_on: vec![],
+    });
+    let provision_path = action_path(&PhaseName::Prerequisites, &brew_provision);
+
+    assert!(
+        pattern_matches_action("prerequisites.brew", &managers_owner, &provision_path),
+        "`prerequisites.brew` must still reach brew's own provision node"
+    );
+    assert!(
+        !pattern_matches_action("prerequisites.curl", &managers_owner, &provision_path),
+        "`prerequisites.curl` must not reach brew's provision node"
+    );
+}
+
 #[test]
 fn pattern_matches_exact() {
     assert!(pattern_matches("files:/etc/foo", "files:/etc/foo"));
@@ -953,6 +1014,63 @@ fn filter_plan_only_keeps_matching_actions() {
         pkg_phase.action_count(),
         1,
         "package actions inside --only scope should remain"
+    );
+}
+
+#[test]
+fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
+    // `--only prerequisites.managers` (the docs' own recovery command for a
+    // stranded-install alert) drops every package install — none of them
+    // matches the selector — which would leave zero surviving consumers for
+    // either manager. Proves the fix for finding 1: `prune_to_surviving_consumers`
+    // must NOT run when `only` is non-empty, or the very managers the user
+    // asked to keep are deleted for having no consumers left.
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![
+                Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    depends_on: vec![],
+                }),
+                Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "npm".to_string(),
+                }),
+            ],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["rg"]),
+                pkg_install("npm", vec!["typescript"]),
+            ],
+        ),
+    ]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["prerequisites.managers".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+
+    let prereq_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites)
+        .expect("both manager nodes must survive; the Prerequisites phase must not be dropped");
+    assert_eq!(
+        prereq_phase.action_count(),
+        2,
+        "both manager nodes must survive `--only prerequisites.managers` even \
+         though every package consumer fell out of scope: {:?}",
+        prereq_phase.actions().collect::<Vec<_>>()
+    );
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Packages),
+        "no package matched the selector, so the Packages phase must be dropped: {:?}",
+        plan.phases
     );
 }
 

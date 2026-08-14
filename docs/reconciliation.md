@@ -200,19 +200,31 @@ The owner segment (`module:nvim`) is what keeps a module named `brew` distinct f
 packages.module:brew` selects the module. The pre-routing spellings `modules` and
 `modules.<name>` still work and print a deprecation naming their replacement.
 
-`--phase`/`--skip` also take the dotted grammar one level up, scoped to a single phase:
-`<phase>.<selector>`, where the selector names an owner group (`managers`, `env`,
-`session` — the three `Prerequisites` always carries) or a manager (family-collapsed,
-so `prerequisites.brew` also covers `brew-tap`/`brew-cask`). `prerequisites.managers`
-is the whole-group equivalent of `cfgd:managers`, scoped to that one phase.
+`--phase`/`--skip`/`--only` also take the dotted grammar one level up, scoped to a
+single phase: `<phase>.<selector>`, where the selector names an owner group
+(`managers`, `env`, `session` — the three `Prerequisites` always carries) or a
+manager (family-collapsed, so `prerequisites.brew` also covers `brew-tap`/`brew-cask`,
+but never a prerequisite tool a manager's installer merely depends on — `curl` is
+keyed on its own name, `prerequisites.curl`, not on whichever manager needed it).
+`prerequisites.managers` is the whole-group equivalent of `cfgd:managers`, scoped to
+that one phase. A selector is only valid scoped to `prerequisites`; naming one after
+any other phase (`--phase packages.brew`) errors rather than silently matching
+nothing, and points at the phase the selector actually belongs to.
 
 Skipping a manager's bootstrap (`prerequisites.managers`, `prerequisites.brew`,
 `cfgd:managers`) leaves the installs that needed a provisioned manager in the plan —
 cfgd cannot drop those on your behalf, so it strands them, warns, and prints the
-`--skip packages.<manager>` flags that would drop them too. The opposite direction is
-silent: dropping the last package install that named a manager prunes that manager's
-now-purposeless bootstrap node with no warning, since nothing in the plan needs it
-anymore.
+`--skip packages.<manager>` flags that would drop them too. A prerequisite tool that
+existed only for the skipped manager's own bootstrap is pruned along with it, silently.
+The opposite direction is silent too: dropping the last package install that named a
+manager prunes that manager's now-purposeless bootstrap node with no warning, since
+nothing in the plan needs it anymore.
+
+`--only` never prunes for lack of consumers, in either case above: an `--only`
+selector is explicit selection, so `--only prerequisites.managers` (the recovery
+command the stranding warning itself prints) keeps every manager bootstrap node
+even though it empties `Packages` of every install that used to justify them. The
+consumer-prune is a `--skip`-side behavior only.
 
 ## Failure Handling
 

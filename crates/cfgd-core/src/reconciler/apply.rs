@@ -302,17 +302,21 @@ pub fn action_matches_phase_filter(
 /// The `<selector>` half of a dotted phase filter: either one of the closed
 /// cfgd owner-group names (`managers`/`env`/`session`) or a manager name.
 ///
-/// A manager selector matches on [`ManagerAction::manager`] directly rather
-/// than through `Owner`, because every [`ManagerAction`] shares the single
-/// `cfgd:managers` owner — the manager identity lives on the action, not the
-/// owner. Sub-managers are already collapsed onto their family at plan time
-/// (`managers.rs`), so `prerequisites.brew` matching `brew-cask`'s plan node
-/// costs nothing extra here.
+/// A manager selector matches on [`ManagerAction::filter_subject`] directly
+/// rather than through `Owner`, because every [`ManagerAction`] shares the
+/// single `cfgd:managers` owner — the manager identity lives on the action,
+/// not the owner. Sub-managers are already collapsed onto their family at
+/// plan time (`managers.rs`), so `prerequisites.brew` matching `brew-cask`'s
+/// plan node costs nothing extra here. `filter_subject` (not
+/// [`ManagerAction::manager`]) keys a prerequisite node on its TOOL rather
+/// than its installer, so this matcher agrees with `cfgd`'s own
+/// `action_path`/`pattern_matches_action` on which node
+/// `prerequisites.curl` reaches.
 fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
     if super::types::CFGD_GROUP_ORDER.contains(&selector) {
         return owner.kind == OwnerKind::Cfgd && owner.name == selector;
     }
-    matches!(action, Action::Manager(node) if node.manager() == selector)
+    matches!(action, Action::Manager(node) if node.filter_subject() == selector)
 }
 
 /// Suffix `apply_env_action` appends to a description when the surface was

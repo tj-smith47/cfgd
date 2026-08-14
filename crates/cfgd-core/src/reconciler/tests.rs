@@ -14641,6 +14641,16 @@ fn action_matches_phase_filter_table() {
     let npm_refresh = Action::Manager(ManagerAction::RefreshIndex {
         manager: "npm".to_string(),
     });
+    // A Prerequisite node's tool and installer deliberately differ, so a case
+    // pinned to only one of them would pass even if the matcher regressed
+    // onto `manager()` (the installer) instead of `filter_subject()` (the
+    // tool) — the exact drift finding 3 fixed.
+    let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
+        tool: "curl".to_string(),
+        installer: "brew".to_string(),
+        required_by: vec!["brew".to_string()],
+        depends_on: vec![],
+    });
     let cases: Vec<(&str, bool, &PhaseName, &Owner, &Action, PhaseFilter)> = vec![
         // Strict phase-equality cases.
         (
@@ -14821,6 +14831,26 @@ fn action_matches_phase_filter_table() {
             &managers_owner,
             &brew_provision,
             PhaseFilter::Selector(PhaseName::Prerequisites, "npm".to_string()),
+        ),
+        // A Prerequisite node is keyed on its TOOL (`curl`), not its
+        // installer (`brew`) — `prerequisites.curl` reaches it and
+        // `prerequisites.brew` does not, even though `brew` is the command
+        // that actually runs it.
+        (
+            "curl prerequisite under prerequisites.curl (its tool)",
+            true,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &curl_prereq,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "curl".to_string()),
+        ),
+        (
+            "curl prerequisite under prerequisites.brew (its installer) misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &curl_prereq,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "brew".to_string()),
         ),
     ];
 

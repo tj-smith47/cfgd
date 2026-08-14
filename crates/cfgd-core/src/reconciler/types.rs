@@ -249,6 +249,26 @@ impl ManagerAction {
             ManagerAction::Prerequisite { installer, .. } => installer,
         }
     }
+
+    /// What a `--phase`/`--skip`/`--only` selector names this node by — the
+    /// manager for every variant but a prerequisite, which is keyed on its
+    /// TOOL. Deliberately distinct from [`ManagerAction::manager`]: that
+    /// accessor answers "which command runs this", the question a lane/prune
+    /// needs, while this one answers "what does the user see in the tree"
+    /// (`manager:prereq:curl` — the subject is the tool, not brew's name
+    /// merely because brew happens to be the installer). Both this crate's
+    /// `action_matches_phase_filter` (`--phase prerequisites.curl`) and the
+    /// `cfgd` binary's `action_path` (`--skip prerequisites.curl`) key on this
+    /// so the two matchers can never disagree about which node a selector
+    /// reaches.
+    pub fn filter_subject(&self) -> &str {
+        match self {
+            ManagerAction::RefreshIndex { manager }
+            | ManagerAction::Provision { manager, .. }
+            | ManagerAction::Refuse { manager, .. } => manager,
+            ManagerAction::Prerequisite { tool, .. } => tool,
+        }
+    }
 }
 
 /// A unified action across all resource types.
@@ -460,7 +480,14 @@ impl OwnerKind {
 /// Only cfgd's names are ordered this way, and only because cfgd mints all of
 /// them — a profile, module, backup or source name is a user string with no
 /// meaning to order by, so those still sort by name.
-pub(super) const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, "env", "session"];
+///
+/// `pub`, not `pub(super)`: the CLI's `--phase`/`--skip`/`--only` dotted
+/// grammar (`prerequisites.managers`/`.env`/`.session`) and its selector
+/// validation both read this list rather than minting their own copy of it —
+/// two copies is how the group vocabulary drifted between `--phase` (via
+/// `reconciler::action_matches_phase_filter`) and `--skip`/`--only` (via
+/// `cfgd::cli::plan_ops::pattern_matches_action`) before it was unified here.
+pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, "env", "session"];
 
 /// The cfgd-owned group every [`ManagerAction`] belongs to. Named once: a
 /// filter that keeps this group and a planner that mints into it must agree on

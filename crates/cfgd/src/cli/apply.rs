@@ -202,11 +202,6 @@ pub fn run_apply(
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
 
-    // `PhaseArg`'s base phase is clap-validated; a selector combined with
-    // `--phase modules` is the one combination `resolve_phase_filter` still
-    // has to reject at runtime (see its doc comment).
-    let phase_filter: Option<PhaseFilter> = resolve_phase_filter(args.phase.clone(), printer)?;
-
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
@@ -231,6 +226,14 @@ pub fn run_apply(
     registry.package_managers.extend(packages::custom_managers(
         &effective_resolved.merged.packages.custom,
     ));
+
+    // `PhaseArg`'s base phase is clap-validated; a selector combined with
+    // `--phase modules` is the one combination `resolve_phase_filter` still
+    // has to reject at runtime (see its doc comment). Resolved only now that
+    // `registry` carries every custom manager too, so a selector naming one
+    // validates against the same vocabulary the plan itself will match.
+    let phase_filter: Option<PhaseFilter> =
+        resolve_phase_filter(args.phase.clone(), &registry, printer)?;
 
     // If --module is set, skip profile-level packages/files
     let module_only = module_filter.is_some();
