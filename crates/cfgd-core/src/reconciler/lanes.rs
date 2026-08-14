@@ -411,12 +411,11 @@ fn blocking_node<'s, 'p>(slots: &'s [Slot<'p>], index: usize) -> Option<&'s Slot
         .depends_on
         .iter()
         .filter_map(|dependency| {
-            slots.iter().enumerate().find(|(_, s)| {
+            slots.iter().find(|s| {
                 s.state != SlotState::Done && s.node.as_deref() == Some(dependency.as_str())
             })
         })
-        .max_by_key(|(position, slot)| (slot.state == SlotState::Waiting, *position))
-        .map(|(_, slot)| slot)
+        .max_by_key(|slot| (slot.state == SlotState::Waiting, slot.plan_index))
 }
 
 /// What a node is CALLED on the line of a node it takes down.
@@ -1083,7 +1082,17 @@ fn refresh_wait_bars<'x>(
         // node absent from the live region for the whole of its wait.
         let (key, subject) = match blocking_node(slots, index) {
             Some(blocker) => {
-                let on = node_subject(blocker.action).unwrap_or_default();
+                // Only a manager node carries edges, so a blocker always has a
+                // name. If that ever stops holding, say nothing rather than
+                // "waiting on " with the claim's object missing.
+                let named = node_subject(blocker.action);
+                debug_assert!(
+                    named.is_some(),
+                    "a node is blocked by an action with no subject to name"
+                );
+                let Some(on) = named else {
+                    continue;
+                };
                 // Keyed per node: the nodes of the `cfgd:managers` group share
                 // one owner and one lane, so an owner-keyed line would let the
                 // first of them speak for all of them.
@@ -1602,12 +1611,13 @@ mod tests {
     }
 
     #[test]
-    fn two_unstarted_edges_are_ranked_by_plan_order_not_declaration_order() {
-        // Neither blocker has started, so the tie breaks on the plan: the one
-        // dispatched later is the one still ahead of the dependent when the
-        // other is done. The edges are declared in the opposite order to the
-        // one the line must pick, so a ranking that took the first edge
-        // written would say brew here.
+    fn two_unstarted_edges_are_ranked_by_plan_order_not_dispatch_order() {
+        // Neither blocker has started, so the tie breaks on the PLAN: the node
+        // planned later is the one still ahead of the dependent once the other
+        // is done. Two other rankings would answer brew and are excluded here
+        // — the edges are declared brew-first, and the slots are held in an
+        // order (pipx, brew) that is not their plan order, which is the shape
+        // a tier-partitioned dispatch produces.
         let (printer, _buf) = Printer::for_test_with_live_bars();
         let managers = Owner::cfgd("managers");
         let brew = provision("brew", "curl", &[]);
@@ -1621,8 +1631,8 @@ mod tests {
             ],
         );
         let slots = vec![
-            node_slot(&managers, &brew, 0),
             node_slot(&managers, &pipx, 1),
+            node_slot(&managers, &brew, 0),
             node_slot(&managers, &poetry, 2),
         ];
         let groups = groups_of(&slots);
