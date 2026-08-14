@@ -12292,6 +12292,7 @@ struct BootstrappingPackageManager {
     bootstrap_called: std::sync::Mutex<bool>,
     install_calls: std::sync::Mutex<Vec<Vec<String>>>,
     path_dirs_after: Vec<String>,
+    bootstrap_creates: Vec<String>,
 }
 
 impl BootstrappingPackageManager {
@@ -12302,7 +12303,17 @@ impl BootstrappingPackageManager {
             bootstrap_called: std::sync::Mutex::new(false),
             install_calls: std::sync::Mutex::new(Vec::new()),
             path_dirs_after: path_dirs.iter().map(|s| s.to_string()).collect(),
+            bootstrap_creates: Vec::new(),
         }
+    }
+
+    /// Also declare `dirs` on the `BootstrapPlan` itself — the population
+    /// `fold_provision_path_dirs` reads at plan time, before any bootstrap
+    /// has run. Kept separate from `path_dirs_after` (what a real bootstrap
+    /// would later record) so a test can exercise the two independently.
+    fn declaring_path_dirs(mut self, dirs: &[&str]) -> Self {
+        self.bootstrap_creates = dirs.iter().map(|s| s.to_string()).collect();
+        self
     }
 }
 
@@ -12314,7 +12325,7 @@ impl PackageManager for BootstrappingPackageManager {
         *self.available.lock().unwrap()
     }
     fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
-        Some(crate::providers::BootstrapPlan::new("stub"))
+        Some(crate::providers::BootstrapPlan::new("stub").creating(self.bootstrap_creates.clone()))
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrap_called.lock().unwrap() = true;
@@ -12683,6 +12694,51 @@ fn plan_env_writes_nothing_for_a_manager_cfgd_never_bootstrapped() {
     assert!(
         !tmp_home.path().join(".cfgd.env").exists(),
         "planning must not write the env file"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // No bootstrap has ever run — the state store holds no record — but the
+    // manager this run is about to provision names, on its own
+    // `BootstrapPlan`, where its binaries will land. `plan()` must fold that
+    // declaration in itself, without waiting for the bootstrap to actually
+    // run and record it.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &[]).declaring_path_dirs(&[
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/home/linuxbrew/.linuxbrew/sbin",
+        ]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let content = planned_env_file_content(&plan)
+        .expect("a to-be-provisioned manager's declared dirs must plan a .cfgd.env write");
+    assert!(
+        content.contains(
+            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "the planner must fold the Provision node's declared dirs in at plan time: {content}"
     );
 }
 

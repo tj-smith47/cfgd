@@ -38,6 +38,11 @@ pub(super) fn nix_env_cmd() -> Command {
     tool_cmd_with_resolver("nix-env", find_nix_env)
 }
 
+// Single source for the multi-user installer's profile bin dir, so
+// `bootstrap_plan`'s declaration and `path_dirs`'s recording can never
+// drift apart.
+const NIX_PROFILE_BIN_DIR: &str = "/nix/var/nix/profiles/default/bin";
+
 impl PackageManager for NixManager {
     fn name(&self) -> &str {
         "nix"
@@ -54,8 +59,12 @@ impl PackageManager for NixManager {
         Some(
             BootstrapPlan::new("nix installer")
                 .requiring(["curl"])
-                .creating(["/nix/var/nix/profiles/default/bin"]),
+                .creating([NIX_PROFILE_BIN_DIR]),
         )
+    }
+
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        vec![NIX_PROFILE_BIN_DIR.to_string()]
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -381,6 +390,18 @@ mod tests {
             plan.creates_path_dirs,
             ["/nix/var/nix/profiles/default/bin"]
         );
+    }
+
+    #[test]
+    fn nix_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let plan = NixManager
+            .bootstrap_plan()
+            .expect("the cascade is unconditional");
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let mgr: Box<dyn PackageManager> = Box::new(NixManager);
+        assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
     }
 
     #[test]

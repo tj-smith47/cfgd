@@ -2130,6 +2130,7 @@ pub struct MockPackageManager {
     pub bootstrap_capable: bool,
     pub bootstrap_method: String,
     pub bootstrap_requires: Vec<String>,
+    pub bootstrap_creates: Vec<String>,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
@@ -2143,6 +2144,7 @@ impl MockPackageManager {
             bootstrap_capable: false,
             bootstrap_method: "mock".to_string(),
             bootstrap_requires: Vec::new(),
+            bootstrap_creates: Vec::new(),
             installed: std::collections::HashSet::new(),
             install_calls: Mutex::new(Vec::new()),
             uninstall_calls: Mutex::new(Vec::new()),
@@ -2179,6 +2181,14 @@ impl MockPackageManager {
         self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
         self
     }
+
+    /// Name the PATH directories this manager's bootstrap plan declares —
+    /// the population `fold_provision_path_dirs` folds into the planned Env
+    /// content for a manager this run will provision.
+    pub fn creating_dirs(mut self, dirs: &[&str]) -> Self {
+        self.bootstrap_creates = dirs.iter().map(|d| (*d).to_string()).collect();
+        self
+    }
 }
 
 impl crate::providers::PackageManager for MockPackageManager {
@@ -2194,6 +2204,7 @@ impl crate::providers::PackageManager for MockPackageManager {
         self.bootstrap_capable.then(|| {
             crate::providers::BootstrapPlan::new(self.bootstrap_method.clone())
                 .requiring(self.bootstrap_requires.clone())
+                .creating(self.bootstrap_creates.clone())
         })
     }
 

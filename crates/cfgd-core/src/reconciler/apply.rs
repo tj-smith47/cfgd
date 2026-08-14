@@ -443,8 +443,13 @@ impl<'a> super::Reconciler<'a> {
         let mut completions = Completions::default();
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
         // The PATH directories the Env phase's planned content was built from.
-        // Compared against the post-run set below to detect a manager this run
-        // bootstrapped, whose directories could not have been known that early.
+        // `plan()` already folds a to-be-provisioned manager's OWN declared
+        // dirs in (`managers::fold_provision_path_dirs`), so this baseline is
+        // not "before bootstrapping" in general — it is compared against the
+        // post-run set below only to catch what the plan could not have named:
+        // npm, whose global prefix resolves only after install, and any
+        // manager whose real recorded dirs end up differing from what it
+        // declared.
         let path_dirs_at_plan =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
         // Set when a signal requested cooperative cancellation. Stopping happens BEFORE
@@ -857,11 +862,20 @@ impl<'a> super::Reconciler<'a> {
         }
 
         // --- Env regeneration: fold in inputs that only exist once the phases ran ---
-        // Two inputs land too late for the Env phase, which by `PhaseName` order
-        // runs before both Modules and Packages: a secret's resolved value, and
-        // the PATH directories of a manager bootstrapped during this very run.
-        // Regenerating once here, with both present, converges the file inside
-        // the same apply instead of leaving it right only from the next one on.
+        // One input lands too late for the Env phase, which by `PhaseName` order
+        // runs before both Modules and Packages: a secret's resolved value.
+        // Regenerating here converges the file inside the same apply instead of
+        // leaving it right only from the next one on.
+        //
+        // A manager's PATH directories are not a late-arriving input anymore —
+        // `plan()` already folds a Provision node's declared `creates_path_dirs`
+        // into the planned content, so the Env phase's own write already
+        // carries them for every manager whose `path_dirs()` mirrors its
+        // `bootstrap_plan()` declaration. Comparing `path_dirs_now` against
+        // `path_dirs_at_plan` stays as the convergence net for the one case
+        // the planner cannot declare up front — npm, whose resolved global
+        // prefix is only knowable once its install finishes — and for any run
+        // where what actually got recorded diverges from what was declared.
         let path_dirs_now =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
         // A phase-scoped run must stay inside the phase the caller asked for.

@@ -513,6 +513,39 @@ fn find_manager<'r>(registry: &'r ProviderRegistry, name: &str) -> Option<&'r dy
         .map(|pm| pm.as_ref())
 }
 
+/// Fold each `Provision` node's declared `BootstrapPlan.creates_path_dirs`
+/// into the dirs `plan_env` already recorded from past bootstraps, so an env
+/// file this run writes already names a directory a manager it is about to
+/// bootstrap will populate. Re-deriving `bootstrap_plan()` here rather than
+/// carrying the dirs on `ManagerAction::Provision` keeps that type's shape —
+/// consumed by every action-rendering and id-generation site — untouched;
+/// two runs against the same host resolve the same manager to the same plan,
+/// so re-deriving is exact, not an estimate.
+pub(super) fn fold_provision_path_dirs(
+    registry: &ProviderRegistry,
+    actions: &[Action],
+    recorded: Vec<String>,
+) -> Vec<String> {
+    let mut dirs = recorded;
+    for action in actions {
+        let Action::Manager(ManagerAction::Provision { manager, .. }) = action else {
+            continue;
+        };
+        let Some(pm) = find_manager(registry, manager) else {
+            continue;
+        };
+        let Some(plan) = pm.bootstrap_plan() else {
+            continue;
+        };
+        for dir in plan.creates_path_dirs {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
+}
+
 /// The system manager a prerequisite is installed from on this host, in
 /// registration order — the platform's own preference — or `None` when the host
 /// has none, which is the refusal path.
@@ -1040,5 +1073,70 @@ mod tests {
             vec!["manager:provision:cargo".to_string()],
             "and it is planned exactly once, as a manager node"
         );
+    }
+
+    #[test]
+    fn fold_provision_path_dirs_adds_a_provisioned_managers_declared_dirs() {
+        let actions = plan_actions(
+            installs(&["cargo"]),
+            vec![
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup")
+                    .creating_dirs(&["/home/u/.cargo/bin"]),
+            ],
+        );
+        let harness = ReconcilerTestHarness::builder()
+            .with_package_manager(
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup")
+                    .creating_dirs(&["/home/u/.cargo/bin"]),
+            )
+            .build();
+        let recorded = vec!["/opt/homebrew/bin".to_string()];
+        let dirs = fold_provision_path_dirs(&harness.registry, &actions, recorded.clone());
+        assert_eq!(
+            dirs,
+            vec![
+                "/opt/homebrew/bin".to_string(),
+                "/home/u/.cargo/bin".to_string(),
+            ],
+            "the recorded dirs stay first; the provisioned manager's declared dir is appended"
+        );
+    }
+
+    #[test]
+    fn fold_provision_path_dirs_never_duplicates_an_already_recorded_dir() {
+        let actions = plan_actions(
+            installs(&["cargo"]),
+            vec![
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup")
+                    .creating_dirs(&["/home/u/.cargo/bin"]),
+            ],
+        );
+        let harness = ReconcilerTestHarness::builder()
+            .with_package_manager(
+                MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup")
+                    .creating_dirs(&["/home/u/.cargo/bin"]),
+            )
+            .build();
+        let recorded = vec!["/home/u/.cargo/bin".to_string()];
+        let dirs = fold_provision_path_dirs(&harness.registry, &actions, recorded.clone());
+        assert_eq!(dirs, recorded, "a dir already recorded is not repeated");
+    }
+
+    #[test]
+    fn fold_provision_path_dirs_leaves_recorded_dirs_untouched_when_nothing_provisions() {
+        let harness = ReconcilerTestHarness::builder()
+            .with_package_manager(MockPackageManager::new("brew"))
+            .build();
+        let recorded = vec!["/opt/homebrew/bin".to_string()];
+        let dirs = fold_provision_path_dirs(&harness.registry, &[], recorded.clone());
+        assert_eq!(dirs, recorded);
     }
 }

@@ -86,19 +86,6 @@ impl<'a> super::Reconciler<'a> {
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
 
-        let path_dirs =
-            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
-        let (env_actions, warnings) = self.plan_env(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            resolved.merged.env_scope,
-            &module_actions,
-            &[], // Secret envs are not yet resolved at plan time; they are
-            // injected during the apply phase after ResolveEnv actions run.
-            &path_dirs,
-            &super::env::recorded_managed_env_files(self.state),
-        );
-
         // Module work is attributed to the phase whose KIND it is, so a
         // module's packages sit beside the profile's in `Packages` rather than
         // in a bucket of their own. Packages are grouped with system/native
@@ -129,6 +116,27 @@ impl<'a> super::Reconciler<'a> {
         // `apt update` on every interval.
         let manager_actions =
             super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+
+        // The env file publishes where a manager's binaries live, so it has to
+        // know about a manager this very run is about to provision, not only
+        // the ones past runs already recorded — otherwise a script sourcing
+        // the freshly-written env file right after `cfgd apply` still can't
+        // find a binary the same run just installed.
+        let path_dirs = super::managers::fold_provision_path_dirs(
+            self.registry,
+            &manager_actions,
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions),
+        );
+        let (env_actions, warnings) = self.plan_env(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            resolved.merged.env_scope,
+            &module_actions,
+            &[], // Secret envs are not yet resolved at plan time; they are
+            // injected during the apply phase after ResolveEnv actions run.
+            &path_dirs,
+            &super::env::recorded_managed_env_files(self.state),
+        );
 
         let package_actions = profile_packages
             .into_iter()

@@ -98,6 +98,13 @@ impl PackageManager for ScoopManager {
         Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
     }
 
+    fn path_dirs(&self, _cx: &PackageContext<'_>) -> Vec<String> {
+        scoop_shims_dir()
+            .into_iter()
+            .map(cfgd_core::to_posix_string)
+            .collect()
+    }
+
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx,
@@ -322,6 +329,19 @@ mod tests {
         } else {
             assert!(plan.creates_path_dirs.is_empty());
         }
+    }
+
+    #[test]
+    fn scoop_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let home = tempfile::tempdir().unwrap();
+        cfgd_core::with_test_home(home.path(), || {
+            let plan = ScoopManager.bootstrap_plan().expect("always planned");
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+            let mgr: Box<dyn PackageManager> = Box::new(ScoopManager);
+            assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
+        });
     }
 
     // ---------------------------------------------------------------------------

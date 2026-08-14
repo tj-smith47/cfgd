@@ -60,6 +60,23 @@ pub(super) fn pipx_available() -> bool {
     find_pipx().is_some()
 }
 
+// The tool the pip fallback would run: whichever of pip3/pip is present,
+// else the preferred name. Shared by `bootstrap_plan` and `path_dirs` so
+// both always name the same interpreter.
+fn pipx_pip_tool() -> &'static str {
+    ["pip3", "pip"]
+        .into_iter()
+        .find(|t| command_available(t))
+        .unwrap_or("pip3")
+}
+
+// Single source for the pip fallback's user-scripts dir, so
+// `bootstrap_plan`'s declaration and `path_dirs`'s recording can never
+// drift apart.
+fn pipx_pip_scripts_dir() -> Option<PathBuf> {
+    pip_user_scripts_dir(pipx_pip_tool())
+}
+
 pub(super) fn pipx_cmd() -> Command {
     tool_cmd_with_resolver("pipx", find_pipx)
 }
@@ -82,18 +99,24 @@ impl PackageManager for PipxManager {
             // planner say WHY pipx cannot be provisioned instead of dropping it
             // — `pip3` is not installable under that name from any system
             // manager, so `feasible_bootstrap_plan` still answers `None`.
-            "pip" => {
-                let tool = ["pip3", "pip"]
-                    .into_iter()
-                    .find(|t| command_available(t))
-                    .unwrap_or("pip3");
-                Some(
-                    BootstrapPlan::new("pip")
-                        .requiring([tool])
-                        .creating(pip_user_scripts_dir(tool)),
-                )
-            }
+            "pip" => Some(
+                BootstrapPlan::new("pip")
+                    .requiring([pipx_pip_tool()])
+                    .creating(pipx_pip_scripts_dir()),
+            ),
             method => Some(BootstrapPlan::new(method)),
+        }
+    }
+
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        match detect_brew_system_method("pip") {
+            "pip" => pipx_pip_scripts_dir()
+                .into_iter()
+                .map(cfgd_core::to_posix_string)
+                .collect(),
+            // brew/system installs land pipx on the system PATH; nothing new
+            // to declare.
+            _ => Vec::new(),
         }
     }
 
@@ -495,6 +518,17 @@ mod tests {
                 assert!(plan.creates_path_dirs.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn pipx_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let plan = PipxManager.bootstrap_plan();
+        let Some(plan) = plan else { return };
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let mgr: Box<dyn PackageManager> = Box::new(PipxManager);
+        assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
     }
 
     #[test]

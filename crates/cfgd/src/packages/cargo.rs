@@ -33,6 +33,12 @@ pub(super) fn cargo_cmd() -> Command {
     tool_cmd_with_resolver("cargo", find_cargo)
 }
 
+// Single source for the rustup-installed bin dir, so `bootstrap_plan`'s
+// declaration and `path_dirs`'s recording can never drift apart.
+fn cargo_bin_dir() -> Option<PathBuf> {
+    home_relative_dir("~/.cargo/bin")
+}
+
 impl PackageManager for CargoManager {
     fn name(&self) -> &str {
         "cargo"
@@ -46,8 +52,19 @@ impl PackageManager for CargoManager {
         Some(
             BootstrapPlan::new("rustup")
                 .requiring(["curl"])
-                .creating(home_relative_dir("~/.cargo/bin")),
+                .creating(cargo_bin_dir()),
         )
+    }
+
+    // Reads `cargo_bin_dir()` directly rather than the recorded state row: the
+    // rustup cascade always lands cargo in the same `~`-relative place, so
+    // there is nothing a live probe would learn that the plan's own
+    // declaration does not already know.
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        cargo_bin_dir()
+            .into_iter()
+            .map(cfgd_core::to_posix_string)
+            .collect()
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -357,6 +374,20 @@ tokei v12.1.2:
             plan.creates_path_dirs,
             [cfgd_core::to_posix_string(home.path().join(".cargo/bin"))]
         );
+    }
+
+    #[test]
+    fn cargo_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let home = tempfile::tempdir().unwrap();
+        cfgd_core::with_test_home(home.path(), || {
+            let plan = CargoManager.bootstrap_plan().unwrap();
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+            let mgr: Box<dyn PackageManager> = Box::new(CargoManager);
+            assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
+        });
     }
 
     #[test]

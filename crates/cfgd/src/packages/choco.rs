@@ -85,6 +85,13 @@ impl PackageManager for ChocolateyManager {
         Some(BootstrapPlan::new("system").creating(choco_bin_dir()))
     }
 
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        choco_bin_dir()
+            .into_iter()
+            .map(cfgd_core::to_posix_string)
+            .collect()
+    }
+
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx,
@@ -516,6 +523,16 @@ Tags: git vcs dvcs
         } else {
             assert!(plan.creates_path_dirs.is_empty());
         }
+    }
+
+    #[test]
+    fn chocolatey_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let plan = ChocolateyManager.bootstrap_plan().expect("always planned");
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let mgr: Box<dyn PackageManager> = Box::new(ChocolateyManager);
+        assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
     }
 
     // ---------------------------------------------------------------------------
