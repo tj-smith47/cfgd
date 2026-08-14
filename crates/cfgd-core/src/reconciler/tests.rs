@@ -18721,6 +18721,41 @@ fn a_manager_node_journals_under_the_phase_that_planned_it() {
 }
 
 #[test]
+// `set_hook` is process-wide — see the note on the package-lane panic test.
+#[serial_test::serial]
+fn a_panicking_node_fails_the_run_rather_than_stalling_the_graph() {
+    // Panic containment reaches the new action kind: the worker still sends a
+    // completion, so the coordinator settles the node AND everything waiting
+    // behind it instead of parking forever on a message that cannot arrive.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).panicking(),
+        DispatchLogManager::new("brew", &log, false),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        prerequisite_node("curl", "apt", &["brew"]),
+        provision_node("brew", "curl", &[ManagerAction::prereq_node("curl")]),
+    ]);
+
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let (result, rendered) = apply_manager_plan(&registry, &state, &plan);
+    std::panic::set_hook(hook);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert!(
+        !dispatch_log(&log).contains(&"bootstrap:brew".to_string()),
+        "the provision ran on a tool that never arrived: {:?}",
+        dispatch_log(&log)
+    );
+    assert!(
+        rendered.contains("did not run — curl failed earlier in this phase"),
+        "the dependent names what stopped it: {rendered}"
+    );
+}
+
+#[test]
 fn a_cyclic_edge_fails_the_run_instead_of_hanging_it() {
     // The planner's graph is acyclic by construction, so this is the
     // dispatcher's guard against a plan it did not build: nothing runnable and
