@@ -16,9 +16,34 @@ use super::shared::{
 pub struct PipxManager;
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
-    std::env::var_os("HOME")
+    let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
         .map(|h| pipx_fallbacks_for_home(std::path::Path::new(&h)))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if cfg!(windows) {
+        fallbacks.extend(windows_user_pipx_candidates());
+    }
+    fallbacks
+}
+
+/// Every `pipx.exe` a `pip install --user pipx` could have left under roaming
+/// AppData — the same `nt_user` tree the bootstrap plan declares, so a pipx this
+/// machine installed is still found when its `Scripts` directory never reached
+/// `PATH`.
+///
+/// The version segment belongs to whichever interpreter pip ran, so the tree is
+/// READ rather than probed: this resolver answers `is_available()`, which a
+/// single run asks many times, and must not spawn a process to do it.
+pub(super) fn windows_user_pipx_candidates() -> Vec<PathBuf> {
+    let Some(root) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Python")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join("Scripts").join("pipx.exe"))
+        .collect()
 }
 
 /// `pipx_fallbacks` with the `$HOME` directory injected — split out so tests
@@ -438,14 +463,21 @@ mod tests {
         if let Some(plan) = plan {
             // Only `bootstrap`'s pip fallback installs into the user's own tree
             // (`pip install --user`); brew and the system managers put pipx on
-            // the system PATH, so they declare no directory.
+            // the system PATH, so they declare no directory. The user tree is
+            // not the same directory on every platform — Windows sends console
+            // scripts to CPython's `nt_user` scheme under roaming AppData.
             if plan.method == "pip" {
                 assert_eq!(plan.requires.len(), 1);
                 assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
+                let is_user_scripts_dir = |d: &String| {
+                    if cfg!(windows) {
+                        d.contains("/Python/Python") && d.ends_with("/Scripts")
+                    } else {
+                        d.ends_with("/.local/bin")
+                    }
+                };
                 assert!(
-                    plan.creates_path_dirs
-                        .iter()
-                        .all(|d| d.ends_with("/.local/bin")),
+                    plan.creates_path_dirs.iter().all(is_user_scripts_dir),
                     "{:?}",
                     plan.creates_path_dirs
                 );
@@ -543,6 +575,40 @@ mod tests {
         let fallbacks = pipx_fallbacks_for_home(home);
         assert_eq!(fallbacks.len(), 1);
         assert_eq!(fallbacks[0], home.join(".local/bin/pipx"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_pipx_candidates_come_from_the_roaming_python_tree() {
+        let appdata = tempfile::tempdir().unwrap();
+        let scripts = appdata
+            .path()
+            .join("Python")
+            .join("Python314")
+            .join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "APPDATA",
+            appdata.path().to_string_lossy().as_ref(),
+        );
+
+        assert_eq!(
+            windows_user_pipx_candidates(),
+            vec![scripts.join("pipx.exe")],
+            "a pipx installed by `pip install --user` must be findable off PATH"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_pipx_candidates_are_empty_without_a_roaming_python_tree() {
+        let appdata = tempfile::tempdir().unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "APPDATA",
+            appdata.path().to_string_lossy().as_ref(),
+        );
+
+        assert!(windows_user_pipx_candidates().is_empty());
     }
 
     // ---------------------------------------------------------------------
