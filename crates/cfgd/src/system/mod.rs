@@ -212,10 +212,11 @@ pub(crate) fn assert_keys_undoubled(
     }
 }
 
-// Both bridges that drive this capture (`systemd_unit`'s and `node`'s) are
-// `#[cfg(target_os = "linux")]`, so the shared half follows them rather than
-// standing dead on every other platform.
-#[cfg(all(test, target_os = "linux"))]
+// The widest bridge that drives this capture is `ssh_keys`', which runs on every
+// unix; `systemd_unit`'s and `node`'s are narrower (`target_os = "linux"`). The
+// shared half follows the widest of them rather than standing dead on Windows,
+// where no bridge compiles at all.
+#[cfg(all(test, unix))]
 mod tests_snapshot_bridge;
 
 #[cfg(test)]
