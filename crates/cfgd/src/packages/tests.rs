@@ -1784,6 +1784,7 @@ fn test_simple_manager_no_aliases_for_pacman() {
 // The per-manager plans live beside each manager; these pin the two shared
 // cascade detectors every one of those plans resolves its method through.
 
+#[cfg(target_os = "linux")]
 #[test]
 fn detect_system_method_returns_valid_manager() {
     // detect_system_method cascades apt → dnf → zypper

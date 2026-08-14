@@ -532,7 +532,9 @@ pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str 
     }
 }
 
-/// Which manager an apt→dnf→zypper cascade would pick.
+/// Which manager an apt→dnf→zypper cascade would pick. Linux-only, like the two
+/// managers whose plans resolve their method through it.
+#[cfg(target_os = "linux")]
 pub(super) fn detect_system_method() -> &'static str {
     if command_available("apt") {
         "apt"
