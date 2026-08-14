@@ -240,6 +240,13 @@ pub enum PackageError {
     // code — cannot read `Success` over a shortfall it walked away from.
     #[error("{manager} dispatch stalled — no lane ever became available for this action")]
     LaneStalled { manager: String },
+
+    // A `Prerequisites` node whose dependency failed. It never ran: what it was
+    // waiting to be handed does not exist, so running it anyway would be the
+    // silent bootstrap that phase exists to replace. Named after the ROOT
+    // failure rather than the nearest link, so the line points at what to fix.
+    #[error("did not run — {dependency} failed earlier in this phase")]
+    DependencyFailed { dependency: String },
 }
 
 #[derive(Debug, thiserror::Error)]

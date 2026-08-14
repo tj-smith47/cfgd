@@ -16595,7 +16595,20 @@ impl PackageManager for DispatchLogManager {
         }
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // npm's `update` resolves its global prefix from `cx.state`, and an
+        // index refresh now runs on a lane like every other action. Nothing
+        // is recorded in the log, so every ordering fixture is unaffected.
+        if self.touches_state {
+            cx.state
+                .record_resolved_prefix(&self.name, &format!("/opt/{}", self.name), false)?;
+            let stored = cx.state.resolved_prefix(&self.name)?;
+            assert_eq!(
+                stored.map(|(prefix, _)| prefix),
+                Some(format!("/opt/{}", self.name)),
+                "an index refresh must read back what it wrote through the coordinator"
+            );
+        }
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -18450,6 +18463,368 @@ fn to_hash_string_is_stable_across_group_permutation() {
         plan.to_hash_string(),
         permuted.to_hash_string(),
         "the hash identifies the SET of planned actions, not the walk order"
+    );
+}
+
+// --- the Prerequisites phase's cfgd:managers DAG ---
+
+fn prerequisites_phase(actions: Vec<Action>) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: vec![],
+    }
+}
+
+fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
+    Action::Manager(ManagerAction::Provision {
+        manager: manager.to_string(),
+        via: via.to_string(),
+        depends_on: depends_on.to_vec(),
+    })
+}
+
+fn prerequisite_node(tool: &str, installer: &str, required_by: &[&str]) -> Action {
+    Action::Manager(ManagerAction::Prerequisite {
+        tool: tool.to_string(),
+        installer: installer.to_string(),
+        required_by: required_by.iter().map(|m| (*m).to_string()).collect(),
+        depends_on: Vec::new(),
+    })
+}
+
+/// Apply a manager-node plan on this thread, returning the run, the tree it
+/// rendered and the state it wrote — the shape for every node test that needs
+/// no rendezvous.
+fn apply_manager_plan(
+    registry: &ProviderRegistry,
+    state: &crate::state::StateStore,
+    plan: &Plan,
+) -> (ApplyResult, String) {
+    let (printer, buf) = Printer::for_test();
+    let reconciler = Reconciler::new(registry, state);
+    let result = reconciler
+        .apply(
+            plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    (result, crate::test_helpers::captured_text(&buf))
+}
+
+#[test]
+fn a_node_waits_for_the_node_it_names() {
+    // The §3.3 edge `apt(index) -> curl(prereq) -> brew(provision)`, minus the
+    // refresh: brew's provision may not begin while the tool its cascade shells
+    // out to is still being installed.
+    let probe = LaneProbe::holding(&["apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        prerequisite_node("curl", "apt", &["brew"]),
+        provision_node("brew", "curl", &[ManagerAction::prereq_node("curl")]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_started("apt:curl"),
+            "the prerequisite never ran: {:?}",
+            driver.events()
+        );
+        assert!(
+            !driver.started("bootstrap:brew"),
+            "a provision started while the prerequisite it named was still \
+             running: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:bootstrap:brew") > event_at(&events, "end:apt:curl"),
+        "{events:?}"
+    );
+    assert_eq!(probe.peak(), 1, "a declared edge is not concurrency");
+}
+
+#[test]
+fn independent_provisions_run_concurrently() {
+    // The drain rule removed. Both managers are ABSENT — exactly the condition
+    // `drains_phase` keys on — so under the `Packages` sub-gate each would wait
+    // for an empty phase and the graph would run one node at a time. Nothing
+    // connects them, so the phase whose purpose is provisioning runs them at
+    // once.
+    let probe = LaneProbe::holding(&["bootstrap:brew", "bootstrap:cargo"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+        DispatchLogManager::new("cargo", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        provision_node("cargo", "rustup", &[]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_in_flight(2),
+            "two unconnected provisions, two lanes: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(probe.peak(), 2, "the phase really provisioned two at once");
+}
+
+#[test]
+fn two_nodes_on_one_manager_share_its_lane() {
+    // Mutual exclusion survives the drain rule's removal: two prerequisites
+    // installed by apt are two `apt install` commands, and one manager runs one
+    // command at a time whatever the graph says.
+    let probe = LaneProbe::holding(&["apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        prerequisite_node("curl", "apt", &["brew"]),
+        prerequisite_node("git", "apt", &["cargo"]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(driver.await_started("apt:curl"), "{:?}", driver.events());
+        assert!(
+            !driver.started("apt:git"),
+            "two nodes ran one manager's command at once: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(probe.peak(), 1);
+}
+
+#[test]
+fn a_failed_node_fails_its_dependents_with_the_root_cause() {
+    // §3.4: brew's provision fails, so neither npm nor pnpm — which install
+    // through it, one at a remove — runs at all, and each names brew rather
+    // than the link above it.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).stays_unavailable(),
+        DispatchLogManager::new("npm", &log, false),
+        DispatchLogManager::new("pnpm", &log, false),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+        provision_node("pnpm", "npm", &[ManagerAction::provision_node("npm")]),
+    ]);
+
+    let (result, rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert_eq!(
+        result.action_results.iter().filter(|r| !r.success).count(),
+        3,
+        "the failed node and both of its dependents are failures: {:?}",
+        result.action_results
+    );
+    let events = dispatch_log(&log);
+    assert_eq!(
+        events,
+        vec!["bootstrap:brew"],
+        "a node whose dependency failed must not run: {events:?}"
+    );
+    assert_eq!(
+        rendered
+            .matches("did not run — brew failed earlier in this phase")
+            .count(),
+        2,
+        "both dependents name the ROOT failure, not the link above them: {rendered}"
+    );
+    // A node that never ran opens no journal row — the same treatment a
+    // stalled action gets, and for the same reason: there is nothing to
+    // record beginning.
+    let journalled: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    assert_eq!(journalled, vec!["provision:brew".to_string()]);
+}
+
+#[test]
+fn an_edge_naming_a_node_the_run_does_not_hold_is_satisfied() {
+    // A phase filter selects actions, not sub-graphs, so a surviving node can
+    // name one that was never planned. Waiting for it would stall the run the
+    // user asked for.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, false)]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![provision_node(
+        "brew",
+        "curl",
+        &[ManagerAction::refresh_node("apt")],
+    )]);
+
+    let (result, _rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(dispatch_log(&log), vec!["bootstrap:brew"]);
+}
+
+#[test]
+fn a_manager_node_journals_under_the_phase_that_planned_it() {
+    // The dispatcher serves two phases now, so the journal's phase column is
+    // read from the plan rather than assumed — a row filed under the wrong
+    // phase is a row no phase query finds.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("apt", &log, true)]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![prerequisite_node("curl", "apt", &["brew"])]);
+
+    let (result, _rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    let phases: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.phase)
+        .collect();
+    assert_eq!(phases, vec![PhaseName::Prerequisites.as_str().to_string()]);
+}
+
+#[test]
+fn a_cyclic_edge_fails_the_run_instead_of_hanging_it() {
+    // The planner's graph is acyclic by construction, so this is the
+    // dispatcher's guard against a plan it did not build: nothing runnable and
+    // nothing in flight is a FAILED run, never a green tick over work that
+    // never ran and never a wait with no end.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false),
+        DispatchLogManager::new("npm", &log, false),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "npm", &[ManagerAction::provision_node("npm")]),
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+    ]);
+
+    let (result, rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert!(
+        dispatch_log(&log).is_empty(),
+        "neither node ran: {:?}",
+        dispatch_log(&log)
+    );
+    assert_eq!(
+        rendered.matches("dispatch stalled").count(),
+        2,
+        "every slot the dispatcher walked away from is reported: {rendered}"
+    );
+}
+
+#[test]
+fn an_index_refresh_in_a_lane_reads_the_real_state_store() {
+    // npm resolves its global prefix from `cx.state` inside `update()`. Backed
+    // by a stub that store would answer nothing and swallow the write; a lane
+    // is backed by the proxy, which messages the one thread that owns the
+    // SQLite connection, so the refresh reads and writes the run's real state.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("npm", &log, true).with_state_writes(),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![Action::Manager(ManagerAction::RefreshIndex {
+        manager: "npm".to_string(),
+    })]);
+
+    let (result, _rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    use crate::providers::PackageStateStore;
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(
+        state.resolved_prefix("npm").unwrap(),
+        Some(("/opt/npm".to_string(), false)),
+        "the refresh's write landed in the run's own state store"
+    );
+}
+
+#[test]
+fn the_managers_group_completes_before_the_env_group_begins() {
+    // §4's producer-before-consumer rule, which the phase's split dispatch is
+    // what could break: `cfgd:managers` creates the binaries and `cfgd:env`
+    // publishes where they live, so no env surface may be written while a
+    // provision is still running.
+    let home = tempfile::tempdir().unwrap();
+    let env_file = home.path().join(".cfgd.env");
+    let probe = LaneProbe::holding(&["bootstrap:brew"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: env_file.clone(),
+            content: "export PATH=\"/home/linuxbrew/.linuxbrew/bin:$PATH\"\n".to_string(),
+        }),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let held = env_file.clone();
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_started("bootstrap:brew"),
+            "{:?}",
+            driver.events()
+        );
+        assert!(
+            !held.exists(),
+            "the env file was published while its producer was still running"
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert!(env_file.exists(), "the env group still ran");
+    assert_eq!(
+        outcome
+            .transcript
+            .find("provision brew via curl")
+            .zip(outcome.transcript.find(".cfgd.env"))
+            .map(|(managers, env)| managers < env),
+        Some(true),
+        "the tree reads producer before consumer: {}",
+        outcome.transcript
     );
 }
 

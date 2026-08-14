@@ -546,6 +546,10 @@ pub(super) fn action_manager(action: &crate::reconciler::types::Action) -> Optio
             kind: ModuleActionKind::InstallPackages { resolved },
             ..
         }) => resolved.first().map(|p| p.manager.as_str()),
+        // The manager whose COMMAND the node runs — apt for `apt install curl`,
+        // not the manager that needed curl. That is what must not run twice at
+        // once, and the prerequisite's own subject already names the tool.
+        Action::Manager(node) => Some(node.manager()),
         _ => None,
     }
 }

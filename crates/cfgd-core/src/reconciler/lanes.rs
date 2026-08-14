@@ -1,9 +1,14 @@
-//! The `Packages` phase's dispatcher: per-manager lanes behind Rule P's tier
-//! barrier.
+//! The concurrent dispatcher: per-manager lanes, serving the `Packages` phase
+//! behind Rule P's tier barrier and the `Prerequisites` phase's `cfgd:managers`
+//! group as a DAG.
 //!
 //! Every other phase mutates shared user state and stays a sequential walk.
 //! Package installs do not: two managers driving two different binaries have
 //! nothing to contend over, and the run's wall-clock cost is dominated by them.
+//! Provisioning the managers themselves is the same shape one step earlier —
+//! `apt update` and a `rustup` install contend over nothing either — except
+//! that its ordering is a graph rather than a tier: a node runs once every node
+//! its plan named ([`Slot::depends_on`]) has completed.
 //!
 //! The shape is a coordinator plus workers, and the reason is SQLite. The
 //! reconciler's `StateStore` owns a `rusqlite::Connection`, which is `Send` and
@@ -22,8 +27,11 @@
 //!    the same instant.
 //! 2. **Tier B is serial**, in plan order: a bootstrap can depend on another
 //!    bootstrap, which is the one intra-tier edge in the phase.
-//! 3. **Module `depends`** — a module's package work waits for every action of
-//!    its transitive dependencies.
+//! 3. **Module `depends`, and a node's own edges** — a module's package work
+//!    waits for every action of its transitive dependencies, and a
+//!    `Prerequisites` node waits for every node its plan named. A node whose
+//!    dependency FAILED never runs at all: it settles as a failure naming the
+//!    ancestor, because what it was waiting to be handed does not exist.
 //! 4. **The per-family lane** — at most one action per manager FAMILY is in
 //!    flight, so the maximum parallelism is the number of distinct families.
 //!    `brew`, `brew-tap` and `brew-cask` are one binary and share a lane; the
@@ -36,11 +44,15 @@
 //! 6. **The serial sub-gate** — any action whose manager is registered and not
 //!    currently available drains the phase. Evaluated at dispatch time, because
 //!    a manager bootstrapped earlier in the same phase becomes available
-//!    mid-run.
+//!    mid-run. It does NOT apply to a `Prerequisites` node: that gate exists to
+//!    serialize around an inline bootstrap nobody planned, and a node whose
+//!    whole job is to MAKE its manager available is unavailable by definition —
+//!    left in, it would drain the one phase whose purpose is that provisioning
+//!    runs concurrently.
 //!
 //! ## The caller must not hold `path_env_mutation_guard()` across `apply()`
 //!
-//! `dispatch_package_lanes` spawns worker threads that read the process `PATH`
+//! `dispatch_lanes` spawns worker threads that read the process `PATH`
 //! (a package manager resolving its own binary, `git`, a script interpreter),
 //! each guarded by `cfgd_core::test_helpers::path_env_read_guard()` at the
 //! actual point of spawn. That guard's thread-locals are per-thread, so a
@@ -49,7 +61,7 @@
 //! exclusive `path_env_mutation_guard()` (a test fixture driving `apply()`
 //! from inside a `CwdGuard`/`PathShimGuard` window) that thread goes on to
 //! park in `inbox.recv()` waiting for the very worker that is blocked behind
-//! its own write guard — deadlock, with no timeout. `dispatch_package_lanes`
+//! its own write guard — deadlock, with no timeout. `dispatch_lanes`
 //! asserts against exactly that precondition before spawning anything, so the
 //! violation fails fast instead of hanging.
 use std::collections::{HashMap, HashSet};
@@ -67,14 +79,18 @@ use super::format::{
 };
 use super::packages::{ModuleInstallContext, PackageExec, action_manager};
 use super::types::{
-    Action, ModuleAction, ModuleActionKind, Owner, PhaseName, ReconcileContext, Tier,
+    Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, PhaseName, ReconcileContext, Tier,
 };
 
-/// The run-scoped inputs every package action needs, none of which change
+/// The run-scoped inputs every dispatched action needs, none of which change
 /// between actions.
-pub(super) struct PackageRun<'x> {
+pub(super) struct LaneRun<'x> {
     pub(super) printer: &'x Printer,
     pub(super) apply_id: i64,
+    /// The phase being dispatched — the journal's `phase` column. Read from the
+    /// plan rather than assumed, because two phases now dispatch through here
+    /// and a row filed under the wrong one is a row no phase query finds.
+    pub(super) phase: &'x PhaseName,
     pub(super) config_dir: &'x std::path::Path,
     pub(super) resolved: &'x ResolvedProfile,
     pub(super) module_actions: &'x [ResolvedModule],
@@ -195,6 +211,15 @@ struct Slot<'p> {
     manager: Option<String>,
     /// The module that owns it, for the `depends` edges.
     module: Option<String>,
+    /// The DAG node this action IS, when the phase's ordering is a graph
+    /// (`Prerequisites`). `None` for package work, whose ordering is the tier
+    /// barrier and module `depends` instead — and the one bit the drain rule
+    /// and the failure cascade both read to tell the two gatings apart.
+    node: Option<String>,
+    /// The nodes this one must follow, as [`ManagerAction::node_id`] values.
+    /// Read off the plan rather than re-derived, so the scheduler cannot
+    /// disagree with the edges the preview showed. Empty for package work.
+    depends_on: &'p [String],
     state: SlotState,
 }
 
@@ -301,6 +326,13 @@ fn drains_phase(registry: &ProviderRegistry, manager: &str) -> bool {
 
 impl<'p> Slot<'p> {
     fn drains(&self, registry: &ProviderRegistry) -> bool {
+        // A `Prerequisites` node is exempt: the gate asks "is this manager
+        // missing", and a provision's answer is yes until the moment it
+        // succeeds. Draining on it would serialize the whole graph — see the
+        // module doc's rule 6.
+        if self.node.is_some() {
+            return false;
+        }
         self.manager
             .as_deref()
             .is_some_and(|m| drains_phase(registry, m))
@@ -339,6 +371,100 @@ fn depends_satisfied(
                 .as_deref()
                 .is_some_and(|owner| needs.contains(owner))
     })
+}
+
+/// Whether every node `slots[index]` must follow has completed.
+///
+/// An edge naming a node that is not in this dispatch counts as satisfied. A
+/// phase filter selects actions, not sub-graphs, so a user who asked for one
+/// half of the phase can leave an edge pointing at a node that was never going
+/// to run — and a dispatcher that waited for it would stall the run the user
+/// asked for rather than perform it.
+///
+/// A FAILED dependency is `Done` like any other, which is why this predicate
+/// says nothing about failure: [`fail_dependents`] settles every node
+/// downstream of a failure before the next dispatch pass, so a slot whose
+/// dependency failed is already `Done` and is never offered here.
+fn dag_satisfied(slots: &[Slot<'_>], index: usize) -> bool {
+    slots[index].depends_on.iter().all(|dependency| {
+        !slots
+            .iter()
+            .any(|s| s.state != SlotState::Done && s.node.as_deref() == Some(dependency.as_str()))
+    })
+}
+
+/// What a node is CALLED on the line of a node it takes down.
+///
+/// A prerequisite is named by its TOOL rather than by the manager running the
+/// install: `apt install curl` failing is curl not arriving, and curl is what
+/// the dependent was waiting for. Everything else is named by its manager.
+fn node_subject(action: &Action) -> Option<&str> {
+    match action {
+        Action::Manager(ManagerAction::Prerequisite { tool, .. }) => Some(tool.as_str()),
+        Action::Manager(node) => Some(node.manager()),
+        _ => None,
+    }
+}
+
+/// Settle every node downstream of the failure at `root` as a failure of its
+/// own, without running any of them.
+///
+/// Attribution is the ROOT rather than the nearest dependency: a `provision
+/// npm` held up by a missing curl says curl, because the reader's next move is
+/// to fix curl and three lines each blaming the line above it say the same
+/// thing three times without ever naming what to do. Sweeps run in slot order —
+/// the plan's own order — and repeat until nothing more is reachable, so a
+/// chain of any depth is settled in one call and always in the same sequence.
+fn fail_dependents(
+    slots: &mut [Slot<'_>],
+    root: usize,
+    collect: &mut dyn FnMut(&Action, LaneCollected),
+) {
+    let root_action = slots[root].action;
+    let Some(root_node) = slots[root].node.clone() else {
+        return;
+    };
+    let cause = node_subject(root_action)
+        .unwrap_or(root_node.as_str())
+        .to_string();
+    let mut failed: Vec<String> = vec![root_node];
+    loop {
+        let mut progressed = false;
+        for slot in slots.iter_mut() {
+            if slot.state != SlotState::Waiting
+                || !slot
+                    .depends_on
+                    .iter()
+                    .any(|dependency| failed.iter().any(|f| f == dependency))
+            {
+                continue;
+            }
+            // Marked `Done` rather than left `Waiting`: an uncollected slot is
+            // what the stall check exists to catch, and this one is not
+            // stalled — it has been answered.
+            slot.state = SlotState::Done;
+            if let Some(node) = slot.node.clone() {
+                failed.push(node);
+            }
+            progressed = true;
+            collect(
+                slot.action,
+                LaneCollected {
+                    journal_id: None,
+                    result: Err(PackageError::DependencyFailed {
+                        dependency: cause.clone(),
+                    }
+                    .into()),
+                    elapsed: Duration::ZERO,
+                    notes: Vec::new(),
+                    body: Vec::new(),
+                },
+            );
+        }
+        if !progressed {
+            return;
+        }
+    }
 }
 
 /// What the dispatcher holds while it decides.
@@ -391,6 +517,9 @@ fn pick_next(
             return (state.running == 0).then_some(index);
         }
         if !depends_satisfied(slots, index, deps) {
+            continue;
+        }
+        if !dag_satisfied(slots, index) {
             continue;
         }
         if slot.drains(registry) {
@@ -471,14 +600,14 @@ fn groups_of<'p>(slots: &[Slot<'p>]) -> Vec<(&'p Owner, Tier)> {
 }
 
 impl super::Reconciler<'_> {
-    /// Run the `Packages` phase across per-manager lanes, handing each finished
-    /// action to `collect` on this thread, in completion order.
+    /// Run one phase's concurrent actions across per-manager lanes, handing each
+    /// finished action to `collect` on this thread, in completion order.
     ///
     /// Returns the abort exit code when a signal stopped the dispatch.
-    pub(super) fn dispatch_package_lanes<'p>(
+    pub(super) fn dispatch_lanes<'p>(
         &self,
         dispatch: &[(&'p Owner, &'p Action, usize)],
-        run: &PackageRun<'_>,
+        run: &LaneRun<'_>,
         collect: &mut dyn FnMut(&Action, LaneCollected),
     ) -> Option<u8> {
         // See the module doc's "caller must not hold `path_env_mutation_guard()`"
@@ -488,7 +617,7 @@ impl super::Reconciler<'_> {
         #[cfg(any(test, feature = "test-helpers"))]
         debug_assert!(
             !crate::test_helpers::path_env_exclusive_guard_held(),
-            "dispatch_package_lanes() called while this thread already holds \
+            "dispatch_lanes() called while this thread already holds \
              path_env_mutation_guard() — a lane worker's path_env_read_guard() \
              would deadlock behind it once this thread parks in inbox.recv(). \
              Release the mutation guard before calling apply()."
@@ -505,6 +634,14 @@ impl super::Reconciler<'_> {
                 module: match action {
                     Action::Module(ModuleAction { module_name, .. }) => Some(module_name.clone()),
                     _ => None,
+                },
+                node: match action {
+                    Action::Manager(node) => Some(node.node_id()),
+                    _ => None,
+                },
+                depends_on: match action {
+                    Action::Manager(node) => node.depends_on(),
+                    _ => &[],
                 },
                 state: SlotState::Waiting,
             })
@@ -782,6 +919,7 @@ impl super::Reconciler<'_> {
                             }
                         }
                         self.persist_bootstraps(done.bootstrapped);
+                        let failed = done.result.is_err();
                         collect(
                             slots[index].action,
                             LaneCollected {
@@ -792,6 +930,14 @@ impl super::Reconciler<'_> {
                                 body: done.body,
                             },
                         );
+                        // Settled BEFORE the next dispatch pass, so a node whose
+                        // dependency just failed is never offered a lane: the
+                        // thing it was waiting to be handed does not exist, and
+                        // running it anyway is the silent bootstrap this phase
+                        // replaces.
+                        if failed {
+                            fail_dependents(&mut slots, index, collect);
+                        }
                     }
                     // Reachable only once the coordinator has dropped its own
                     // `tx` above AND every worker's clone is also gone
@@ -813,7 +959,7 @@ impl super::Reconciler<'_> {
     /// write, like every other SQLite access in the phase.
     fn begin_package_journal(
         &self,
-        run: &PackageRun<'_>,
+        run: &LaneRun<'_>,
         action: &Action,
         action_index: usize,
     ) -> Option<i64> {
@@ -823,7 +969,7 @@ impl super::Reconciler<'_> {
             .journal_begin(
                 run.apply_id,
                 action_index,
-                PhaseName::Packages.as_str(),
+                run.phase.as_str(),
                 &action_type,
                 &resource_id,
                 None,
@@ -906,6 +1052,12 @@ fn refresh_wait_bars<'x>(
         if !depends_satisfied(slots, index, inputs.deps) {
             continue;
         }
+        // A node still waiting on an edge is not waiting on its lane, and
+        // saying so would name the wrong blocker. What such a node IS waiting
+        // on is the node ahead of it — attribution the renderer owns.
+        if !dag_satisfied(slots, index) {
+            continue;
+        }
         // An owner mid-action in another lane still gets this line: one
         // bar per in-flight action AND one per blocked action is the whole
         // point of the grammar, and the window it describes — a module
@@ -949,7 +1101,7 @@ struct LaneWorkerResult {
 /// One action, executed on a worker thread with no `&Reconciler` in reach.
 fn run_one_action(
     registry: &ProviderRegistry,
-    run: &PackageRun<'_>,
+    run: &LaneRun<'_>,
     action: &Action,
     lane: &dyn LaneOutput,
     tx: &Sender<LaneMessage>,
@@ -972,6 +1124,7 @@ fn run_one_action(
     let exec = PackageExec::new(registry, &proxy, run.printer, &notes).in_lane(lane);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
         Action::Package(pkg) => exec.apply_package_action(pkg).map(|desc| (desc, true)),
+        Action::Manager(node) => exec.apply_manager_action(node),
         Action::Module(
             module @ ModuleAction {
                 kind: ModuleActionKind::InstallPackages { resolved },
@@ -990,8 +1143,9 @@ fn run_one_action(
                 path_dirs,
             },
         ),
-        // The phase holds only package work by construction
-        // (`phase_for_module_kind`), so this arm exists for totality.
+        // The dispatched set holds only package and manager work by
+        // construction (`phase_for_module_kind` routes module work, and the
+        // caller partitions the phase), so this arm exists for totality.
         other => Ok((format_action_description(other), false)),
     }));
     let result = match executed {
@@ -1155,6 +1309,8 @@ mod tests {
                 .token()
                 .strip_prefix("module:")
                 .map(ToString::to_string),
+            node: None,
+            depends_on: &[],
             state: SlotState::Waiting,
         }
     }

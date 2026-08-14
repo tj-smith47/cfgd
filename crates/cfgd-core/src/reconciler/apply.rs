@@ -213,6 +213,22 @@ fn action_key(action: &Action) -> usize {
     action as *const Action as usize
 }
 
+/// Whether an owner's actions in `phase` run through the concurrent dispatcher
+/// rather than sequentially.
+///
+/// The ONE partition, so the phase's two halves cannot both claim an action or
+/// both disown it: all of `Packages`, and only the `cfgd:managers` group of
+/// `Prerequisites` — its other two groups write the env file and refresh the
+/// live session, which are one file and one session and contend with each
+/// other rather than with a manager's binary.
+fn dispatched_in_lanes(phase: &PhaseName, owner: &Owner) -> bool {
+    match phase {
+        PhaseName::Packages => true,
+        PhaseName::Prerequisites => owner.is_managers(),
+        _ => false,
+    }
+}
+
 fn hash_sorted_parts(mut parts: Vec<String>) -> String {
     parts.sort();
     crate::sha256_hex(parts.join("|").as_bytes())
@@ -550,11 +566,23 @@ impl<'a> super::Reconciler<'a> {
                 subjects: &subjects,
                 bootstrap_owners: &bootstrap_owners,
             };
-            // `Packages` writes its tree at phase close so the groups read in
-            // `Owner::sort_key` order while Rule P dispatches `0 -> B -> 1`;
-            // every other phase streams, because there its dispatch order and
-            // its reading order are the same walk.
-            let deferred = phase.name == PhaseName::Packages;
+            // The concurrent actions of this phase — all of `Packages`, and the
+            // `cfgd:managers` group of `Prerequisites`, whose nodes are a DAG
+            // over the same family lanes. The rest of the phase runs
+            // sequentially AFTER them: `cfgd:env` publishes where the binaries
+            // the managers group just created live, so producer precedes
+            // consumer inside the phase as well as across it.
+            let (lane_dispatch, serial_dispatch): (Vec<_>, Vec<_>) = dispatch
+                .into_iter()
+                .partition(|(owner, _, _)| dispatched_in_lanes(&phase.name, owner));
+
+            // A phase whose dispatch order is not its reading order writes its
+            // tree at phase close instead of streaming: `Packages` because Rule
+            // P dispatches `0 -> B -> 1` while the groups read in
+            // `Owner::sort_key` order, `Prerequisites` because its first group
+            // finishes in whatever order its lanes do. Every other phase
+            // streams, because there the two walks are the same one.
+            let deferred = matches!(phase.name, PhaseName::Packages | PhaseName::Prerequisites);
             let mut recorded: std::collections::HashMap<usize, ActionOutcome> =
                 std::collections::HashMap::new();
             // Platform-gated skips are the header's `Modules`-row annotation,
@@ -573,15 +601,16 @@ impl<'a> super::Reconciler<'a> {
             let mut abort_stop: Option<u8> = None;
             let mut pre_script_stop: Option<String> = None;
 
-            if deferred {
-                // The concurrent dispatcher owns this phase: it opens each
+            if !lane_dispatch.is_empty() {
+                // The concurrent dispatcher owns these actions: it opens each
                 // action's journal row at its dispatch point, runs the work in
                 // a per-manager lane, and hands every finish back HERE, on this
                 // thread, in completion order. No status line streams — the
                 // tree below is written once the phase closes.
-                let run = super::lanes::PackageRun {
+                let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
+                    phase: &phase.name,
                     config_dir,
                     resolved,
                     module_actions,
@@ -614,16 +643,21 @@ impl<'a> super::Reconciler<'a> {
                         // notes beside the outcome rather than inside it, and a
                         // deferred phase has no line open to attach them under.
                         // Unreachable: only the two script shapes self-report,
-                        // and neither is ever planned into `Packages`.
+                        // and neither is ever dispatched into a lane.
                         None => debug_assert!(
                             settled.notes.is_empty(),
                             "a self-reporting action reached a lane carrying notes"
                         ),
                     }
                 };
-                abort_stop = self.dispatch_package_lanes(&dispatch, &run, &mut collect);
-            } else {
-                for (owner, action, plan_index) in dispatch.into_iter() {
+                abort_stop = self.dispatch_lanes(&lane_dispatch, &run, &mut collect);
+            }
+
+            // Whatever the phase did not hand to a lane, in plan order. An
+            // abort during the lane half stops here: the phase's remaining work
+            // is exactly the work a cancelled run must not begin.
+            if abort_stop.is_none() {
+                for (owner, action, plan_index) in serial_dispatch.into_iter() {
                     let action_index = plan_index_base + plan_index;
                     // Cooperative cancellation: a signal flips the abort flag, and
                     // the loop stops before beginning the next atomic action.

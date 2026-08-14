@@ -39,7 +39,8 @@ groups, which read producer-before-consumer: `cfgd:managers` creates the binarie
 `cfgd:env` publishes where they live, `cfgd:session` broadcasts it. **Execution order in
 `Packages` is deliberately not the displayed order**: module-owned package work runs first,
 then profile-owned package work, so a module's dependency is present before a module's own
-hooks need it. Everywhere else, execution follows the displayed order.
+hooks need it. `Prerequisites` is the other exception — its `cfgd:managers` group is a
+graph, described below. Everywhere else, execution follows the displayed order.
 
 Those three tiers are also a barrier: a tier starts only once every action in the tier
 above it has *finished*. Inside a tier, package work runs **concurrently — one lane per
@@ -68,11 +69,24 @@ phase you excluded, and a run narrowed some other way — a per-module daemon ti
 package awaiting a source decision — keeps only the refreshes its surviving work reads.
 A refresh that fails is a warning and never fails the run.
 
+Those actions are a **graph**, not a list, and they run across the same family lanes: an
+index refresh, a tool the provisioning shells out to, and the provisioning itself are
+edges cfgd plans (`apt(index) → curl(tool) → brew → npm`), and everything whose edges are
+satisfied runs at once. The "runs alone" rule above does NOT apply here — it exists to
+serialize around an install that changes `PATH` mid-`Packages`, and a manager that is
+missing is exactly what this phase is for. What still holds is one operation per manager
+family, so two nodes never drive one binary at once. **A node whose dependency failed
+never runs**: it is reported as a failure naming the root cause (`did not run — brew
+failed earlier in this phase`), rather than as a separate mystery or as a silent
+success. `cfgd:env` and `cfgd:session` run after that group finishes, in order, because
+they publish what it created.
+
 While a lane is held back, the live region shows one dimmed line per waiting group or
 action naming what it is waiting on (`module:nvim · waiting on apt`). Those lines exist
 only on a terminal — they are never logged, never in `-o json`, and never in scrollback.
-Because the lanes finish out of order, the `Packages` tree is written once, when the phase
-closes, in the displayed group order rather than the order things happened.
+Because the lanes finish out of order, the `Packages` and `Prerequisites` trees are each
+written once, when the phase closes, in the displayed group order rather than the order
+things happened.
 
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the
