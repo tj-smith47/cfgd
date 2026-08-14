@@ -16,7 +16,7 @@ fn scripted_manager_from_spec() {
     };
     let mgr = ScriptedManager::from_spec(&spec);
     assert_eq!(mgr.name(), "mypm");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn custom_managers_preserves_names() {
     assert_eq!(managers[2].name(), "gamma");
     // All should not be bootstrappable
     for m in &managers {
-        assert!(!m.can_bootstrap());
+        assert!(m.bootstrap_plan().is_none());
     }
 }
 
@@ -725,7 +725,7 @@ fn custom_managers_all_return_none_for_version() {
     let managers = custom_managers(&specs);
     for m in &managers {
         assert!(m.available_version("any").unwrap().is_none());
-        assert!(!m.can_bootstrap());
+        assert!(m.bootstrap_plan().is_none());
     }
 }
 
@@ -743,7 +743,7 @@ fn scripted_manager_is_available_through_trait() {
     let mgr: Box<dyn PackageManager> = Box::new(ScriptedManager::from_spec(&spec));
     // Exercise is_available through the trait object
     assert!(mgr.is_available());
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     assert!(mgr.available_version("anything").unwrap().is_none());
 }
 

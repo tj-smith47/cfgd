@@ -408,10 +408,77 @@ impl NoteSink {
     }
 }
 
+/// What provisioning a package manager takes on this host: the tools its own
+/// `bootstrap` cascade shells out to, the method that cascade will pick, and the
+/// PATH directories the install creates.
+///
+/// A manager that cannot be provisioned at all — it ships with the OS (`winget`),
+/// it is a sub-manager of one that does (`brew-tap`), or nothing on this host can
+/// install it — answers [`PackageManager::bootstrap_plan`] with `None`. `Some` is
+/// the plan this run would carry out, resolved against what is available NOW: two
+/// hosts with different system managers get different methods for the same
+/// manager, which is what makes the plan a plan rather than a description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapPlan {
+    /// Tools the chosen method shells out to (`curl`, `pip3`) — the population
+    /// a prerequisite is drawn from.
+    pub requires: Vec<String>,
+    /// The method the cascade will use, as plan and doctor display it
+    /// (`rustup`, `homebrew installer`, or the manager doing the installing).
+    pub method: String,
+    /// PATH directories the install deterministically creates on this platform,
+    /// folded to `/` because they are compared against recorded dirs and written
+    /// into the generated env file. Empty when the install lands somewhere
+    /// already on the system PATH (`apt install snapd`), or when the directory is
+    /// only knowable after the install (npm's resolved global prefix).
+    pub creates_path_dirs: Vec<String>,
+}
+
+impl BootstrapPlan {
+    /// A plan that needs no tool and creates no PATH directory.
+    pub fn new(method: impl Into<String>) -> Self {
+        Self {
+            requires: Vec::new(),
+            method: method.into(),
+            creates_path_dirs: Vec::new(),
+        }
+    }
+
+    /// Name the tools the chosen method shells out to.
+    pub fn requiring<I>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.requires = tools.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Declare the PATH directories the install creates. Values are folded to
+    /// `/` here rather than at each provider, so no caller can leave a
+    /// host-native separator in a value that crosses into the env file.
+    pub fn creating<I>(mut self, dirs: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<std::path::Path>,
+    {
+        self.creates_path_dirs = dirs
+            .into_iter()
+            .map(|d| crate::to_posix_string(d.as_ref()))
+            .collect();
+        self
+    }
+}
+
 pub trait PackageManager: Send + Sync {
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
-    fn can_bootstrap(&self) -> bool;
+
+    /// The provisioning plan for this host, or `None` when this manager cannot
+    /// be provisioned at all. Implementations resolve the cascade the same way
+    /// `bootstrap` does, so the plan names what will actually run.
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan>;
+
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()>;
     fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>>;
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
@@ -510,6 +577,24 @@ pub trait PackageManager: Send + Sync {
     /// script vanishes with the config block.
     fn persisted_uninstall(&self) -> Option<String> {
         None
+    }
+}
+
+/// The question-only view of [`PackageManager::bootstrap_plan`], for call sites
+/// that ask whether a manager can be provisioned without caring what that takes.
+///
+/// Blanket-implemented over every `PackageManager` — including `dyn
+/// PackageManager` — rather than living on the trait as a defaulted method, so no
+/// implementation can answer this question differently from its own plan. A
+/// manager that returned `true` here while planning `None` would be claimed as a
+/// candidate by [`crate::modules::resolve`] and then never provisioned.
+pub trait PackageManagerExt {
+    fn can_bootstrap(&self) -> bool;
+}
+
+impl<T: PackageManager + ?Sized> PackageManagerExt for T {
+    fn can_bootstrap(&self) -> bool {
+        self.bootstrap_plan().is_some()
     }
 }
 
@@ -1019,8 +1104,9 @@ impl PackageManager for StubPackageManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn can_bootstrap(&self) -> bool {
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
         self.bootstrap_capable
+            .then(|| BootstrapPlan::new("stub").requiring(["stub-tool"]))
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -1190,6 +1276,32 @@ mod tests {
         let available = reg.available_system_configurators();
         assert_eq!(available.len(), 1);
         assert_eq!(available[0].name(), "shell");
+    }
+
+    #[test]
+    fn bootstrap_plan_builder_folds_declared_dirs_to_posix() {
+        let plan = BootstrapPlan::new("rustup")
+            .requiring(["curl"])
+            .creating([std::path::PathBuf::from("/opt/x").join("bin")]);
+        assert_eq!(plan.method, "rustup");
+        assert_eq!(plan.requires, ["curl"]);
+        // Declared dirs are compared against recorded ones and written into the
+        // generated env file, so they carry no host-native separator.
+        assert_eq!(plan.creates_path_dirs, ["/opt/x/bin"]);
+        assert!(plan.creates_path_dirs.iter().all(|d| !d.contains('\\')));
+    }
+
+    #[test]
+    fn a_manager_that_plans_nothing_cannot_be_bootstrapped() {
+        // `can_bootstrap` is blanket-implemented over the plan, so the two can
+        // never disagree about a manager.
+        let planless = StubPackageManager::new("winget");
+        assert!(planless.bootstrap_plan().is_none());
+        assert!(!planless.can_bootstrap());
+
+        let planned = StubPackageManager::new("brew").bootstrappable();
+        assert!(planned.bootstrap_plan().is_some());
+        assert!(planned.can_bootstrap());
     }
 
     #[test]

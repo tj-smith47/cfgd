@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
 
@@ -74,8 +74,9 @@ impl PackageManager for WingetManager {
         cfgd_core::command_available("winget")
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // winget ships with Windows; nothing cfgd runs can provision it.
+        None
     }
 
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -282,7 +283,9 @@ Git        Git.Git     2.43.0\n\
     fn winget_manager_name_and_traits() {
         let mgr = WingetManager;
         assert_eq!(mgr.name(), "winget");
-        assert!(!mgr.can_bootstrap());
+        // Nothing cfgd runs can provision winget, so it plans nothing — and
+        // `bootstrap` says so with the App Installer guidance below.
+        assert!(mgr.bootstrap_plan().is_none());
     }
 
     #[test]

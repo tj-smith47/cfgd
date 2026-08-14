@@ -2132,6 +2132,7 @@ pub struct MockPackageManager {
     pub mgr_name: String,
     pub available: bool,
     pub bootstrap_capable: bool,
+    pub bootstrap_method: String,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
@@ -2143,6 +2144,7 @@ impl MockPackageManager {
             mgr_name: name.to_string(),
             available: true,
             bootstrap_capable: false,
+            bootstrap_method: "mock".to_string(),
             installed: std::collections::HashSet::new(),
             install_calls: Mutex::new(Vec::new()),
             uninstall_calls: Mutex::new(Vec::new()),
@@ -2165,6 +2167,13 @@ impl MockPackageManager {
         self.bootstrap_capable = true;
         self
     }
+
+    /// Bootstrappable, with the method its plan names.
+    pub fn bootstrappable_via(mut self, method: &str) -> Self {
+        self.bootstrap_capable = true;
+        self.bootstrap_method = method.to_string();
+        self
+    }
 }
 
 impl crate::providers::PackageManager for MockPackageManager {
@@ -2176,8 +2185,9 @@ impl crate::providers::PackageManager for MockPackageManager {
         self.available
     }
 
-    fn can_bootstrap(&self) -> bool {
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
         self.bootstrap_capable
+            .then(|| crate::providers::BootstrapPlan::new(self.bootstrap_method.clone()))
     }
 
     fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
@@ -2689,7 +2699,7 @@ mod tests {
 
     #[test]
     fn mock_package_manager_helpers_and_trait_methods() {
-        use crate::providers::PackageManager;
+        use crate::providers::{PackageManager, PackageManagerExt};
 
         let mgr = MockPackageManager::new("pacman")
             .with_installed(&["git"])

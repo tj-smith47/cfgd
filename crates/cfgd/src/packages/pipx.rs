@@ -6,11 +6,11 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, pkg_run, resolve_tool_with_fallbacks,
-    run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
+    bootstrap_via_brew_then_system, detect_brew_system_method, home_relative_dir, pkg_run,
+    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct PipxManager;
@@ -48,13 +48,20 @@ impl PackageManager for PipxManager {
         pipx_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        // Can bootstrap via system package manager or pip
-        brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("pip3")
-            || command_available("pip")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        match detect_brew_system_method("pip") {
+            // Only the pip fallback installs into the user's own tree; brew and
+            // the system managers land pipx on the system PATH.
+            "pip" => ["pip3", "pip"]
+                .into_iter()
+                .find(|t| command_available(t))
+                .map(|tool| {
+                    BootstrapPlan::new("pip")
+                        .requiring([tool])
+                        .creating(home_relative_dir("~/.local/bin"))
+                }),
+            method => Some(BootstrapPlan::new(method)),
+        }
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -420,15 +427,34 @@ mod tests {
     }
 
     #[test]
-    fn pipx_manager_can_bootstrap_checks_cascade() {
-        let mgr = PipxManager;
-        let can = mgr.can_bootstrap();
+    fn pipx_bootstrap_plan_follows_the_brew_system_pip_cascade() {
+        let plan = PipxManager.bootstrap_plan();
         let expected = brew_available()
             || command_available("apt")
             || command_available("dnf")
             || command_available("pip3")
             || command_available("pip");
-        assert_eq!(can, expected);
+        assert_eq!(plan.is_some(), expected);
+        if let Some(plan) = plan {
+            // Only `bootstrap`'s pip fallback installs into the user's own tree
+            // (`pip install --user`); brew and the system managers put pipx on
+            // the system PATH, so they declare no directory.
+            if plan.method == "pip" {
+                assert_eq!(plan.requires.len(), 1);
+                assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
+                assert!(
+                    plan.creates_path_dirs
+                        .iter()
+                        .all(|d| d.ends_with("/.local/bin")),
+                    "{:?}",
+                    plan.creates_path_dirs
+                );
+            } else {
+                assert!(["brew", "apt", "dnf"].contains(&plan.method.as_str()));
+                assert!(plan.requires.is_empty());
+                assert!(plan.creates_path_dirs.is_empty());
+            }
+        }
     }
 
     #[test]

@@ -510,7 +510,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
         $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
-        $2 != "name" && $2 != "is_available" && $2 != "can_bootstrap" && $2 != "bootstrap" && \
+        $2 != "name" && $2 != "is_available" && $2 != "bootstrap_plan" && $2 != "bootstrap" && \
         $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && $2 != "update" && \
         $2 != "diff" && $2 != "apply" && $2 != "current_state" && \
         $2 != "scan_source" && $2 != "scan_target" && \

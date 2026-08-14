@@ -4,14 +4,27 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
-    canonical_ci_pkg_name, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd_live,
-    run_pkg_query, tool_cmd_with_resolver,
+    canonical_ci_pkg_name, home_relative_dir, parse_version_field, resolve_tool_with_fallbacks,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct ScoopManager;
+
+/// Where the Scoop installer puts its shims — `SCOOP` when the user pins a root,
+/// otherwise the installer's default under the home directory. Windows-only,
+/// because the bootstrap is a PowerShell script that runs nowhere else.
+fn scoop_shims_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    match std::env::var_os("SCOOP") {
+        Some(root) => Some(std::path::PathBuf::from(root).join("shims")),
+        None => home_relative_dir("~/scoop/shims"),
+    }
+}
 
 /// Build a `Command` for scoop, resolved shim-aware. scoop ships on Windows only as
 /// `scoop.ps1`/`scoop.cmd` (never `scoop.exe`), so a bare `Command::new("scoop")`
@@ -81,8 +94,8 @@ impl PackageManager for ScoopManager {
         cfgd_core::command_available("scoop")
     }
 
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
     }
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
@@ -277,7 +290,7 @@ mod tests {
     fn scoop_manager_name_and_traits() {
         let mgr = ScoopManager;
         assert_eq!(mgr.name(), "scoop");
-        assert!(mgr.can_bootstrap());
+        assert!(mgr.bootstrap_plan().is_some());
     }
 
     #[test]
@@ -292,9 +305,23 @@ mod tests {
     }
 
     #[test]
-    fn scoop_manager_can_bootstrap_true() {
-        let mgr = ScoopManager;
-        assert!(mgr.can_bootstrap());
+    fn scoop_bootstrap_plan_declares_the_shims_dir_on_windows() {
+        let home = tempfile::tempdir().unwrap();
+        let plan = cfgd_core::with_test_home(home.path(), || ScoopManager.bootstrap_plan())
+            .expect("always planned");
+        assert_eq!(plan.method, "system");
+        assert!(plan.requires.is_empty());
+        // `bootstrap` is a PowerShell install script; the shims it creates only
+        // exist on the platform that can run it.
+        if cfg!(windows) {
+            assert!(
+                plan.creates_path_dirs.iter().all(|d| d.ends_with("/shims")),
+                "{:?}",
+                plan.creates_path_dirs
+            );
+        } else {
+            assert!(plan.creates_path_dirs.is_empty());
+        }
     }
 
     // ---------------------------------------------------------------------------

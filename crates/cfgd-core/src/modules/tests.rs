@@ -4586,6 +4586,28 @@ fn resolve_package_bootstrappable_manager() {
     );
 }
 
+#[test]
+fn resolve_package_skips_an_unavailable_manager_that_plans_no_bootstrap() {
+    // The candidate predicate reads the manager's PLAN, not its presence: an
+    // unavailable manager that can be provisioned stays in the running, one that
+    // cannot is passed over for the next preference.
+    let cargo = MockManager::new("cargo").unavailable();
+    let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
+    let managers = make_manager_map(&[("cargo", &cargo), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "ripgrep".into(),
+        prefer: vec!["cargo".into(), "brew".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "test", &platform, &managers)
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "brew");
+}
+
 // -----------------------------------------------------------------------
 // resolve_package — deny + script interaction
 // -----------------------------------------------------------------------

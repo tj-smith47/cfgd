@@ -5,7 +5,7 @@ use std::process::Command;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::Role;
-use cfgd_core::providers::{PackageContext, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
 
@@ -165,8 +165,10 @@ impl PackageManager for ScriptedManager {
             .unwrap_or(false)
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A user-defined manager declares no install of its own — only how to
+        // check, list, install and remove packages with one that already exists.
+        None
     }
 
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {

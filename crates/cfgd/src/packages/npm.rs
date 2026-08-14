@@ -7,10 +7,10 @@ use std::process::Command;
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Role;
-use cfgd_core::providers::{PackageContext, PackageManager, PackageStateStore};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, pkg_run, report_abandoned_step,
+    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, report_abandoned_step,
     run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
@@ -485,12 +485,16 @@ impl PackageManager for NpmManager {
         }
     }
 
-    fn can_bootstrap(&self) -> bool {
-        // Can bootstrap via system package manager or nvm
-        brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("curl")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // No declared PATH directory: npm's global bin lives under a prefix that
+        // is only resolvable once node exists, which is what `path_dirs` reads
+        // out of state after the install.
+        match detect_brew_system_method("nvm") {
+            "nvm" => {
+                command_available("curl").then(|| BootstrapPlan::new("nvm").requiring(["curl"]))
+            }
+            method => Some(BootstrapPlan::new(method)),
+        }
     }
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
@@ -798,15 +802,40 @@ mod tests {
     }
 
     #[test]
-    fn npm_manager_can_bootstrap_checks_cascade() {
-        let mgr = NpmManager;
-        let can = mgr.can_bootstrap();
-        // Should be true if brew, apt, dnf, or curl is available
+    fn npm_bootstrap_plan_follows_the_brew_system_nvm_cascade() {
+        let plan = NpmManager.bootstrap_plan();
+        // Should be planned if brew, apt, dnf, or curl is available
         let expected = brew_available()
             || command_available("apt")
             || command_available("dnf")
             || command_available("curl");
-        assert_eq!(can, expected);
+        assert_eq!(plan.is_some(), expected);
+        if let Some(plan) = plan {
+            // The method names whichever arm of `bootstrap`'s cascade this host
+            // reaches; only the nvm fallback shells out to a tool of its own,
+            // and no arm creates a PATH dir the manager can name before node
+            // exists (`path_dirs` reads the resolved prefix out of state).
+            let can = |t: &str| command_available(t);
+            let expected_method = if brew_available() {
+                "brew"
+            } else if can("apt") {
+                "apt"
+            } else if can("dnf") {
+                "dnf"
+            } else {
+                "nvm"
+            };
+            assert_eq!(plan.method, expected_method);
+            assert_eq!(
+                plan.requires,
+                if expected_method == "nvm" {
+                    vec!["curl".to_string()]
+                } else {
+                    Vec::<String>::new()
+                }
+            );
+            assert!(plan.creates_path_dirs.is_empty());
+        }
     }
 
     #[test]

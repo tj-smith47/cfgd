@@ -10,7 +10,6 @@
 //!   `crate::packages::BrewManager`, `crate::packages::plan_packages`, etc.
 //! - The reconciler (`plan_packages`, `apply_packages`, ...).
 //! - `add_package` / `remove_package` profile-spec mutators.
-//! - `bootstrap_method` cascade detection.
 //! - Native-manifest parsers (Brewfile, package.json, Cargo.toml, apt list)
 //!   and `resolve_manifest_packages`.
 //! - The provider registry (`all_package_managers`).
@@ -19,7 +18,6 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::command_available;
 use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{PackageError, Result};
@@ -66,50 +64,11 @@ pub use simple::SimpleManager;
 pub use snap::SnapManager;
 pub use winget::WingetManager;
 
-use shared::brew_available;
 use simple::{
     apk_manager, apt_manager, dnf_manager, pacman_manager, pkg_manager, yum_manager, zypper_manager,
 };
 
 // --- Package Reconciler ---
-
-/// Bootstrap method description for display in plan/doctor output.
-/// Detect which method will be used to bootstrap via brew→apt→dnf cascade.
-fn detect_brew_system_method(fallback: &'static str) -> &'static str {
-    if brew_available() {
-        "brew"
-    } else if command_available("apt") {
-        "apt"
-    } else if command_available("dnf") {
-        "dnf"
-    } else {
-        fallback
-    }
-}
-
-/// Detect which method will be used to bootstrap via apt→dnf→zypper cascade.
-fn detect_system_method() -> &'static str {
-    if command_available("apt") {
-        "apt"
-    } else if command_available("dnf") {
-        "dnf"
-    } else {
-        "zypper"
-    }
-}
-
-pub fn bootstrap_method(manager: &dyn PackageManager) -> &'static str {
-    match manager.name() {
-        "brew" => "homebrew installer",
-        "cargo" => "rustup",
-        "npm" => detect_brew_system_method("nvm"),
-        "pipx" => detect_brew_system_method("pip"),
-        "go" => detect_brew_system_method("dnf"),
-        "snap" | "flatpak" => detect_system_method(),
-        "nix" => "nix installer",
-        _ => "system",
-    }
-}
 
 /// Compute the packages to prune for one manager: cfgd-tracked, still installed,
 /// no longer desired. User-installed packages (not in `cfgd_installed`) are
@@ -213,7 +172,7 @@ pub fn plan_packages_observed(
         if desired.is_empty() {
             continue;
         }
-        if !manager.is_available() && manager.can_bootstrap() {
+        if !manager.is_available() && manager.bootstrap_plan().is_some() {
             bootstrapping.insert(manager.name().to_string());
         }
     }
@@ -311,11 +270,11 @@ pub fn plan_packages_observed(
             // it cannot read installed state to confirm presence, so it cannot
             // safely prune — leave its packages untouched.
             continue;
-        } else if manager.can_bootstrap() {
+        } else if let Some(plan) = manager.bootstrap_plan() {
             // Unavailable but bootstrappable: add Bootstrap + Install all desired
             actions.push(PackageAction::Bootstrap {
                 manager: manager.name().to_string(),
-                method: bootstrap_method(*manager).to_string(),
+                method: plan.method,
                 origin: LOCAL_LAYER.to_string(),
             });
             actions.push(PackageAction::Install {

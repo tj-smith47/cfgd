@@ -403,7 +403,7 @@ impl<'x> PackageExec<'x> {
                     // an out-of-band append would be erased by the next
                     // wholesale rewrite of that file.
                     let was_available = pm.is_available();
-                    if !was_available && pm.can_bootstrap() {
+                    if !was_available && pm.bootstrap_plan().is_some() {
                         pm.bootstrap(&cx)?;
                         self.record_bootstrap(pm.as_ref());
                     }

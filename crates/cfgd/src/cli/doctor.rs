@@ -229,12 +229,9 @@ fn collect_doctor_output(
             if !seen.insert(name.to_string()) {
                 continue;
             }
-            let can_bootstrap = mgr.can_bootstrap();
-            let bootstrap_method = if can_bootstrap {
-                Some(packages::bootstrap_method(mgr.as_ref()).to_string())
-            } else {
-                None
-            };
+            let plan = mgr.bootstrap_plan();
+            let can_bootstrap = plan.is_some();
+            let bootstrap_method = plan.map(|p| p.method);
             manager_checks.push(DoctorManagerCheck {
                 name: name.to_string(),
                 available: mgr.is_available(),

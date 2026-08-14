@@ -6,11 +6,11 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    tool_cmd_with_resolver,
+    bootstrap_via_shell_script, home_relative_dir, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
@@ -43,8 +43,12 @@ impl PackageManager for CargoManager {
         cargo_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        command_available("curl")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        command_available("curl").then(|| {
+            BootstrapPlan::new("rustup")
+                .requiring(["curl"])
+                .creating(home_relative_dir("~/.cargo/bin"))
+        })
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -334,14 +338,23 @@ tokei v12.1.2:
     }
 
     #[test]
-    fn cargo_manager_can_bootstrap_depends_on_curl() {
+    fn cargo_bootstrap_plan_names_rustup_curl_and_the_cargo_bin_dir() {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let mgr = CargoManager;
-        let can = mgr.can_bootstrap();
-        // Should be true if curl is available
-        assert_eq!(can, command_available("curl"));
+        let home = tempfile::tempdir().unwrap();
+        let plan = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
+        // Planned exactly when the installer's one tool is there.
+        assert_eq!(plan.is_some(), command_available("curl"));
+        let Some(plan) = plan else { return };
+        // What `bootstrap` runs: rustup's install script, fetched with curl,
+        // landing cargo (and everything `cargo install` builds) in ~/.cargo/bin.
+        assert_eq!(plan.method, "rustup");
+        assert_eq!(plan.requires, ["curl"]);
+        assert_eq!(
+            plan.creates_path_dirs,
+            [cfgd_core::to_posix_string(home.path().join(".cargo/bin"))]
+        );
     }
 
     #[test]

@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::{PackageContext, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
-#[cfg(target_os = "linux")]
-use super::shared::linux_system_manager_available;
 use super::shared::{
     bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd,
     run_pkg_cmd_live, tool_cmd_with_resolver,
 };
+#[cfg(target_os = "linux")]
+use super::shared::{detect_system_method, linux_system_manager_available};
 
 pub struct FlatpakManager;
 
@@ -37,15 +37,16 @@ impl PackageManager for FlatpakManager {
         flatpak_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
         // flatpak is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
+        // The client lands on the system PATH, so the plan creates no directory.
         #[cfg(target_os = "linux")]
         {
-            linux_system_manager_available()
+            linux_system_manager_available().then(|| BootstrapPlan::new(detect_system_method()))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            false
+            None
         }
     }
 
@@ -147,12 +148,21 @@ mod tests {
     }
 
     #[test]
-    fn flatpak_manager_can_bootstrap_checks_system_managers() {
-        let mgr = FlatpakManager;
+    fn flatpak_bootstrap_plan_installs_flatpak_from_a_system_manager() {
+        let plan = FlatpakManager.bootstrap_plan();
         #[cfg(target_os = "linux")]
-        assert_eq!(mgr.can_bootstrap(), linux_system_manager_available());
+        {
+            assert_eq!(plan.is_some(), linux_system_manager_available());
+            if let Some(plan) = plan {
+                // `bootstrap` runs `<system manager> install flatpak`, which puts
+                // the client on the system PATH.
+                assert_eq!(plan.method, super::super::shared::detect_system_method());
+                assert!(plan.requires.is_empty());
+                assert!(plan.creates_path_dirs.is_empty());
+            }
+        }
         #[cfg(not(target_os = "linux"))]
-        assert!(!mgr.can_bootstrap());
+        assert!(plan.is_none());
     }
 
     #[test]

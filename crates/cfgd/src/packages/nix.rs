@@ -6,7 +6,7 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
@@ -48,8 +48,15 @@ impl PackageManager for NixManager {
         nix_env_available() || nix_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        command_available("curl")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        command_available("curl").then(|| {
+            // The multi-user (`--daemon`) install puts the nix binaries in the
+            // default profile; a per-user profile only appears once something is
+            // installed into it.
+            BootstrapPlan::new("nix installer")
+                .requiring(["curl"])
+                .creating(["/nix/var/nix/profiles/default/bin"])
+        })
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -355,13 +362,21 @@ mod tests {
     }
 
     #[test]
-    fn nix_manager_can_bootstrap_checks_curl() {
+    fn nix_bootstrap_plan_names_curl_and_the_default_profile_bin() {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let mgr = NixManager;
-        let can = mgr.can_bootstrap();
-        assert_eq!(can, command_available("curl"));
+        let plan = NixManager.bootstrap_plan();
+        assert_eq!(plan.is_some(), command_available("curl"));
+        let Some(plan) = plan else { return };
+        // What `bootstrap` runs: the nixos.org installer in --daemon mode,
+        // fetched with curl, whose binaries land in the default profile.
+        assert_eq!(plan.method, "nix installer");
+        assert_eq!(plan.requires, ["curl"]);
+        assert_eq!(
+            plan.creates_path_dirs,
+            ["/nix/var/nix/profiles/default/bin"]
+        );
     }
 
     #[test]

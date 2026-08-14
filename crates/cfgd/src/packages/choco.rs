@@ -4,11 +4,26 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::{PackageInfo, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live};
 
 pub struct ChocolateyManager;
+
+/// Where the Chocolatey installer puts the shims it creates. `ChocolateyInstall`
+/// is set by an existing install; the literal is the installer's own default for
+/// the machine-wide install cfgd's bootstrap performs. Windows-only, because the
+/// bootstrap is a PowerShell script that runs nowhere else.
+fn choco_bin_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    Some(
+        std::env::var_os("ChocolateyInstall")
+            .map(|root| std::path::PathBuf::from(root).join("bin"))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\chocolatey\bin")),
+    )
+}
 
 /// Extract `(name, version)` for each real package line of `choco list` output,
 /// skipping the `Chocolatey vX` banner and the `N packages installed.` footer. The
@@ -66,8 +81,8 @@ impl PackageManager for ChocolateyManager {
         cfgd_core::command_available("choco")
     }
 
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        Some(BootstrapPlan::new("system").creating(choco_bin_dir()))
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -322,7 +337,7 @@ mod tests {
     fn chocolatey_manager_name_and_traits() {
         let mgr = ChocolateyManager;
         assert_eq!(mgr.name(), "chocolatey");
-        assert!(mgr.can_bootstrap());
+        assert!(mgr.bootstrap_plan().is_some());
     }
 
     #[test]
@@ -484,9 +499,23 @@ Tags: git vcs dvcs
     }
 
     #[test]
-    fn chocolatey_manager_can_bootstrap_true() {
-        let mgr = ChocolateyManager;
-        assert!(mgr.can_bootstrap());
+    fn chocolatey_bootstrap_plan_declares_the_installer_shim_dir_on_windows() {
+        let plan = ChocolateyManager.bootstrap_plan().expect("always planned");
+        assert_eq!(plan.method, "system");
+        assert!(plan.requires.is_empty());
+        // `bootstrap` is a PowerShell install script; the shims it creates only
+        // exist on the platform that can run it.
+        if cfg!(windows) {
+            assert_eq!(plan.creates_path_dirs.len(), 1);
+            assert!(
+                plan.creates_path_dirs[0].ends_with("/bin"),
+                "{:?}",
+                plan.creates_path_dirs
+            );
+            assert!(!plan.creates_path_dirs[0].contains('\\'));
+        } else {
+            assert!(plan.creates_path_dirs.is_empty());
+        }
     }
 
     // ---------------------------------------------------------------------------

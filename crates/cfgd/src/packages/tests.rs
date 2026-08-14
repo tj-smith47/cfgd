@@ -68,8 +68,9 @@ impl PackageManager for MockPackageManager {
         self.available
     }
 
-    fn can_bootstrap(&self) -> bool {
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
         self.bootstrappable
+            .then(|| cfgd_core::providers::BootstrapPlan::new("stub"))
     }
 
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -132,8 +133,8 @@ impl PackageManager for GoLikeMockManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -1548,7 +1549,7 @@ fn yum_skipped_when_dnf_available() {
     // the manager's name is correct
     let yum = yum_manager();
     assert_eq!(yum.name(), "yum");
-    assert!(!yum.can_bootstrap());
+    assert!(yum.bootstrap_plan().is_none());
 }
 
 #[test]
@@ -1778,40 +1779,15 @@ fn test_simple_manager_no_aliases_for_pacman() {
 
 // --- parse_scoop_list edge cases ---
 
-// --- bootstrap_method tests ---
-
-#[test]
-fn bootstrap_method_brew_returns_homebrew_installer() {
-    let mock = MockPackageManager::new("brew", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "homebrew installer");
-}
-
-#[test]
-fn bootstrap_method_cargo_returns_rustup() {
-    let mock = MockPackageManager::new("cargo", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "rustup");
-}
-
-#[test]
-fn bootstrap_method_nix_returns_nix_installer() {
-    let mock = MockPackageManager::new("nix", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "nix installer");
-}
-
-#[test]
-fn bootstrap_method_unknown_returns_system() {
-    let mock = MockPackageManager::new("unknown-pm", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "system");
-}
+// --- bootstrap-method cascade tests ---
+//
+// The per-manager plans live beside each manager; these pin the two shared
+// cascade detectors every one of those plans resolves its method through.
 
 #[test]
 fn detect_system_method_returns_valid_manager() {
     // detect_system_method cascades apt → dnf → zypper
-    let method = detect_system_method();
+    let method = shared::detect_system_method();
     assert!(
         method == "apt" || method == "dnf" || method == "zypper",
         "expected apt, dnf, or zypper, got: {}",
@@ -1822,7 +1798,7 @@ fn detect_system_method_returns_valid_manager() {
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
     // detect_brew_system_method cascades brew → apt → dnf → fallback
-    let method = detect_brew_system_method("pip");
+    let method = shared::detect_brew_system_method("pip");
     assert!(
         method == "brew" || method == "apt" || method == "dnf" || method == "pip",
         "expected brew, apt, dnf, or pip, got: {}",
@@ -2318,7 +2294,7 @@ fn simple_manager_available_version_dispatches() {
 // Additional coverage tests
 // =========================================================================
 
-// --- Concrete manager name/can_bootstrap/trait verification ---
+// --- Concrete manager name/bootstrap-plan/trait verification ---
 
 // --- BrewManager path_dirs tests ---
 
@@ -2724,60 +2700,6 @@ fn resolve_manifest_packages_duplicate_merging() {
 
 // --- custom_managers tests ---
 
-// --- bootstrap_method comprehensive ---
-
-#[test]
-fn bootstrap_method_snap_or_flatpak_returns_system_method() {
-    let snap_mock = MockPackageManager::new("snap", false, vec![]);
-    let method = bootstrap_method(&snap_mock);
-    assert!(
-        method == "apt" || method == "dnf" || method == "zypper",
-        "expected system method, got: {}",
-        method
-    );
-
-    let flatpak_mock = MockPackageManager::new("flatpak", false, vec![]);
-    let method = bootstrap_method(&flatpak_mock);
-    assert!(
-        method == "apt" || method == "dnf" || method == "zypper",
-        "expected system method, got: {}",
-        method
-    );
-}
-
-#[test]
-fn bootstrap_method_npm_detects_method() {
-    let mock = MockPackageManager::new("npm", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert!(
-        method == "brew" || method == "apt" || method == "dnf" || method == "nvm",
-        "expected brew/apt/dnf/nvm, got: {}",
-        method
-    );
-}
-
-#[test]
-fn bootstrap_method_pipx_detects_method() {
-    let mock = MockPackageManager::new("pipx", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert!(
-        method == "brew" || method == "apt" || method == "dnf" || method == "pip",
-        "expected brew/apt/dnf/pip, got: {}",
-        method
-    );
-}
-
-#[test]
-fn bootstrap_method_go_detects_method() {
-    let mock = MockPackageManager::new("go", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert!(
-        method == "brew" || method == "apt" || method == "dnf",
-        "expected brew/apt/dnf, got: {}",
-        method
-    );
-}
-
 // --- apply_packages with skip action ---
 
 #[test]
@@ -2993,7 +2915,7 @@ fn all_package_managers_unique_names() {
 fn all_package_managers_bootstrap_consistency() {
     let managers = all_package_managers();
 
-    // snap and flatpak are Linux-only; can_bootstrap() always returns false elsewhere.
+    // snap and flatpak are Linux-only; they plan nothing elsewhere.
     #[cfg(target_os = "linux")]
     let bootstrappable: HashSet<&str> = [
         "brew",
@@ -3059,7 +2981,7 @@ fn all_package_managers_bootstrap_consistency() {
             // own manager, and claiming otherwise would drive a nonsensical
             // install attempt.
             assert!(
-                !m.can_bootstrap(),
+                m.bootstrap_plan().is_none(),
                 "{} should NOT be bootstrappable",
                 m.name()
             );
@@ -3085,15 +3007,64 @@ fn all_package_managers_bootstrap_consistency() {
                 // system manager, so this still asserts go IS bootstrappable.
                 if m.name() == "go" {
                     assert_eq!(
-                        m.can_bootstrap(),
+                        m.bootstrap_plan().is_some(),
                         any_system_manager_available(),
                         "go bootstrappability must track system-manager availability"
                     );
                 } else {
-                    assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
+                    assert!(
+                        m.bootstrap_plan().is_some(),
+                        "{} should be bootstrappable",
+                        m.name()
+                    );
                 }
             }
         }
+    }
+}
+
+#[test]
+fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
+    // One gate over the whole registry, so a manager added later cannot declare
+    // a prerequisite nothing can install or a PATH entry nothing can resolve.
+    let home = tempfile::tempdir().unwrap();
+    let plans: Vec<(String, cfgd_core::providers::BootstrapPlan)> =
+        cfgd_core::with_test_home(home.path(), || {
+            all_package_managers()
+                .iter()
+                .filter_map(|m| m.bootstrap_plan().map(|p| (m.name().to_string(), p)))
+                .collect()
+        });
+    assert!(!plans.is_empty(), "no manager planned a bootstrap");
+
+    for (name, plan) in plans {
+        assert!(!plan.method.trim().is_empty(), "{name}: empty method");
+        // The prerequisite population is closed on purpose: a plan may only
+        // name a tool a system manager can actually install for it.
+        for tool in &plan.requires {
+            assert!(
+                ["curl", "pip3", "pip"].contains(&tool.as_str()),
+                "{name}: unknown prerequisite {tool}"
+            );
+        }
+        for dir in &plan.creates_path_dirs {
+            assert!(
+                !dir.contains('\\'),
+                "{name}: unfolded path separator in {dir}"
+            );
+            assert!(
+                std::path::Path::new(dir).is_absolute(),
+                "{name}: relative PATH dir {dir}"
+            );
+        }
+        let mut unique = plan.creates_path_dirs.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            plan.creates_path_dirs.len(),
+            "{name}: duplicate PATH dir"
+        );
     }
 }
 
@@ -3696,7 +3667,7 @@ fn remove_package_snap_from_packages_list() {
 
 // --- SimpleManager::bootstrap() is no-op ---
 
-// --- Concrete manager can_bootstrap and is_available ---
+// --- Concrete manager bootstrap_plan and is_available ---
 
 // --- run_pkg_cmd error kind dispatch (exercised through real commands) ---
 // These use sh -c to create controlled failures that exercise run_pkg_cmd_prefixed
@@ -3743,7 +3714,7 @@ fn cmd_builders_return_valid_commands() {
 
 // --- WingetManager::bootstrap error ---
 
-// --- ChocolateyManager and ScoopManager can_bootstrap ---
+// --- ChocolateyManager and ScoopManager bootstrap plans ---
 
 // --- BrewManager::path_dirs called through trait ---
 
@@ -3800,8 +3771,8 @@ impl PackageManager for CiVersionedMockManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -3942,8 +3913,8 @@ impl PackageManager for PkgLikeMockManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())

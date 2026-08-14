@@ -1621,8 +1621,8 @@ impl cfgd_core::providers::PackageManager for AvailableManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(
         &self,

@@ -205,8 +205,8 @@ mod tests {
             true
         }
 
-        fn can_bootstrap(&self) -> bool {
-            false
+        fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+            None
         }
 
         fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {

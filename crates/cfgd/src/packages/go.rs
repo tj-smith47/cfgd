@@ -7,11 +7,12 @@ use std::process::Command;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Role;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd, pkg_run,
-    report_abandoned_step, resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
+    any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd,
+    detect_brew_system_method, pkg_run, report_abandoned_step, resolve_tool_with_fallbacks,
+    run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
@@ -48,8 +49,10 @@ impl PackageManager for GoInstallManager {
         go_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        any_system_manager_available()
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // The toolchain lands on the system PATH whichever manager installs it,
+        // so the plan creates no directory of its own.
+        any_system_manager_available().then(|| BootstrapPlan::new(detect_brew_system_method("dnf")))
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -362,9 +365,16 @@ mod tests {
     }
 
     #[test]
-    fn go_install_manager_can_bootstrap_checks_cascade() {
-        let mgr = GoInstallManager;
-        assert_eq!(mgr.can_bootstrap(), any_system_manager_available());
+    fn go_bootstrap_plan_follows_the_brew_system_cascade() {
+        let plan = GoInstallManager.bootstrap_plan();
+        assert_eq!(plan.is_some(), any_system_manager_available());
+        if let Some(plan) = plan {
+            // `bootstrap` installs the toolchain through brew or a system
+            // manager, which put `go` on the system PATH — nothing to declare.
+            assert_eq!(plan.method, detect_brew_system_method("dnf"));
+            assert!(plan.requires.is_empty());
+            assert!(plan.creates_path_dirs.is_empty());
+        }
     }
 
     #[test]

@@ -520,9 +520,10 @@ impl<'a> super::Reconciler<'a> {
                     .iter()
                     .find(|m| m.name() == mgr.as_str())
                 {
-                    Some(m) if m.is_available() => 0,  // available (native) first
-                    Some(m) if m.can_bootstrap() => 1, // bootstrappable second
-                    _ => 2,                            // unknown last
+                    Some(m) if m.is_available() => 0, // available (native) first
+                    // Bootstrappable second — a manager with a plan to provision it.
+                    Some(m) if m.bootstrap_plan().is_some() => 1,
+                    _ => 2, // unknown last
                 };
                 (class, mgr.as_str())
             });

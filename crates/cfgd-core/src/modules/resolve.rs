@@ -85,7 +85,7 @@ pub fn resolve_package(
             None => continue,
         };
 
-        let bootstrappable = !mgr.is_available() && mgr.can_bootstrap();
+        let bootstrappable = !mgr.is_available() && mgr.bootstrap_plan().is_some();
         if !mgr.is_available() && !bootstrappable {
             continue;
         }

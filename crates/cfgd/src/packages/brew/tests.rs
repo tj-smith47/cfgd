@@ -67,17 +67,27 @@ fn parse_brew_versions_whitespace_only() {
 }
 
 #[test]
-fn brew_manager_name_and_bootstrap() {
+fn brew_manager_name_and_bootstrap_plan() {
     let mgr = BrewManager;
     assert_eq!(mgr.name(), "brew");
-    assert!(mgr.can_bootstrap());
+    let plan = mgr
+        .bootstrap_plan()
+        .expect("brew always plans to provision itself");
+    // What `bootstrap` runs: Homebrew's install.sh, fetched with curl, landing
+    // in the same prefix `path_dirs` reports.
+    assert_eq!(plan.method, "homebrew installer");
+    assert_eq!(plan.requires, ["curl"]);
+    assert_eq!(
+        plan.creates_path_dirs,
+        super::super::shared::brew_path_dirs()
+    );
 }
 
 #[test]
 fn brew_tap_manager_name_and_bootstrap() {
     let mgr = BrewTapManager;
     assert_eq!(mgr.name(), "brew-tap");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     // bootstrap is a no-op
     let printer = cfgd_core::test_helpers::test_printer();
     mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
@@ -88,7 +98,7 @@ fn brew_tap_manager_name_and_bootstrap() {
 fn brew_cask_manager_name_and_bootstrap() {
     let mgr = BrewCaskManager;
     assert_eq!(mgr.name(), "brew-cask");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     let printer = cfgd_core::test_helpers::test_printer();
     mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
         .unwrap();

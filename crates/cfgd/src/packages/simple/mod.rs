@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::providers::{PackageContext, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 use cfgd_core::{command_available, command_available_with_seam, tool_cmd};
 
 use super::parsers::{
@@ -122,8 +122,10 @@ impl PackageManager for SimpleManager {
         }
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A native system manager ships with its distribution: there is no host
+        // where cfgd could install `apt` or `pacman` from something else.
+        None
     }
 
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {

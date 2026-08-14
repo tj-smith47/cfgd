@@ -8913,8 +8913,8 @@ impl PackageManager for RecordingInstallManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
@@ -9489,8 +9489,8 @@ impl PackageManager for RecordingUninstallManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())

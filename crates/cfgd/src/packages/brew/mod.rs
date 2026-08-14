@@ -9,7 +9,7 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Role;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
@@ -80,8 +80,10 @@ impl PackageManager for BrewTapManager {
         brew_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A sub-manager has no bootstrap of its own: `brew` provisions the one
+        // binary all three share.
+        None
     }
 
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -155,8 +157,10 @@ impl PackageManager for BrewCaskManager {
         brew_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A sub-manager has no bootstrap of its own: `brew` provisions the one
+        // binary all three share.
+        None
     }
 
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -236,8 +240,15 @@ impl PackageManager for BrewManager {
         brew_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // `curl` is named, not gated on: the installer needs it, but brew has
+        // always offered to provision itself regardless, and narrowing that here
+        // would drop the manager instead of reporting the missing tool.
+        Some(
+            BootstrapPlan::new("homebrew installer")
+                .requiring(["curl"])
+                .creating(brew_path_dirs()),
+        )
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {

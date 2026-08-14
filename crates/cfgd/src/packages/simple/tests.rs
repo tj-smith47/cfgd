@@ -29,7 +29,7 @@ fn simple_manager_display_cmd_empty_packages() {
 fn apt_manager_has_correct_fields() {
     let mgr = apt_manager();
     assert_eq!(mgr.name(), "apt");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     // list_cmd should use dpkg-query
     assert_eq!(mgr.list_cmd[0], "dpkg-query");
     // install_cmd should include sudo and -y
@@ -52,7 +52,7 @@ fn apt_manager_has_correct_fields() {
 fn dnf_manager_has_correct_fields() {
     let mgr = dnf_manager();
     assert_eq!(mgr.name(), "dnf");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     assert!(mgr.install_cmd.contains(&"sudo"));
     assert!(mgr.install_cmd.contains(&"-y"));
     // dnf ignores update exit (check-update returns 100 for available updates)
@@ -65,7 +65,7 @@ fn dnf_manager_has_correct_fields() {
 fn yum_manager_has_correct_fields() {
     let mgr = yum_manager();
     assert_eq!(mgr.name(), "yum");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     assert!(mgr.install_cmd.contains(&"sudo"));
     // yum also ignores update exit
     assert!(mgr.ignore_update_exit);
@@ -156,7 +156,7 @@ fn simple_manager_name_matches() {
 }
 
 #[test]
-fn simple_manager_none_can_bootstrap() {
+fn simple_manager_none_plans_a_bootstrap() {
     let managers: Vec<SimpleManager> = vec![
         apt_manager(),
         dnf_manager(),
@@ -167,7 +167,7 @@ fn simple_manager_none_can_bootstrap() {
     ];
     for mgr in &managers {
         assert!(
-            !mgr.can_bootstrap(),
+            mgr.bootstrap_plan().is_none(),
             "{} should not be bootstrappable",
             mgr.name()
         );

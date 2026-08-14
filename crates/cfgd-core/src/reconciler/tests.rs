@@ -2810,8 +2810,8 @@ impl PackageManager for TrackingPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -3001,8 +3001,8 @@ impl PackageManager for ScriptedLikeManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -3934,8 +3934,8 @@ impl PackageManager for RefreshFailingPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -4167,8 +4167,8 @@ impl PackageManager for BarrierSyncedPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -5093,8 +5093,8 @@ impl PackageManager for FailingPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -5252,8 +5252,8 @@ impl PackageManager for PanickingPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -7247,8 +7247,8 @@ impl PackageManager for BootstrappablePackageManager {
     fn is_available(&self) -> bool {
         *self.bootstrapped.lock().unwrap()
     }
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        Some(crate::providers::BootstrapPlan::new("stub"))
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrapped.lock().unwrap() = true;
@@ -12345,8 +12345,8 @@ impl PackageManager for BootstrappingPackageManager {
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
     }
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        Some(crate::providers::BootstrapPlan::new("stub"))
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrap_called.lock().unwrap() = true;
@@ -16570,8 +16570,8 @@ impl PackageManager for DispatchLogManager {
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
     }
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        Some(crate::providers::BootstrapPlan::new("stub"))
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         let label = format!("bootstrap:{}", self.name);
@@ -19252,8 +19252,8 @@ impl PackageManager for NotePushingManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())

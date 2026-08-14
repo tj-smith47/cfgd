@@ -517,6 +517,41 @@ pub(super) fn any_system_manager_available() -> bool {
         || command_available("scoop")
 }
 
+/// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
+/// them is available. The name a `BootstrapPlan` carries as its method, resolved
+/// through the same probes `bootstrap_via_brew_then_system` runs.
+pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
+    if brew_available() {
+        "brew"
+    } else if command_available("apt") {
+        "apt"
+    } else if command_available("dnf") {
+        "dnf"
+    } else {
+        fallback
+    }
+}
+
+/// Which manager an apt→dnf→zypper cascade would pick.
+pub(super) fn detect_system_method() -> &'static str {
+    if command_available("apt") {
+        "apt"
+    } else if command_available("dnf") {
+        "dnf"
+    } else {
+        "zypper"
+    }
+}
+
+/// A `~`-relative directory an installer creates, or `None` when no home
+/// resolves — a literal `~` handed to a PATH entry names nothing, so a
+/// bootstrap plan declares no directory rather than an unusable one.
+pub(super) fn home_relative_dir(rel: &str) -> Option<std::path::PathBuf> {
+    let rel = std::path::Path::new(rel);
+    let expanded = cfgd_core::expand_tilde(rel);
+    (expanded != rel).then_some(expanded)
+}
+
 /// Return the brew bin/sbin directories for the current platform.
 /// Mirrors `BrewManager::path_dirs`; kept here so `path_with_brew` doesn't need
 /// to depend on the brew submodule.
