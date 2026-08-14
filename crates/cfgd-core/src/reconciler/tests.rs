@@ -785,6 +785,98 @@ fn plan_multiple_modules_in_dependency_order() {
     }
 }
 
+/// F2: a module declaring packages across two managers of the same
+/// availability class (both unresolved against an empty registry, so both
+/// fall into the "unknown" tier) used to route through
+/// `by_manager.keys().collect()` — a `HashMap`, whose key order is
+/// `RandomState` and reshuffled per process. `sort_by_key` is stable, so
+/// same-class managers kept whatever order the `HashMap` handed them: the
+/// plan tree's bullet order, the `-o json` payload order, the journal
+/// `action_index`, and the phase's execution offer order all drew from it.
+/// Runs `plan()` many times over one process on a fixed module and asserts
+/// the two `InstallPackages` actions land in the same (alphabetical by
+/// manager name) order every time.
+#[test]
+fn plan_package_actions_order_ties_by_manager_name_every_run() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module = ResolvedModule {
+        name: "toolchain".to_string(),
+        packages: vec![
+            ResolvedPackage {
+                canonical_name: "typescript".to_string(),
+                resolved_name: "typescript".to_string(),
+                manager: "npm".to_string(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+            },
+            ResolvedPackage {
+                canonical_name: "ripgrep".to_string(),
+                resolved_name: "ripgrep".to_string(),
+                manager: "cargo".to_string(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+            },
+        ],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    };
+
+    for _ in 0..50 {
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![module.clone()],
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let packages = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Packages)
+            .expect("packages phase");
+        let managers: Vec<&str> = packages
+            .actions()
+            .map(|action| match action {
+                Action::Module(ma) => match &ma.kind {
+                    ModuleActionKind::InstallPackages { resolved } => resolved[0].manager.as_str(),
+                    other => panic!("expected InstallPackages, got {other:?}"),
+                },
+                other => panic!("expected Module action, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            managers,
+            vec!["cargo", "npm"],
+            "same-class managers must tie-break on name, identically every run"
+        );
+    }
+}
+
 #[test]
 fn plan_routes_module_work_to_the_phase_of_its_kind() {
     // packages + files + postApply script → three consecutive, correctly
@@ -4929,6 +5021,54 @@ fn rollback_records_new_apply_entry() {
     let last = state.last_apply().unwrap().unwrap();
     assert_eq!(last.profile, "rollback");
     assert!(last.id > apply_id);
+}
+
+#[test]
+fn rollback_dedups_same_apply_backups_by_highest_id_every_run() {
+    // A single apply can store more than one backup row for the same path —
+    // an absent marker before the CREATE, then the post-apply resolved
+    // snapshot once the write lands. The row with the HIGHEST id is the one
+    // rollback must keep: it is the state the apply actually settled on, not
+    // a step on the way there. `target_snapshot`'s dedup walks
+    // `get_apply_backups` (already `ORDER BY id`) in reverse so the first
+    // row seen per path is always that one; a `HashMap`-driven walk could
+    // keep either row depending on process-random iteration order, silently
+    // restoring the wrong content on some runs and not others.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("f.txt");
+    let file_path = target.display().to_string();
+    let state = test_state();
+
+    let apply_id = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    // Row 1 (lowest id): pre-action absent marker.
+    state.store_absent_backup(apply_id, &file_path).unwrap();
+    // Row 2 (highest id): the post-apply resolved snapshot — the desired
+    // dedup winner.
+    std::fs::write(&target, "settled content").unwrap();
+    let settled = crate::capture_file_resolved_state(&target)
+        .unwrap()
+        .unwrap();
+    state
+        .store_file_backup(apply_id, &file_path, &settled)
+        .unwrap();
+
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    for _ in 0..5 {
+        std::fs::write(&target, "later content").unwrap();
+        let result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+        assert_eq!(result.files_restored, 1, "must restore exactly once");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "settled content",
+            "must restore the highest-id row (the settled post-apply state), \
+             not the pre-action absent marker, every run"
+        );
+    }
 }
 
 // --- Partial apply tests ---

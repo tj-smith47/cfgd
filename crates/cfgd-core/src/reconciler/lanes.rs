@@ -864,11 +864,20 @@ fn refresh_wait_bars<'x>(
                 .any(|s| s.state == SlotState::Waiting && s.owner.token() == owner.token()),
         })
         .collect();
-    let wanted: HashMap<String, String> = tier_waits(&waits, in_flight)
+    // A `Vec`, not a `HashMap`: `tier_waits` already hands back `groups_of`
+    // order, and a bar not yet in `bars.groups` is `multi_progress.add`-ed
+    // (via `printer.wait_bar`) at the point it is first inserted below — so
+    // the iteration order here IS the top-to-bottom order new wait lines are
+    // drawn in. Collecting through a `HashMap` first discarded that order and
+    // redrew every fresh set of bars in `RandomState` order, reshuffled per
+    // process.
+    let wanted: Vec<(String, String)> = tier_waits(&waits, in_flight)
         .into_iter()
         .map(|(owner, subject)| (owner.token(), subject))
         .collect();
-    bars.groups.retain(|token, _| wanted.contains_key(token));
+    let wanted_tokens: HashSet<&str> = wanted.iter().map(|(token, _)| token.as_str()).collect();
+    bars.groups
+        .retain(|token, _| wanted_tokens.contains(token.as_str()));
     for (token, subject) in wanted {
         match bars.groups.get(&token) {
             // Replaced, never appended to: the chain `modules` →
@@ -881,7 +890,15 @@ fn refresh_wait_bars<'x>(
         }
     }
 
-    let mut blocked: HashMap<(String, String), String> = HashMap::new();
+    // Same reasoning as `wanted` above: `slots` is walked in plan order, so
+    // building `blocked` as a `Vec` keeps that order for the bars inserted
+    // from it.
+    let mut blocked: Vec<((String, String), String)> = Vec::new();
+    // Several slots can collapse onto the same `(owner, lane)` line — dedup
+    // on first sight so the bar is inserted exactly once; `wait_subject` is a
+    // pure function of `(owner, lane)`, so every later occurrence would say
+    // the same thing anyway.
+    let mut blocked_seen: HashSet<(String, String)> = HashSet::new();
     for (index, slot) in slots.iter().enumerate() {
         if slot.state != SlotState::Waiting || Some(slot.tier) != in_flight {
             continue;
@@ -903,13 +920,14 @@ fn refresh_wait_bars<'x>(
             // `(owner, lane)` collapses the several actions of one owner that
             // are all held behind the same binary into the one line they all
             // say.
-            blocked.insert(
-                (slot.owner.token(), lane.to_string()),
-                wait_subject(slot.owner, lane),
-            );
+            let key = (slot.owner.token(), lane.to_string());
+            if blocked_seen.insert(key.clone()) {
+                blocked.push((key, wait_subject(slot.owner, lane)));
+            }
         }
     }
-    bars.actions.retain(|key, _| blocked.contains_key(key));
+    let blocked_keys: HashSet<&(String, String)> = blocked.iter().map(|(k, _)| k).collect();
+    bars.actions.retain(|key, _| blocked_keys.contains(key));
     for (key, subject) in blocked {
         match bars.actions.get(&key) {
             Some(bar) => bar.set_subject(&subject),
@@ -1392,5 +1410,107 @@ mod tests {
             bars.actions.is_empty(),
             "a wait line outlives neither the wait nor the action"
         );
+    }
+
+    /// The order new group bars are `printer.wait_bar`-ed in, read back through
+    /// `WaitBar::seq` since indicatif exposes no public draw-position API.
+    fn group_bar_creation_order(bars: &WaitBars<'_>) -> Vec<String> {
+        let mut by_seq: Vec<(String, u64)> = bars
+            .groups
+            .iter()
+            .map(|(token, bar)| (token.clone(), bar.seq()))
+            .collect();
+        by_seq.sort_by_key(|(_, seq)| seq.to_owned());
+        by_seq.into_iter().map(|(token, _)| token).collect()
+    }
+
+    #[test]
+    fn group_wait_bars_are_created_in_slot_order_not_hash_order() {
+        // Owners are deliberately non-alphabetical: a `HashMap`-driven creation
+        // loop reshuffles this every process, and the top-to-bottom order new
+        // bars are drawn in has to match `groups_of`'s plan order — the same
+        // order the phase tree shows — every run, not just this one.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let busy_owner = Owner::module("busy");
+        let zeta = Owner::module("zeta");
+        let alpha = Owner::module("alpha");
+        let mid = Owner::module("mid");
+        let action = probe_action();
+        let mut slots = vec![
+            slot(&busy_owner, Tier::Modules, "brew", &action),
+            slot(&zeta, Tier::Rest, "brew", &action),
+            slot(&alpha, Tier::Rest, "brew", &action),
+            slot(&mid, Tier::Rest, "brew", &action),
+        ];
+        // Keeps `Modules` in flight, so the three `Rest`-tier groups are all
+        // blocked and all render a wait line in the same refresh.
+        slots[0].state = SlotState::Running;
+        let groups = groups_of(&slots);
+
+        for _ in 0..5 {
+            let mut bars = empty_bars();
+            refresh(
+                &printer,
+                &slots,
+                &groups,
+                &HashMap::new(),
+                &busy(&[]),
+                &mut bars,
+            );
+            assert_eq!(
+                group_bar_creation_order(&bars),
+                vec!["module:zeta", "module:alpha", "module:mid"],
+                "wait bars must be created in slot/plan order every run"
+            );
+        }
+    }
+
+    /// The order new action bars are `printer.wait_bar`-ed in, same reasoning
+    /// as `group_bar_creation_order` but for the `(owner, lane)`-keyed map.
+    fn action_bar_creation_order(bars: &WaitBars<'_>) -> Vec<String> {
+        let mut by_seq: Vec<(String, u64)> = bars
+            .actions
+            .iter()
+            .map(|((owner, _lane), bar)| (owner.clone(), bar.seq()))
+            .collect();
+        by_seq.sort_by_key(|(_, seq)| seq.to_owned());
+        by_seq.into_iter().map(|(owner, _)| owner).collect()
+    }
+
+    #[test]
+    fn action_wait_bars_are_created_in_slot_order_not_hash_order() {
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let holder = Owner::module("holder");
+        let zeta = Owner::module("zeta");
+        let alpha = Owner::module("alpha");
+        let mid = Owner::module("mid");
+        let action = probe_action();
+        let mut slots = vec![
+            slot(&holder, Tier::Rest, "brew", &action),
+            slot(&zeta, Tier::Rest, "brew", &action),
+            slot(&alpha, Tier::Rest, "brew", &action),
+            slot(&mid, Tier::Rest, "brew", &action),
+        ];
+        // `holder` occupies the `brew` lane, so `zeta`/`alpha`/`mid` are all
+        // blocked behind it and all render a wait line in the same refresh.
+        slots[0].state = SlotState::Running;
+        let groups = groups_of(&slots);
+
+        for _ in 0..5 {
+            let mut bars = empty_bars();
+            refresh(
+                &printer,
+                &slots,
+                &groups,
+                &HashMap::new(),
+                &busy(&["brew"]),
+                &mut bars,
+            );
+            assert_eq!(
+                action_bar_creation_order(&bars),
+                vec!["module:zeta", "module:alpha", "module:mid"],
+                "wait bars must be created in slot order every run"
+            );
+        }
     }
 }

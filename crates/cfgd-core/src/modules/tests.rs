@@ -198,6 +198,31 @@ fn dependency_order_three_node_cycle() {
     assert!(result.unwrap_err().to_string().contains("cycle"));
 }
 
+/// F4: the cycle's member list is built from a `HashSet`, whose iteration
+/// order is `RandomState` (reshuffled per process). Sorting before the
+/// `Err` fixes it to alphabetical, so the message is byte-identical every
+/// run instead of just "some order that happens to look stable within one
+/// process". Runs the same cycle detection many times over one process to
+/// prove it never drifts, and pins the exact sorted member list.
+#[test]
+fn dependency_order_cycle_chain_is_sorted_every_run() {
+    let modules = make_test_modules(&[
+        ("zeta", &["mid"]),
+        ("mid", &["alpha"]),
+        ("alpha", &["zeta"]),
+    ]);
+    let expected = "module error: module dependency cycle: [\"alpha\", \"mid\", \"zeta\"]";
+    for _ in 0..50 {
+        let result = resolve_dependency_order(&["zeta".into()], &modules);
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            expected,
+            "cycle member list must be sorted and identical on every run"
+        );
+    }
+}
+
 // --- Package resolution tests ---
 
 #[test]

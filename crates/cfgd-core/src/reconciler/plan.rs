@@ -505,8 +505,16 @@ impl<'a> super::Reconciler<'a> {
             // one's is the dispatcher's serial gate around any action whose
             // manager is not currently available.
             let mut manager_order: Vec<&String> = by_manager.keys().collect();
+            // `(class, name)`, not `class` alone: `sort_by_key` is stable, so a
+            // key that ties on `class` falls back to `HashMap::keys()`'s
+            // arbitrary, per-process order. Two managers in the same class
+            // (`cargo` and `npm`, both `0`) would then emit their
+            // `InstallPackages` actions in a different relative order on every
+            // run — the plan tree's bullet order, the `-o json` payload order,
+            // the journal `action_index`, and the phase's execution offer
+            // order all read from this `Vec`.
             manager_order.sort_by_key(|mgr| {
-                match self
+                let class = match self
                     .registry
                     .package_managers
                     .iter()
@@ -515,7 +523,8 @@ impl<'a> super::Reconciler<'a> {
                     Some(m) if m.is_available() => 0,  // available (native) first
                     Some(m) if m.can_bootstrap() => 1, // bootstrappable second
                     _ => 2,                            // unknown last
-                }
+                };
+                (class, mgr.as_str())
             });
 
             for mgr_name in manager_order {

@@ -637,7 +637,11 @@ pub fn run_apply(
         apply_id: Some(result.apply_id),
         succeeded: result.succeeded(),
         failed: result.failed(),
-        source_commits,
+        // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
+        // serialize its keys in a fixed order; `DesiredState.source_commits`
+        // stays a `HashMap` internally since nothing else reads its
+        // iteration order.
+        source_commits: source_commits.into_iter().collect(),
         backups: backup_outputs,
     };
     printer.emit(Doc::new().with_data(&output));

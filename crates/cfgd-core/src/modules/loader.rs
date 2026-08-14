@@ -248,10 +248,15 @@ pub fn resolve_dependency_order(
     if order.len() != needed.len() {
         // Cycle detected — find the cycle members (use HashSet for O(1) lookup)
         let ordered: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
-        let in_cycle: Vec<String> = needed
+        let mut in_cycle: Vec<String> = needed
             .into_iter()
             .filter(|n| !ordered.contains(n.as_str()))
             .collect();
+        // `needed` is a `HashSet`, so its iteration order is random per
+        // process; sort so the same cycle prints the same member list on
+        // every run, matching the "sort for deterministic output" style
+        // already used for the Kahn's-algorithm queue above.
+        in_cycle.sort();
         return Err(ModuleError::DependencyCycle { chain: in_cycle }.into());
     }
 

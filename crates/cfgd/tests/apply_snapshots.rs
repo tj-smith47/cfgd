@@ -23,7 +23,7 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
@@ -41,7 +41,7 @@ use common::{
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn happy_output() -> ApplyOutput {
-    let mut source_commits = HashMap::new();
+    let mut source_commits = BTreeMap::new();
     source_commits.insert("team-config".to_string(), "abc1234".to_string());
     ApplyOutput {
         status: "success".to_string(),

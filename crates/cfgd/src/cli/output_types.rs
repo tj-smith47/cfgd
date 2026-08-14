@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -89,8 +89,12 @@ pub struct ApplyOutput {
     pub apply_id: Option<i64>,
     pub succeeded: usize,
     pub failed: usize,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub source_commits: HashMap<String, String>,
+    // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
+    // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
+    // `HashMap` writes its keys in per-process-random order — byte-unstable
+    // for a docs capture, a golden test, or a checksum-diffing consumer.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_commits: BTreeMap<String, String>,
     /// Schedule-less `spec.backups[]` runs executed alongside this apply.
     /// Empty (and omitted from the wire) on the no-op paths and whenever the
     /// profile declares no schedule-less backups.
@@ -105,7 +109,7 @@ impl ApplyOutput {
             apply_id: None,
             succeeded: 0,
             failed: 0,
-            source_commits: HashMap::new(),
+            source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
     }
@@ -116,7 +120,7 @@ impl ApplyOutput {
             apply_id: None,
             succeeded: 0,
             failed: 0,
-            source_commits: HashMap::new(),
+            source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
     }
@@ -919,7 +923,7 @@ mod tests {
         );
         assert!(
             json.get("sourceCommits").is_none(),
-            "sourceCommits must be skipped when HashMap is empty"
+            "sourceCommits must be skipped when BTreeMap is empty"
         );
         assert!(
             json.get("backups").is_none(),
@@ -946,7 +950,7 @@ mod tests {
             apply_id: Some(7),
             succeeded: 2,
             failed: 0,
-            source_commits: HashMap::new(),
+            source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
                 status: "success".to_string(),
@@ -963,7 +967,7 @@ mod tests {
 
     #[test]
     fn apply_output_populated_includes_apply_id_and_source_commits() {
-        let mut commits = HashMap::new();
+        let mut commits = BTreeMap::new();
         commits.insert("origin".to_string(), "abc123".to_string());
         let v = ApplyOutput {
             status: "success".to_string(),
@@ -979,6 +983,37 @@ mod tests {
         assert_eq!(json["succeeded"], json!(3));
         assert_eq!(json["failed"], json!(1));
         assert_eq!(json["sourceCommits"]["origin"], json!("abc123"));
+    }
+
+    #[test]
+    fn apply_output_source_commits_serialize_in_key_order_every_run() {
+        // A `HashMap` here would print `sourceCommits` keys in a
+        // per-process-random order, byte-unstable for a docs capture, a
+        // golden test, or a checksum-diffing `-o json` consumer.
+        // `BTreeMap` fixes the order to key-sorted regardless of insertion
+        // order or how many times this test (or the process) runs.
+        let mut commits = BTreeMap::new();
+        commits.insert("zeta".to_string(), "z-sha".to_string());
+        commits.insert("alpha".to_string(), "a-sha".to_string());
+        commits.insert("mid".to_string(), "m-sha".to_string());
+        let v = ApplyOutput {
+            status: "success".to_string(),
+            apply_id: Some(1),
+            succeeded: 1,
+            failed: 0,
+            source_commits: commits,
+            backups: Vec::new(),
+        };
+        let first = serde_json::to_string(&v).unwrap();
+        let second = serde_json::to_string(&v).unwrap();
+        assert_eq!(first, second, "identical value must serialize identically");
+        let alpha_pos = first.find("\"alpha\"").unwrap();
+        let mid_pos = first.find("\"mid\"").unwrap();
+        let zeta_pos = first.find("\"zeta\"").unwrap();
+        assert!(
+            alpha_pos < mid_pos && mid_pos < zeta_pos,
+            "sourceCommits keys must serialize in sorted order: {first}"
+        );
     }
 
     #[test]

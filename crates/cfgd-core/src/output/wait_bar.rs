@@ -27,6 +27,14 @@ pub(crate) struct WaitBar<'p> {
     /// `None` for a hidden bar, which is never added to the `MultiProgress`.
     _live: Option<LiveBarGuard>,
     _phantom: PhantomData<&'p ()>,
+    /// A monotonic creation order, visible only to tests. `indicatif::ProgressBar::index`
+    /// (the `MultiProgress` draw position this bar was actually assigned) is
+    /// crate-private to indicatif and unreachable from here, so a determinism
+    /// test asserting the TOP-TO-BOTTOM order new bars are drawn in has no
+    /// other observable proxy for "the order `printer.wait_bar` was called
+    /// in" — which is the exact thing F1 fixes.
+    #[cfg(test)]
+    seq: u64,
 }
 
 impl WaitBar<'_> {
@@ -44,6 +52,13 @@ impl WaitBar<'_> {
     #[cfg(test)]
     pub(crate) fn subject(&self) -> String {
         super::strip_ansi(&self.bar.message())
+    }
+
+    /// This bar's creation order relative to every other `WaitBar` in the
+    /// same test binary — see the field doc on `seq`.
+    #[cfg(test)]
+    pub(crate) fn seq(&self) -> u64 {
+        self.seq
     }
 
     /// `<glyph> <subject>`, both from the theme. The glyph is never written at
@@ -96,6 +111,12 @@ impl super::Printer {
             renderer: self.renderer.clone(),
             _live: live,
             _phantom: PhantomData,
+            #[cfg(test)]
+            seq: {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static WAIT_BAR_SEQ: AtomicU64 = AtomicU64::new(0);
+                WAIT_BAR_SEQ.fetch_add(1, Ordering::SeqCst)
+            },
         };
         wait.set_subject(subject);
         wait
