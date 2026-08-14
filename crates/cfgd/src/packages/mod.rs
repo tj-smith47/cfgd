@@ -411,7 +411,11 @@ pub fn add_package(
                     custom.packages.push(package_name.to_string());
                 }
             } else {
-                return Err(PackageError::ManagerNotAvailable {
+                // `manager_name` matches none of the known spec slots and no
+                // declared `custom` entry — this schema has no runtime
+                // registry to consult, so reaching here always means the
+                // name was never registered, never merely unprovisioned.
+                return Err(PackageError::ManagerNotFound {
                     manager: manager_name.to_string(),
                 }
                 .into());
@@ -514,7 +518,9 @@ pub fn remove_package(
                 custom.packages.retain(|p| p != package_name);
                 custom.packages.len() < before
             } else {
-                return Err(PackageError::ManagerNotAvailable {
+                // Same reasoning as `add_package`'s fallback: no declared
+                // slot for this name means it was never registered.
+                return Err(PackageError::ManagerNotFound {
                     manager: manager_name.to_string(),
                 }
                 .into());

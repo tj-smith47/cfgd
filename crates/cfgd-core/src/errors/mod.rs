@@ -230,7 +230,11 @@ pub enum PackageError {
     #[error("{manager} bootstrap failed: {message}")]
     BootstrapFailed { manager: String, message: String },
 
-    #[error("package manager '{manager}' not found in registry")]
+    // The manager is not registered at all — no phase can provision a name
+    // that does not exist, so this carries no phase-run guidance (unlike
+    // `ManagerNotAvailable`, whose recovery is always the `Prerequisites`
+    // phase).
+    #[error("package manager '{manager}' not available")]
     ManagerNotFound { manager: String },
 
     // A worker thread that unwinds without reporting would leave the apply

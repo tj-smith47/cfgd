@@ -7374,6 +7374,14 @@ fn apply_package_install_unknown_manager_errors() {
 
     assert_eq!(result.status, ApplyStatus::Failed);
     assert_eq!(result.failed(), 1);
+    let error = result.action_results[0]
+        .error
+        .as_deref()
+        .unwrap_or_default();
+    assert!(
+        error.contains("nonexistent") && !error.contains("prerequisites"),
+        "a manager never registered at all gets no phase-run guidance — nothing can provision a name that doesn't exist: {error}"
+    );
 }
 
 #[test]
@@ -7414,6 +7422,14 @@ fn apply_package_uninstall_unknown_manager_errors() {
 
     assert_eq!(result.status, ApplyStatus::Failed);
     assert_eq!(result.failed(), 1);
+    let error = result.action_results[0]
+        .error
+        .as_deref()
+        .unwrap_or_default();
+    assert!(
+        error.contains("nonexistent") && !error.contains("prerequisites"),
+        "a manager never registered at all gets no phase-run guidance — nothing can provision a name that doesn't exist: {error}"
+    );
 }
 
 // --- apply_secret_action: Decrypt, Resolve, ResolveEnv ---
