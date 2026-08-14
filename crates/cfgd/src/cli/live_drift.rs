@@ -133,12 +133,12 @@ pub(super) fn live_drift_results(
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
     // planner, so `verify`/`status -e` cannot disagree with `diff` about
     // whether a missing manager is live drift.
-    for action in cfgd_core::reconciler::plan_managers(registry, &pkg_actions, &[]) {
-        if let Action::Manager(ma) = action
-            && let Some(result) = manager_action_drift(&ma)
-        {
-            drift.push(result);
-        }
+    for ma in manager_drift_actions(cfgd_core::reconciler::plan_managers(
+        registry,
+        &pkg_actions,
+        &[],
+    )) {
+        drift.push(manager_action_drift(&ma));
     }
 
     // System: any configurator reporting a non-empty diff is drift. The desired
@@ -198,30 +198,80 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
     }
 }
 
-/// Map a [`ManagerAction`] to a drift `VerifyResult`. Returns `None` for
-/// `RefreshIndex`/`Prerequisite`: neither is something the user declared and
-/// can be *missing* — they run every apply regardless of drift, so surfacing
-/// them here would flag a fresh clone as drifted even when nothing diverges.
-/// Only `Provision` (a manager that can self-heal) and `Refuse` (one that
-/// can't) name an actual gap between desired and live state.
-fn manager_action_drift(action: &ManagerAction) -> Option<VerifyResult> {
+/// Filter a planner's [`Action`]s down to the [`ManagerAction`]s that are
+/// themselves drift: a manager the plan would provision or refuse. The single
+/// predicate `diff`'s `cfgd:managers` group and every live-check surface
+/// share, so "is this ManagerAction drift" has one answer instead of two
+/// filters that could disagree. `RefreshIndex`/`Prerequisite` are excluded:
+/// neither is something the user declared and can be *missing* — they run
+/// every apply regardless of drift, so surfacing them here would flag a fresh
+/// clone as drifted even when nothing diverges.
+pub(in crate::cli) fn manager_drift_actions(actions: Vec<Action>) -> Vec<ManagerAction> {
+    actions
+        .into_iter()
+        .filter_map(|a| match a {
+            Action::Manager(
+                ma @ (ManagerAction::Provision { .. } | ManagerAction::Refuse { .. }),
+            ) => Some(ma),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Map a drift [`ManagerAction`] (already filtered by [`manager_drift_actions`])
+/// to a `VerifyResult`. The `resource_id` uses the journal's own tail grammar
+/// for the same fact (`provision:<manager>` / `refuse:<manager>`) rather than
+/// the bare manager name, so a `package`-row consumer meets the persisted
+/// identity instead of a third grammar.
+fn manager_action_drift(action: &ManagerAction) -> VerifyResult {
     match action {
-        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
-        ManagerAction::Provision { manager, via, .. } => Some(VerifyResult {
+        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+            unreachable!("manager_drift_actions excludes RefreshIndex and Prerequisite")
+        }
+        ManagerAction::Provision { manager, via, .. } => VerifyResult {
             resource_type: "package".to_string(),
-            resource_id: manager.clone(),
+            resource_id: format!("provision:{manager}"),
             matches: false,
             expected: "installed".to_string(),
             actual: format!("not installed (bootstrap via {via})"),
-        }),
-        ManagerAction::Refuse { manager, reason } => Some(VerifyResult {
+        },
+        ManagerAction::Refuse { manager, reason } => VerifyResult {
             resource_type: "package".to_string(),
-            resource_id: manager.clone(),
+            resource_id: format!("refuse:{manager}"),
             matches: false,
             expected: "installed".to_string(),
             actual: format!("not installed (cannot bootstrap — {reason})"),
-        }),
+        },
     }
+}
+
+/// Manager-drift half of [`live_drift_results`], usable standalone by
+/// `cmd_verify` — which needs manager provisioning/refusal drift but drives
+/// its file/system/module checks through `reconciler::verify`, not this
+/// module's file functions. Computes its own package-action plan rather than
+/// accepting one, so it's a single self-contained call for the caller.
+pub(super) fn manager_verify_results(
+    resolved: &ResolvedProfile,
+    registry: &ProviderRegistry,
+    modules: &[ResolvedModule],
+    cfgd_installed: &std::collections::HashSet<String>,
+    cx: &cfgd_core::providers::PackageContext<'_>,
+) -> anyhow::Result<Vec<VerifyResult>> {
+    let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
+        .package_managers
+        .iter()
+        .map(|m| m.as_ref())
+        .collect();
+    let pkg_actions =
+        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
+    Ok(manager_drift_actions(cfgd_core::reconciler::plan_managers(
+        registry,
+        &pkg_actions,
+        &[],
+    ))
+    .iter()
+    .map(manager_action_drift)
+    .collect())
 }
 
 #[cfg(test)]
@@ -666,7 +716,7 @@ mod tests {
 
         let manager_row = drift
             .iter()
-            .find(|r| r.resource_type == "package" && r.resource_id == "npm")
+            .find(|r| r.resource_type == "package" && r.resource_id == "provision:npm")
             .unwrap_or_else(|| panic!("a provisionable manager must register as drift: {drift:?}"));
         assert_eq!(
             manager_row.actual, "not installed (bootstrap via pip install npm-bootstrap)",
@@ -706,12 +756,97 @@ mod tests {
 
         let manager_row = drift
             .iter()
-            .find(|r| r.resource_type == "package" && r.resource_id == "npm")
+            .find(|r| r.resource_type == "package" && r.resource_id == "refuse:npm")
             .unwrap_or_else(|| panic!("a refused manager must register as drift too: {drift:?}"));
         assert!(
             manager_row.actual.contains("cannot bootstrap")
                 && manager_row.actual.contains("a-tool-nothing-provides"),
             "must name why, distinct from the provisionable wording, got: {manager_row:?}"
+        );
+    }
+
+    // `cmd_verify` folds `manager_verify_results` straight into its `results`
+    // vector and derives BOTH its exit code (`fail_count = results.iter()
+    // .filter(|r| !r.matches).count()`, `has_drift = fail_count > 0`) and its
+    // `-o json` `results` array from that same vector with no reshaping — so
+    // pinning `matches: false` and the row shape here pins what `verify -e`
+    // would exit with and what `verify -o json` would print, without needing
+    // to trigger the real `ExitCode::exit()` (`-> !`) inside a test process.
+    #[test]
+    fn manager_verify_results_flags_a_provisionable_manager_as_drift() {
+        let resolved = resolved_no_files();
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .unavailable()
+                .bootstrappable_via("pip install npm-bootstrap"),
+        ));
+        let modules = vec![module_with_package("dev", "npm", "left-pad")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+        let results = manager_verify_results(
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &cx,
+        )
+        .unwrap();
+
+        let row = results
+            .iter()
+            .find(|r| r.resource_id == "provision:npm")
+            .unwrap_or_else(|| panic!("a provisionable manager must reach verify -e: {results:?}"));
+        assert_eq!(row.resource_type, "package");
+        assert!(
+            !row.matches,
+            "must fail verify — this is what flips exit code 5"
+        );
+        assert_eq!(
+            row.actual, "not installed (bootstrap via pip install npm-bootstrap)",
+            "must name the method, same as diff/status, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn manager_verify_results_flags_a_refused_manager_as_drift() {
+        let resolved = resolved_no_files();
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .unavailable()
+                .bootstrappable_via("pip install npm-bootstrap")
+                .requiring(&["a-tool-nothing-provides"]),
+        ));
+        let modules = vec![module_with_package("dev", "npm", "left-pad")];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+        let results = manager_verify_results(
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &cx,
+        )
+        .unwrap();
+
+        let row = results
+            .iter()
+            .find(|r| r.resource_id == "refuse:npm")
+            .unwrap_or_else(|| panic!("a refused manager must reach verify -e too: {results:?}"));
+        assert_eq!(row.resource_type, "package");
+        assert!(
+            !row.matches,
+            "must fail verify — this is what flips exit code 5"
+        );
+        assert!(
+            row.actual
+                .contains("cannot bootstrap — a-tool-nothing-provides"),
+            "must name the refusal reason, got: {row:?}"
         );
     }
 

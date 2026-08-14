@@ -75,6 +75,20 @@ pub fn cmd_verify(
         &resolved,
         &resolved_modules,
     )?);
+    // Managers: the reconciler's own `verify` only walks
+    // `available_package_managers`, so a manager the plan would provision or
+    // refuse contributes no row there — the same gap `diff` and `status -e`
+    // close via `plan_managers`. Fold that half in here too, so `verify -e`
+    // cannot report clean on a host `diff`/`status -e` both flag as drifted.
+    let cfgd_installed = cfgd_installed_packages(&state)?;
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    results.extend(super::live_drift::manager_verify_results(
+        &resolved,
+        &registry,
+        &resolved_modules,
+        &cfgd_installed,
+        &pkg_cx,
+    )?);
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
     let has_drift = fail_count > 0;

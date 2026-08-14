@@ -503,7 +503,7 @@ Phase: Packages
     ⚠ nix: missing  — hello
   cfgd:managers
     ⚠ pipx: not installed — can bootstrap via pip install pipx
-    ⚠ snap: not installed — cannot bootstrap — no available system manager
+    ⚠ snap: not installed — cannot bootstrap: no available system manager
 
 Phase: System
   profile:work
@@ -518,7 +518,7 @@ still change. It draws from the same planner the `Prerequisites` phase uses (see
 [Reconciliation](reconciliation.md#phases)), so a manager never reads
 "converged" here while `apply` still has work to do on it. A manager `apply` can
 self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
-`not installed — cannot bootstrap — <reason>`.
+`not installed — cannot bootstrap: <reason>`.
 
 File bodies render at column 0 under the file they belong to, so a diff hunk stays
 copy-pasteable.
@@ -543,13 +543,13 @@ A file cfgd could not evaluate — an unparseable target, a filter that exited n
 
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
 
-`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `bootstrap` | `refused`), and `packages` (empty for the two manager-drift shapes). A `bootstrap` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead — the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
+`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead — the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
 
 ```json
 {
   "packages": [
     { "manager": "cargo", "shape": "missing", "packages": ["ripgrep"] },
-    { "manager": "pipx", "shape": "bootstrap", "bootstrapMethod": "pip install pipx" },
+    { "manager": "pipx", "shape": "provision", "bootstrapMethod": "pip install pipx" },
     { "manager": "snap", "shape": "refused", "reason": "no available system manager" }
   ]
 }

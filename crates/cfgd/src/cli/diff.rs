@@ -2,7 +2,7 @@ use super::*;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
-use cfgd_core::reconciler::{Action, MANAGERS_GROUP, ManagerAction, Owner, PhaseName};
+use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner, PhaseName};
 
 /// Render one module-deployed file's inline diff and report whether it drifts.
 ///
@@ -167,17 +167,12 @@ pub fn cmd_diff(
         )?;
         // Same planner the Prerequisites phase runs, so a manager `diff` calls
         // out as drift is exactly the one `apply` would provision or refuse —
-        // no second membership rule to keep in sync with the reconciler's.
-        let manager_actions: Vec<ManagerAction> =
-            cfgd_core::reconciler::plan_managers(&registry, &pkg_actions, &[])
-                .into_iter()
-                .filter_map(|a| match a {
-                    Action::Manager(
-                        ma @ (ManagerAction::Provision { .. } | ManagerAction::Refuse { .. }),
-                    ) => Some(ma),
-                    _ => None,
-                })
-                .collect();
+        // and the same predicate `verify`/`status -e` share via
+        // `manager_drift_actions`, so no second membership rule can drift out
+        // of sync with the reconciler's.
+        let manager_actions: Vec<ManagerAction> = super::live_drift::manager_drift_actions(
+            cfgd_core::reconciler::plan_managers(&registry, &pkg_actions, &[]),
+        );
         print_package_drift(
             &pkg_actions,
             &manager_actions,
@@ -420,7 +415,6 @@ fn package_missing_drift(
 }
 
 /// Render the package half of a drift report, one owner group per owner.
-/// Render the package half of a drift report, one owner group per owner.
 ///
 /// `manager_actions` is the same `ManagerAction` planner output the
 /// Prerequisites phase runs (`reconciler::plan_managers`) — a missing manager
@@ -465,7 +459,7 @@ fn print_package_drift(
                             .detail(format!("can bootstrap via {via}"));
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
-                            shape: "bootstrap".to_string(),
+                            shape: "provision".to_string(),
                             packages: Vec::new(),
                             bootstrap_method: Some(via.clone()),
                             reason: None,
@@ -474,7 +468,7 @@ fn print_package_drift(
                     ManagerAction::Refuse { manager, reason } => {
                         group
                             .status(Role::Warn, format!("{manager}: not installed"))
-                            .detail(format!("cannot bootstrap — {reason}"));
+                            .detail(format!("cannot bootstrap: {reason}"));
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
                             shape: "refused".to_string(),
@@ -861,9 +855,10 @@ mod tests {
         );
         assert!(
             output.contains("snap: not installed")
-                && output.contains("cannot bootstrap")
-                && output.contains("no available system manager"),
-            "should show the refusal and its reason, got: {output}"
+                && output.contains("cannot bootstrap: no available system manager"),
+            "should show the refusal and its reason with a single separator \
+             (the status renderer already supplies ' — ' before the detail), \
+             got: {output}"
         );
         // A manager installs a manager, so it belongs to cfgd — same
         // attribution the plan that would provision it uses — and the
@@ -883,8 +878,8 @@ mod tests {
         let bootstrap = payload
             .packages
             .iter()
-            .find(|p| p.shape == "bootstrap")
-            .expect("a bootstrap row must be in the json payload");
+            .find(|p| p.shape == "provision")
+            .expect("a provision row must be in the json payload");
         assert_eq!(bootstrap.manager, "pipx");
         assert_eq!(
             bootstrap.bootstrap_method.as_deref(),

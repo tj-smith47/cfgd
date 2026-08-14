@@ -213,15 +213,18 @@ pub struct DiffSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PackageDrift {
     pub manager: String,
-    /// `missing` | `extra` | `bootstrap` | `refused`. `bootstrap`/`refused` are
+    /// `missing` | `extra` | `provision` | `refused`. `provision`/`refused` are
     /// package-less rows: the manager itself is what drifts, not a package it
-    /// would install, so `packages` stays empty for both.
+    /// would install, so `packages` stays empty for both. `provision` names the
+    /// plan-state fact (matches `ManagerAction::Provision`'s machine vocabulary
+    /// across `diff`/`verify`/`status`); the mechanism itself keeps the
+    /// "bootstrap" word in `bootstrap_method` and in the human render.
     pub shape: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
-    /// The method a `shape: "bootstrap"` row would self-install with — naming
+    /// The method a `shape: "provision"` row would self-install with — naming
     /// precedent: `DoctorManagerCheck.bootstrap_method`. `Some` only when
-    /// `shape == "bootstrap"`.
+    /// `shape == "provision"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_method: Option<String>,
     /// Why a `shape: "refused"` row cannot self-install. `Some` only when
