@@ -572,6 +572,7 @@ fn prerequisite_installer(registry: &ProviderRegistry) -> Option<&dyn PackageMan
 mod tests {
     use super::*;
     use crate::providers::PackageAction;
+    use crate::reconciler::types::{Owner, Phase};
     use crate::reconciler::{PhaseName, format_action_description, format_plan_item};
     use crate::test_helpers::{MockPackageManager, ReconcilerTestHarness};
 
@@ -1150,5 +1151,109 @@ mod tests {
         let dirs =
             fold_provision_path_dirs(&harness.registry, &Vec::<Action>::new(), recorded.clone());
         assert_eq!(dirs, recorded);
+    }
+    /// A minimal one-phase plan built directly from manager and package
+    /// actions, bypassing `plan_managers` — the two `prune_to_surviving_consumers`
+    /// tests below construct a plan shape by hand rather than through a real
+    /// planning pass, so each can isolate exactly one node's presence.
+    fn one_phase_plan(
+        prereq_and_provision_actions: Vec<Action>,
+        package_actions: Vec<Action>,
+    ) -> Plan {
+        let profile = Owner::profile("test");
+        let mut phases = vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &profile,
+            prereq_and_provision_actions,
+        )];
+        if !package_actions.is_empty() {
+            phases.push(Phase::from_actions(
+                PhaseName::Packages,
+                &profile,
+                package_actions,
+            ));
+        }
+        Plan {
+            phases,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn pkg_install(manager: &str, package: &str) -> Action {
+        Action::Package(PackageAction::Install {
+            manager: manager.to_string(),
+            packages: vec![package.to_string()],
+            origin: "profile".to_string(),
+        })
+    }
+
+    #[test]
+    fn prune_to_surviving_consumers_drops_a_prerequisite_whose_sole_dependent_is_gone() {
+        // Mirrors the state left behind by `--skip prerequisites.npm`: the
+        // skip removes npm's `Provision` node directly (it matched the
+        // pattern), but leaves the npm package install alone (a different
+        // pattern), so npm is still a "surviving consumer" by
+        // `surviving_consumers`'s own test. The curl prerequisite npm alone
+        // needed has no surviving dependent left to keep it alive and must be
+        // pruned along with the provision that named it — the doc comment's
+        // claim on `prune_to_surviving_consumers`, previously untested.
+        let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["npm".to_string()],
+            depends_on: vec![ManagerAction::refresh_node("apt")],
+        });
+        let mut plan = one_phase_plan(vec![curl_prereq], vec![pkg_install("npm", "typescript")]);
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert!(
+            !plan
+                .phases
+                .iter()
+                .any(|p| p.name == PhaseName::Prerequisites),
+            "the prerequisite's sole dependent (npm's provision) is absent from the plan, \
+             so it must be pruned and the now-empty Prerequisites phase dropped with it: {:?}",
+            plan.phases
+        );
+    }
+
+    #[test]
+    fn prune_to_surviving_consumers_keeps_a_prerequisite_another_manager_still_depends_on() {
+        // The companion case: curl is required by both npm and pipx. npm's
+        // provision is gone (as if `--skip prerequisites.npm` ran), but
+        // pipx's provision — which also depends on the curl prerequisite —
+        // survives because pipx still has a package consumer. The shared
+        // prerequisite must survive through pipx's edge even though npm's is
+        // gone.
+        let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["npm".to_string(), "pipx".to_string()],
+            depends_on: vec![ManagerAction::refresh_node("apt")],
+        });
+        let pipx_provision = Action::Manager(ManagerAction::Provision {
+            manager: "pipx".to_string(),
+            via: "pipx installer".to_string(),
+            depends_on: vec![ManagerAction::prereq_node("curl")],
+        });
+        let mut plan = one_phase_plan(
+            vec![curl_prereq, pipx_provision],
+            vec![pkg_install("pipx", "black")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        let prereq_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Prerequisites)
+            .expect("pipx's provision survives, and the prerequisite it depends on with it");
+        assert_eq!(
+            prereq_phase.action_count(),
+            2,
+            "both the curl prerequisite and pipx's provision survive: {:?}",
+            prereq_phase.actions().collect::<Vec<_>>()
+        );
     }
 }

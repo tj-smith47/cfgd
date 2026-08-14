@@ -1075,6 +1075,65 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
 }
 
 #[test]
+fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
+    // `--only cfgd:managers` is the OWNER-group spelling of the same
+    // recovery command `prerequisites.managers` covers, but it reaches the
+    // action through `pattern_matches_action`'s first rule (`owner.token()
+    // == pattern`) rather than the phase-qualified group alias
+    // (`phase_qualified_group_owner_token`) the dotted form uses — a
+    // genuinely different code path. Proves finding 1's fix holds for BOTH
+    // spellings: `prune_to_surviving_consumers` must not run when `only` is
+    // non-empty, whichever grammar named the managers group.
+    let mut plan = make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![
+                Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    depends_on: vec![],
+                }),
+                Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "npm".to_string(),
+                }),
+            ],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["rg"]),
+                pkg_install("npm", vec!["typescript"]),
+            ],
+        ),
+    ]);
+    filter_plan(
+        &mut plan,
+        &[],
+        &["cfgd:managers".to_string()],
+        &Printer::for_test().0,
+        &ProviderRegistry::new(),
+    );
+
+    let prereq_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites)
+        .expect("both manager nodes must survive; the Prerequisites phase must not be dropped");
+    assert_eq!(
+        prereq_phase.action_count(),
+        2,
+        "both manager nodes must survive `--only cfgd:managers` even \
+         though every package consumer fell out of scope: {:?}",
+        prereq_phase.actions().collect::<Vec<_>>()
+    );
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Packages),
+        "no package matched the selector, so the Packages phase must be dropped: {:?}",
+        plan.phases
+    );
+}
+
+#[test]
 fn filter_plan_skip_individual_packages() {
     let mut plan = make_plan(vec![(
         PhaseName::Packages,
