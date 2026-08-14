@@ -564,7 +564,11 @@ impl StateStore {
                 message: format!("failed to acquire migration lock: {e}"),
             })?;
 
-        let current_version = self.schema_version();
+        let current_version = self.schema_version().inspect_err(|_| {
+            if let Err(rb) = self.conn.execute_batch("ROLLBACK") {
+                tracing::error!("rollback after schema_version read failure also failed: {rb}");
+            }
+        })?;
 
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
@@ -605,13 +609,30 @@ impl StateStore {
         Ok(())
     }
 
-    fn schema_version(&self) -> usize {
-        self.conn
-            .query_row("SELECT version FROM schema_version", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .map(|v| v as usize)
-            .unwrap_or(0)
+    /// The applied-migration count, or `0` for a database that has never run
+    /// one. A read failure (locked, corrupt, mid-crash file) must propagate
+    /// rather than fold to `0`: several migrations are `ALTER TABLE ... ADD
+    /// COLUMN`, which is not idempotent, so a spurious `0` here makes
+    /// [`Self::run_migrations`] replay them against a database that already
+    /// has the column and abort with "duplicate column name" — turning a
+    /// transient read error into a permanent open failure. The only
+    /// legitimate `0` is "the `schema_version` table itself does not exist
+    /// yet", checked directly rather than inferred from whatever error a
+    /// missing table happens to raise.
+    fn schema_version(&self) -> Result<usize> {
+        let table_exists: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_exists == 0 {
+            return Ok(0);
+        }
+
+        let version: i64 =
+            self.conn
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))?;
+        Ok(version as usize)
     }
 }
 
