@@ -522,8 +522,9 @@ mod tests {
 
     #[test]
     fn pipx_path_dirs_matches_the_bootstrap_plans_declaration() {
-        let plan = PipxManager.bootstrap_plan();
-        let Some(plan) = plan else { return };
+        let plan = PipxManager
+            .bootstrap_plan()
+            .expect("pipx always declares a bootstrap plan");
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

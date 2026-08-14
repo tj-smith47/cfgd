@@ -521,9 +521,9 @@ fn find_manager<'r>(registry: &'r ProviderRegistry, name: &str) -> Option<&'r dy
 /// consumed by every action-rendering and id-generation site — untouched;
 /// two runs against the same host resolve the same manager to the same plan,
 /// so re-deriving is exact, not an estimate.
-pub(super) fn fold_provision_path_dirs(
+pub(super) fn fold_provision_path_dirs<'a>(
     registry: &ProviderRegistry,
-    actions: &[Action],
+    actions: impl IntoIterator<Item = &'a Action>,
     recorded: Vec<String>,
 ) -> Vec<String> {
     let mut dirs = recorded;
@@ -1136,7 +1136,8 @@ mod tests {
             .with_package_manager(MockPackageManager::new("brew"))
             .build();
         let recorded = vec!["/opt/homebrew/bin".to_string()];
-        let dirs = fold_provision_path_dirs(&harness.registry, &[], recorded.clone());
+        let dirs =
+            fold_provision_path_dirs(&harness.registry, &Vec::<Action>::new(), recorded.clone());
         assert_eq!(dirs, recorded);
     }
 }

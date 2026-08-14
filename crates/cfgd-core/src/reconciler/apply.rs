@@ -251,6 +251,25 @@ fn env_result_key(description: &str) -> &str {
         .unwrap_or(description)
 }
 
+/// Whether the post-phase env regeneration must re-run over `path_dirs_now`,
+/// the recorded PATH directories as they stand once every phase has run.
+///
+/// Order-insensitive on purpose: `path_dirs_now` reads back
+/// `ORDER BY manager` (alphabetical, `state::bootstrapped_managers`) while
+/// `path_dirs_at_plan` appends a newly-provisioned manager's declared dirs in
+/// plan declaration order, so the same SET of directories can legally list in
+/// a different order on each side without either side being wrong — a run
+/// that provisions a manager alphabetically ahead of one already recorded
+/// must not be told PATH "changed" just because grouping by manager name
+/// reordered it.
+pub(super) fn path_dirs_changed(path_dirs_now: &[String], path_dirs_at_plan: &[String]) -> bool {
+    let mut now_sorted = path_dirs_now.to_vec();
+    now_sorted.sort();
+    let mut at_plan_sorted = path_dirs_at_plan.to_vec();
+    at_plan_sorted.sort();
+    now_sorted != at_plan_sorted
+}
+
 /// Fold a late env regeneration into the result the Env phase already recorded
 /// for the same surface.
 ///
@@ -443,15 +462,22 @@ impl<'a> super::Reconciler<'a> {
         let mut completions = Completions::default();
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
         // The PATH directories the Env phase's planned content was built from.
-        // `plan()` already folds a to-be-provisioned manager's OWN declared
-        // dirs in (`managers::fold_provision_path_dirs`), so this baseline is
-        // not "before bootstrapping" in general — it is compared against the
-        // post-run set below only to catch what the plan could not have named:
-        // npm, whose global prefix resolves only after install, and any
-        // manager whose real recorded dirs end up differing from what it
-        // declared.
-        let path_dirs_at_plan =
-            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
+        // `plan()` folds a to-be-provisioned manager's OWN declared dirs into
+        // the Env phase's write (`managers::fold_provision_path_dirs`), so
+        // this baseline must fold the SAME way against the SAME
+        // Prerequisites-phase Provision actions — otherwise it is a pre-run
+        // snapshot missing every manager this run is about to bootstrap, and
+        // the comparison below flags ordinary, successful provisioning as
+        // drift.
+        let path_dirs_at_plan = super::managers::fold_provision_path_dirs(
+            self.registry,
+            plan.phases
+                .iter()
+                .find(|phase| phase.name == PhaseName::Prerequisites)
+                .into_iter()
+                .flat_map(|phase| phase.actions()),
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions),
+        );
         // Set when a signal requested cooperative cancellation. Stopping happens BEFORE
         // the next action — the previous one already completed atomically, so no
         // file is left torn.
@@ -871,7 +897,8 @@ impl<'a> super::Reconciler<'a> {
         // `plan()` already folds a Provision node's declared `creates_path_dirs`
         // into the planned content, so the Env phase's own write already
         // carries them for every manager whose `path_dirs()` mirrors its
-        // `bootstrap_plan()` declaration. Comparing `path_dirs_now` against
+        // `bootstrap_plan()` declaration, and `path_dirs_at_plan` above folds
+        // the identical set. Comparing `path_dirs_now` against
         // `path_dirs_at_plan` stays as the convergence net for the one case
         // the planner cannot declare up front — npm, whose resolved global
         // prefix is only knowable once its install finishes — and for any run
@@ -883,7 +910,8 @@ impl<'a> super::Reconciler<'a> {
         // and rewrite `~/.cfgd.env` plus the source lines in `~/.bashrc` —
         // surfaces the Env phase owns. The bootstrap record is durable either
         // way, so the next unfiltered apply still converges the file.
-        let path_dirs_changed = phase_filter.is_none() && path_dirs_now != path_dirs_at_plan;
+        let path_dirs_changed =
+            phase_filter.is_none() && path_dirs_changed(&path_dirs_now, &path_dirs_at_plan);
         // The regeneration reads the DECLARED env, not the plan, so a caller
         // that pruned the env actions out of its plan would still see the
         // surface written here. `withhold_env_surface` is that caller saying

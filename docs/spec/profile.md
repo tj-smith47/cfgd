@@ -269,11 +269,14 @@ change it did not make, so your rc files are left alone. Drop the manager from t
 directories age out of the file.
 
 Those directories are exported **first**, ahead of your own variables, so a `spec.env` value may
-reference a binary the manager just installed. The first apply on a bare machine converges inside
-that same run: the `Env` phase runs before `Modules`, so cfgd regenerates the file once the phases
-finish and the bootstrap is recorded. cfgd prints a reminder after any apply that wrote the file or
-injected a source line — your already-running shell does not pick either up until you
-`source ~/.cfgd.env` or open a new one.
+reference a binary the manager just installed. cfgd knows most managers' install locations before
+the bootstrap even runs, so the plan folds a to-be-provisioned manager's declared directories into
+the `Env` phase's write up front — the first apply on a bare machine is already correct. The one
+exception is a manager whose install location is only knowable once its bootstrap finishes (npm's
+global prefix depends on which Node install method wins); that manager still converges inside the
+same run — cfgd re-derives the file once every phase completes and the real directory is recorded.
+cfgd prints a reminder after any apply that wrote the file or injected a source line — your
+already-running shell does not pick either up until you `source ~/.cfgd.env` or open a new one.
 
 **Example:**
 ```yaml

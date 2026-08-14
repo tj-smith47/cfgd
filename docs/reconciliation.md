@@ -95,9 +95,12 @@ surfaces that phase owns: manager provisioning and index refresh both belong to 
 whose manager is not yet available is reported as blocked on it rather than bootstrapping
 it on the spot.
 
-A full apply needs no second run for that: the `Prerequisites` phase provisions the manager
-and regenerates `~/.cfgd.env` before `Packages` runs, so the file is correct when that run
-finishes.
+A full apply needs no second run for that: the plan already folds a to-be-provisioned manager's
+declared PATH directories into the `Prerequisites` phase's `~/.cfgd.env` write, so for most
+managers the file is correct before `Packages` even runs. The one manager whose install location
+is only knowable once its bootstrap finishes (npm's global prefix) still converges inside the same
+apply — cfgd re-derives the file once every phase completes and the real directory is recorded, so
+the file is correct when that run finishes either way.
 
 ## Apply vs Reconcile Context
 

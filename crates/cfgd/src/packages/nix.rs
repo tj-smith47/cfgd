@@ -64,7 +64,7 @@ impl PackageManager for NixManager {
     }
 
     fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
-        vec![NIX_PROFILE_BIN_DIR.to_string()]
+        vec![cfgd_core::to_posix_string(NIX_PROFILE_BIN_DIR)]
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {

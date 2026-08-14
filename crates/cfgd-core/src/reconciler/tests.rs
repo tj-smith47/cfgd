@@ -12743,6 +12743,75 @@ fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
 }
 
 #[test]
+fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
+    // The same folded PATH-dir set `plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs`
+    // pins through the bash `.cfgd.env` render — proven here through fish's
+    // dialect too, so a divergence in `generate_fish_env_content`'s PATH
+    // folding (a different join char, a missing per-entry quote) cannot hide
+    // behind bash-only coverage.
+    let home = Path::new("/h");
+    let mut probe = env_probe("/bin/bash");
+    probe.fish_present = true;
+    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    let t = env_targets(
+        &[],
+        &[],
+        &dirs,
+        EnvScope::Interactive,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    let fish_content = t
+        .iter()
+        .find_map(|target| match target {
+            EnvTarget::ManagedFile { path, content } if path.ends_with("cfgd-env.fish") => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .expect("fish_present must plan the fish managed file");
+    assert!(
+        fish_content.contains(
+            "set -gx PATH '/home/linuxbrew/.linuxbrew/bin' '/home/linuxbrew/.linuxbrew/sbin' $PATH"
+        ),
+        "fish must fold the same PATH dirs bash renders, single-quoted per entry: {fish_content}"
+    );
+}
+
+#[test]
+fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
+    // PowerShell counterpart of the fish assertion above: same folded PATH-dir
+    // set, `;`-joined and double-quoted for `$env:PATH` interpolation.
+    let home = Path::new("/h");
+    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    let t = env_targets(
+        &[],
+        &[],
+        &dirs,
+        EnvScope::Interactive,
+        home,
+        &env_probe(""),
+        EnvPlatform::Windows,
+    );
+    let ps_content = t
+        .iter()
+        .find_map(|target| match target {
+            EnvTarget::ManagedFile { path, content } if path.ends_with(".cfgd-env.ps1") => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .expect("Windows must plan the PowerShell managed file");
+    assert!(
+        ps_content.contains(
+            "$env:PATH = \"/home/linuxbrew/.linuxbrew/bin;/home/linuxbrew/.linuxbrew/sbin;$env:PATH\""
+        ),
+        "PowerShell must fold the same PATH dirs bash renders, `;`-joined: {ps_content}"
+    );
+}
+
+#[test]
 #[serial_test::serial]
 fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
     use crate::with_test_home_guard;
@@ -12816,6 +12885,175 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
         planned_env_file_content(&replan).as_deref(),
         Some(contents.as_str()),
         "the next plan must re-derive byte-identical content from the record"
+    );
+}
+
+// -----------------------------------------------------------------------
+// path_dirs_changed: order-insensitive convergence-net comparison
+// -----------------------------------------------------------------------
+
+#[test]
+fn path_dirs_changed_is_false_when_only_order_differs() {
+    let now = vec![
+        "/home/linuxbrew/.linuxbrew/bin".to_string(),
+        "/home/u/.npm-global/bin".to_string(),
+    ];
+    let at_plan = vec![
+        "/home/u/.npm-global/bin".to_string(),
+        "/home/linuxbrew/.linuxbrew/bin".to_string(),
+    ];
+    assert!(
+        !super::apply::path_dirs_changed(&now, &at_plan),
+        "the same set of directories in a different order must not read as drift"
+    );
+}
+
+#[test]
+fn path_dirs_changed_is_true_when_the_set_actually_differs() {
+    // Models npm: its resolved global prefix is only knowable once the
+    // install finishes, so the plan-time fold cannot have named it.
+    let now = vec![
+        "/home/u/.npm-global/bin".to_string(),
+        "/usr/local/lib/node_modules/.bin".to_string(),
+    ];
+    let at_plan = vec!["/home/u/.npm-global/bin".to_string()];
+    assert!(
+        super::apply::path_dirs_changed(&now, &at_plan),
+        "a genuinely new directory must still trigger regeneration"
+    );
+}
+
+#[test]
+fn path_dirs_changed_is_false_for_identical_input() {
+    let dirs = vec!["/opt/homebrew/bin".to_string()];
+    assert!(!super::apply::path_dirs_changed(&dirs, &dirs));
+}
+
+/// Two package managers: `brew`, unavailable so this run provisions it, and
+/// `npm`, already satisfied so it earns no action of its own — only its
+/// state-store record, seeded by the caller before planning.
+fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
+    let brew_package = ResolvedPackage {
+        canonical_name: "ripgrep".to_string(),
+        resolved_name: "ripgrep".to_string(),
+        manager: "brew".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    let npm_package = ResolvedPackage {
+        canonical_name: "prettier".to_string(),
+        resolved_name: "prettier".to_string(),
+        manager: "npm".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![brew_package, npm_package],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }]
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_does_not_reorder_the_env_file_when_a_new_manager_joins_an_already_recorded_one() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // npm is already recorded from a prior run. `state::bootstrapped_managers`
+    // reads managers back `ORDER BY manager` — "brew" sorts ahead of "npm" —
+    // while the plan-time fold appends a newly-provisioned manager's dirs
+    // AFTER whatever was already recorded. The two orders disagree on
+    // purpose: this is what the convergence-net comparison must tolerate
+    // without rewriting the file.
+    let state = test_state();
+    state
+        .record_bootstrapped_path_dirs("npm", &["/home/u/.npm-global/bin".to_string()])
+        .expect("record npm bootstrap path dirs");
+    // Unlike `registry_with_bootstrappable_brew` (which leaves the plan-time
+    // declaration empty on purpose, to model npm's late-known prefix), this
+    // manager declares the SAME dirs it will later record — the ordinary,
+    // reconciled shape every real `PackageManager` now has (Task 10). Only
+    // that shape can prove "an ordinary provision does not spuriously
+    // regenerate": if the declared and recorded sets differed, this test
+    // could not tell a real divergence apart from an ordering artifact.
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
+            .declaring_path_dirs(&BREW_PATH_DIRS),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = brew_and_npm_module_fixture();
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let planned_content = planned_env_file_content(&plan)
+        .expect("the pre-recorded npm dir alone must already plan an env write");
+    assert!(
+        planned_content.contains(
+            "export PATH=\"/home/u/.npm-global/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "npm (already recorded) must lead, brew (declared by this run's Provision) must \
+         follow, in fold order: {planned_content}"
+    );
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // brew is now ALSO recorded, so a post-run read of `bootstrapped_managers`
+    // comes back alphabetically ("brew" then "npm") — the opposite of the
+    // fold order above. A convergence net that compared those two orderings
+    // directly would rewrite the file into the alphabetical order; the file
+    // on disk must stay byte-identical to what the Env phase already wrote.
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
+        .expect("apply must leave a .cfgd.env behind");
+    assert_eq!(
+        contents, planned_content,
+        "an ordinary provision beside an already-recorded manager must not reorder PATH \
+         between the plan-time write and the end of this same apply: {contents}"
     );
 }
 
