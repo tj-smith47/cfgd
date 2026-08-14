@@ -3053,8 +3053,16 @@ fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
                 !dir.contains('\\'),
                 "{name}: unfolded path separator in {dir}"
             );
+            // Judged on the folded string, not `Path::is_absolute`: a declared
+            // dir is a cross-OS value, and Windows calls the POSIX-rooted
+            // `/nix/var/nix/profiles/default/bin` relative because it names no
+            // drive. Rooted means a leading `/` or a `C:/`-style drive root.
+            let drive_rooted = {
+                let b = dir.as_bytes();
+                b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/'
+            };
             assert!(
-                std::path::Path::new(dir).is_absolute(),
+                dir.starts_with('/') || drive_rooted,
                 "{name}: relative PATH dir {dir}"
             );
         }
