@@ -90,9 +90,10 @@ things happened.
 
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the
-surfaces that phase owns: bootstrapping a package manager under `--phase packages` records
-its PATH entries but leaves `~/.cfgd.env` and your shell rc files alone. The record is
-durable, so the next full `cfgd apply` folds those entries in.
+surfaces that phase owns: manager provisioning and index refresh both belong to the
+`Prerequisites` phase, so `--phase packages` performs no manager work at all — an install
+whose manager is not yet available is reported as blocked on it rather than bootstrapping
+it on the spot.
 
 A full apply needs no second run for that: the `Prerequisites` phase provisions the manager
 and regenerates `~/.cfgd.env` before `Packages` runs, so the file is correct when that run

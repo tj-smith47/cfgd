@@ -446,8 +446,6 @@ Phase: Packages
   profile:work
     ⚠ brew: missing — extra-tool
     ⚠ nix: missing  — hello
-  cfgd:managers
-    ⚠ nix: not installed — can bootstrap via nix installer
 
 Phase: System
   profile:work
