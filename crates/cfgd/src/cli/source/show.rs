@@ -272,7 +272,15 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    if let Err(e) = mgr.load_source(source_spec, &silent_printer) {
+    // `show` is a read path (Report mode, output-module.md): it renders
+    // whatever `add`/`update`/`sync` already cached rather than fetching, so
+    // inspecting a source never needs network or credentials of its own.
+    // `load_source` would clone/fetch on every call, which also means its
+    // failure is a live one — `at_verbosity(Quiet)` still surfaces a
+    // `Role::Fail` line, and that line reaches this printer's own sink, not a
+    // discarded one, so it would sit beside the `-o json` payload every time
+    // the machine were offline.
+    if let Err(e) = mgr.load_source_cached(source_spec, &silent_printer) {
         printer.status_simple(
             Role::Warn,
             format!(
