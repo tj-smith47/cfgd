@@ -183,15 +183,6 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             expected: "absent".to_string(),
             actual: "to remove".to_string(),
         }),
-        PackageAction::Bootstrap {
-            manager, method, ..
-        } => Some(VerifyResult {
-            resource_type: "package".to_string(),
-            resource_id: manager.clone(),
-            matches: false,
-            expected: "installed".to_string(),
-            actual: format!("not installed (bootstrap via {method})"),
-        }),
     }
 }
 

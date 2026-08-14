@@ -1721,23 +1721,24 @@ fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
 }
 
 #[test]
-fn pending_package_decision_leaves_the_bootstrap_of_its_manager_alone() {
-    // A bootstrap installs the package MANAGER — the prerequisite of every
-    // still-decided package in the batch — so it names no decidable package.
+fn pending_package_decision_leaves_a_skip_alone() {
+    // A `Skip` names no package — nothing on it could ever match a decision
+    // path — so pruning never withholds it, unlike an Install action, whose
+    // per-package matches can shrink it down to nothing.
     let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
         crate::expand_tilde,
     );
     let mut phase = packages_phase_of(vec![
-        crate::reconciler::Action::Package(crate::providers::PackageAction::Bootstrap {
+        crate::reconciler::Action::Package(crate::providers::PackageAction::Skip {
             manager: "cargo".into(),
-            method: "auto".into(),
+            reason: "not available".into(),
             origin: "acme".into(),
         }),
         install_of("cargo", &["bat", "ripgrep"]),
     ]);
     prune_with(&mut phase, &exclusions);
-    assert_eq!(phase.action_count(), 2, "the bootstrap survives");
+    assert_eq!(phase.action_count(), 2, "the skip survives");
     assert_eq!(
         installed_batches(&phase),
         vec![("cargo".to_string(), vec!["ripgrep".to_string()])]
@@ -2862,17 +2863,17 @@ fn action_resource_info_file_skip() {
 }
 
 #[test]
-fn action_resource_info_package_bootstrap() {
-    use crate::reconciler::Action;
+fn action_resource_info_manager_provision() {
+    use crate::reconciler::{Action, ManagerAction};
 
-    let action = Action::Package(crate::providers::PackageAction::Bootstrap {
+    let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".into(),
-        method: "curl".into(),
-        origin: "local".into(),
+        via: "homebrew installer".into(),
+        depends_on: vec![],
     });
     let (rtype, rid) = action_resource_info(&action);
-    assert_eq!(rtype, "package");
-    assert_eq!(rid, "brew:bootstrap");
+    assert_eq!(rtype, "manager");
+    assert_eq!(rid, "provision:brew");
 }
 
 #[test]

@@ -132,7 +132,6 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             FileAction::Skip { .. } => "skip",
         },
         reconciler::Action::Package(pa) => match pa {
-            PackageAction::Bootstrap { .. } => "bootstrap",
             PackageAction::Install { .. } => "install",
             PackageAction::Uninstall { .. } => "uninstall",
             PackageAction::Skip { .. } => "skip",
@@ -233,8 +232,7 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
             | FileAction::Skip { origin, .. } => norm(origin),
         },
         reconciler::Action::Package(pa) => match pa {
-            PackageAction::Bootstrap { origin, .. }
-            | PackageAction::Install { origin, .. }
+            PackageAction::Install { origin, .. }
             | PackageAction::Uninstall { origin, .. }
             | PackageAction::Skip { origin, .. } => norm(origin),
         },
@@ -414,13 +412,12 @@ pub(in crate::cli) fn build_plan_output(
 
 /// The manager every `PackageAction` names.
 ///
-/// One or-pattern over all four variants rather than three arms and a
-/// fallthrough, so a fifth variant fails to compile here instead of silently
+/// One or-pattern over all three variants rather than two arms and a
+/// fallthrough, so a fourth variant fails to compile here instead of silently
 /// escaping `--skip-scripts`.
 fn package_manager_name(a: &PackageAction) -> &str {
     match a {
-        PackageAction::Bootstrap { manager, .. }
-        | PackageAction::Install { manager, .. }
+        PackageAction::Install { manager, .. }
         | PackageAction::Uninstall { manager, .. }
         | PackageAction::Skip { manager, .. } => manager,
     }
@@ -686,7 +683,6 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
     match action {
         reconciler::Action::Package(pa) => {
             let manager = match pa {
-                PackageAction::Bootstrap { manager, .. } => manager,
                 PackageAction::Install { manager, .. } => manager,
                 PackageAction::Uninstall { manager, .. } => manager,
                 PackageAction::Skip { manager, .. } => manager,
@@ -1192,17 +1188,14 @@ pub(in crate::cli) fn filter_plan(
                     filtered_actions.push(action);
                     continue;
                 }
-                // Both spellings of "cfgd would have provided this manager":
-                // the `Prerequisites` node that provisions it, and the package
-                // bootstrap the drift surfaces still mint. Either one filtered
-                // away strands the installs that needed the manager.
-                match &action {
-                    reconciler::Action::Package(PackageAction::Bootstrap { manager, .. })
-                    | reconciler::Action::Manager(reconciler::ManagerAction::Provision {
-                        manager,
-                        ..
-                    }) => removals.record(manager, matched_skip.map(String::as_str)),
-                    _ => {}
+                // The `Prerequisites` node that provisions the manager. Filtered
+                // away, it strands the installs that needed the manager.
+                if let reconciler::Action::Manager(reconciler::ManagerAction::Provision {
+                    manager,
+                    ..
+                }) = &action
+                {
+                    removals.record(manager, matched_skip.map(String::as_str));
                 }
             }
 

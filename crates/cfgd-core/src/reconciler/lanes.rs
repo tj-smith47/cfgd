@@ -25,23 +25,21 @@
 //! 1. **The tier barrier** — no action is dispatched until every action in the
 //!    tier above it has *completed*. An empty tier is released and drained in
 //!    the same instant.
-//! 2. **Tier B is serial**, in plan order: a bootstrap can depend on another
-//!    bootstrap, which is the one intra-tier edge in the phase.
-//! 3. **Module `depends`, and a node's own edges** — a module's package work
+//! 2. **Module `depends`, and a node's own edges** — a module's package work
 //!    waits for every action of its transitive dependencies, and a
 //!    `Prerequisites` node waits for every node its plan named. A node whose
 //!    dependency FAILED never runs at all: it settles as a failure naming the
 //!    ancestor, because what it was waiting to be handed does not exist.
-//! 4. **The per-family lane** — at most one action per manager FAMILY is in
+//! 3. **The per-family lane** — at most one action per manager FAMILY is in
 //!    flight, so the maximum parallelism is the number of distinct families.
 //!    `brew`, `brew-tap` and `brew-cask` are one binary and share a lane; the
 //!    key is [`Slot::lane`], never the registered name.
-//! 5. **The owner's turn** — an owner already holding a lane takes a second one
+//! 4. **The owner's turn** — an owner already holding a lane takes a second one
 //!    only after every other owner with ready work has taken one. So a module
 //!    declaring brew and apt work takes brew while another module holds apt,
 //!    and then says it is waiting on apt — while a lone owner still fills every
 //!    lane in the phase.
-//! 6. **The serial sub-gate** — any action whose manager is registered and not
+//! 5. **The serial sub-gate** — any action whose manager is registered and not
 //!    currently available drains the phase. Evaluated at dispatch time, because
 //!    a manager bootstrapped earlier in the same phase becomes available
 //!    mid-run. It does NOT apply to a `Prerequisites` node: that gate exists to
@@ -240,7 +238,7 @@ fn wait_subject(owner: &Owner, thing: &str) -> String {
 /// as "the tier in flight" rather than "the nearest undrained tier above" — the
 /// latter is a property of the plan and would have a run with no module package
 /// work announce that it is waiting on modules.
-fn tier_in_flight(pending_per_tier: [usize; 3]) -> Option<Tier> {
+fn tier_in_flight(pending_per_tier: [usize; 2]) -> Option<Tier> {
     Tier::ALL
         .into_iter()
         .find(|tier| pending_per_tier[tier_index(*tier)] > 0)
@@ -249,8 +247,7 @@ fn tier_in_flight(pending_per_tier: [usize; 3]) -> Option<Tier> {
 fn tier_index(tier: Tier) -> usize {
     match tier {
         Tier::Modules => 0,
-        Tier::Bootstraps => 1,
-        Tier::Rest => 2,
+        Tier::Rest => 1,
     }
 }
 
@@ -267,7 +264,7 @@ struct GroupWait<'p> {
 /// group's line is replaced rather than reopened.
 ///
 /// A group in the tier that is in flight is not blocked and renders nothing, so
-/// no group can ever name its own tier; under `0 → B → 1` a module group is
+/// no group can ever name its own tier; under `0 → 1` a module group is
 /// dispatched first and is never blocked at all.
 fn tier_waits<'g>(groups: &[GroupWait<'g>], in_flight: Option<Tier>) -> Vec<(&'g Owner, String)> {
     let Some(in_flight) = in_flight else {
@@ -311,12 +308,12 @@ fn transitive_depends(modules: &[ResolvedModule]) -> HashMap<&str, HashSet<&str>
 
 /// Whether an action for `manager` drains the phase.
 ///
-/// The predicate is "registered and not currently available", not "is a
-/// `Bootstrap` action": a module install on an unavailable manager bootstraps it
-/// inline, with no planned bootstrap action anywhere in the plan, and a gate
-/// keyed on the action variant would miss that entirely. An UNREGISTERED name —
-/// the `script` pseudo-manager, or a typo — bootstraps nothing and so drains
-/// nothing.
+/// The predicate is "registered and not currently available", keyed on the
+/// manager's own state rather than on which action kind names it: a module
+/// install can reach an unavailable manager just as a profile install can,
+/// and both must serialize around it the same way. An UNREGISTERED name —
+/// the `script` pseudo-manager, or a typo — is never unavailable in this
+/// sense and so drains nothing.
 fn drains_phase(registry: &ProviderRegistry, manager: &str) -> bool {
     registry
         .package_managers
@@ -493,7 +490,6 @@ fn pick_next(
     }
     let pending = [
         pending_in(slots, Tier::Modules),
-        pending_in(slots, Tier::Bootstraps),
         pending_in(slots, Tier::Rest),
     ];
     let in_flight = tier_in_flight(pending)?;
@@ -508,13 +504,6 @@ fn pick_next(
     for (index, slot) in slots.iter().enumerate() {
         if slot.state != SlotState::Waiting || slot.tier != in_flight {
             continue;
-        }
-        // Tier B is dispatched serially in plan order: a bootstrap can depend
-        // on another bootstrap (pipx's installs brew first), which is the one
-        // intra-tier edge in the phase. So the FIRST waiting bootstrap is the
-        // only candidate, and it waits for an empty phase.
-        if in_flight == Tier::Bootstraps {
-            return (state.running == 0).then_some(index);
         }
         if !depends_satisfied(slots, index, deps) {
             continue;
@@ -629,7 +618,7 @@ impl super::Reconciler<'_> {
                 owner,
                 action,
                 plan_index: *plan_index,
-                tier: Tier::of(owner, action),
+                tier: Tier::of(owner),
                 manager: action_manager(action).map(str::to_string),
                 module: match action {
                     Action::Module(ModuleAction { module_name, .. }) => Some(module_name.clone()),
@@ -994,7 +983,6 @@ fn refresh_wait_bars<'x>(
     let slots = inputs.slots;
     let pending = [
         pending_in(slots, Tier::Modules),
-        pending_in(slots, Tier::Bootstraps),
         pending_in(slots, Tier::Rest),
     ];
     let in_flight = tier_in_flight(pending);
@@ -1026,9 +1014,9 @@ fn refresh_wait_bars<'x>(
         .retain(|token, _| wanted_tokens.contains(token.as_str()));
     for (token, subject) in wanted {
         match bars.groups.get(&token) {
-            // Replaced, never appended to: the chain `modules` →
-            // `bootstraps` → the group's own bars is one line changing what
-            // it says, not three lines accumulating.
+            // Replaced, never appended to: the chain `modules` → the
+            // group's own bars is one line changing what it says, not two
+            // lines accumulating.
             Some(bar) => bar.set_subject(&subject),
             None => {
                 bars.groups.insert(token, printer.wait_bar(&subject));
@@ -1195,7 +1183,7 @@ mod tests {
         let managers = Owner::cfgd("managers");
         let subjects = subjects(
             &[
-                group(&managers, Tier::Bootstraps, true),
+                group(&managers, Tier::Rest, true),
                 group(&profile, Tier::Rest, true),
             ],
             Some(Tier::Modules),
@@ -1222,47 +1210,38 @@ mod tests {
         let profile = Owner::profile("work");
         let managers = Owner::cfgd("managers");
         let groups = [
-            group(&managers, Tier::Bootstraps, true),
+            group(&managers, Tier::Rest, true),
             group(&profile, Tier::Rest, true),
         ];
 
-        // Module work in flight: both lower tiers wait on it.
-        assert_eq!(tier_in_flight([2, 1, 1]), Some(Tier::Modules));
+        // Module work in flight: the Rest tier waits on it.
+        assert_eq!(tier_in_flight([2, 1]), Some(Tier::Modules));
         assert_eq!(
-            subjects(&groups, tier_in_flight([2, 1, 1])),
+            subjects(&groups, tier_in_flight([2, 1])),
             vec![
                 "cfgd:managers · waiting on modules",
                 "profile:work · waiting on modules",
             ]
         );
 
-        // The line is REPLACED as the tier in flight changes, and the group
-        // that was in flight is no longer blocked by anything.
-        assert_eq!(tier_in_flight([0, 1, 1]), Some(Tier::Bootstraps));
-        assert_eq!(
-            subjects(&groups, tier_in_flight([0, 1, 1])),
-            vec!["profile:work · waiting on bootstraps"]
-        );
-
         // Nothing is ever blocked behind the last tier.
-        assert_eq!(tier_in_flight([0, 0, 1]), Some(Tier::Rest));
-        assert!(subjects(&groups, tier_in_flight([0, 0, 1])).is_empty());
-        assert_eq!(tier_in_flight([0, 0, 0]), None);
+        assert_eq!(tier_in_flight([0, 1]), Some(Tier::Rest));
+        assert!(subjects(&groups, tier_in_flight([0, 1])).is_empty());
+        assert_eq!(tier_in_flight([0, 0]), None);
     }
 
     #[test]
     fn wait_line_skips_an_empty_tier() {
-        // A plan with a bootstrap and a profile install and no module package
+        // A plan with only profile-owned package work and no module package
         // work: tier 0 is released and drained in the same instant, so it is
         // never in flight and `waiting on modules` is never said.
         let profile = Owner::profile("work");
         let groups = [group(&profile, Tier::Rest, true)];
 
-        assert_eq!(tier_in_flight([0, 1, 1]), Some(Tier::Bootstraps));
-        assert_eq!(
-            subjects(&groups, tier_in_flight([0, 1, 1])),
-            vec!["profile:work · waiting on bootstraps"],
-            "an empty tier is never in flight and is never named"
+        assert_eq!(tier_in_flight([0, 1]), Some(Tier::Rest));
+        assert!(
+            subjects(&groups, tier_in_flight([0, 1])).is_empty(),
+            "an empty tier is never in flight, and nothing is ever blocked behind the last tier"
         );
     }
 
@@ -1270,11 +1249,7 @@ mod tests {
     fn a_group_with_nothing_left_to_dispatch_renders_no_wait_line() {
         let profile = Owner::profile("work");
         assert!(
-            subjects(
-                &[group(&profile, Tier::Rest, false)],
-                Some(Tier::Bootstraps)
-            )
-            .is_empty(),
+            subjects(&[group(&profile, Tier::Rest, false)], Some(Tier::Modules)).is_empty(),
             "a group whose actions are all dispatched is not waiting"
         );
     }
@@ -1499,9 +1474,9 @@ mod tests {
     }
 
     #[test]
-    fn a_groups_line_is_replaced_as_the_tier_in_flight_advances() {
-        // One line changing what it says, not two lines accumulating — and it
-        // is removed outright once nothing above the group is left.
+    fn a_groups_line_is_removed_once_the_tier_in_flight_advances() {
+        // The group's line is drawn while Modules is in flight, and removed
+        // outright — never left stale — once nothing above the group is left.
         let (printer, _buf) = Printer::for_test_with_live_bars();
         let nvim = Owner::module("nvim");
         let managers = Owner::cfgd("managers");
@@ -1509,7 +1484,7 @@ mod tests {
         let action = probe_action();
         let mut slots = vec![
             slot(&nvim, Tier::Modules, "apt", &action),
-            slot(&managers, Tier::Bootstraps, "pipx", &action),
+            slot(&managers, Tier::Rest, "pipx", &action),
             slot(&profile, Tier::Rest, "brew", &action),
         ];
         let groups = groups_of(&slots);
@@ -1528,19 +1503,11 @@ mod tests {
 
         slots[0].state = SlotState::Done;
         refresh(&printer, &slots, &groups, &deps, &idle, &mut bars);
-        assert_eq!(
-            on_screen(&bars),
-            vec!["profile:work · waiting on bootstraps"],
-            "the group that was blocked keeps ONE line, re-labelled"
-        );
-        assert_eq!(bars.groups.len(), 1, "replaced, never appended to");
-
-        slots[1].state = SlotState::Done;
-        refresh(&printer, &slots, &groups, &deps, &idle, &mut bars);
         assert!(
             on_screen(&bars).is_empty(),
             "nothing is ever blocked behind the last tier"
         );
+        assert_eq!(bars.groups.len(), 0, "the line is removed, not left stale");
     }
 
     #[test]

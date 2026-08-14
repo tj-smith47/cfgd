@@ -97,9 +97,6 @@ pub fn format_action_description(action: &Action) -> String {
             FileAction::Skip { target, .. } => format!("file:skip:{}", path_str(target)),
         },
         Action::Package(pa) => match pa {
-            PackageAction::Bootstrap { manager, .. } => {
-                format!("package:{}:bootstrap", manager)
-            }
             PackageAction::Install {
                 manager, packages, ..
             } => format!("package:{}:install:{}", manager, packages.join(",")),
@@ -361,17 +358,6 @@ pub fn format_plan_item(action: &Action) -> String {
             ),
         },
         Action::Package(pa) => match pa {
-            PackageAction::Bootstrap {
-                manager,
-                method,
-                origin,
-                ..
-            } => format!(
-                "bootstrap {} via {}{}",
-                manager,
-                method,
-                provenance_suffix(origin)
-            ),
             PackageAction::Install {
                 manager,
                 packages,

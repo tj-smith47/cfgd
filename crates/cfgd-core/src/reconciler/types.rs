@@ -568,7 +568,6 @@ pub struct OwnerGroup {
 pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
     match action {
         Action::Module(ma) => Owner::module(ma.module_name.clone()),
-        Action::Package(pa) => package_owner(pa, profile),
         // Env surfaces aggregate declarations from the profile *and* every
         // module, so no single user document owns them — cfgd authored the file
         // and cfgd owns it.
@@ -577,22 +576,6 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
         // A manager is a prerequisite every owner may be waiting on; cfgd
         // provisions it, and no user document declares it.
         Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
-        _ => profile.clone(),
-    }
-}
-
-/// Which owner a package action belongs to, under the profile that planned it.
-///
-/// Split out of [`owner_of`] because `cfgd diff` groups bare
-/// [`PackageAction`]s it never wraps in an [`Action`]: without this, the drift
-/// surface would re-derive the rule and could attribute a bootstrap to the
-/// profile while the plan that fixes it attributes the same work to cfgd.
-pub fn package_owner(action: &PackageAction, profile: &Owner) -> Owner {
-    match action {
-        // A `Bootstrap` installs a package *manager*, a prerequisite any owner
-        // may be waiting on, so it belongs to cfgd rather than to the profile
-        // whose planner happened to emit it.
-        PackageAction::Bootstrap { .. } => Owner::cfgd(MANAGERS_GROUP),
         _ => profile.clone(),
     }
 }
@@ -761,15 +744,15 @@ impl Phase {
 
     /// Dispatch order — the ONE thing `Reconciler::apply` walks. Identical to
     /// [`Phase::owned_actions`] in every phase except `Packages`, where it is
-    /// Rule P's three-tier partition: module-owned groups (tier 0), then
-    /// planned bootstraps (tier B), then the rest (tier 1). Separate from
-    /// `actions()` because `actions()` is the plan's own order and is what
-    /// filters, counts and payloads must keep seeing.
+    /// Rule P's two-tier partition: module-owned groups (tier 0), then the
+    /// rest (tier 1). Separate from `actions()` because `actions()` is the
+    /// plan's own order and is what filters, counts and payloads must keep
+    /// seeing.
     pub fn dispatch_order(&self) -> impl Iterator<Item = (&Owner, &Action)> {
         let mut ordered: Vec<(&Owner, &Action)> = Vec::with_capacity(self.action_count());
         if self.name == PhaseName::Packages {
             for tier in Tier::ALL {
-                ordered.extend(self.owned_actions().filter(|(o, a)| Tier::of(o, a) == tier));
+                ordered.extend(self.owned_actions().filter(|(o, _)| Tier::of(o) == tier));
             }
         } else {
             ordered.extend(self.owned_actions());
@@ -786,47 +769,31 @@ impl Phase {
     }
 }
 
-/// The `Packages` phase's three dispatch tiers, in the order they are released.
+/// The `Packages` phase's two dispatch tiers, in the order they are released.
 ///
 /// Two surfaces read this and they must not disagree: the dispatch order
 /// ([`Phase::dispatch_order`]) partitions the phase by it, and the dispatcher
-/// releases a tier only once the tier above it has *completed*. A partition
-/// that ranked an action differently from the barrier would let a bootstrap run
-/// beside the install it enables.
+/// releases a tier only once the tier above it has *completed*. Manager
+/// provisioning is a `Prerequisites`-phase [`ManagerAction`] node now, ahead
+/// of the whole `Packages` phase, so nothing in this phase blocks on a
+/// same-phase bootstrap any more — module work still runs first because a
+/// profile install may consume a package a module just installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Tier {
     /// Module-owned package work.
     Modules,
-    /// Every planned [`crate::providers::PackageAction::Bootstrap`], which is
-    /// exactly the `cfgd:managers` group. Named rather than numbered because it
-    /// sits BETWEEN the other two: a bootstrap must precede every profile-owned
-    /// consumer of the manager it installs, while a module install on an
-    /// unavailable manager bootstraps it inline and so needs no tier.
-    Bootstraps,
     /// Everything else — in practice the profile's own package work.
     Rest,
 }
 
 impl Tier {
     /// The tiers in release order.
-    pub const ALL: [Tier; 3] = [Tier::Modules, Tier::Bootstraps, Tier::Rest];
+    pub const ALL: [Tier; 2] = [Tier::Modules, Tier::Rest];
 
     /// The ONE tier derivation.
-    ///
-    /// The middle predicate is written as "not module-owned AND a bootstrap"
-    /// rather than just "a bootstrap" so the three arms are a partition by
-    /// construction. Every `Bootstrap` belongs to the `cfgd:managers` group, so
-    /// under that membership rule the two spellings select the same actions —
-    /// but only this one keeps an action from landing in two tiers if that rule
-    /// ever slips.
-    pub fn of(owner: &Owner, action: &Action) -> Self {
+    pub fn of(owner: &Owner) -> Self {
         if owner.kind == OwnerKind::Module {
             Tier::Modules
-        } else if matches!(
-            action,
-            Action::Package(crate::providers::PackageAction::Bootstrap { .. })
-        ) {
-            Tier::Bootstraps
         } else {
             Tier::Rest
         }
@@ -839,7 +806,6 @@ impl Tier {
     pub fn wait_word(self) -> Option<&'static str> {
         match self {
             Tier::Modules => Some("modules"),
-            Tier::Bootstraps => Some("bootstraps"),
             Tier::Rest => None,
         }
     }
@@ -958,9 +924,6 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
             FileAction::Skip { target, .. } => ("file".to_string(), to_posix_string(target)),
         },
         Action::Package(pa) => match pa {
-            PackageAction::Bootstrap { manager, .. } => {
-                ("package".to_string(), format!("{}:bootstrap", manager))
-            }
             PackageAction::Install {
                 manager, packages, ..
             } => (

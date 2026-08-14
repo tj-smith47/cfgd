@@ -88,7 +88,6 @@ struct PhaseLedger<'p> {
     /// The subject every action renders under, in both trees: the same string
     /// the preview bullet printed and `align_width` measured.
     subjects: &'p std::collections::HashMap<usize, String>,
-    bootstrap_owners: &'p std::collections::HashMap<&'p str, String>,
 }
 
 /// One finished action, as its collection point hands it over.
@@ -132,38 +131,6 @@ impl Completions {
         self.0 += 1;
         index
     }
-}
-
-/// Who declared the manager a `PackageAction::Bootstrap` installs, as the
-/// `for <owner token>, …` detail its line carries. `None` when nothing declared
-/// it, which renders the line bare.
-///
-/// A union of DECLARATIONS, deliberately not `effective_desired_packages`: that
-/// view resolves package CLAIMS, so a profile whose packages under this manager
-/// are all also declared by a module would contribute no row and the line would
-/// omit the very owner whose declaration planned the bootstrap.
-fn bootstrap_attribution(
-    manager: &str,
-    profile_name: &str,
-    resolved: &ResolvedProfile,
-    module_actions: &[ResolvedModule],
-) -> Option<String> {
-    let mut owners: Vec<Owner> = Vec::new();
-    // The profile arm is `plan_packages`' own `desired_for(m)` with `modules:
-    // &[]`, so the profile appears exactly when its declaration is what planned
-    // this bootstrap. It is total over `spec.packages.custom` too, which is why
-    // a custom manager needs no second lookup.
-    if !crate::config::desired_packages_for_spec(manager, &resolved.merged.packages).is_empty() {
-        owners.push(Owner::profile(profile_name));
-    }
-    for module in module_actions {
-        if module.packages.iter().any(|p| p.manager == manager) {
-            owners.push(Owner::module(&module.name));
-        }
-    }
-    Owner::order(&mut owners);
-    let tokens: Vec<String> = owners.iter().map(Owner::token).collect();
-    (!tokens.is_empty()).then(|| format!("for {}", tokens.join(", ")))
 }
 
 /// The notes a provider produced during one action, under the status that
@@ -484,22 +451,6 @@ impl<'a> super::Reconciler<'a> {
         // the next action — the previous one already completed atomically, so no
         // file is left torn.
         let mut aborted_code: Option<u8> = None;
-        // Who declared each manager a planned bootstrap installs. Derived here
-        // rather than in `plan_packages`, which every executing call site
-        // passes `modules: &[]` and whose view is therefore profile-only.
-        let bootstrap_owners: std::collections::HashMap<&str, String> = plan
-            .phases
-            .iter()
-            .flat_map(|phase| phase.owned_actions())
-            .filter_map(|(_, action)| match action {
-                Action::Package(PackageAction::Bootstrap { manager, .. }) => {
-                    let detail =
-                        bootstrap_attribution(manager, profile_name, resolved, module_actions)?;
-                    Some((manager.as_str(), detail))
-                }
-                _ => None,
-            })
-            .collect();
         // Post-install notes a manager produced during ONE action, drained
         // after that action's status line so they render attached to it.
         let notes = NoteSink::default();
@@ -564,7 +515,6 @@ impl<'a> super::Reconciler<'a> {
             let ledger = PhaseLedger {
                 phase_name: phase.name.clone(),
                 subjects: &subjects,
-                bootstrap_owners: &bootstrap_owners,
             };
             // The concurrent actions of this phase — all of `Packages`, and the
             // `cfgd:managers` group of `Prerequisites`, whose nodes are a DAG
@@ -1344,29 +1294,14 @@ impl<'a> super::Reconciler<'a> {
                 body,
             },
             None => {
-                let bootstrap = match action {
-                    Action::Package(PackageAction::Bootstrap { manager, .. }) => {
-                        Some(manager.as_str())
-                    }
-                    _ => None,
-                };
                 let noop = declared_noop_role(action);
                 let role = match (noop, action_changed) {
                     (Some(role), _) => role,
                     (None, true) => Role::Ok,
                     (None, false) => Role::Skipped,
                 };
-                // A bootstrap's detail is the only plan-derived one in the
-                // tree, and it always carries its duration: a `(0.0s)` is the
-                // reader's evidence that the manager was already installed by
-                // an earlier tier.
-                let (detail, duration) = match bootstrap {
-                    Some(manager) => (ledger.bootstrap_owners.get(manager).cloned(), Some(elapsed)),
-                    None => (
-                        (noop.is_none() && !action_changed).then(|| "unchanged".to_string()),
-                        (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed),
-                    ),
-                };
+                let detail = (noop.is_none() && !action_changed).then(|| "unchanged".to_string());
+                let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
                 ActionOutcome {
                     subject,
                     role,

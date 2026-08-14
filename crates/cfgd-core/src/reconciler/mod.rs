@@ -58,7 +58,7 @@ pub use run::{
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction,
     ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan,
-    ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier, package_owner,
+    ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
 };
 pub use verify::{VerifyResult, verify};
 

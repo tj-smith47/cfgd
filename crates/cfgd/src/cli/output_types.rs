@@ -216,8 +216,6 @@ pub struct PackageDrift {
     pub shape: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bootstrap_method: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1105,7 +1103,6 @@ mod tests {
                 manager: "brew".to_string(),
                 shape: "missing".to_string(),
                 packages: vec!["ripgrep".to_string()],
-                bootstrap_method: Some("script".to_string()),
             }],
             system: vec![SystemDriftOutput {
                 key: "sysctl.kernel.x".to_string(),
@@ -1181,12 +1178,11 @@ mod tests {
     }
 
     #[test]
-    fn package_drift_skips_empty_packages_and_none_bootstrap() {
+    fn package_drift_skips_empty_packages() {
         let v = PackageDrift {
             manager: "apt".to_string(),
             shape: "extra".to_string(),
             packages: vec![],
-            bootstrap_method: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["manager"], json!("apt"));
@@ -1195,23 +1191,17 @@ mod tests {
             json.get("packages").is_none(),
             "packages must be skipped when Vec is empty"
         );
-        assert!(
-            json.get("bootstrapMethod").is_none(),
-            "bootstrapMethod must be skipped when None"
-        );
     }
 
     #[test]
-    fn package_drift_emits_packages_and_bootstrap_method_when_populated() {
+    fn package_drift_emits_packages_when_populated() {
         let v = PackageDrift {
             manager: "cargo".to_string(),
             shape: "missing".to_string(),
             packages: vec!["bat".to_string(), "fd-find".to_string()],
-            bootstrap_method: Some("rustup".to_string()),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["packages"], json!(["bat", "fd-find"]));
-        assert_eq!(json["bootstrapMethod"], json!("rustup"));
     }
 
     #[test]

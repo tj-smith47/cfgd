@@ -271,11 +271,6 @@ fn plan_skips_manager_with_no_desired_packages() {
 #[test]
 fn format_actions_produces_readable_strings() {
     let actions = vec![
-        PackageAction::Bootstrap {
-            manager: "cargo".into(),
-            method: "rustup".into(),
-            origin: "local".into(),
-        },
         PackageAction::Install {
             manager: "brew".into(),
             packages: vec!["ripgrep".into(), "fd".into()],
@@ -289,12 +284,10 @@ fn format_actions_produces_readable_strings() {
     ];
 
     let formatted = plan_items(actions);
-    assert_eq!(formatted.len(), 3);
-    assert!(formatted[0].contains("bootstrap"));
-    assert!(formatted[0].contains("rustup"));
-    assert!(formatted[1].contains("brew"));
-    assert!(formatted[1].contains("ripgrep"));
-    assert!(formatted[2].contains("skip"));
+    assert_eq!(formatted.len(), 2);
+    assert!(formatted[0].contains("brew"));
+    assert!(formatted[0].contains("ripgrep"));
+    assert!(formatted[1].contains("skip"));
 }
 
 #[test]
@@ -599,7 +592,7 @@ fn plan_multiple_managers() {
 }
 
 #[test]
-fn plan_bootstrap_unavailable_bootstrappable_manager() {
+fn plan_installs_unavailable_bootstrappable_manager_optimistically() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -615,10 +608,13 @@ fn plan_bootstrap_unavailable_bootstrappable_manager() {
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
-    assert_eq!(actions.len(), 2);
-    assert!(matches!(&actions[0], PackageAction::Bootstrap { manager, .. } if manager == "cargo"));
+    // An unavailable-but-bootstrappable manager gets its Install planned
+    // optimistically here; provisioning the manager itself is the
+    // Prerequisites phase's job (`ManagerAction::Provision`), planned
+    // separately and not visible to this per-manager planner.
+    assert_eq!(actions.len(), 1);
     assert!(
-        matches!(&actions[1], PackageAction::Install { manager, packages, .. } if manager == "cargo" && packages.len() == 2)
+        matches!(&actions[0], PackageAction::Install { manager, packages, .. } if manager == "cargo" && packages.len() == 2)
     );
 }
 
@@ -672,11 +668,11 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     let managers: Vec<&dyn PackageManager> = vec![&brew_mock, &tap_mock];
     let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
-    // Should have: Bootstrap(brew), Install(brew: ripgrep), Install(brew-tap: some/tap)
-    assert_eq!(actions.len(), 3);
-    assert!(matches!(&actions[0], PackageAction::Bootstrap { manager, .. } if manager == "brew"));
-    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
-    assert!(matches!(&actions[2], PackageAction::Install { manager, .. } if manager == "brew-tap"));
+    // Should have: Install(brew: ripgrep), Install(brew-tap: some/tap) — brew's
+    // own provisioning is a Prerequisites-phase concern this planner never sees.
+    assert_eq!(actions.len(), 2);
+    assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew"));
+    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew-tap"));
 }
 
 // --- Declarative prune (Uninstall generation) tests ---
@@ -1474,12 +1470,13 @@ fn plan_with_new_managers() {
         } if manager == "pacman" && packages.contains(&"neovim".to_string())
     )));
 
-    // snap: unavailable but bootstrappable → Bootstrap + Install
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, PackageAction::Bootstrap { manager, .. } if manager == "snap"))
-    );
+    // snap: unavailable but bootstrappable → Install planned optimistically
+    // (provisioning is a separate Prerequisites-phase concern)
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        PackageAction::Install { manager, packages, .. }
+            if manager == "snap" && packages.contains(&"nvim".to_string())
+    )));
 }
 
 #[test]
@@ -1619,21 +1616,6 @@ fn apply_packages_uninstall() {
     apply_packages(&actions, &managers, &cx).unwrap();
     let uninstalls = mock.uninstalls.lock().unwrap();
     assert_eq!(uninstalls.len(), 1);
-}
-
-#[test]
-fn apply_packages_bootstrap() {
-    let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    let actions = vec![PackageAction::Bootstrap {
-        manager: "cargo".into(),
-        method: "rustup".into(),
-        origin: "local".into(),
-    }];
-    let managers: Vec<&dyn PackageManager> = vec![&mock];
-    apply_packages(&actions, &managers, &cx).unwrap();
 }
 
 #[test]
@@ -2432,11 +2414,6 @@ fn simple_manager_available_version_dispatches() {
 #[test]
 fn format_package_actions_all_action_types() {
     let actions = vec![
-        PackageAction::Bootstrap {
-            manager: "brew".into(),
-            method: "homebrew installer".into(),
-            origin: "local".into(),
-        },
         PackageAction::Install {
             manager: "cargo".into(),
             packages: vec!["ripgrep".into(), "fd-find".into(), "bat".into()],
@@ -2455,12 +2432,11 @@ fn format_package_actions_all_action_types() {
     ];
 
     let formatted = plan_items(actions);
-    assert_eq!(formatted.len(), 4);
+    assert_eq!(formatted.len(), 3);
 
-    assert_eq!(formatted[0], "bootstrap brew via homebrew installer");
-    assert_eq!(formatted[1], "cargo install ripgrep, fd-find, bat");
-    assert_eq!(formatted[2], "npm uninstall old-pkg");
-    assert_eq!(formatted[3], "skip snap: 'snap' not available");
+    assert_eq!(formatted[0], "cargo install ripgrep, fd-find, bat");
+    assert_eq!(formatted[1], "npm uninstall old-pkg");
+    assert_eq!(formatted[2], "skip snap: 'snap' not available");
 }
 
 #[test]
@@ -2519,12 +2495,8 @@ fn plan_packages_mixed_available_and_unavailable() {
         PackageAction::Skip { manager, .. } if manager == "snap"
     )));
 
-    // nix: unavailable + bootstrappable → bootstrap + install
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, PackageAction::Bootstrap { manager, .. } if manager == "nix"))
-    );
+    // nix: unavailable + bootstrappable → install planned optimistically
+    // (provisioning is a separate Prerequisites-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -2811,11 +2783,6 @@ fn apply_packages_mixed_actions() {
     let npm_mock = MockPackageManager::new("npm", true, vec!["old-pkg"]);
 
     let actions = vec![
-        PackageAction::Bootstrap {
-            manager: "cargo".into(),
-            method: "rustup".into(),
-            origin: "local".into(),
-        },
         PackageAction::Install {
             manager: "cargo".into(),
             packages: vec!["ripgrep".into(), "bat".into()],
@@ -3678,17 +3645,6 @@ fn format_package_actions_single_package_uninstall() {
     }];
     let formatted = plan_items(actions);
     assert_eq!(formatted[0], "apt uninstall vim");
-}
-
-#[test]
-fn format_package_actions_bootstrap_with_long_method() {
-    let actions = vec![PackageAction::Bootstrap {
-        manager: "npm".into(),
-        method: "nvm".into(),
-        origin: "local".into(),
-    }];
-    let formatted = plan_items(actions);
-    assert_eq!(formatted[0], "bootstrap npm via nvm");
 }
 
 // --- parse_simple_lines deduplication behavior ---

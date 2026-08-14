@@ -332,14 +332,7 @@ pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
 /// own would render the same install twice; standalone (`cfgd doctor`, a manual
 /// bootstrap) the window IS the only line and must settle.
 ///
-/// A concurrent index refresh (`PackageContext::for_index_refresh`) takes
-/// neither branch: `Printer::run`/`run_silent` both open a window
-/// unconditionally, and N managers refreshing on N threads would render N
-/// overlapping bars on a TTY and interleave N streams into a non-TTY log.
-/// Checked first, so a context can never fall through to a window by
-/// accident.
-///
-/// A concurrent install lane is checked before both: its window already exists,
+/// A concurrent install lane is checked first: its window already exists,
 /// created by the coordinator at the action's depth, and `Printer::run` would
 /// open a second one at the ambient depth — which in a concurrent phase is
 /// whatever the last renderer state happened to be, shared by every lane.
@@ -350,15 +343,6 @@ pub(super) fn pkg_run(
 ) -> std::io::Result<CommandOutput> {
     if let Some(lane) = cx.lane() {
         lane.run(cmd)
-    } else if cx.windowless() {
-        let start = std::time::Instant::now();
-        let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT)?;
-        Ok(CommandOutput {
-            status: output.status,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            duration: start.elapsed(),
-        })
     } else if cx.caller_owns_status {
         cx.printer.run_silent(cmd, label)
     } else {

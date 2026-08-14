@@ -585,10 +585,6 @@ impl PackageManager for NpmManager {
         Ok(())
     }
 
-    fn update_needs_state(&self) -> bool {
-        true
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // npm view <pkg> version
         let output = run_pkg_query("npm", npm_cmd().args(["view", package, "version"]))?;

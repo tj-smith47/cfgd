@@ -1061,13 +1061,9 @@ pub fn test_printer() -> crate::output::Printer {
 }
 
 /// A `PackageStateStore` that remembers nothing — for a fixture whose subject
-/// (`bootstrap`) reaches no state. A test-fixture stub only: production no
-/// longer constructs `crate::providers::NoOpPackageState` directly — an index
-/// refresh on a spawned lane backs itself with
-/// `crate::providers::IndexRefreshPackageState` instead, which fails loudly
-/// on the same trait rather than permissively. Re-exported under this name
-/// so existing fixtures keep reading as "the state a bootstrap-only test
-/// doesn't need."
+/// (`bootstrap`) reaches no state. A test-fixture stub only; re-exported under
+/// this name so existing fixtures keep reading as "the state a bootstrap-only
+/// test doesn't need."
 pub use crate::providers::NoOpPackageState as NullPackageState;
 
 /// A `PackageContext` for a fixture that drives `bootstrap`, which touches no

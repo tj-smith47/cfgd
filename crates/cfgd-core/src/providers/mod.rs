@@ -32,11 +32,7 @@ pub trait PackageStateStore {
 
 /// A `PackageStateStore` that remembers nothing — the fixture stub for a
 /// `PackageManager` test whose subject never reaches `cx.state` (bootstrap,
-/// install, uninstall, a manager left on the default `update_needs_state`).
-/// Re-exported as `test_helpers::NullPackageState`; production code does not
-/// construct this — an index refresh running on a spawned lane backs itself
-/// with [`IndexRefreshPackageState`] instead, which fails loudly rather than
-/// permissively on the same trait.
+/// install, uninstall). Re-exported as `test_helpers::NullPackageState`.
 pub struct NoOpPackageState;
 
 impl PackageStateStore for NoOpPackageState {
@@ -51,55 +47,6 @@ impl PackageStateStore for NoOpPackageState {
         _is_fallback: bool,
     ) -> Result<()> {
         Ok(())
-    }
-}
-
-/// The state handle for an index refresh running on a spawned lane — every
-/// manager left on the default `update_needs_state`, refreshed inside a
-/// `std::thread::scope` rather than on the thread that owns the state store.
-///
-/// Zero fields, so it is auto-`Send + Sync` with no `unsafe`, unlike `&dyn
-/// PackageStateStore` backed by a real `StateStore` (whose `rusqlite::
-/// Connection` is `Send` but not `Sync`, and whose trait carries no `Send +
-/// Sync` supertrait to carry through `dyn` erasure regardless).
-///
-/// Unlike the permissive [`NoOpPackageState`], every method here fails
-/// loudly. A manager left on the default `update_needs_state` is provably
-/// never supposed to reach `cx.state` from `update` — so a call that DOES
-/// reach it here means that manager's override is wrong (it should return
-/// `true` and refresh sequentially against the real store instead), and the
-/// refresh — which never fails a run — must degrade to report that rather
-/// than silently succeed on a write that never landed.
-pub struct IndexRefreshPackageState;
-
-impl PackageStateStore for IndexRefreshPackageState {
-    fn resolved_prefix(&self, manager: &str) -> Result<Option<(String, bool)>> {
-        Err(crate::errors::PackageError::CommandFailed {
-            manager: manager.to_string(),
-            source: std::io::Error::other(
-                "a concurrent index refresh carries no persisted package-manager state; \
-                 a manager reading cx.state here must override update_needs_state to \
-                 refresh sequentially instead",
-            ),
-        }
-        .into())
-    }
-
-    fn record_resolved_prefix(
-        &self,
-        manager: &str,
-        _prefix: &str,
-        _is_fallback: bool,
-    ) -> Result<()> {
-        Err(crate::errors::PackageError::CommandFailed {
-            manager: manager.to_string(),
-            source: std::io::Error::other(
-                "a concurrent index refresh carries no persisted package-manager state; \
-                 a manager writing cx.state here must override update_needs_state to \
-                 refresh sequentially instead",
-            ),
-        }
-        .into())
     }
 }
 
@@ -130,17 +77,6 @@ pub struct PackageContext<'a> {
     /// line for the same work. Set by [`PackageContext::caller_owns_status`];
     /// false everywhere else, where a manager's command IS the action.
     pub caller_owns_status: bool,
-    /// True only for an index refresh running on a spawned lane, where N
-    /// managers run `update()` on N threads with no status line of their own.
-    /// Every manager's command run under this context executes through
-    /// [`crate::command_output_with_timeout`] — captured, buffered,
-    /// window-free — instead of the live [`Printer`] window every other
-    /// context opens: a live window per lane would render N overlapping bars
-    /// on a TTY and N interleaved streams in a log. Read-only outside this
-    /// module by design ([`PackageContext::windowless`]); the only way to set
-    /// it is [`PackageContext::for_index_refresh`], so it cannot be left on by
-    /// a builder call a later edit forgets to remove.
-    windowless: bool,
     /// The concurrent lane this action is executing in, when the phase is
     /// running package work across managers. A command run under it feeds that
     /// lane's own window (or its capture, off a TTY) instead of opening a
@@ -160,7 +96,6 @@ impl<'a> PackageContext<'a> {
             state,
             notes: NoteSink::discarded(),
             caller_owns_status: false,
-            windowless: false,
             lane: None,
         }
     }
@@ -177,32 +112,8 @@ impl<'a> PackageContext<'a> {
             state,
             notes,
             caller_owns_status: false,
-            windowless: false,
             lane: None,
         }
-    }
-
-    /// The context for one lane of a concurrent index refresh: no window (see
-    /// [`PackageContext::windowless`]), no caller status line to collapse into,
-    /// and notes discarded rather than collected (a note raised here has no
-    /// action drain to settle under, so it must report itself immediately
-    /// rather than being silently attached to whichever action happens to run
-    /// first).
-    pub fn for_index_refresh(printer: &'a Printer, state: &'a dyn PackageStateStore) -> Self {
-        Self {
-            printer,
-            state,
-            notes: NoteSink::discarded(),
-            caller_owns_status: false,
-            windowless: true,
-            lane: None,
-        }
-    }
-
-    /// Whether commands run under this context must execute without opening a
-    /// live output window. See the field doc on [`PackageContext::windowless`].
-    pub fn windowless(&self) -> bool {
-        self.windowless
     }
 
     /// Execute this context's commands inside `lane` — the concurrent
@@ -482,18 +393,6 @@ pub trait PackageManager: Send + Sync {
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn update(&self, cx: &PackageContext<'_>) -> Result<()>;
-
-    /// Whether `update` reads `cx.state` (the persisted per-manager decision
-    /// store, e.g. npm's resolved global prefix). A concurrent refresh runs
-    /// every OTHER manager's `update` inside `std::thread::scope`, backed by
-    /// [`IndexRefreshPackageState`] — safe only because `PackageStateStore`
-    /// carries no `Send + Sync` supertrait bound, so `&dyn PackageStateStore`
-    /// can never cross a spawned thread. A manager overriding this to `true`
-    /// refreshes sequentially instead, on the coordinating thread, against the
-    /// real `StateStore`.
-    fn update_needs_state(&self) -> bool {
-        false
-    }
 
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
@@ -915,11 +814,6 @@ pub trait FileManager: Send + Sync {
 
 #[derive(Debug, Serialize)]
 pub enum PackageAction {
-    Bootstrap {
-        manager: String,
-        method: String,
-        origin: String,
-    },
     Install {
         manager: String,
         packages: Vec<String>,

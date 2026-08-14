@@ -102,8 +102,9 @@ fn uninstall_for_manager(
 }
 
 /// Plan package actions by diffing installed vs desired for all managers.
-/// Handles bootstrap: unavailable managers that can be bootstrapped get Bootstrap
-/// actions before their Install actions.
+/// An unavailable manager that can be bootstrapped still gets its Install
+/// action planned here; provisioning the manager itself is the Prerequisites
+/// phase's job (`ManagerAction::Provision`), planned separately.
 ///
 /// `cfgd_installed` carries the set of packages cfgd itself installed, as
 /// `"<manager>/<identity>"` entries (the installed-DB identity name — i.e. what
@@ -272,13 +273,10 @@ pub fn plan_packages_observed(
             // it cannot read installed state to confirm presence, so it cannot
             // safely prune — leave its packages untouched.
             continue;
-        } else if let Some(plan) = manager.feasible_bootstrap_plan() {
-            // Unavailable but bootstrappable: add Bootstrap + Install all desired
-            actions.push(PackageAction::Bootstrap {
-                manager: manager.name().to_string(),
-                method: plan.method,
-                origin: LOCAL_LAYER.to_string(),
-            });
+        } else if manager.can_bootstrap() {
+            // Unavailable but bootstrappable: the Prerequisites phase plans
+            // provisioning this manager separately (`ManagerAction::Provision`).
+            // Install all desired packages so they land once it lands.
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
@@ -316,13 +314,6 @@ pub fn apply_packages(
 ) -> Result<()> {
     for action in actions {
         match action {
-            PackageAction::Bootstrap {
-                manager: mgr_name, ..
-            } => {
-                if let Some(mgr) = managers.iter().find(|m| m.name() == mgr_name) {
-                    mgr.bootstrap(cx)?;
-                }
-            }
             PackageAction::Install {
                 manager: mgr_name,
                 packages,

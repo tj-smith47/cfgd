@@ -6,8 +6,7 @@ use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{LaneOutput, Printer};
 use crate::providers::{
-    NoteSink, PackageAction, PackageContext, PackageManager, PackageManagerExt, PackageStateStore,
-    ProviderRegistry,
+    NoteSink, PackageAction, PackageContext, PackageManager, PackageStateStore, ProviderRegistry,
 };
 
 use super::scripts::{
@@ -178,55 +177,6 @@ impl<'x> PackageExec<'x> {
     pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<String> {
         let cx = self.cx();
         match action {
-            PackageAction::Bootstrap { manager, .. } => {
-                // Find in ALL managers (not just available — it isn't available yet)
-                for pm in &self.registry.package_managers {
-                    if pm.name() == manager {
-                        // A module's implicit bootstrap dispatches ahead of this
-                        // planned one, so by the time it runs the manager is
-                        // often already installed. Re-running the installer is
-                        // not idempotent for every manager and is minutes of
-                        // work for some; the action still completes, because
-                        // what it promises is an available manager, not an
-                        // installation.
-                        let was_available = pm.is_available();
-                        if !was_available {
-                            pm.bootstrap(&cx)?;
-                        }
-                        // Profile-level packages reach bootstrap through here
-                        // rather than through the Modules phase, so this site
-                        // owes the same record — without it a profile that names
-                        // only `spec.packages` never gets the manager on PATH.
-                        // It precedes the availability check because that check
-                        // resolves the binary, and a manager installed into a
-                        // prefix this process never inherited only becomes
-                        // resolvable once its directories are registered.
-                        self.record_bootstrap(pm.as_ref());
-                        if !pm.is_available() {
-                            return Err(crate::errors::PackageError::BootstrapFailed {
-                                manager: manager.clone(),
-                                message: format!("{manager} still not available after bootstrap"),
-                            }
-                            .into());
-                        }
-                        // A manager bootstrapped just above did not exist when
-                        // the run was planned, so no `Prerequisites` node names
-                        // it and its index is whatever its installer left
-                        // behind. That is the whole of what this inline update
-                        // covers — never a refresh a filter or a prune removed,
-                        // which is the caller's decision to leave alone.
-                        // Mirrors the module-package bootstrap arm below.
-                        if !was_available && pm.is_available() {
-                            pm.update(&cx)?;
-                        }
-                        return Ok(format!("package:{}:bootstrap", manager));
-                    }
-                }
-                Err(crate::errors::PackageError::ManagerNotFound {
-                    manager: manager.clone(),
-                }
-                .into())
-            }
             PackageAction::Install {
                 manager, packages, ..
             } => {
@@ -482,28 +432,6 @@ impl<'x> PackageExec<'x> {
 
                 if let Some(pm) = pm {
                     let cx = self.cx();
-
-                    // Bootstrap if needed. The manager's PATH directories
-                    // are recorded, never appended to `~/.cfgd.env` here:
-                    // the generated env file has exactly one writer, and
-                    // an out-of-band append would be erased by the next
-                    // wholesale rewrite of that file.
-                    let was_available = pm.is_available();
-                    if !was_available && pm.can_bootstrap() {
-                        pm.bootstrap(&cx)?;
-                        self.record_bootstrap(pm.as_ref());
-                    }
-
-                    // A manager bootstrapped just above did not
-                    // exist when the run was planned, so no
-                    // `Prerequisites` node names it and its index is
-                    // whatever its installer left behind. That is the
-                    // whole of what this inline update covers — never
-                    // a refresh a filter or a prune removed.
-                    if !was_available && pm.is_available() {
-                        pm.update(&cx)?;
-                    }
-
                     pm.install(&pkg_names, &cx)?;
                     manager_changed = true;
                 }
@@ -537,8 +465,7 @@ pub(super) fn action_manager(action: &crate::reconciler::types::Action) -> Optio
     use crate::reconciler::types::Action;
     match action {
         Action::Package(
-            PackageAction::Bootstrap { manager, .. }
-            | PackageAction::Install { manager, .. }
+            PackageAction::Install { manager, .. }
             | PackageAction::Uninstall { manager, .. }
             | PackageAction::Skip { manager, .. },
         ) => Some(manager.as_str()),

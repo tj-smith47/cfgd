@@ -65,14 +65,6 @@ fn file_skip(target: &str) -> Action {
     })
 }
 
-fn pkg_bootstrap() -> Action {
-    Action::Package(PackageAction::Bootstrap {
-        manager: "brew".to_string(),
-        method: "script".to_string(),
-        origin: "test".to_string(),
-    })
-}
-
 fn pkg_install(manager: &str, packages: Vec<&str>) -> Action {
     Action::Package(PackageAction::Install {
         manager: manager.to_string(),
@@ -244,13 +236,46 @@ fn action_type_str_file_variants() {
 
 #[test]
 fn action_type_str_package_variants() {
-    assert_eq!(action_type_str(&pkg_bootstrap()), "bootstrap");
     assert_eq!(action_type_str(&pkg_install("brew", vec!["rg"])), "install");
     assert_eq!(
         action_type_str(&pkg_uninstall("brew", vec!["rg"])),
         "uninstall"
     );
     assert_eq!(action_type_str(&pkg_skip()), "skip");
+}
+
+#[test]
+fn action_type_str_manager_variants() {
+    assert_eq!(
+        action_type_str(&Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        })),
+        "refresh"
+    );
+    assert_eq!(
+        action_type_str(&Action::Manager(ManagerAction::Provision {
+            manager: "brew".to_string(),
+            via: "homebrew installer".to_string(),
+            depends_on: vec![],
+        })),
+        "provision"
+    );
+    assert_eq!(
+        action_type_str(&Action::Manager(ManagerAction::Prerequisite {
+            tool: "xcode-select".to_string(),
+            installer: "xcode-select --install".to_string(),
+            required_by: vec!["brew".to_string()],
+            depends_on: vec![],
+        })),
+        "prerequisite"
+    );
+    assert_eq!(
+        action_type_str(&Action::Manager(ManagerAction::Refuse {
+            manager: "brew".to_string(),
+            reason: "no supported installer for this platform".to_string(),
+        })),
+        "refuse"
+    );
 }
 
 #[test]
@@ -979,7 +1004,11 @@ fn build_plan_output_orders_groups_profile_first() {
         &Owner::profile("work"),
         vec![
             module_install(),
-            pkg_bootstrap(),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
@@ -1760,7 +1789,11 @@ fn brew_bootstrap_plan() -> Plan {
     make_plan(vec![(
         PhaseName::Packages,
         vec![
-            pkg_bootstrap(),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             pkg_install("brew", vec!["ripgrep"]),
             pkg_install("brew-tap", vec!["homebrew/cask"]),
         ],
@@ -1981,8 +2014,8 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
             .phases
             .iter()
             .flat_map(|p| p.actions())
-            .any(|a| matches!(a, Action::Package(PackageAction::Bootstrap { .. }))),
-        "the bootstrap is gone, which is what strands the installs"
+            .any(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. }))),
+        "the provision node is gone, which is what strands the installs"
     );
     assert_eq!(
         out.matches("bootstrap(s)").count(),
@@ -2028,7 +2061,11 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
     let mut plan = make_plan(vec![(
         PhaseName::Packages,
         vec![
-            pkg_bootstrap(),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             pkg_install("brew", vec!["ripgrep"]),
             pkg_install("brew", vec!["fd"]),
         ],

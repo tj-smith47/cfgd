@@ -3794,6 +3794,17 @@ fn apply_with_phase_filter_runs_only_packages() {
         )
         .unwrap();
 
+    // The plan model always includes brew's index refresh in Prerequisites —
+    // proving the assertion below is the filter excluding an existing node,
+    // not the node having never been planned in the first place.
+    assert!(
+        plan.phases
+            .iter()
+            .any(|p| p.name == PhaseName::Prerequisites),
+        "the plan model always includes the manager refresh: {:?}",
+        plan.phases
+    );
+
     let printer = test_printer();
 
     // Apply with filter set to Packages phase — should run the install
@@ -3815,6 +3826,16 @@ fn apply_with_phase_filter_runs_only_packages() {
     assert_eq!(result.status, ApplyStatus::Success);
     assert_eq!(result.action_results.len(), 1);
     assert!(result.action_results[0].success);
+    // `--phase packages` filters, and never adds: no `manager:*` node — the
+    // index refresh belongs to Prerequisites and must not run here.
+    assert!(
+        !result
+            .action_results
+            .iter()
+            .any(|r| r.description.starts_with("manager:")),
+        "`--phase packages` must plan zero manager actions: {:?}",
+        result.action_results
+    );
 }
 
 #[test]
@@ -6197,9 +6218,9 @@ fn parse_resource_from_description_keeps_module_name_in_the_id() {
 #[test]
 fn parse_resource_from_description_keeps_manager_name_in_the_package_id() {
     // `package:{manager}:{verb}` has the same shape hazard as `module`. Only
-    // bootstrap/skip reach this parser — install/uninstall are split
-    // per-package by `parse_package_description` first — and both of those
-    // collapsed onto the bare verb, so every manager shared one row.
+    // skip reaches this parser — install/uninstall are split per-package by
+    // `parse_package_description` first — and it collapsed onto the bare
+    // verb, so every manager shared one row.
     let (ty_brew, id_brew) = super::parse_resource_from_description("package:brew:skip");
     let (ty_apt, id_apt) = super::parse_resource_from_description("package:apt:skip");
     assert_eq!(ty_brew, "package");
@@ -7244,50 +7265,33 @@ impl PackageManager for BootstrappablePackageManager {
 }
 
 #[test]
-fn apply_package_bootstrap_makes_manager_available() {
+fn apply_manager_provision_makes_manager_available() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers
         .push(Box::new(BootstrappablePackageManager::new("snap")));
 
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
-
     let plan = Plan {
         phases: vec![Phase::from_actions(
-            PhaseName::Packages,
+            PhaseName::Prerequisites,
             &Owner::profile("test"),
-            vec![Action::Package(PackageAction::Bootstrap {
+            vec![Action::Manager(ManagerAction::Provision {
                 manager: "snap".to_string(),
-                method: "auto".to_string(),
-                origin: "local".to_string(),
+                via: "stub".to_string(),
+                depends_on: vec![],
             })],
         )],
         warnings: vec![],
     };
 
-    let printer = test_printer();
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
-            Path::new("."),
-            &printer,
-            Some(&PhaseFilter::Phase(PhaseName::Packages)),
-            &[],
-            ReconcileContext::Apply,
-            false,
-            None,
-            &crate::AbortFlag::new(),
-        )
-        .unwrap();
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
 
     assert_eq!(result.status, ApplyStatus::Success);
     assert_eq!(result.action_results.len(), 1);
     assert!(result.action_results[0].success);
     assert!(
-        result.action_results[0].description.contains("bootstrap"),
+        result.action_results[0].description.contains("provision"),
         "desc: {}",
         result.action_results[0].description
     );
@@ -7297,40 +7301,24 @@ fn apply_package_bootstrap_makes_manager_available() {
 }
 
 #[test]
-fn apply_package_bootstrap_unknown_manager_errors() {
+fn apply_manager_provision_unknown_manager_errors() {
     let state = test_state();
     let registry = ProviderRegistry::new(); // no managers
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
 
     let plan = Plan {
         phases: vec![Phase::from_actions(
-            PhaseName::Packages,
+            PhaseName::Prerequisites,
             &Owner::profile("test"),
-            vec![Action::Package(PackageAction::Bootstrap {
+            vec![Action::Manager(ManagerAction::Provision {
                 manager: "nonexistent".to_string(),
-                method: "auto".to_string(),
-                origin: "local".to_string(),
+                via: "stub".to_string(),
+                depends_on: vec![],
             })],
         )],
         warnings: vec![],
     };
 
-    let printer = test_printer();
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
-            Path::new("."),
-            &printer,
-            Some(&PhaseFilter::Phase(PhaseName::Packages)),
-            &[],
-            ReconcileContext::Apply,
-            false,
-            None,
-            &crate::AbortFlag::new(),
-        )
-        .unwrap();
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
 
     // Should fail — unknown manager
     assert_eq!(result.status, ApplyStatus::Failed);
@@ -9051,26 +9039,33 @@ fn apply_module_install_packages_bootstraps_when_needed() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase::from_actions(
-            PhaseName::Packages,
-            &Owner::profile("test"),
-            vec![Action::Module(ModuleAction {
-                module_name: "tools".to_string(),
-                kind: ModuleActionKind::InstallPackages {
-                    resolved: vec![ResolvedPackage {
-                        canonical_name: "jq".to_string(),
-                        resolved_name: "jq".to_string(),
-                        manager: "brew".to_string(),
-                        version: None,
-                        script: None,
-                        creates: None,
-                        only_if: None,
-                        unless: None,
-                    }],
-                },
-                origin: None,
-            })],
-        )],
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("test"),
+                vec![provision_node("brew", "stub", &[])],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "tools".to_string(),
+                    kind: ModuleActionKind::InstallPackages {
+                        resolved: vec![ResolvedPackage {
+                            canonical_name: "jq".to_string(),
+                            resolved_name: "jq".to_string(),
+                            manager: "brew".to_string(),
+                            version: None,
+                            script: None,
+                            creates: None,
+                            only_if: None,
+                            unless: None,
+                        }],
+                    },
+                    origin: None,
+                })],
+            ),
+        ],
         warnings: vec![],
     };
 
@@ -9081,7 +9076,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseFilter::Phase(PhaseName::Packages)),
+            None,
             &modules,
             ReconcileContext::Apply,
             false,
@@ -9091,9 +9086,9 @@ fn apply_module_install_packages_bootstraps_when_needed() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert!(result.action_results[0].success);
+    assert!(result.action_results.iter().all(|r| r.success));
 
-    // Manager should have been bootstrapped and package installed
+    // Manager should have been provisioned and package installed
     assert!(registry.package_managers[0].is_available());
     let cx = test_package_context(&printer, &state);
     assert!(
@@ -10153,14 +10148,14 @@ fn format_action_description_module_skip_dependency() {
 }
 
 #[test]
-fn format_action_description_package_bootstrap() {
-    let action = Action::Package(PackageAction::Bootstrap {
+fn format_action_description_manager_provision() {
+    let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
-        method: "curl".to_string(),
-        origin: "local".to_string(),
+        via: "homebrew installer".to_string(),
+        depends_on: vec![],
     });
     let desc = format_action_description(&action);
-    assert_eq!(desc, "package:brew:bootstrap");
+    assert_eq!(desc, "manager:provision:brew");
 }
 
 #[test]
@@ -11721,21 +11716,20 @@ fn format_plan_items_file_set_permissions() {
 }
 
 #[test]
-fn format_plan_items_package_bootstrap() {
+fn format_plan_items_manager_provision() {
     let phase = Phase::from_actions(
-        PhaseName::Packages,
+        PhaseName::Prerequisites,
         &Owner::profile("test"),
-        vec![Action::Package(PackageAction::Bootstrap {
+        vec![Action::Manager(ManagerAction::Provision {
             manager: "brew".into(),
-            method: "curl | bash".into(),
-            origin: "corp".into(),
+            via: "curl | bash".into(),
+            depends_on: vec![],
         })],
     );
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("bootstrap brew"), "got: {}", items[0]);
+    assert!(items[0].contains("provision brew"), "got: {}", items[0]);
     assert!(items[0].contains("curl | bash"), "got: {}", items[0]);
-    assert!(items[0].contains("<- corp"), "got: {}", items[0]);
 }
 
 #[test]
@@ -12429,16 +12423,33 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
 
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = with_test_home_guard(tmp_home.path());
+    // The provision below registers `path_dirs` into the process-global
+    // resolution registry, which production never clears. Without this the
+    // real host directories named here stay resolvable for every later test
+    // in the binary.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
 
-    let state = run_brew_module_action(&["/opt/homebrew/bin", "/opt/homebrew/sbin"]);
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(BootstrappingPackageManager::new(
+            "brew",
+            &["/opt/homebrew/bin", "/opt/homebrew/sbin"],
+        )));
 
-    // The generated env file has exactly one writer — the Env phase. An
-    // out-of-band append here would be erased by the next plan's wholesale
-    // rewrite, so the bootstrapped PATH would vanish on the second apply.
+    let plan = prerequisites_phase(vec![provision_node("brew", "stub", &[])]);
+    let (result, _text) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // The generated env file has exactly one writer — the Env phase. A
+    // Prerequisites-phase provision that writes it out of band would be
+    // erased by the next plan's wholesale rewrite, so the bootstrapped PATH
+    // would vanish on the second apply.
     let env_path = tmp_home.path().join(".cfgd.env");
     assert!(
         !env_path.exists(),
-        "the Modules phase must not write {}",
+        "the Prerequisites phase must not write {}",
         env_path.posix()
     );
 
@@ -12453,7 +12464,7 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
                 "/opt/homebrew/sbin".to_string()
             ]
         )],
-        "a successful bootstrap must record the manager's PATH directories in order"
+        "a successful provision must record the manager's PATH directories in order"
     );
 }
 
@@ -15471,11 +15482,6 @@ fn dedup_passes_through_non_install_package_actions() {
             .collect(),
     );
     let pkg_actions = vec![
-        PackageAction::Bootstrap {
-            manager: "brew".to_string(),
-            method: "curl".to_string(),
-            origin: "profile".to_string(),
-        },
         PackageAction::Uninstall {
             manager: "brew".to_string(),
             packages: vec!["gh".to_string()],
@@ -15490,8 +15496,8 @@ fn dedup_passes_through_non_install_package_actions() {
     let filtered = Reconciler::filter_profile_packages(pkg_actions, &claimed);
     assert_eq!(
         filtered.len(),
-        3,
-        "Bootstrap/Uninstall/Skip must pass through untouched"
+        2,
+        "Uninstall/Skip must pass through untouched"
     );
 }
 
@@ -16640,14 +16646,6 @@ fn uninstall_action(manager: &str, packages: &[&str]) -> Action {
     })
 }
 
-fn bootstrap_action(manager: &str) -> Action {
-    Action::Package(PackageAction::Bootstrap {
-        manager: manager.to_string(),
-        method: "auto".to_string(),
-        origin: "local".to_string(),
-    })
-}
-
 fn owner_resolved_package(manager: &str, package: &str) -> ResolvedPackage {
     ResolvedPackage {
         canonical_name: package.to_string(),
@@ -16836,21 +16834,24 @@ fn owner_order_is_profile_first_in_every_phase() {
 #[test]
 fn bootstrap_group_is_built_at_rank_one() {
     let phase = Phase::from_actions(
-        PhaseName::Packages,
+        PhaseName::Prerequisites,
         &Owner::profile("work"),
         vec![
-            install_action("brew", &["ripgrep"]),
-            bootstrap_action("brew"),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             module_install_action("nvim", "brew", "neovim"),
         ],
     );
 
     assert_eq!(
         owner_tokens(&phase),
-        vec!["profile:work", "cfgd:managers", "module:nvim"],
-        "a bootstrap is cfgd's, not the profile's whose planner emitted it"
+        vec!["cfgd:managers", "module:nvim"],
+        "a manager action is cfgd's, not the profile's whose planner emitted it"
     );
-    assert_eq!(phase.groups()[1].actions.len(), 1);
+    assert_eq!(phase.groups()[0].actions.len(), 1);
 }
 
 #[test]
@@ -16872,69 +16873,6 @@ fn no_bootstrap_builds_no_managers_group() {
             .any(|g| g.owner.kind == OwnerKind::Cfgd),
         "an owner with no actions in a phase produces no group"
     );
-}
-
-#[test]
-fn bootstrap_dispatches_before_the_install_it_enables() {
-    let log = new_dispatch_log();
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
-    let reconciler = Reconciler::new(&registry, &state);
-
-    let plan = packages_phase(vec![
-        install_action("brew", &["ripgrep"]),
-        bootstrap_action("brew"),
-    ]);
-    assert_eq!(
-        owner_tokens(&plan.phases[0]),
-        vec!["profile:work", "cfgd:managers"],
-        "the display order this test exists to contradict"
-    );
-
-    let result = run_apply(&reconciler, &plan, &[], None);
-
-    assert_eq!(
-        dispatch_log(&log),
-        vec!["bootstrap:brew", "install:brew:ripgrep"]
-    );
-    assert_eq!(result.status, ApplyStatus::Success);
-    assert!(
-        result.action_results.iter().all(|r| r.error.is_none()),
-        "no action may fail for want of the manager the run itself installs: {:?}",
-        result.action_results
-    );
-}
-
-#[test]
-fn module_package_work_dispatches_before_the_bootstrap_tier() {
-    let log = new_dispatch_log();
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("pipx", &log, false)));
-    let reconciler = Reconciler::new(&registry, &state);
-
-    let plan = packages_phase(vec![
-        bootstrap_action("pipx"),
-        module_install_action("nvim", "brew", "neovim"),
-    ]);
-    let modules = vec![module_for("nvim", "brew", "neovim")];
-
-    let result = run_apply(&reconciler, &plan, &modules, None);
-
-    assert_eq!(
-        dispatch_log(&log),
-        vec!["install:brew:neovim", "bootstrap:pipx"],
-        "module-owned package work completes before the bootstrap tier begins"
-    );
-    assert_eq!(result.status, ApplyStatus::Success);
 }
 
 #[test]
@@ -16964,75 +16902,35 @@ fn module_package_work_dispatches_before_profile_package_work() {
 }
 
 #[test]
-fn brew_bootstrap_precedes_pipx_bootstrap() {
+fn apply_manager_provision_is_skipped_when_already_available() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("pipx", &log, false)));
-    let reconciler = Reconciler::new(&registry, &state);
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
 
-    let plan = packages_phase(vec![bootstrap_action("brew"), bootstrap_action("pipx")]);
-    assert_eq!(
-        owner_tokens(&plan.phases[0]),
-        vec!["cfgd:managers"],
-        "both bootstraps share one group, so plan order is the only order there is"
-    );
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
 
-    let result = run_apply(&reconciler, &plan, &[], None);
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
 
-    assert_eq!(
-        dispatch_log(&log),
-        vec!["bootstrap:brew", "bootstrap:pipx"],
-        "planned bootstraps run serially among themselves, in plan order"
-    );
     assert_eq!(result.status, ApplyStatus::Success);
-}
-
-#[test]
-fn planned_bootstrap_is_skipped_when_its_manager_is_already_available() {
-    let log = new_dispatch_log();
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
-    let reconciler = Reconciler::new(&registry, &state);
-
-    let plan = packages_phase(vec![
-        bootstrap_action("brew"),
-        module_install_action("nvim", "brew", "neovim"),
-    ]);
-    let modules = vec![module_for("nvim", "brew", "neovim")];
-
-    let result = run_apply(&reconciler, &plan, &modules, None);
-
-    let events = dispatch_log(&log);
-    assert_eq!(
-        events.iter().filter(|e| *e == "bootstrap:brew").count(),
-        1,
-        "the module's implicit bootstrap already installed brew: {events:?}"
-    );
-    assert_eq!(events[0], "bootstrap:brew");
-
-    // The action still completes: what it promises is an available manager,
-    // not an installation.
-    let bootstrap = result
-        .action_results
-        .iter()
-        .find(|r| r.description == "package:brew:bootstrap")
-        .expect("the planned bootstrap reports a result of its own");
-    assert!(bootstrap.success);
-    assert!(bootstrap.changed, "applied, not skipped");
-    assert_eq!(result.planned_total, 2);
-    assert_eq!(
-        state.journal_entries(result.apply_id).unwrap().len(),
-        2,
-        "one journal row per planned action, bootstrap included"
+    assert!(result.action_results[0].success);
+    assert!(
+        !dispatch_log(&log).iter().any(|e| e == "bootstrap:brew"),
+        "an already-available manager's bootstrap() is never called: {:?}",
+        dispatch_log(&log)
     );
 }
 
@@ -17049,11 +16947,19 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
     let build_plan = || Plan {
         phases: vec![
             Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("work"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
                 PhaseName::Packages,
                 &Owner::profile("work"),
                 vec![
                     install_action("brew", &["fd"]),
-                    bootstrap_action("brew"),
                     module_install_action("nvim", "brew", "neovim"),
                 ],
             ),
@@ -17087,16 +16993,18 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
     assert_eq!(
         by_plan,
         vec![
+            "provision:brew",
             "brew:install:fd",
-            "brew:bootstrap",
             "nvim:packages:neovim",
             "/home/u/.gitconfig",
         ],
-        "indices follow the flattened group order, not the tiers"
+        "indices follow the flattened group order, not dispatch order"
     );
 
     // Row ids ascend in insertion order, which is dispatch order — and it is a
-    // different order, which is what makes the derivation change observable.
+    // different order, which is what makes the derivation change observable:
+    // module-owned Packages work dispatches before the profile's, even though
+    // the profile's action was declared first.
     let mut by_dispatch: Vec<(i64, &str)> = entries
         .iter()
         .map(|e| (e.id, e.resource_id.as_str()))
@@ -17105,8 +17013,8 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
     assert_eq!(
         by_dispatch.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
         vec![
+            "provision:brew",
             "nvim:packages:neovim",
-            "brew:bootstrap",
             "brew:install:fd",
             "/home/u/.gitconfig",
         ]
@@ -17615,51 +17523,12 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
 }
 
 #[test]
-fn bootstrap_action_drains_the_phase() {
-    let probe = LaneProbe::holding(&["bootstrap:brew", "brew:fd", "apt:curl"]);
-    let log = new_dispatch_log();
-    let registry = lane_registry(vec![
-        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
-        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
-    ]);
-    let plan = packages_phase(vec![
-        bootstrap_action("brew"),
-        install_action("brew", &["fd"]),
-        install_action("apt", &["curl"]),
-    ]);
-
-    let driver = std::sync::Arc::clone(&probe);
-    let outcome = ConcurrentApply::new(registry, plan).run(move || {
-        assert!(driver.await_started("bootstrap:brew"));
-        assert_eq!(
-            driver.in_flight(),
-            1,
-            "nothing may overlap a bootstrap: {:?}",
-            driver.events()
-        );
-        driver.release("bootstrap:brew");
-        // Once the gate releases, the two installs it enabled run in their own
-        // lanes — so the drain was the bootstrap's, not the phase's.
-        assert!(
-            driver.await_in_flight(2),
-            "the phase stayed drained after the bootstrap finished: {:?}",
-            driver.events()
-        );
-        driver.release_all();
-    });
-
-    assert_eq!(outcome.result.status, ApplyStatus::Success);
-    let events = probe.events();
-    assert!(event_at(&events, "end:bootstrap:brew") < event_at(&events, "start:brew:fd"));
-    assert!(event_at(&events, "end:bootstrap:brew") < event_at(&events, "start:apt:curl"));
-    assert_eq!(probe.peak(), 2);
-}
-
-#[test]
 fn unavailable_manager_action_drains_the_phase() {
-    // The implicit bootstrap inside a module install: no planned `Bootstrap`
-    // action exists anywhere in this plan, so a gate keyed on the action
-    // variant would miss it entirely.
+    // A manager the registry reports unavailable forces every action naming
+    // it to run alone in the phase — provisioning now happens ahead of time,
+    // in Prerequisites, so this is the defensive floor for a manager that is
+    // STILL unavailable when Packages runs (a provision that failed, or a
+    // manager no Prerequisites node ever named).
     let probe = LaneProbe::holding(&["brew:neovim"]);
     let log = new_dispatch_log();
     let registry = lane_registry(vec![
@@ -17670,12 +17539,6 @@ fn unavailable_manager_action_drains_the_phase() {
         module_install_action("nvim", "brew", "neovim"),
         module_install_action("tmux", "apt", "tmux"),
     ]);
-    assert!(
-        !plan.phases[0]
-            .actions()
-            .any(|a| matches!(a, Action::Package(PackageAction::Bootstrap { .. }))),
-        "the fixture's whole point is that nothing planned a bootstrap"
-    );
     let modules = vec![
         module_for("nvim", "brew", "neovim"),
         module_for("tmux", "apt", "tmux"),
@@ -17699,52 +17562,7 @@ fn unavailable_manager_action_drains_the_phase() {
     assert_eq!(outcome.result.status, ApplyStatus::Success);
     let events = probe.events();
     assert!(event_at(&events, "end:brew:neovim") < event_at(&events, "start:apt:tmux"));
-    assert!(
-        dispatch_log(&log).contains(&"bootstrap:brew".to_string()),
-        "the module install bootstrapped brew inline: {:?}",
-        dispatch_log(&log)
-    );
     assert_eq!(probe.peak(), 1);
-}
-
-#[test]
-fn manager_becomes_available_mid_phase() {
-    // The gate's predicate is a dispatch-time read, so once the bootstrap has
-    // made brew resolve, brew's next action stops draining and dispatches
-    // beside another manager's.
-    let probe = LaneProbe::holding(&["brew:bpkg", "apt:cpkg"]);
-    let log = new_dispatch_log();
-    let registry = lane_registry(vec![
-        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
-        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
-    ]);
-    let plan = packages_phase(vec![
-        module_install_action("a", "brew", "apkg"),
-        module_install_action("b", "brew", "bpkg"),
-        module_install_action("c", "apt", "cpkg"),
-    ]);
-    let modules = vec![
-        module_for("a", "brew", "apkg"),
-        module_for("b", "brew", "bpkg"),
-        module_for("c", "apt", "cpkg"),
-    ];
-
-    let driver = std::sync::Arc::clone(&probe);
-    let outcome = ConcurrentApply::new(registry, plan)
-        .with_modules(modules)
-        .run(move || {
-            assert!(
-                driver.await_in_flight(2),
-                "after the bootstrap, brew's lane runs beside apt's again: {:?}",
-                driver.events()
-            );
-            driver.release_all();
-        });
-
-    assert_eq!(outcome.result.status, ApplyStatus::Success);
-    let events = probe.events();
-    assert!(event_at(&events, "end:brew:apkg") < event_at(&events, "start:brew:bpkg"));
-    assert_eq!(probe.peak(), 2);
 }
 
 #[test]
@@ -18284,12 +18102,16 @@ fn retain_actions_drops_the_groups_it_empties() {
         &profile,
         vec![
             install_action("brew", &["ripgrep"]),
-            bootstrap_action("brew"),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             module_install_action("nvim", "brew", "neovim"),
         ],
     );
 
-    phase.retain_actions(|a| !matches!(a, Action::Package(PackageAction::Bootstrap { .. })));
+    phase.retain_actions(|a| !matches!(a, Action::Manager(_)));
 
     assert_eq!(
         phase
@@ -18364,7 +18186,11 @@ fn retain_groups_keeps_the_surviving_owners_in_sort_key_order() {
         &profile,
         vec![
             install_action("brew", &["ripgrep"]),
-            bootstrap_action("brew"),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             module_install_action("nvim", "brew", "neovim"),
             module_install_action("apt-mod", "apt", "fd"),
         ],
@@ -18424,7 +18250,11 @@ fn to_hash_string_is_stable_across_group_permutation() {
         vec![
             install_action("brew", &["ripgrep"]),
             module_install_action("nvim", "brew", "neovim"),
-            bootstrap_action("brew"),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                depends_on: vec![],
+            }),
             install_action("apt", &["fd"]),
         ]
     };
@@ -18952,7 +18782,11 @@ fn bootstrap_renders_in_cfgd_managers_group() {
 
     let plan = packages_phase(vec![
         install_action("brew", &["ripgrep"]),
-        bootstrap_action("brew"),
+        Action::Manager(ManagerAction::Provision {
+            manager: "brew".to_string(),
+            via: "homebrew installer".to_string(),
+            depends_on: vec![],
+        }),
         module_install_action("nvim", "brew", "neovim"),
     ]);
     let resolved = resolved_for("work", &["ripgrep"]);
@@ -18983,44 +18817,6 @@ fn bootstrap_renders_in_cfgd_managers_group() {
 }
 
 #[test]
-fn bootstrap_detail_names_every_declaring_owner() {
-    // The claimed-away shape: the SAME package under both the profile and the
-    // module, which is the only fixture that catches a derivation built on
-    // `effective_desired_packages` (whose claim rule drops the profile row).
-    let log = new_dispatch_log();
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
-    let reconciler = Reconciler::new(&registry, &state);
-
-    let plan = packages_phase(vec![bootstrap_action("brew")]);
-    let resolved = resolved_for("work", &["neovim"]);
-    let modules = vec![module_for("nvim", "brew", "neovim")];
-    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
-
-    assert!(
-        out.contains("for profile:work, module:nvim"),
-        "the attribution names every declarer, profile-first: {out}"
-    );
-
-    // A failed bootstrap gives the detail slot to the error instead: one slot
-    // cannot carry both, and the error is what the reader must act on.
-    let empty_registry = ProviderRegistry::new();
-    let failing = Reconciler::new(&empty_registry, &state);
-    let (_, failed_out) = apply_transcript(&failing, &plan, &resolved, &modules);
-    assert!(
-        failed_out.contains("not found in registry"),
-        "the collapsed error takes the slot: {failed_out}"
-    );
-    assert!(
-        !failed_out.contains("for profile:work"),
-        "the attribution must not survive beside an error: {failed_out}"
-    );
-}
-
-#[test]
 fn bootstrap_group_is_display_only() {
     let log = new_dispatch_log();
     let state = test_state();
@@ -19030,10 +18826,14 @@ fn bootstrap_group_is_display_only() {
         .push(Box::new(DispatchLogManager::new("brew", &log, false)));
     let reconciler = Reconciler::new(&registry, &state);
 
-    let action = bootstrap_action("brew");
+    let action = Action::Manager(ManagerAction::Provision {
+        manager: "brew".to_string(),
+        via: "homebrew installer".to_string(),
+        depends_on: vec![],
+    });
     assert_eq!(
         crate::reconciler::format_action_description(&action),
-        "package:brew:bootstrap",
+        "manager:provision:brew",
         "the resource id reads no owner"
     );
 
@@ -19044,7 +18844,7 @@ fn bootstrap_group_is_display_only() {
     assert_eq!(result.action_results.len(), 1);
     assert_eq!(
         result.action_results[0].description,
-        "package:brew:bootstrap"
+        "manager:provision:brew"
     );
     assert_eq!(result.action_results[0].phase, "packages");
     assert_eq!(result.planned_total, 1);

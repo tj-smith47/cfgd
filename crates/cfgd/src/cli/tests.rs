@@ -9584,21 +9584,48 @@ fn action_type_str_package_variants() {
     );
 
     assert_eq!(
-        super::action_type_str(&Action::Package(PackageAction::Bootstrap {
-            manager: "brew".into(),
-            method: "curl".into(),
-            origin: "local".into(),
-        })),
-        "bootstrap"
-    );
-
-    assert_eq!(
         super::action_type_str(&Action::Package(PackageAction::Skip {
             manager: "brew".into(),
             reason: "test".into(),
             origin: "local".into(),
         })),
         "skip"
+    );
+}
+
+#[test]
+fn action_type_str_manager_variants() {
+    use cfgd_core::reconciler::{Action, ManagerAction};
+
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        })),
+        "refresh"
+    );
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::Provision {
+            manager: "brew".to_string(),
+            via: "homebrew installer".to_string(),
+            depends_on: vec![],
+        })),
+        "provision"
+    );
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::Prerequisite {
+            tool: "xcode-select".to_string(),
+            installer: "xcode-select --install".to_string(),
+            required_by: vec!["brew".to_string()],
+            depends_on: vec![],
+        })),
+        "prerequisite"
+    );
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::Refuse {
+            manager: "brew".to_string(),
+            reason: "no supported installer for this platform".to_string(),
+        })),
+        "refuse"
     );
 }
 
@@ -15777,14 +15804,14 @@ fn action_path_package_uninstall() {
 }
 
 #[test]
-fn action_path_package_bootstrap() {
-    let action = reconciler::Action::Package(PackageAction::Bootstrap {
+fn action_path_manager_provision() {
+    let action = reconciler::Action::Manager(reconciler::ManagerAction::Provision {
         manager: "brew".into(),
-        method: "curl install".into(),
-        origin: "profile".into(),
+        via: "homebrew installer".into(),
+        depends_on: vec![],
     });
-    let path = super::action_path(&PhaseName::Packages, &action);
-    assert_eq!(path, "packages.brew");
+    let path = super::action_path(&PhaseName::Prerequisites, &action);
+    assert_eq!(path, "prerequisites.brew");
 }
 
 #[test]

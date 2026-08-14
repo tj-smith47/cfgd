@@ -2,7 +2,7 @@ use super::*;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
-use cfgd_core::reconciler::{Owner, PhaseName, package_owner};
+use cfgd_core::reconciler::{Owner, PhaseName};
 
 /// Render one module-deployed file's inline diff and report whether it drifts.
 ///
@@ -395,15 +395,10 @@ fn package_missing_drift(
         manager: pkg.manager.clone(),
         shape: "missing".to_string(),
         packages: vec![pkg.resolved_name.clone()],
-        bootstrap_method: None,
     })
 }
 
 /// Render the package half of a drift report, one owner group per owner.
-///
-/// Attribution runs through [`package_owner`], the same rule the plan uses, so
-/// a bootstrap reads as `cfgd:managers` here exactly as it does in the plan
-/// that would install it.
 fn print_package_drift(
     pkg_actions: &[PackageAction],
     section: &SectionGuard<'_>,
@@ -413,7 +408,7 @@ fn print_package_drift(
     let pkg_diffs: Vec<(&PackageAction, Owner)> = pkg_actions
         .iter()
         .filter(|a| !matches!(a, PackageAction::Skip { .. }))
-        .map(|a| (a, package_owner(a, profile)))
+        .map(|a| (a, profile.clone()))
         .collect();
     let has_drift = !pkg_diffs.is_empty();
     if pkg_diffs.is_empty() {
@@ -425,19 +420,6 @@ fn print_package_drift(
             let group = section.section_owner(&owner_label(owner));
             for (action, _) in pkg_diffs.iter().filter(|(_, o)| o == owner) {
                 match action {
-                    PackageAction::Bootstrap {
-                        manager, method, ..
-                    } => {
-                        group
-                            .status(Role::Warn, format!("{}: not installed", manager))
-                            .detail(format!("can bootstrap via {}", method));
-                        payload.packages.push(PackageDrift {
-                            manager: manager.clone(),
-                            shape: "bootstrap".to_string(),
-                            packages: Vec::new(),
-                            bootstrap_method: Some(method.clone()),
-                        });
-                    }
                     PackageAction::Install {
                         manager, packages, ..
                     } => {
@@ -448,7 +430,6 @@ fn print_package_drift(
                             manager: manager.clone(),
                             shape: "missing".to_string(),
                             packages: packages.clone(),
-                            bootstrap_method: None,
                         });
                     }
                     PackageAction::Uninstall {
@@ -461,7 +442,6 @@ fn print_package_drift(
                             manager: manager.clone(),
                             shape: "extra".to_string(),
                             packages: packages.clone(),
-                            bootstrap_method: None,
                         });
                     }
                     PackageAction::Skip { .. } => {}
@@ -722,11 +702,6 @@ mod tests {
                 packages: vec!["left-pad".into()],
                 origin: "profile".into(),
             },
-            PackageAction::Bootstrap {
-                manager: "pipx".into(),
-                method: "pip install pipx".into(),
-                origin: "profile".into(),
-            },
         ];
         {
             let section = printer.section(PhaseName::Packages.section_title());
@@ -746,27 +721,10 @@ mod tests {
             "should show extra npm packages, got: {output}"
         );
         assert!(
-            output.contains("pipx: not installed") && output.contains("bootstrap"),
-            "should show bootstrap need, got: {output}"
+            output.contains("profile:tiny"),
+            "package drift must group under its profile owner, got: {output}"
         );
-        // Attribution is the plan's, not a second rule: a bootstrap installs a
-        // package *manager*, so it belongs to cfgd, and the profile's own
-        // group is the one that precedes it (`Owner::sort_key`).
-        let profile_at = output.find("profile:tiny").unwrap_or_else(|| {
-            panic!("package drift must group under its profile owner, got: {output}")
-        });
-        let cfgd_at = output
-            .find("cfgd:managers")
-            .unwrap_or_else(|| panic!("a bootstrap must group under cfgd:managers, got: {output}"));
-        assert!(
-            profile_at < cfgd_at,
-            "profile precedes cfgd in owner order, got: {output}"
-        );
-        assert!(
-            output.find("pipx: not installed") > Some(cfgd_at),
-            "the bootstrap line belongs inside the cfgd:managers group, got: {output}"
-        );
-        assert_eq!(payload.packages.len(), 3);
+        assert_eq!(payload.packages.len(), 2);
     }
 
     /// Minimal package-manager double: a fixed installed set plus an optional

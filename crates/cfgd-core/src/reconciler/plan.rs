@@ -118,16 +118,7 @@ impl<'a> super::Reconciler<'a> {
         // `Phase::dispatch_order`, not by the phase list. Profile entries
         // already claimed by a module install are dropped here so the package
         // installs only once.
-        let profile_packages = Self::filter_profile_packages(pkg_actions, &claimed)
-            .into_iter()
-            // Provisioning a manager is a `Prerequisites` node now, and one
-            // reaching `Packages` as well would plan the same install twice —
-            // once above the packages that need it and once beside them. The
-            // planner still MINTS bootstraps, because the drift surfaces that
-            // read a bare `PackageAction` list (`cfgd diff`, the drift-event
-            // recorder) report an absent manager from it.
-            .filter(|action| !matches!(action, PackageAction::Bootstrap { .. }))
-            .collect::<Vec<_>>();
+        let profile_packages = Self::filter_profile_packages(pkg_actions, &claimed);
 
         // Prerequisites: the managers that create binaries, then the env file
         // that publishes where they live, then the live-session broadcast. It

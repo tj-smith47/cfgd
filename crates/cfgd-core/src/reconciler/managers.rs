@@ -191,7 +191,7 @@ fn wanted_managers(
     for action in package_actions {
         let manager = match action {
             PackageAction::Install { manager, .. } | PackageAction::Skip { manager, .. } => manager,
-            PackageAction::Bootstrap { .. } | PackageAction::Uninstall { .. } => continue,
+            PackageAction::Uninstall { .. } => continue,
         };
         wanted.insert(node_manager(registry, manager).to_string());
     }
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn provisioning_is_planned_once_not_as_a_package_bootstrap_too() {
+    fn provisioning_is_planned_once_as_a_manager_node() {
         let harness = ReconcilerTestHarness::builder()
             .profile_yaml("packages:\n  cargo: [bat]\n")
             .with_package_manager(
@@ -1016,34 +1016,14 @@ mod tests {
         let plan = harness
             .plan_with_actions(
                 Vec::new(),
-                vec![
-                    PackageAction::Bootstrap {
-                        manager: "cargo".to_string(),
-                        method: "rustup".to_string(),
-                        origin: "profile".to_string(),
-                    },
-                    PackageAction::Install {
-                        manager: "cargo".to_string(),
-                        packages: vec!["bat".to_string()],
-                        origin: "profile".to_string(),
-                    },
-                ],
+                vec![PackageAction::Install {
+                    manager: "cargo".to_string(),
+                    packages: vec!["bat".to_string()],
+                    origin: "profile".to_string(),
+                }],
                 Vec::new(),
             )
             .expect("plan");
-        let bootstraps: Vec<String> = plan
-            .phases
-            .iter()
-            .flat_map(|p| p.owned_actions())
-            .filter(|(_, action)| {
-                matches!(action, Action::Package(PackageAction::Bootstrap { .. }))
-            })
-            .map(|(_, action)| format_action_description(action))
-            .collect();
-        assert!(
-            bootstraps.is_empty(),
-            "provisioning is a Prerequisites node now, planned nowhere else: {bootstraps:?}"
-        );
         let provisions: Vec<String> = plan
             .phases
             .iter()

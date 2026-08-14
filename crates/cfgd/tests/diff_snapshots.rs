@@ -288,7 +288,6 @@ fn diff_bridge_one_blank_line() {
             manager: "drift-mgr".to_string(),
             shape: "missing".to_string(),
             packages: vec!["pkg-a".to_string()],
-            bootstrap_method: None,
         }],
         system: Vec::new(),
         system_errors: Vec::new(),
