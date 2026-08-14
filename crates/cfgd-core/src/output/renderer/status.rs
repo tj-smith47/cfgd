@@ -59,6 +59,14 @@ pub(crate) fn pad_subject(subject: &str, width: usize, has_trailing: bool) -> Op
     (cur < width).then(|| format!("{}{}", subject, " ".repeat(width - cur)))
 }
 
+/// Columns a line rendered at `depth` may occupy before `w` hard-wraps it.
+/// `None` for a sink that never does — a capture buffer or a redirected
+/// stream keeps the physical lines the renderer emitted, so no amount of
+/// padding can strand anything there.
+fn wrap_budget(w: &dyn Writer, depth: usize) -> Option<usize> {
+    w.wrap_columns().map(|cols| cols.saturating_sub(depth * 2))
+}
+
 impl Renderer {
     /// Top-level status dispatcher. Routes to the topmost open section's
     /// pending-statuses buffer when one exists (so subjects can be
@@ -107,6 +115,7 @@ impl Renderer {
                 self.flush_pending_section_headers(w);
             }
             StatusRoute::Live(width) => {
+                let width = self.affordable_column(w, depth, f, width);
                 let padded = pad_subject(f.subject, width, f.has_trailing());
                 match padded {
                     Some(subject) => self.render_status_immediate(
@@ -142,6 +151,35 @@ impl Renderer {
                 });
             }
         }
+    }
+
+    /// The column `f` can be padded to at `depth` without pushing its trailing
+    /// content over the sink's edge.
+    ///
+    /// Alignment is a courtesy; a duration wrapped onto a row of its own,
+    /// under a run of padding spaces, is not one — it reads as a bare
+    /// right-aligned `(12.1s)` separated from its action by blank space. So
+    /// the requested column is capped per line by what the line can hold, and
+    /// a line with no room left renders unpadded and wraps under its own
+    /// marker instead.
+    pub(crate) fn affordable_column(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        f: &StatusFields<'_>,
+        column: usize,
+    ) -> usize {
+        let Some(budget) = wrap_budget(w, depth) else {
+            return column;
+        };
+        // Everything on the line that is not the subject — the glyph, the
+        // first line of the detail, the target, the duration — measured off
+        // the composed line rather than re-derived, so no format string here
+        // can disagree with the one that builds it.
+        let (line, _) = self.compose_status(f);
+        let fixed = console::measure_text_width(&line)
+            .saturating_sub(console::measure_text_width(f.subject));
+        column.min(budget.saturating_sub(fixed))
     }
 
     /// Emit a Status line with no group bookkeeping: the live-column route,
@@ -255,6 +293,83 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         (r, sink, buf)
+    }
+
+    /// A sink that hard-wraps, the way a terminal does. `StringSink` answers
+    /// `None`, so the padding budget is only ever exercised against one of
+    /// these — which is also why a golden capture is never re-padded.
+    struct NarrowSink(StringSink, usize);
+
+    impl Writer for NarrowSink {
+        fn write_line(&self, text: &str) {
+            self.0.write_line(text);
+        }
+
+        fn wrap_columns(&self) -> Option<usize> {
+            Some(self.1)
+        }
+    }
+
+    fn narrow(cols: usize) -> (Renderer, NarrowSink, Arc<Mutex<String>>) {
+        let (r, sink, buf) = capture();
+        (r, NarrowSink(sink, cols), buf)
+    }
+
+    fn timed(subject: &str) -> StatusFields<'_> {
+        StatusFields {
+            role: Role::Ok,
+            subject,
+            detail: None,
+            duration: Some(Duration::from_millis(12_100)),
+            target: None,
+            subject_style: None,
+            detail_style: None,
+        }
+    }
+
+    #[test]
+    fn the_alignment_column_is_capped_by_what_the_line_can_hold() {
+        // The plan-wide column is computed from the widest subject in the
+        // phase, which says nothing about the window. Padded to it, this
+        // line's duration lands past the edge and wraps under a row of
+        // nothing but padding.
+        let (r, sink, _buf) = narrow(40);
+        let f = timed("install ripgrep");
+        let capped = r.affordable_column(&sink, 1, &f, 120);
+
+        assert!(capped < 120, "the request is capped: {capped}");
+        let padded = pad_subject(f.subject, capped, true).unwrap_or_default();
+        let width = console::measure_text_width(&format!("  ✓ {padded} (12.1s)"));
+        assert!(width <= 40, "the padded line still fits: {width}");
+    }
+
+    #[test]
+    fn a_line_with_no_room_left_is_not_padded_at_all() {
+        // Its own content already fills the window, so every column of
+        // padding is one the duration is pushed out by.
+        let (r, sink, _buf) = narrow(40);
+        let f = timed("install ripgrep and a great many other packages");
+
+        let capped = r.affordable_column(&sink, 1, &f, 120);
+        assert!(
+            capped < console::measure_text_width(f.subject),
+            "the cap lands inside the subject: {capped}"
+        );
+        assert_eq!(
+            pad_subject(f.subject, capped, true),
+            None,
+            "so the line renders unpadded and wraps under its own marker"
+        );
+    }
+
+    #[test]
+    fn a_sink_that_never_wraps_keeps_the_column_it_was_given() {
+        // A capture buffer or a redirected stream keeps the physical lines the
+        // renderer emitted, so padding can strand nothing there — and a golden
+        // recorded on one window replays identically on another.
+        let (r, sink, _buf) = capture();
+        let f = timed("install ripgrep");
+        assert_eq!(r.affordable_column(&sink, 1, &f, 120), 120);
     }
 
     #[test]
