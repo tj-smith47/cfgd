@@ -5262,7 +5262,6 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
             on_conflict: crate::cli::OnConflict::Ask,
-            default_strategy: cfgd_core::config::FileStrategy::Symlink,
             path: Some(target.to_str().unwrap()),
             from: None,
             branch: "master",
