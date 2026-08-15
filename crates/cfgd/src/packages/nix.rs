@@ -174,11 +174,6 @@ impl PackageManager for NixManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Nix packages are pinned; update is a no-op (channels are managed separately)
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // nix search nixpkgs <pkg> --json → parse version from first matching result
         if nix_available() {
@@ -290,12 +285,16 @@ mod tests {
     }
 
     #[test]
-    fn nix_manager_update_is_noop() {
+    fn nix_declares_no_index_to_refresh() {
         let mgr = NixManager;
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
+        assert!(
+            !mgr.has_index(),
+            "nix packages are pinned; channels are managed separately"
+        );
+        mgr.refresh_index(&cx).unwrap();
     }
 
     #[test]
@@ -432,15 +431,6 @@ mod tests {
             }
         }
         assert_eq!(available, expected);
-    }
-
-    #[test]
-    fn nix_update_returns_ok() {
-        let mgr = NixManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
     }
 
     // --- parse_nix_profile_list_json ---

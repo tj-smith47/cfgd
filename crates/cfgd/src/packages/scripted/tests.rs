@@ -170,7 +170,7 @@ fn scripted_manager_update_noop_when_no_cmd() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
+    mgr.refresh_index(&cx).unwrap();
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn scripted_manager_update_runs_command() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
+    mgr.refresh_index(&cx).unwrap();
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn scripted_manager_update_failure() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    let result = mgr.update(&cx);
+    let result = mgr.refresh_index(&cx);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -590,7 +590,7 @@ fn scripted_manager_update_failure_includes_stderr() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    let result = mgr.update(&cx);
+    let result = mgr.refresh_index(&cx);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(

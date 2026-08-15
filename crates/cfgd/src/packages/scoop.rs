@@ -184,13 +184,19 @@ impl PackageManager for ScoopManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // `scoop update` alone refreshes the bucket manifests. The `*` form is
+        // an upgrade of every installed app, which no plan asked for.
         run_pkg_cmd_live(
             cx,
             "scoop",
-            scoop_cmd().args(["update", "*"]),
-            "Upgrading all scoop packages",
-            "install",
+            scoop_cmd().arg("update"),
+            "scoop update",
+            "update",
         )?;
         Ok(())
     }
@@ -483,12 +489,13 @@ mod tests {
 
         #[test]
         #[serial]
-        fn scoop_update_runs_update_star() {
+        fn scoop_refresh_updates_buckets_without_upgrading_apps() {
             let (_bin, _path) = install_scoop_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            ScoopManager.update(&cx).expect("update Ok");
+            assert!(ScoopManager.has_index(), "scoop buckets are a local index");
+            ScoopManager.refresh_index(&cx).expect("refresh Ok");
         }
 
         #[test]

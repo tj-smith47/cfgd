@@ -159,22 +159,6 @@ impl PackageManager for WingetManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx,
-            "winget",
-            Command::new("winget").args([
-                "upgrade",
-                "--all",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-            ]),
-            "Upgrading all winget packages",
-            "install",
-        )?;
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         let output = Command::new("winget")
             .args(["show", "--id", package])
@@ -495,12 +479,16 @@ SomeApp               Some.App                  1.0.0\n";
 
         #[test]
         #[serial]
-        fn update_runs_upgrade_all() {
+        fn winget_declares_no_index_and_refreshing_upgrades_nothing() {
             let (_bin, _path) = install_winget_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            WingetManager.update(&cx).expect("update Ok");
+            assert!(
+                !WingetManager.has_index(),
+                "`winget upgrade --all` upgrades every package the user never declared"
+            );
+            WingetManager.refresh_index(&cx).expect("refresh Ok");
         }
 
         #[test]

@@ -203,17 +203,6 @@ impl PackageManager for PipxManager {
         Ok(())
     }
 
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx,
-            "pipx",
-            pipx_cmd().args(["upgrade-all"]),
-            "pipx upgrade-all",
-            "update",
-        )?;
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // Query PyPI JSON API: https://pypi.org/pypi/<pkg>/json → .info.version
         let url = format!("https://pypi.org/pypi/{}/json", package);
@@ -699,13 +688,19 @@ mod tests {
 
         #[test]
         #[serial]
-        fn pipx_update_runs_upgrade_all_subcommand() {
+        fn pipx_declares_no_index_and_refreshing_upgrades_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            PipxManager.update(&cx).expect("Ok");
-            assert!(s.argv_log().contains("upgrade-all"));
+            assert!(!PipxManager.has_index(), "pipx resolves PyPI per install");
+            PipxManager.refresh_index(&cx).expect("Ok");
+            assert_eq!(
+                s.invocation_count(),
+                0,
+                "`pipx upgrade-all` upgrades every venv on the machine: {}",
+                s.argv_log()
+            );
         }
 
         #[test]

@@ -122,11 +122,6 @@ impl PackageManager for CargoManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // cargo install re-installs to update; no separate update command
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // cargo search <pkg> --limit 1 → "package_name = \"version\""
         let output = cargo_cmd()
@@ -278,15 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn cargo_manager_update_is_noop() {
-        let mgr = CargoManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
-    }
-
-    #[test]
     fn parse_cargo_install_list_multiple_binaries() {
         let output = "cargo-edit v0.12.2:\n    cargo-add\n    cargo-rm\n    cargo-upgrade\n    cargo-set-version\n";
         let pkgs = parse_cargo_install_list(output);
@@ -395,15 +381,6 @@ tokei v12.1.2:
         let mgr = CargoManager;
         let available = mgr.is_available();
         assert_eq!(available, cargo_available());
-    }
-
-    #[test]
-    fn cargo_update_returns_ok() {
-        let mgr = CargoManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
     }
 
     // --- parse_cargo_install_list_packages ---
@@ -526,16 +503,20 @@ tokei v12.1.2:
 
         #[test]
         #[serial]
-        fn cargo_update_is_noop_no_command_spawned() {
+        fn refreshing_the_index_declares_none_and_spawns_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            CargoManager.update(&cx).expect("Ok");
+            assert!(
+                !CargoManager.has_index(),
+                "every install resolves against the remote, so there is no index to refresh"
+            );
+            CargoManager.refresh_index(&cx).expect("Ok");
             assert_eq!(
                 s.invocation_count(),
                 0,
-                "cargo update is documented no-op (re-install is the convention)"
+                "a manager with no index must spawn nothing under a refresh"
             );
         }
 

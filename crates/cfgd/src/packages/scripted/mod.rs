@@ -194,7 +194,11 @@ impl PackageManager for ScriptedManager {
         self.run_template(&self.uninstall_cmd, packages, cx, "uninstall")
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        self.update_cmd.is_some()
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
         if let Some(ref cmd) = self.update_cmd {
             #[cfg(test)]
             let _path_guard = cfgd_core::test_helpers::path_env_read_guard();

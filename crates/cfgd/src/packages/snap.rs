@@ -116,17 +116,6 @@ impl PackageManager for SnapManager {
         Ok(())
     }
 
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx,
-            "snap",
-            sudo_cmd_with_seam("snap").arg("refresh"),
-            "snap refresh",
-            "update",
-        )?;
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // snap info <pkg> → parse "latest/stable:" or first channel line for version
         let output = snap_cmd().args(["info", package]).output().map_err(|e| {
@@ -479,14 +468,19 @@ fd        9.0.0    100    latest/stable  -             -
 
         #[test]
         #[serial]
-        fn snap_update_runs_refresh() {
+        fn snap_declares_no_index_and_refreshing_upgrades_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            SnapManager.update(&cx).expect("Ok");
-            assert_eq!(s.invocation_count(), 1);
-            assert!(s.argv_log().contains("refresh"), "argv: {}", s.argv_log());
+            assert!(!SnapManager.has_index(), "snapd tracks channels itself");
+            SnapManager.refresh_index(&cx).expect("Ok");
+            assert_eq!(
+                s.invocation_count(),
+                0,
+                "a bare `snap refresh` upgrades every installed snap: {}",
+                s.argv_log()
+            );
         }
 
         #[test]

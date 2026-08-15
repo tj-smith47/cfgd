@@ -576,15 +576,6 @@ impl PackageManager for NpmManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
-        let decision = resolve_npm_prefix(cx.state)?;
-        let mut cmd = npm_cmd();
-        cmd.args(["update", "-g"]);
-        apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx, "npm", &mut cmd, "npm update -g", "update")?;
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // npm view <pkg> version
         let output = run_pkg_query("npm", npm_cmd().args(["view", package, "version"]))?;
@@ -1314,7 +1305,7 @@ mod tests {
 
         #[test]
         #[serial]
-        fn npm_update_runs_update_g() {
+        fn npm_declares_no_index_and_refreshing_upgrades_nothing() {
             let _clear = clear_npm_env_prefix();
             let home = tempfile::tempdir().expect("tempdir");
             let _home_guard = cfgd_core::with_test_home_guard(home.path());
@@ -1322,10 +1313,16 @@ mod tests {
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&p, &state);
-            NpmManager.update(&cx).expect("Ok");
+            assert!(
+                !NpmManager.has_index(),
+                "npm resolves the registry on every install"
+            );
+            NpmManager.refresh_index(&cx).expect("Ok");
             let argv = s.argv_log();
-            assert!(argv.contains("update -g"));
-            assert!(!argv.contains("--prefix"), "got: {argv}");
+            assert!(
+                !argv.contains("update"),
+                "`npm update -g` upgrades every global package the user never declared: {argv}"
+            );
         }
 
         #[test]

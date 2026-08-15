@@ -540,8 +540,6 @@ Phase: Prerequisites
   cfgd:managers
     - refresh apt index
     - refresh brew index
-    - refresh npm index
-    - refresh pipx index
 
 Phase: Packages
   profile:work

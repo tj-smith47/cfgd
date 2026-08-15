@@ -409,12 +409,6 @@ impl PackageManager for TestPackageManager {
     ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn update(
-        &self,
-        _cx: &cfgd_core::providers::PackageContext<'_>,
-    ) -> cfgd_core::errors::Result<()> {
-        Ok(())
-    }
     fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
         Ok(None)
     }
@@ -1178,12 +1172,6 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         fn uninstall(
             &self,
             _pkgs: &[String],
-            _cx: &cfgd_core::providers::PackageContext<'_>,
-        ) -> cfgd_core::errors::Result<()> {
-            Ok(())
-        }
-        fn update(
-            &self,
             _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<()> {
             Ok(())

@@ -537,7 +537,7 @@ mod seam_tests {
         let printer = test_printer();
         let state = test_state();
         let cx = test_package_context(&printer, &state);
-        apt_manager().update(&cx).unwrap();
+        apt_manager().refresh_index(&cx).unwrap();
         let log = shim.argv_log();
         assert_eq!(shim.invocation_count(), 1);
         assert!(
@@ -558,7 +558,7 @@ mod seam_tests {
         let state = test_state();
         let cx = test_package_context(&printer, &state);
         dnf_manager()
-            .update(&cx)
+            .refresh_index(&cx)
             .expect("dnf update must tolerate exit 100");
         assert_eq!(shim.invocation_count(), 1);
     }

@@ -172,7 +172,7 @@ pub fn plan_managers(
 
     refuse_provisions_with_no_usable_installer(&mut graph);
     drop_prerequisites_nothing_still_needs(&mut graph);
-    build_actions(&graph, installer.as_deref())
+    build_actions(registry, &graph, installer.as_deref())
 }
 
 /// The managers this run's own work names, family-folded and deduplicated.
@@ -297,15 +297,24 @@ fn drop_prerequisites_nothing_still_needs(graph: &mut Graph) {
 
 /// Assemble the nodes in topological order, wiring each edge to the id of the
 /// node that satisfies it.
-fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
+fn build_actions(
+    registry: &ProviderRegistry,
+    graph: &Graph,
+    installer: Option<&str>,
+) -> Vec<Action> {
     let mut actions: Vec<Action> = Vec::new();
 
     for (manager, state) in &graph.members {
-        // Only an already-present manager gets a refresh node here. A manager
-        // this run is about to provision needs none: its installer just
-        // fetched the index as part of installing it, so a refresh would be a
-        // wasted network call for data that is already current.
-        if matches!(state, MemberState::Present) {
+        // Only an already-present manager that keeps a local index gets a
+        // refresh node. A manager this run is about to provision needs none:
+        // its installer just fetched the index as part of installing it, so a
+        // refresh would be a wasted network call for data that is already
+        // current. A manager with no index at all (`cargo`, `npm`, `pipx` —
+        // every install resolves against the remote) needs none either, and
+        // planning one for it puts a line in the tree for work no manager
+        // performs.
+        let refreshes = find_manager(registry, manager).is_some_and(|pm| pm.has_index());
+        if refreshes && matches!(state, MemberState::Present) {
             actions.push(Action::Manager(ManagerAction::RefreshIndex {
                 manager: manager.clone(),
             }));
@@ -698,6 +707,24 @@ mod tests {
             ids,
             vec!["manager:refresh:brew", "manager:refresh:cargo"],
             "a manager this run installs through refreshes, and only those"
+        );
+    }
+
+    #[test]
+    fn a_manager_with_no_index_plans_no_refresh_node() {
+        let ids = plan_ids(
+            installs(&["brew", "cargo"]),
+            vec![
+                MockPackageManager::new("brew"),
+                MockPackageManager::new("cargo").without_index(),
+            ],
+        );
+        assert_eq!(
+            ids,
+            vec!["manager:refresh:brew"],
+            "a manager that resolves its remote on every install has no index, so \
+             planning a refresh for it puts a line in the tree — and an action in \
+             `-o json` — for work no manager performs: {ids:?}"
         );
     }
 

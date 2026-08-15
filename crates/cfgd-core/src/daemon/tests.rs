@@ -9112,7 +9112,11 @@ impl PackageManager for RecordingInstallManager {
     fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
@@ -9689,7 +9693,11 @@ impl PackageManager for RecordingUninstallManager {
             .extend(packages.iter().cloned());
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {

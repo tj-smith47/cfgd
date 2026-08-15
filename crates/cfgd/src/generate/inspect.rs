@@ -236,10 +236,6 @@ mod tests {
             Ok(())
         }
 
-        fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-            Ok(())
-        }
-
         fn available_version(&self, _package: &str) -> Result<Option<String>> {
             Ok(self.version.clone())
         }

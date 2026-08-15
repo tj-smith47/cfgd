@@ -93,12 +93,18 @@ impl PackageManager for FlatpakManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // `--appstream` refreshes the remotes' metadata. Without it the same
+        // command upgrades every installed app, which no plan asked for.
         run_pkg_cmd_live(
             cx,
             "flatpak",
-            flatpak_cmd().args(["update", "-y"]),
-            "flatpak update -y",
+            flatpak_cmd().args(["update", "--appstream", "-y"]),
+            "flatpak update --appstream -y",
             "update",
         )?;
         Ok(())
@@ -264,14 +270,22 @@ mod tests {
 
         #[test]
         #[serial]
-        fn flatpak_update_runs_update_y() {
+        fn flatpak_refresh_updates_appstream_without_upgrading_apps() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            FlatpakManager.update(&cx).expect("Ok");
+            assert!(
+                FlatpakManager.has_index(),
+                "remote appstream data is an index"
+            );
+            FlatpakManager.refresh_index(&cx).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
-            assert!(s.argv_log().contains("update -y"), "argv: {}", s.argv_log());
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("update --appstream -y"),
+                "a bare `flatpak update -y` upgrades every installed app: {argv}"
+            );
         }
 
         #[test]

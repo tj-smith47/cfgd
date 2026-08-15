@@ -274,7 +274,7 @@ impl<'x> PackageExec<'x> {
             // the cause attached beneath it.
             ManagerAction::RefreshIndex { manager } => {
                 let pm = lookup(manager)?;
-                if let Err(e) = pm.update(&cx) {
+                if let Err(e) = pm.refresh_index(&cx) {
                     cx.report(
                         crate::output::Role::Warn,
                         manager,

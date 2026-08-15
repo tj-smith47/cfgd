@@ -98,10 +98,6 @@ impl PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
-
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
@@ -147,9 +143,6 @@ impl PackageManager for GoLikeMockManager {
     }
     fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.uninstalls.lock().unwrap().push(packages.to_vec());
-        Ok(())
-    }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> Result<Option<String>> {
@@ -2110,12 +2103,12 @@ fn plan_packages_no_managers() {
 // --- MockPackageManager trait methods ---
 
 #[test]
-fn mock_manager_update_is_noop() {
+fn mock_manager_refresh_index_is_noop() {
     let mock = MockPackageManager::new("test", true, vec![]);
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mock.update(&cx).unwrap();
+    mock.refresh_index(&cx).unwrap();
 }
 
 #[test]
@@ -3898,9 +3891,6 @@ impl PackageManager for CiVersionedMockManager {
     fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
     fn available_version(&self, _: &str) -> Result<Option<String>> {
         Ok(None)
     }
@@ -4021,9 +4011,6 @@ impl PackageManager for PkgLikeMockManager {
         Ok(())
     }
     fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> Result<Option<String>> {

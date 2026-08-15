@@ -173,7 +173,11 @@ impl PackageManager for SimpleManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        self.update_cmd.is_some()
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };

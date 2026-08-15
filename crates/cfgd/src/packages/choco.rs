@@ -182,17 +182,6 @@ impl PackageManager for ChocolateyManager {
         Ok(())
     }
 
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx,
-            "chocolatey",
-            Command::new("choco").args(["upgrade", "all", "-y"]),
-            "Upgrading all chocolatey packages",
-            "install",
-        )?;
-        Ok(())
-    }
-
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         let output = Command::new("choco")
             .args(["info", package])
@@ -665,12 +654,16 @@ Tags: git vcs dvcs
 
         #[test]
         #[serial]
-        fn update_runs_upgrade_all() {
+        fn choco_declares_no_index_and_refreshing_upgrades_nothing() {
             let (_bin, _path) = install_choco_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            ChocolateyManager.update(&cx).expect("update Ok");
+            assert!(
+                !ChocolateyManager.has_index(),
+                "`choco upgrade all -y` upgrades every package the user never declared"
+            );
+            ChocolateyManager.refresh_index(&cx).expect("refresh Ok");
         }
 
         #[test]

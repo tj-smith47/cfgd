@@ -2146,6 +2146,10 @@ pub struct MockPackageManager {
     /// two managers' lanes ran concurrently rather than serially, by timing a
     /// wall-clock window against N-times the per-manager delay.
     install_delay: Option<std::time::Duration>,
+    /// Whether this manager keeps a local index. `true` by default because
+    /// most fixtures want the refresh node in the tree; `without_index()` is
+    /// the `cargo`/`npm` shape, which must plan none.
+    keeps_index: bool,
 }
 
 impl MockPackageManager {
@@ -2163,7 +2167,14 @@ impl MockPackageManager {
             bootstrap_succeeds: false,
             became_available: std::sync::atomic::AtomicBool::new(false),
             install_delay: None,
+            keeps_index: true,
         }
+    }
+
+    /// The `cargo`/`npm`/`pipx` shape: no local index, so no refresh node.
+    pub fn without_index(mut self) -> Self {
+        self.keeps_index = false;
+        self
     }
 
     pub fn with_installed(mut self, pkgs: &[&str]) -> Self {
@@ -2282,7 +2293,14 @@ impl crate::providers::PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
+    fn has_index(&self) -> bool {
+        self.keeps_index
+    }
+
+    fn refresh_index(
+        &self,
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<()> {
         Ok(())
     }
 
@@ -2810,7 +2828,7 @@ mod tests {
 
         mgr.install(&["vim".to_string()], &cx).unwrap();
         mgr.uninstall(&["nano".to_string()], &cx).unwrap();
-        mgr.update(&cx).unwrap();
+        mgr.refresh_index(&cx).unwrap();
         assert_eq!(
             mgr.install_calls.lock().unwrap().as_slice(),
             &[vec!["vim".to_string()]]

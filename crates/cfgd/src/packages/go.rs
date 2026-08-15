@@ -147,11 +147,6 @@ impl PackageManager for GoInstallManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // go install pkg@latest re-installs to update; no separate update command
-        Ok(())
-    }
-
     fn package_identity(&self, entry: &str) -> String {
         go_binary_name(entry)
     }
@@ -290,15 +285,6 @@ mod tests {
     }
 
     #[test]
-    fn go_install_manager_update_is_noop() {
-        let mgr = GoInstallManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
-    }
-
-    #[test]
     fn parse_go_module_version_strips_v_prefix() {
         let output = r#"{"Path":"golang.org/x/tools/gopls","Version":"v0.15.3"}"#;
         assert_eq!(parse_go_module_version(output), Some("0.15.3".to_string()));
@@ -383,15 +369,6 @@ mod tests {
         let mgr = GoInstallManager;
         let available = mgr.is_available();
         assert_eq!(available, go_available());
-    }
-
-    #[test]
-    fn go_update_returns_ok() {
-        let mgr = GoInstallManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
     }
 
     // --- scan_go_bin_dir ---
@@ -563,16 +540,20 @@ mod tests {
 
         #[test]
         #[serial]
-        fn go_update_is_noop_no_command_spawned() {
+        fn refreshing_the_index_declares_none_and_spawns_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            GoInstallManager.update(&cx).expect("Ok");
+            assert!(
+                !GoInstallManager.has_index(),
+                "every install resolves against the remote, so there is no index to refresh"
+            );
+            GoInstallManager.refresh_index(&cx).expect("Ok");
             assert_eq!(
                 s.invocation_count(),
                 0,
-                "go update is a documented no-op (re-install pinned at @latest is the convention)"
+                "a manager with no index must spawn nothing under a refresh"
             );
         }
 

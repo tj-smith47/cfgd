@@ -946,7 +946,11 @@ mod tests {
         ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
-        fn update(
+        fn has_index(&self) -> bool {
+            true
+        }
+
+        fn refresh_index(
             &self,
             _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<()> {

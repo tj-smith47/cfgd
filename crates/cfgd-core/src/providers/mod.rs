@@ -392,7 +392,34 @@ pub trait PackageManager: Send + Sync {
     fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>>;
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()>;
+
+    /// Refresh this manager's package metadata so the installs below it read a
+    /// current index.
+    ///
+    /// **Metadata only.** Installing, upgrading or removing a package here is a
+    /// change the user never declared, made under a line that says an index was
+    /// refreshed: six managers once spelled this "upgrade everything on the
+    /// machine", so every `cfgd apply` ran `npm update -g`, `pipx upgrade-all`
+    /// and `winget upgrade --all` behind a `refresh <manager> index` tick.
+    ///
+    /// The default is the no-op a manager with no local index wants. Such a
+    /// manager also answers [`PackageManager::has_index`] with `false`, so no
+    /// refresh node is planned for it and no line claims one ran.
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        let _ = cx;
+        Ok(())
+    }
+
+    /// Whether this manager keeps a local package index that
+    /// [`PackageManager::refresh_index`] updates.
+    ///
+    /// `false` — the default — means its install resolves against the remote
+    /// every time, so the planner emits no refresh node for it. Override it
+    /// together with `refresh_index`: the two are one answer, and a `true` with
+    /// a no-op refresh is a planned action that does nothing.
+    fn has_index(&self) -> bool {
+        false
+    }
 
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
@@ -1086,9 +1113,6 @@ impl PackageManager for StubPackageManager {
         Ok(())
     }
     fn uninstall(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
-        Ok(())
-    }
-    fn update(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, package: &str) -> Result<Option<String>> {

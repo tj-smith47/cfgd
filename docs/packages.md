@@ -94,7 +94,6 @@ phase, which runs before any package work:
 Phase: Prerequisites
   cfgd:managers
     - refresh apt index
-    - refresh npm index
     - provision nix via nix installer
 ```
 
@@ -117,20 +116,39 @@ by naming the file to source.
 
 ## Index refresh
 
-cfgd refreshes the package index of every manager already on the machine that
-has work in this run. The refresh is an action of its own in the `Prerequisites`
-phase, so it is named in the plan before it happens and reported where it ran:
+cfgd refreshes the package index of every manager that is already on the machine,
+has work in this run, and keeps a local index at all. The refresh is an action of
+its own in the `Prerequisites` phase, so it is named in the plan before it happens
+and reported where it ran:
 
 ```
 Phase: Prerequisites
   cfgd:managers
-    ◐ npm update -g
-      up to date in 131ms
-    ✓ refresh npm index
+    ✓ refresh apt index (1.0s)
+      Hit:1 http://deb.debian.org/debian stable InRelease
+      Reading package lists... Done
 ```
 
+A refresh touches METADATA ONLY. cfgd never upgrades a package you did not
+declare on its way to installing one you did, so a manager whose only "update"
+command is a machine-wide upgrade — `npm update -g`, `pipx upgrade-all`,
+`choco upgrade all -y`, `winget upgrade --all`, a bare `snap refresh` — gets no
+refresh action at all. Neither does a manager that resolves its remote on every
+install and so has no index to go stale: `cargo`, `go`, `nix`. Where a manager
+has both forms, cfgd runs the metadata half: `scoop update` (bucket manifests,
+not `scoop update *`) and `flatpak update --appstream -y` (remote metadata, not
+a bare `flatpak update -y`). Nothing in the plan or the tree claims a refresh
+that never ran.
+
+| Refreshed | Not refreshed (no local index) |
+|---|---|
+| `apt`, `dnf`, `yum`, `zypper`, `pacman`, `apk`, `pkg`, `brew`, `scoop`, `flatpak`, a custom manager declaring `update:` | `cargo`, `go`, `nix`, `npm`, `pipx`, `snap`, `chocolatey`, `winget`, `brew-cask`, `brew-tap` |
+
+`brew-cask` and `brew-tap` are the same binary and the same index as `brew`, so
+the family is refreshed once by `brew` rather than three times.
+
 Filters filter: a run that leaves the phase out (`--phase packages`) or drops one
-node from it (`--skip prerequisites.npm`) does not refresh that index behind your
+node from it (`--skip prerequisites.apt`) does not refresh that index behind your
 back. The refresh is the phase's, so excluding the phase excludes the refresh.
 
 The rule holds for anything else that narrows a run: a per-module daemon tick

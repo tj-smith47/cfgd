@@ -105,27 +105,19 @@ fn brew_cask_manager_name_and_bootstrap() {
 }
 
 #[test]
-fn brew_tap_manager_update_is_noop() {
-    let mgr = BrewTapManager;
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
+fn only_the_formula_manager_owns_the_brew_family_index() {
+    // One `brew update` per run: a profile naming brew, brew-cask and brew-tap
+    // is three registered managers over one binary and one index, and a
+    // refresh node for each would refresh the same data three times.
+    assert!(BrewManager.has_index());
+    assert!(!BrewCaskManager.has_index());
+    assert!(!BrewTapManager.has_index());
 }
 
 #[test]
 fn brew_tap_manager_available_version_is_none() {
     let mgr = BrewTapManager;
     assert!(mgr.available_version("any").unwrap().is_none());
-}
-
-#[test]
-fn brew_cask_manager_update_is_noop() {
-    let mgr = BrewCaskManager;
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
 }
 
 #[test]
@@ -249,16 +241,6 @@ fn brew_cask_manager_is_available_checks_brew() {
     let mgr = BrewCaskManager;
     let available = mgr.is_available();
     assert_eq!(available, brew_available());
-}
-
-#[test]
-fn brew_cask_update_returns_ok() {
-    let mgr = BrewCaskManager;
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    // brew-cask update is a no-op, should always succeed
-    mgr.update(&cx).unwrap();
 }
 
 #[test]
@@ -557,7 +539,7 @@ mod brew_shim {
         let p = test_printer();
         let st = test_state();
         let cx = test_package_context(&p, &st);
-        BrewManager.update(&cx).expect("update Ok");
+        BrewManager.refresh_index(&cx).expect("refresh Ok");
         assert!(shim.argv_log().contains("update"));
     }
 
@@ -663,12 +645,12 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_tap_update_is_noop_no_command_spawned() {
+    fn brew_tap_refresh_spawns_no_command() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
         let cx = test_package_context(&p, &st);
-        BrewTapManager.update(&cx).expect("Ok");
+        BrewTapManager.refresh_index(&cx).expect("Ok");
         assert_eq!(
             shim.invocation_count(),
             0,

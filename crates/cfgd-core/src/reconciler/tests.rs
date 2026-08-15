@@ -2843,7 +2843,11 @@ impl PackageManager for TrackingPackageManager {
         }
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -3030,7 +3034,11 @@ impl PackageManager for ScriptedLikeManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -4012,7 +4020,11 @@ impl PackageManager for UpdateCountingPackageManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         self.updates
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -5084,7 +5096,11 @@ impl PackageManager for FailingPackageManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -5234,7 +5250,11 @@ impl PackageManager for PanickingPackageManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -7266,7 +7286,11 @@ impl PackageManager for BootstrappablePackageManager {
         }
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -12358,7 +12382,11 @@ impl PackageManager for BootstrappingPackageManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -17021,8 +17049,12 @@ impl PackageManager for DispatchLogManager {
         }
         Ok(())
     }
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
-        // npm's `update` resolves its global prefix from `cx.state`, and an
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // npm's refresh resolves its global prefix from `cx.state`, and an
         // index refresh now runs on a lane like every other action. Nothing
         // is recorded in the log, so every ordering fixture is unaffected.
         if self.touches_state {
@@ -20046,7 +20078,11 @@ impl PackageManager for NotePushingManager {
     fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {

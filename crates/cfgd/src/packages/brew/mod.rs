@@ -133,11 +133,6 @@ impl PackageManager for BrewTapManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Taps are repository references, not versioned packages; nothing to update
-        Ok(())
-    }
-
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         // Taps don't have versions
         Ok(None)
@@ -203,11 +198,6 @@ impl PackageManager for BrewCaskManager {
             &label,
             "uninstall",
         )?;
-        Ok(())
-    }
-
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Cask updates are handled by `brew upgrade`; no separate cask update command
         Ok(())
     }
 
@@ -380,7 +370,11 @@ impl PackageManager for BrewManager {
         Ok(())
     }
 
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx,
             "brew",
