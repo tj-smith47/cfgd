@@ -330,20 +330,24 @@ $ cfgd plan
 Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  default
-  Phases   Packages
+  Phases   Prerequisites, Packages
 
 Pending Decisions (not included in this plan)
   ⊙ recommended packages.brew.k9s — install by acme-corp (run `cfgd decide accept/reject`)
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
 
 Phase: Packages
   profile:default
     - brew install ripgrep
 
-⊙ 1 action(s) planned
+⊙ 2 action(s) planned
 
 $ cfgd decide accept packages.brew.k9s
 $ cfgd plan            # k9s now plans alongside ripgrep
-⊙ 2 action(s) planned
+⊙ 3 action(s) planned
 ```
 
 `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.
