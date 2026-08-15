@@ -67,9 +67,10 @@ pub(in crate::cli) fn print_shell_env_reminder(
         format!("source {shown}")
     };
 
+    // A warning, not a bullet: until the user acts, the shell they are sitting
+    // in disagrees with the environment this run just wrote.
     let section = printer.section("Shell environment changed");
-    section.bullet(format!("run: {command}"));
-    section.bullet("or open a new shell");
+    section.status_simple(Role::Warn, format!("run `{command}` — or open a new shell"));
 }
 
 /// The env file the shell the user is *standing in* can actually source.

@@ -2984,11 +2984,11 @@ fn shell_env_reminder_names_the_written_env_file() {
         "expected reminder heading, got: {out}"
     );
     assert!(
-        out.contains("- run: source ~/.cfgd.env"),
+        out.contains("run `source ~/.cfgd.env`"),
         "expected a retypeable source command, got: {out}"
     );
     assert!(
-        out.contains("- or open a new shell"),
+        out.contains("— or open a new shell"),
         "expected the new-shell alternative, got: {out}"
     );
 }
@@ -3014,7 +3014,7 @@ fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
     });
 
     assert!(
-        out.contains("- run: source /home/u/.cfgd.env"),
+        out.contains("run `source /home/u/.cfgd.env`"),
         "expected the shell-matching file, got: {out}"
     );
     assert!(

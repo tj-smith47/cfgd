@@ -497,7 +497,7 @@ pub fn format_plan_item(action: &Action) -> String {
             }
             EnvAction::RefreshLiveSession { vars } => {
                 format!(
-                    "refresh live session ({})",
+                    "publish {} to the session manager",
                     crate::pluralize(vars.len(), "var")
                 )
             }

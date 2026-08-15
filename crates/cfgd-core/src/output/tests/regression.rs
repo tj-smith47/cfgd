@@ -353,11 +353,12 @@ golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
 // Surface: the reminder `cfgd apply` prints once at the end of a run whose Env
 // phase changed something — the running shell predates the file, so the
 // bootstrapped manager's PATH entries are one command away. Anchors the exact
-// wording and the two-bullet shape.
+// wording and the warning shape: until the user acts, their shell disagrees
+// with what the run wrote, and a bullet would read as information rather than
+// something left to do.
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
     let s = p.section("Shell environment changed");
-    s.bullet("run: source ~/.cfgd.env");
-    s.bullet("or open a new shell");
+    s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
 });
 
 // Same reminder in its real position: emitted after the apply summary line.
@@ -370,8 +371,7 @@ golden_doc!(
         p.status(Role::Ok, "Applied 4 of 4 actions")
             .duration(Duration::from_millis(820));
         let s = p.section("Shell environment changed");
-        s.bullet("run: source ~/.cfgd.env");
-        s.bullet("or open a new shell");
+        s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
     }
 );
 

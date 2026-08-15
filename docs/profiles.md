@@ -239,13 +239,12 @@ Phase: Prerequisites
     ✓ inject source line into /home/you/.profile
     ✓ write /home/you/.config/environment.d/cfgd.conf
   cfgd:session
-    ✓ refresh live session (1 var)
+    ✓ publish 1 var to the session manager
 
 ✓ Apply complete — 6 actions succeeded (0.3s)
 
 Shell environment changed
-  - run: source ~/.cfgd.env
-  - or open a new shell
+  ⚠ run `source ~/.cfgd.env` — or open a new shell
 
 # Now every entry point sees it — no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
