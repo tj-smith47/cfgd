@@ -100,8 +100,11 @@ Phase: Prerequisites
 so every prefix an install needs exists before the `Packages` phase starts.
 Those manager nodes are a graph — a provision waits for the tool it shells out
 to, and for the manager it installs through — and everything whose edges are
-satisfied provisions at the same time. A node whose dependency failed does not
-run at all; its line names the failure that stopped it.
+satisfied provisions at the same time. Two provisions that install through the
+same system manager are the exception: `provision npm via apt` and
+`provision pipx via apt` are both `apt-get` runs, so they take apt's lane and
+run one at a time instead of racing for the dpkg lock. A node whose dependency
+failed does not run at all; its line names the failure that stopped it.
 Inside `Packages`, work runs one lane per manager family concurrently. The lane
 is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
 drive one binary — formulae, taps and casks queue behind each other so only one

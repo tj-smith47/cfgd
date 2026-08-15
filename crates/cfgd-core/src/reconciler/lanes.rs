@@ -350,7 +350,20 @@ impl<'p> Slot<'p> {
     /// `brew` processes — which is exactly what one-operation-per-manager
     /// exists to prevent. Display, the journal and the sub-gate all keep the
     /// registered name; only the mutual exclusion is per family.
+    ///
+    /// A provision lanes on its `via`, not on the manager it delivers: the
+    /// command that runs is the METHOD's (`provision npm via apt` is an
+    /// `apt-get install`), and two provisions mediated by the same system
+    /// manager laned on their own names hold that manager's lock against each
+    /// other — `provision pipx via apt` died on the dpkg lock the npm
+    /// provision's own apt-get was holding. A standalone method ("homebrew
+    /// installer", "rustup") lanes on its phrase, which collides with nothing.
+    /// Ordering against the delivered manager's later work needs no lane: a
+    /// package install depends on its manager's provision by DAG edge.
     fn lane(&self) -> Option<&str> {
+        if let Action::Manager(ManagerAction::Provision { via, .. }) = self.action {
+            return Some(crate::manager_family(via));
+        }
         self.manager.as_deref().map(crate::manager_family)
     }
 }
@@ -1644,6 +1657,37 @@ mod tests {
     }
 
     #[test]
+    fn provisions_sharing_a_bootstrap_mediator_share_its_lane() {
+        // `provision npm via apt` and `provision pipx via apt` both run
+        // apt-get, so they must hold ONE lane or they race for the dpkg lock
+        // — laned on their own names, the pipx provision died on the lock the
+        // npm provision's apt-get was still holding. The registered name
+        // stays on the slot for display/journal/drains; only the mutual
+        // exclusion follows the mediator.
+        let managers = Owner::cfgd("managers");
+        let npm = provision("npm", "apt", &[]);
+        let pipx = provision("pipx", "apt", &[]);
+        let brew = provision("brew", "homebrew installer", &[]);
+        let slots = [
+            node_slot(&managers, &npm, 0),
+            node_slot(&managers, &pipx, 1),
+            node_slot(&managers, &brew, 2),
+        ];
+        assert_eq!(slots[0].lane(), Some("apt"));
+        assert_eq!(slots[0].lane(), slots[1].lane());
+        assert_eq!(
+            slots[2].lane(),
+            Some("homebrew installer"),
+            "a standalone method lanes on its phrase, colliding with nothing"
+        );
+        assert_eq!(
+            slots[0].manager.as_deref(),
+            Some("npm"),
+            "the slot keeps the registered name for everything but the lane"
+        );
+    }
+
+    #[test]
     fn an_edge_blocked_node_names_the_last_thing_that_has_to_finish() {
         // Two blockers: one already running and LATER in the plan, one not
         // started and earlier. The line names the unstarted one, because that
@@ -1683,9 +1727,16 @@ mod tests {
         // The head is the node's own display subject, not the owner token:
         // every node here belongs to `cfgd:managers`, so a token would print
         // the same six characters above each line and name none of them.
+        // The pipx provision earns the first line: it lanes on its mediator
+        // (`brew install pipx` cannot run while another brew process holds
+        // the lane), and a lane-blocked bar keys on the owner as everywhere
+        // else in this region.
         assert_eq!(
             on_screen(&bars),
-            vec!["provision poetry via pipx · waiting on pipx"],
+            vec![
+                "cfgd:managers · waiting on brew",
+                "provision poetry via pipx · waiting on pipx"
+            ],
             "a node held by an edge is in the live region for the whole of its wait"
         );
     }

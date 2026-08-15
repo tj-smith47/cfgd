@@ -19287,26 +19287,29 @@ fn a_failed_node_fails_its_dependents_with_the_root_cause() {
 
 #[test]
 fn an_aborted_run_reports_neither_a_failures_dependents_nor_its_siblings() {
-    // One rule for everything an abort stopped. brew's provision fails at the
+    // One rule for everything an abort stopped. npm's provision fails at the
     // instant cancellation arrives, taking down a node that depends on it and
     // leaving a sibling queued behind its lane. Reporting the dependent as a
     // failure while the sibling says nothing would be two rules for one
     // "planned, never began" fact inside a single run — so an aborted run
     // reports what it BEGAN, and the shortfall is the rollup's to name.
-    let probe = LaneProbe::holding(&["bootstrap:brew"]);
+    let probe = LaneProbe::holding(&["bootstrap:npm"]);
     let log = new_dispatch_log();
     let registry = lane_registry(vec![
-        DispatchLogManager::new("brew", &log, false)
+        DispatchLogManager::new("npm", &log, false)
             .stays_unavailable()
             .with_probe(&probe),
-        DispatchLogManager::new("npm", &log, false),
+        DispatchLogManager::new("pipx", &log, false),
     ]);
     let plan = prerequisites_phase(vec![
-        provision_node("brew", "curl", &[]),
+        // `provision npm via brew` occupies its mediator's lane — the
+        // command that runs is brew's.
+        provision_node("npm", "brew", &[]),
         // Downstream of the failure.
-        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
-        // A sibling with no edge at all, held only by brew's family lane.
-        prerequisite_node("git", "brew", &["npm"]),
+        provision_node("pipx", "npm", &[ManagerAction::provision_node("npm")]),
+        // A sibling with no edge at all, held only by the brew lane its own
+        // installer shares with the running provision's mediator.
+        prerequisite_node("git", "brew", &["pipx"]),
     ]);
 
     let abort = crate::AbortFlag::new();
@@ -19316,7 +19319,7 @@ fn an_aborted_run_reports_neither_a_failures_dependents_nor_its_siblings() {
         .with_abort(abort)
         .run(move || {
             assert!(
-                driver.await_started("bootstrap:brew"),
+                driver.await_started("bootstrap:npm"),
                 "the provision never began: {:?}",
                 driver.events()
             );
@@ -19334,7 +19337,7 @@ fn an_aborted_run_reports_neither_a_failures_dependents_nor_its_siblings() {
         .collect();
     assert_eq!(
         reported,
-        vec!["manager:provision:brew"],
+        vec!["manager:provision:npm"],
         "only the action the run began may be reported"
     );
     assert!(
@@ -19344,7 +19347,7 @@ fn an_aborted_run_reports_neither_a_failures_dependents_nor_its_siblings() {
     );
     assert_eq!(
         dispatch_log(&log),
-        vec!["bootstrap:brew"],
+        vec!["bootstrap:npm"],
         "nothing may be dispatched after the abort"
     );
     // The shortfall is named once, numerically, for the dependent and the
