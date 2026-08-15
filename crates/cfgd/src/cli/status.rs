@@ -31,6 +31,13 @@ pub struct StatusOutput {
     pub classification_degraded_code: Option<super::output_types::ClassificationDegradedCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification_degraded_reason: Option<String>,
+    /// Whether `drift` is the verdict of a LIVE scan of this machine or the
+    /// events something previously recorded. Plain `status` is the fast
+    /// recorded-drift dashboard, so on a host with no daemon its `drift` is
+    /// empty however far the machine has drifted; only `--exit-code` scans.
+    /// A consumer differencing an empty list needs to know which of those two
+    /// it is holding, and the human line says the same thing in words.
+    pub drift_checked_live: bool,
 }
 
 #[derive(Serialize)]
@@ -86,7 +93,16 @@ pub fn build_fleet_status_doc(
     }
 
     doc = if output.drift.is_empty() {
-        doc.section("Drift", |s| s.status(Role::Ok, "No drift detected"))
+        // Only the live scan may claim a detection. The recorded dashboard has
+        // asked nothing of the machine, and "No drift detected" over a host
+        // whose last apply left a declared package uninstalled is an assurance
+        // no query backs.
+        let subject = if output.drift_checked_live {
+            "No drift detected"
+        } else {
+            "No drift recorded — `cfgd diff` checks the live machine"
+        };
+        doc.section("Drift", |s| s.status(Role::Ok, subject))
     } else {
         doc.section("Drift", |s| {
             output.drift.iter().fold(s, |s, event| {
@@ -388,6 +404,7 @@ pub(super) fn cmd_status(
         classification_degraded: classification_degraded.is_some(),
         classification_degraded_code: classification_degraded.as_ref().map(|(c, _)| *c),
         classification_degraded_reason: classification_degraded.map(|(_, r)| r),
+        drift_checked_live: exit_code,
     };
 
     // Plain `status` (no --exit-code) keeps the fast RECORDED-drift dashboard by
@@ -526,6 +543,7 @@ mod tests {
             classification_degraded: false,
             classification_degraded_code: None,
             classification_degraded_reason: None,
+            drift_checked_live: false,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
@@ -576,6 +594,7 @@ mod tests {
             classification_degraded: false,
             classification_degraded_code: None,
             classification_degraded_reason: None,
+            drift_checked_live: false,
         };
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -623,6 +642,7 @@ mod tests {
             classification_degraded_reason: Some(
                 "source 'acme': cached config is unreadable".to_string(),
             ),
+            drift_checked_live: false,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["classificationDegraded"], serde_json::json!(true));
@@ -757,8 +777,8 @@ mod tests {
             "empty applies state should render info line, got: {output}"
         );
         assert!(
-            output.contains("No drift detected"),
-            "empty drift should print success line, got: {output}"
+            output.contains("No drift recorded"),
+            "an empty recorded dashboard says what it read, got: {output}"
         );
     }
 

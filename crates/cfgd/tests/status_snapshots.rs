@@ -65,6 +65,7 @@ fn clean_output() -> StatusOutput {
         classification_degraded: false,
         classification_degraded_code: None,
         classification_degraded_reason: None,
+        drift_checked_live: false,
     }
 }
 
@@ -133,6 +134,7 @@ fn drift_output() -> StatusOutput {
         classification_degraded: false,
         classification_degraded_code: None,
         classification_degraded_reason: None,
+        drift_checked_live: false,
     }
 }
 

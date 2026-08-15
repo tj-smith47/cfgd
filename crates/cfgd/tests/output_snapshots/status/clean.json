@@ -1,6 +1,7 @@
 {
   "classificationDegraded": false,
   "drift": [],
+  "driftCheckedLive": false,
   "lastApply": {
     "id": 1,
     "planHash": "deadbeef",

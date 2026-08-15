@@ -2188,9 +2188,10 @@ fn profile_delete_inherited_with_ignore_not_found_still_errors() {
     );
 }
 
-/// Plain `cfgd status` (no --exit-code) keeps the fast RECORDED-drift dashboard:
-/// with no recorded events it shows "No drift detected" and exits 0 even when a
-/// managed file is live-drifted. The live scan is `-e`-only by design.
+/// Plain `cfgd status` (no --exit-code) keeps the fast RECORDED-drift dashboard
+/// and exits 0 even when a managed file is live-drifted — the live scan is
+/// `-e`-only by design. What it must NOT do is call that a detection: this run
+/// asked the machine nothing, and the file on disk is drifted.
 #[test]
 fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     let dir = tempfile::tempdir().unwrap();
@@ -2223,8 +2224,13 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     // The human Doc renders to stderr; stdout is reserved for structured `-o`.
     let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
-        out.contains("No drift detected"),
-        "plain status shows recorded dashboard (no live scan), got:\n{out}"
+        out.contains("No drift recorded"),
+        "plain status shows the recorded dashboard (no live scan), got:\n{out}"
+    );
+    assert!(
+        !out.contains("No drift detected"),
+        "nothing detected anything: the file at `deployed.conf` is drifted right \
+         now and this run never looked, got:\n{out}"
     );
 }
 

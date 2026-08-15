@@ -9,7 +9,7 @@ Last Apply
   Summary  12 actions applied
 
 Drift
-  ✓ No drift detected
+  ✓ No drift recorded — `cfgd diff` checks the live machine
 
 Modules
   ✓ module:base      — 5 pkgs, 3 files, installed

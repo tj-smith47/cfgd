@@ -22,6 +22,7 @@
       "timestamp": "2026-05-14T12:01:00Z"
     }
   ],
+  "driftCheckedLive": false,
   "lastApply": {
     "id": 2,
     "planHash": "cafebabe",
