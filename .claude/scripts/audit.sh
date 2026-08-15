@@ -170,6 +170,18 @@ require_dirs() {
 
 require_dirs "workspace source scan" "${SRC_ROOTS[@]}" || true
 
+# --- Fail loudly when a tool a gate SEARCHES WITH is missing ---
+# Nine gates below are shaped `if hits=$(rg …) && [ -n "$hits" ]`, whose failure
+# arm is indistinguishable from "found nothing": on a host without ripgrep the
+# banned-old-API, indent-hack, kv-indent, direct-terminal-types,
+# structured-output-coverage, all four path-handling waves and the owner
+# comparator gates report a clean run having searched nothing at all. That is the
+# same vacuous-green shape require_dirs exists to prevent, so it is checked the
+# same way rather than trusted to the environment.
+if ! command -v rg >/dev/null 2>&1; then
+    log_error "ripgrep (rg) not found — the rg-based gates (banned old-API calls, indent hacks, direct terminal types, structured-output coverage, path-handling waves, owner ordering) would search nothing and pass silently"
+fi
+
 # --- Strip test blocks from a file and output non-test lines ---
 # Every gate below re-strips the same files, and the strip now parses literals
 # character by character, so the result is cached per file for the run.
@@ -286,10 +298,17 @@ check_core_boundary() {
 _bold; printf "=== cfgd Code Quality Audit ===\n"; _reset
 
 log_section "Output Centralization"
+# All four write macros, not just the `ln` pair: Hard Rule #1 bans `print!` and
+# `eprint!` by name, and a gate anchored on `println!\(` never sees either —
+# `print!("{}", …)` is one character away from the banned call and was invisible
+# here. The leading class keeps `eprint` from matching as `print`'s suffix, so
+# each macro is judged on its own name.
+# `src/bin/` joins main.rs: a `[[bin]]` entry point owns its stdout the same way
+# the crate's own main does (gen-crds streams a CRD document to a pipe).
 check_pattern error \
-    "No println!/eprintln! outside output/ and main.rs" \
-    'println!\(|eprintln!\(' \
-    'output/|main\.rs:'
+    "No print!/println!/eprint!/eprintln! outside output/, main.rs and src/bin/" \
+    '(^|[^[:alnum:]_])e?print(ln)?!\(' \
+    'output/|main\.rs:|src/bin/'
 
 log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
@@ -407,22 +426,46 @@ log_section "Dead Error Variants"
 #   - Direct construction: ::Variant { or ::Variant(
 #   - #[from] auto-conversion: variant has (#[from] ...) in definition
 dead_variants=""
+# A construction site inside the crate's own tests does not make a variant live:
+# the point of the gate is that PRODUCTION code reaches the variant, and an error
+# only ever built by the test that asserts its Display string is exactly the dead
+# variant this looks for. So the scan runs over the same test-stripped view every
+# other gate uses, with whole-file test modules skipped outright.
+# Concatenated ONCE, not per variant: this file is scanned for every variant of
+# every error enum, and re-stripping the tree inside that loop turns one pass
+# into (variants × files) of them.
+PRODUCTION_CORPUS="$STRIP_CACHE_DIR/production-corpus"
+build_production_corpus() {
+    local rsfile
+    : > "$PRODUCTION_CORPUS"
+    while IFS= read -r -d '' rsfile; do
+        case "$rsfile" in
+            */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+        esac
+        strip_test_blocks_from_file "$rsfile" >> "$PRODUCTION_CORPUS"
+    done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+}
+build_production_corpus
+production_construction_sites() {
+    grep -E "::${1}[[:space:]]*[{(]" "$PRODUCTION_CORPUS" \
+        | grep -v '#\[error' | grep -v 'enum ' || true
+}
 for errors_file in $(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' 2>/dev/null); do
-    # Extract PascalCase variant names (excluding #[from] variants which are auto-constructed)
-    variants=$(grep -oP '^\s+([A-Z][a-zA-Z]+)\s*[\{(]' "$errors_file" \
+    # Extract PascalCase variant names (excluding #[from] variants which are
+    # auto-constructed). Digits are part of a variant name — `Sha256Mismatch`
+    # matched neither regex below, so a digit-bearing variant could never be
+    # reported dead however unreachable it became.
+    variants=$(grep -oP '^\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' "$errors_file" \
         | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
     # Get list of #[from] variants — #[from] appears on the same line as the variant
     from_variants=$(grep '#\[from\]' "$errors_file" \
-        | grep -oP '([A-Z][a-zA-Z]+)\s*\(' | sed 's/\s*($//' || true)
+        | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
         if echo "$from_variants" | grep -qw "$variant" 2>/dev/null; then
             continue
         fi
-        # Count construction sites: ::Variant { or ::Variant( across all source
-        uses=$(grep -r "::${variant}\s*{\\|::${variant}\s*(" "${SRC_ROOTS[@]}" \
-            --include='*.rs' 2>/dev/null \
-            | grep -v '#\[error' | grep -v 'enum ' || true)
+        uses=$(production_construction_sites "$variant")
         if [[ -z "$uses" ]]; then
             dead_variants="${dead_variants}  ${errors_file}: ${variant}\n"
         fi
@@ -487,23 +530,39 @@ log_section "DRY — Duplicated Function Definitions"
 # Excusing the `Owner` site keeps each name's budget for a real duplicate.
 # `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
 # subcommands. Nothing is shared between them but the verb.
+#
+# The remaining pairs excuse a name two unrelated TYPES both answer, where
+# nothing but the verb is shared: `Slot::lane` names a package-manager family
+# while `PackageContext::lane` hands back a live output region; `MemberState`'s
+# `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
+# re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
+# rendered payload's fields, not the reconciler types they name.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
+    "is_clean crates/cfgd-core/src/backup/mod.rs"
     "profile crates/cfgd-core/src/reconciler/types.rs"
     "module crates/cfgd-core/src/reconciler/types.rs"
     "source crates/cfgd-core/src/reconciler/types.rs"
     "execute crates/cfgd-core/src/reconciler/run.rs"
+    "lane crates/cfgd-core/src/providers/mod.rs"
+    "node_id crates/cfgd-core/src/reconciler/managers.rs"
+    "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
+    "token crates/cfgd/src/cli/output_types.rs"
+    "owner crates/cfgd/src/cli/output_types.rs"
+    "actions crates/cfgd/src/cli/output_types.rs"
 )
-allowed_pairs_file=$(mktemp)
+allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
-fn_dupes=""
-while IFS= read -r -d '' rsfile; do
+# A digit is a legal character in a Rust fn name, so the extraction takes
+# `[a-z0-9_]` — anchored on `[a-z_]` it read `fn sha256_hex(` as a definition of
+# `sha` and could never count the real name.
+fn_dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
-        | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z_]+\(' \
-        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z_]*\)(.*|\2 \1|' \
+        | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z0-9_]+\(' \
+        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)(.*|\2 \1|' \
         || true
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort -u | grep -vxF -f "$allowed_pairs_file" \
@@ -511,7 +570,9 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | awk '$1 > 1 && \
         $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
         $2 != "name" && $2 != "is_available" && $2 != "bootstrap_plan" && $2 != "bootstrap" && \
-        $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && $2 != "update" && \
+        $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && \
+        $2 != "refresh_index" && $2 != "has_index" && $2 != "listed_identity" && \
+        $2 != "plan_packages_observed" && \
         $2 != "diff" && $2 != "apply" && $2 != "current_state" && \
         $2 != "scan_source" && $2 != "scan_target" && \
         $2 != "get" && $2 != "set" && $2 != "delete" && $2 != "list" && $2 != "resolve" && \
@@ -553,10 +614,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
         $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
         $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
-        {print}' \
-    > /tmp/cfgd_fn_dupes 2>/dev/null || true
-fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)
-rm -f /tmp/cfgd_fn_dupes "$allowed_pairs_file"
+        {print}' || true)
+rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
     log_warn "Function names defined in multiple files (potential duplication):"
     echo "$fn_dupes" | head -10
