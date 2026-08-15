@@ -393,10 +393,19 @@ fn sysctl_diff_reports_nothing_for_a_knob_already_at_its_desired_value() {
     // already holds, and desire something it does not. The host supplies the
     // input here rather than the verdict, so the assertion holds on any kernel.
     let key = "kernel.pid_max";
-    let Ok(current) = std::fs::read_to_string("/proc/sys/kernel/pid_max") else {
-        return; // no procfs (a container without /proc mounted) — nothing to read
+    let current = match std::fs::read_to_string("/proc/sys/kernel/pid_max") {
+        Ok(v) => v.trim().to_string(),
+        // No procfs (a container without /proc mounted). Assert the arm that
+        // IS reachable there rather than returning: with nothing to read, the
+        // configurator has nothing to configure and must say so.
+        Err(_) => {
+            assert!(
+                !SysctlConfigurator.is_available(),
+                "no /proc/sys means no sysctl to apply"
+            );
+            return;
+        }
     };
-    let current = current.trim().to_string();
 
     let matched = SysctlConfigurator
         .diff(&sysctl_desire(
@@ -1952,12 +1961,23 @@ fn certificate_is_unavailable_off_linux() {
 // without CONFIG_SECCOMP has no such file and must report unavailable. The two
 // directions are asserted separately because comparing against the same
 // `exists()` call the implementation makes restates it and can never fail.
+// Both kernel states assert. An early `return` when the knob is absent leaves
+// a whole arm that passes without checking anything, and nothing distinguishes
+// that from the configurator having been broken.
 #[test]
-fn seccomp_is_available_where_the_kernel_exposes_its_knob() {
-    if !std::path::Path::new("/proc/sys/kernel/seccomp").exists() {
-        return;
+#[cfg(target_os = "linux")]
+fn seccomp_availability_follows_the_kernels_own_knob() {
+    if std::path::Path::new("/proc/sys/kernel/seccomp").exists() {
+        assert!(
+            SeccompConfigurator.is_available(),
+            "a kernel exposing the seccomp knob can be configured"
+        );
+    } else {
+        assert!(
+            !SeccompConfigurator.is_available(),
+            "a Linux build without CONFIG_SECCOMP exposes no knob to write"
+        );
     }
-    assert!(SeccompConfigurator.is_available());
 }
 
 #[test]
@@ -2956,10 +2976,23 @@ fn containerd_apply_with_empty_settings_is_a_noop() {
     assert!(!config.exists());
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     // Drives lines 105-169: settings non-empty → merge into current →
     // serialize TOML → atomic_write → restart fails → rollback arm.
+    //
+    // The failing systemctl is a shim, not the host's. Reading the host's
+    // answer means that on a real k8s node this test runs
+    // `systemctl restart containerd` against a live runtime — and then goes
+    // red there because the restart SUCCEEDS.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart containerd.service: Unit not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("nested/config.toml");
     let mut settings = serde_yaml::Mapping::new();
@@ -2984,10 +3017,11 @@ fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     // return Ok; on CI/dev boxes without containerd it returns Err. Either
     // way, the merge + serialize + atomic_write path on lines 105-152 must
     // have executed — verifiable via the config file contents on disk.
-    let _ = cc.apply(
+    cc.apply(
         &desired,
         &cfgd_core::providers::SystemContext::new(&printer),
-    );
+    )
+    .expect_err("a failing restart must surface as an error");
     assert!(
         config.exists(),
         "atomic_write must have run before restart fires"
@@ -2999,17 +3033,26 @@ fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_fails() {
     // Drives the backup-restore branch at containerd.rs:155-167. Pre-stages
     // a valid TOML config so capture_file_state returns Some(state); apply
-    // writes the merged config; restart fails on hosts without containerd;
-    // the rollback arm fires. Asserts the rollback warning is emitted and
-    // the final on-disk config contains the original bytes.
+    // writes the merged config; the shimmed restart fails; the rollback arm
+    // fires. Asserts the rollback warning is emitted and the final on-disk
+    // config contains the original bytes.
     //
-    // On hosts where containerd is actually running, restart_containerd may
-    // succeed and the rollback warning won't fire. Skip the assertion in
-    // that case — the goal is to pin the rollback arm where it's reachable.
+    // The shim is what makes the rollback arm reachable EVERYWHERE. Reading
+    // the host's own systemctl left the whole assertion behind an `if
+    // result.is_err()`, so on a node with containerd running it asserted
+    // nothing — after restarting the node's container runtime.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart containerd.service: Unit not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("config.toml");
     let original = "[plugins.\"io.containerd.grpc.v1.cri\"]\nsandbox_image = \"old:1.0\"\n";
@@ -3039,22 +3082,16 @@ fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemc
     );
 
     let captured = buf.lock().unwrap().clone();
-    if result.is_err() {
-        // Rollback path: warning must fire and original content must be back.
-        assert!(
-            captured.contains("restoring previous config"),
-            "rollback warning expected on restart-failed path: {captured}"
-        );
-        let after = std::fs::read_to_string(&config).unwrap();
-        assert!(
-            after.contains("old:1.0"),
-            "rollback must restore prior containerd config: {after}"
-        );
-    }
-    // If Ok: the host actually has containerd; nothing to assert about
-    // rollback (it didn't run). The merged-write was already asserted by
-    // the sibling `containerd_apply_writes_toml_then_returns_err_when_systemctl_fails`
-    // test, so this test contributes only when the rollback arm is taken.
+    result.expect_err("a failing restart must surface as an error");
+    assert!(
+        captured.contains("restoring previous config"),
+        "rollback warning expected on restart-failed path: {captured}"
+    );
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        after.contains("old:1.0"),
+        "rollback must restore prior containerd config: {after}"
+    );
 }
 
 // --- KubeletConfigurator::apply paths ---
@@ -3113,15 +3150,24 @@ fn kubelet_apply_with_empty_settings_is_a_noop() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     // Settings present → apply writes the merged config via atomic_write,
-    // then shells out to `systemctl restart kubelet`. In CI/tests
-    // systemctl is either absent or the kubelet unit doesn't exist, so
-    // restart fails → apply returns Err. We assert:
+    // then shells out to `systemctl restart kubelet`. The restart is shimmed
+    // to fail, so the failure arm runs on every host — including a real k8s
+    // node, where "in CI/tests systemctl is either absent or the kubelet unit
+    // doesn't exist" is false and this test would otherwise restart the
+    // node's kubelet and then fail on the Ok it got back. We assert:
     //   (a) the merged config IS written to disk (atomic_write fired)
     //   (b) the returned Err carries a systemctl-related message
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart kubelet.service: Unit kubelet.service not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("nested/sub/config.yaml");
     let mut settings = serde_yaml::Mapping::new();
@@ -3146,7 +3192,7 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
             &desired,
             &cfgd_core::providers::SystemContext::new(&printer),
         )
-        .expect_err("systemctl restart should fail in CI/tests");
+        .expect_err("the shimmed systemctl restart fails, so apply must too");
     assert!(
         config.exists(),
         "atomic_write must have written the merged config before restart"
@@ -3163,18 +3209,28 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_fails() {
     // Drives the backup-restore branch at kubelet.rs:166-180. Pre-stage a
     // valid kubelet config so `capture_file_state` returns Some(state) with
-    // !is_symlink && !oversized. apply writes the new merged config; restart
-    // fails (systemctl unavailable / no kubelet unit); the rollback arm fires,
+    // !is_symlink && !oversized. apply writes the new merged config; the
+    // shimmed restart fails — never the host's, which on a real node means
+    // restarting the kubelet out from under running workloads — the rollback
+    // arm fires,
     // attempts to atomic_write the original bytes back, then re-tries the
     // restart (which fails again). Asserts:
     //   - the printer warning "kubelet restart failed — restoring previous
     //     config" was emitted (proves the if-let-Some(backup) branch ran)
     //   - the final config on disk matches the prior contents (rollback's
     //     atomic_write succeeded)
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart kubelet.service: Unit kubelet.service not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("config.yaml");
     let original = "clusterDomain: cluster.local\nmaxPods: 50\n";
@@ -3198,10 +3254,11 @@ fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_
     let kc = KubeletConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = kc.apply(
+    kc.apply(
         &desired,
         &cfgd_core::providers::SystemContext::new(&printer),
-    );
+    )
+    .expect_err("a failing restart must surface as an error");
 
     let captured = buf.lock().unwrap().clone();
     assert!(

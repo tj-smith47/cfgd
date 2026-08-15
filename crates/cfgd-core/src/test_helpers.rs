@@ -1580,6 +1580,63 @@ pub fn install_named_path_shim(
     (bin_dir, guard)
 }
 
+/// The argv record of a [`install_named_path_shim_logged`] shim. Same two
+/// readers as [`ToolShim`], because a PATH-resolved manager has exactly the
+/// same question asked of it — "what did it actually run, and how often" — and
+/// a test that can only see the shim's exit code cannot tell a refresh that
+/// updated an index from one that upgraded every installed package.
+#[cfg(unix)]
+pub struct PathShimLog {
+    log_path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl PathShimLog {
+    /// Read the captured argv. Each line is the space-joined argv of one
+    /// invocation, in order.
+    pub fn argv_log(&self) -> String {
+        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+    }
+
+    /// Number of times the shim was invoked.
+    pub fn invocation_count(&self) -> usize {
+        self.argv_log().lines().filter(|l| !l.is_empty()).count()
+    }
+}
+
+/// [`install_named_path_shim`] that also records every invocation's argv.
+///
+/// Reach for it over the plain variant whenever the assertion is about WHICH
+/// subcommand ran rather than about what the manager did with its output — the
+/// difference between `scoop update` and `scoop update *`, or between a
+/// no-index manager refreshing nothing and one silently running
+/// `winget upgrade --all`, is invisible in an exit code.
+#[cfg(unix)]
+pub fn install_named_path_shim_logged(
+    binary: &str,
+    exit_code: u8,
+    stdout: &str,
+    stderr: &str,
+) -> (tempfile::TempDir, PathShimGuard, PathShimLog) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin_dir = tempfile::tempdir().expect("tempdir");
+    let log_path = bin_dir.path().join("argv.log");
+    // The log path is baked into the script rather than read from the
+    // environment, so only this shim's own invocations can land in it.
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+        log_path.display().to_string().replace('\'', "'\\''"),
+        stdout.replace('"', "\\\""),
+        stderr.replace('"', "\\\""),
+        exit_code
+    );
+    let path = bin_dir.path().join(binary);
+    std::fs::write(&path, script).expect("write shim");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let guard = PathShimGuard::prepend(bin_dir.path());
+    (bin_dir, guard, PathShimLog { log_path })
+}
+
 /// Install several `#!/bin/sh` shims into a single tempdir prepended to PATH.
 /// Each `(name, exit_code)` becomes a 0o755 script that exits with the given
 /// code (no stdout/stderr). Returns `(TempDir, PathShimGuard)` whose drops

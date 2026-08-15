@@ -490,12 +490,22 @@ mod tests {
         #[test]
         #[serial]
         fn scoop_refresh_updates_buckets_without_upgrading_apps() {
-            let (_bin, _path) = install_scoop_shim(0, "", "");
+            let (_bin, _path, log) =
+                cfgd_core::test_helpers::install_named_path_shim_logged("scoop", 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
             assert!(ScoopManager.has_index(), "scoop buckets are a local index");
             ScoopManager.refresh_index(&cx).expect("refresh Ok");
+            // The load-bearing half, and the whole reason this test is named
+            // "without upgrading apps": `scoop update` refreshes the bucket
+            // manifests, `scoop update *` upgrades every installed app. Both
+            // exit 0, so only the argv separates them.
+            assert_eq!(
+                log.argv_log().trim(),
+                "update",
+                "a bucket refresh is `scoop update` with no target"
+            );
         }
 
         #[test]

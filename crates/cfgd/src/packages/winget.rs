@@ -480,7 +480,8 @@ SomeApp               Some.App                  1.0.0\n";
         #[test]
         #[serial]
         fn winget_declares_no_index_and_refreshing_upgrades_nothing() {
-            let (_bin, _path) = install_winget_shim(0, "", "");
+            let (_bin, _path, log) =
+                cfgd_core::test_helpers::install_named_path_shim_logged("winget", 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -489,6 +490,16 @@ SomeApp               Some.App                  1.0.0\n";
                 "`winget upgrade --all` upgrades every package the user never declared"
             );
             WingetManager.refresh_index(&cx).expect("refresh Ok");
+            // The load-bearing half: `has_index() == false` is only honest if
+            // the refresh runs nothing. An `Ok(())` says nothing about that —
+            // a refresh that shelled out to `winget upgrade --all` would also
+            // return Ok, while upgrading every package on the machine.
+            assert_eq!(
+                log.invocation_count(),
+                0,
+                "a manager with no index must not invoke winget at all, ran: {}",
+                log.argv_log()
+            );
         }
 
         #[test]

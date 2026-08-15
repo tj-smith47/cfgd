@@ -258,12 +258,17 @@ mod tests {
         assert_eq!(gc.name(), "gsettings");
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn gsettings_apply_iterates_schemas_and_keys_through_command_path() {
-        // Drives the apply loop body (lines 76, 80-102): yaml_value_to_string,
-        // status_simple invocation, Command::output (gsettings absent on CI →
-        // Io error path, OR success on a host with gsettings → printer.warn).
-        // Both branches return Ok(()) from apply; we just need the body to run.
+        // Drives the apply loop body: yaml_value_to_string, the report, and one
+        // `gsettings set` per key. A shimmed gsettings makes the run identical
+        // on every host, so the argv — which schema, which key, which value,
+        // and in what order — is what the test asserts. Discarding the Result
+        // instead left it asserting only that apply did not panic.
+        let (_bin, _path, log) =
+            cfgd_core::test_helpers::install_named_path_shim_logged("gsettings", 0, "", "");
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut inner = serde_yaml::Mapping::new();
@@ -281,11 +286,16 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        // We don't assert on stdout — the body runs through Command::output
-        // either way; the missing-binary case currently returns an Io error
-        // because Command::output → CfgdError::Io. So tolerate either Ok or
-        // Err (the body coverage is unchanged either way).
-        let _ = gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .expect("every shimmed `gsettings set` succeeds");
+        assert_eq!(
+            log.argv_log().lines().collect::<Vec<_>>(),
+            vec![
+                "set org.gnome.desktop.interface.test-only color-scheme prefer-dark",
+                "set org.gnome.desktop.interface.test-only font-name Cantarell 11",
+            ],
+            "one `gsettings set` per key, in declaration order, schema first"
+        );
     }
 
     #[test]
