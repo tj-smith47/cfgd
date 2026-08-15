@@ -46,13 +46,165 @@
           "description": "Scripts run after the copy step (e.g. restart the service stopped by `preBackup`). Always attempted, including after a failed `preBackup` or a failed copy.",
           "name": "postBackup",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent). A failure skips the snapshot and records a failed run; `postBackup` still runs.",
           "name": "preBackup",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration rather than a supported \"unlimited\" mode). Defaults to 10.",
@@ -482,37 +634,493 @@
           "description": "",
           "name": "onChange",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "",
           "name": "onDrift",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "",
           "name": "postApply",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "",
           "name": "postReconcile",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "",
           "name": "preApply",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         },
         {
           "description": "",
           "name": "preReconcile",
           "required": false,
-          "type": "[]object"
+          "type": "[](string | object)",
+          "variants": [
+            {
+              "description": "",
+              "name": "string",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "children": [
+                {
+                  "description": "",
+                  "name": "continueOnError",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                  "name": "creates",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                  "name": "idleTimeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                  "name": "interactive",
+                  "required": false,
+                  "type": "boolean"
+                },
+                {
+                  "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "onlyIf",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "run",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "name": "shell",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "",
+                  "name": "timeout",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                  "name": "unless",
+                  "required": false,
+                  "type": "string"
+                },
+                {
+                  "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                  "name": "workdir",
+                  "required": false,
+                  "type": "string"
+                }
+              ],
+              "description": "",
+              "name": "object",
+              "required": false,
+              "type": "object"
+            }
+          ]
         }
       ],
       "description": "",

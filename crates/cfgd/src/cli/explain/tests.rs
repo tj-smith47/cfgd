@@ -283,3 +283,132 @@ fn explain_sources_origin_has_children() {
         "sources.origin should have type/url/branch/auth children"
     );
 }
+
+// --- Task 18: array-of-object + oneOf (untagged-enum) expansion ---
+
+#[test]
+fn explain_resolve_field_path_array_of_object_lists_element_fields() {
+    // `profile.backups[]` is a `Vec<BackupSpec>` (a plain-object array
+    // element); the field path resolves straight to BackupSpec's own
+    // properties, same as `explain_cmd_field_path`'s `module.packages`.
+    let profile = find_schema("Profile").unwrap();
+    let fields = resolve_field_path(&profile.fields, &["backups"]).expect("backups resolves");
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        names.contains(&"name"),
+        "expected BackupSpec's name field, got {names:?}"
+    );
+    assert!(
+        names.contains(&"schedule"),
+        "expected BackupSpec's schedule field, got {names:?}"
+    );
+    // Drilldown continues through the element's own (leaf) fields.
+    let name_field = fields.iter().find(|f| f.name == "name").unwrap();
+    assert!(name_field.children.is_empty());
+    assert!(name_field.variants.is_empty());
+}
+
+#[test]
+fn explain_resolve_field_path_oneof_field_carries_both_variants() {
+    // `profile.scripts.preApply` is a `Vec<ScriptEntry>` — each entry is
+    // either a bare string or a `{ run, timeout, … }` object. The field's
+    // own `children` stay empty (it is not itself an object), so
+    // `resolve_field_path` returns it as a single-element slice; the two
+    // accepted shapes live in `variants` instead.
+    let profile = find_schema("Profile").unwrap();
+    let fields = resolve_field_path(&profile.fields, &["scripts", "preApply"])
+        .expect("scripts.preApply resolves");
+    assert_eq!(fields.len(), 1);
+    let f = &fields[0];
+    assert!(f.children.is_empty());
+    let variant_types: Vec<&str> = f.variants.iter().map(|v| v.type_desc.as_str()).collect();
+    assert_eq!(variant_types, vec!["string", "object"]);
+    let object_variant = f
+        .variants
+        .iter()
+        .find(|v| v.type_desc == "object")
+        .expect("object variant present");
+    assert!(
+        object_variant.children.iter().any(|c| c.name == "run"),
+        "expected the object variant's `run` field, got {:?}",
+        object_variant.children
+    );
+}
+
+#[test]
+fn explain_cmd_field_path_oneof_shows_both_variants() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("profile.scripts.preApply"), false).unwrap();
+    printer.flush();
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Variants"),
+        "expected a Variants section, got: {output}"
+    );
+    assert!(
+        output.contains("string"),
+        "expected the string variant, got: {output}"
+    );
+    assert!(
+        output.contains("object"),
+        "expected the object variant, got: {output}"
+    );
+    // Non-recursive: the object variant's own fields (`run`, …) stay behind
+    // the `[+]` marker, matching every other expandable field.
+    assert!(
+        output.contains("[+]"),
+        "expected the object variant to carry an unexpanded [+] marker, got: {output}"
+    );
+}
+
+#[test]
+fn explain_cmd_field_path_oneof_recursive_expands_object_variant() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("profile.scripts.preApply"), true).unwrap();
+    printer.flush();
+    let output = buf.lock().unwrap();
+    assert!(
+        !output.contains("[+]"),
+        "recursive drilldown should have no unexpanded markers, got: {output}"
+    );
+    assert!(
+        output.contains("continueOnError"),
+        "expected the object variant's own fields expanded, got: {output}"
+    );
+}
+
+#[test]
+fn explain_field_path_oneof_json_shape_is_additive() {
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_explain(&printer, Some("profile.scripts.preApply"), false).unwrap();
+    drop(printer);
+    let json = cap.json().expect("drilldown doc carries with_data");
+    let fields = json["fields"].as_array().expect("fields array");
+    assert_eq!(fields.len(), 1);
+    let field = &fields[0];
+    assert_eq!(field["name"], "preApply");
+    let variants = field["variants"].as_array().expect("variants array");
+    assert_eq!(variants.len(), 2);
+    let variant_types: Vec<&str> = variants
+        .iter()
+        .map(|v| v["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(variant_types, vec!["string", "object"]);
+    let object_variant = variants
+        .iter()
+        .find(|v| v["type"] == "object")
+        .expect("object variant present");
+    let children = object_variant["children"]
+        .as_array()
+        .expect("object variant carries children");
+    assert!(
+        children.iter().any(|c| c["name"] == "run"),
+        "expected the object variant's `run` child in json, got: {object_variant:?}"
+    );
+    // The string variant has nothing to drill into — `variants` and
+    // `children` both stay absent (skip_serializing_if empty), the additive
+    // contract: an existing consumer reading only `children` sees no change.
+    let string_variant = variants.iter().find(|v| v["type"] == "string").unwrap();
+    assert!(string_variant.get("children").is_none());
+    assert!(string_variant.get("variants").is_none());
+}

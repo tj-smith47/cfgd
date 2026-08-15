@@ -57,8 +57,19 @@ pub struct FieldNode {
     pub required: bool,
     /// Short description from the schema (rustdoc on the source field).
     pub description: String,
-    /// Nested fields, for object-typed fields.
+    /// Nested fields, for object-typed fields (including an array field's
+    /// object-shaped element, e.g. `packages[].name`).
     pub children: Vec<FieldNode>,
+    /// Every accepted shape, for a field whose schema is a genuine multi-shape
+    /// union (an untagged Rust enum like `ScriptEntry`, whose variants render
+    /// to *different* type descriptions — `string` and `object` are both
+    /// legal). Each entry's `name`/`type_desc` is the shape's own type label
+    /// (e.g. `"string"`, `"object"`) and its `children` are that shape's own
+    /// fields when it is object-shaped. Empty for every other field, including
+    /// a union whose members all collapse to one instance type (a unit-variant
+    /// enum, an `Option<T>`) — those already carry that single type in
+    /// `type_desc` and need no shape breakdown.
+    pub variants: Vec<FieldNode>,
 }
 
 /// One resource kind in the unified registry.
@@ -466,14 +477,23 @@ fn field_node(
     let type_desc = type_description(&resolved, ctx, visited);
     // Children come from the field's own object properties, or — for an array
     // field — from its element type's object properties so `[]object` entries
-    // stay drillable (e.g. `packages[].name`). A `$ref` re-entry (cycle) stops
-    // here, emitting the field as a leaf.
-    let children = if !descent.safe() {
-        Vec::new()
+    // stay drillable (e.g. `packages[].name`). `variants` covers the third
+    // shape: a field (or an array's element) whose schema is itself a
+    // multi-shape union — neither an object nor unwrappable to one, so
+    // `children` stays empty and the shapes live in `variants` instead. A
+    // `$ref` re-entry (cycle) stops here, emitting the field as a leaf with
+    // neither.
+    let (children, variants) = if !descent.safe() {
+        (Vec::new(), Vec::new())
     } else if is_object(&resolved) {
-        object_fields(&resolved, ctx, visited)
+        (object_fields(&resolved, ctx, visited), Vec::new())
+    } else if array_item(&resolved).is_some() {
+        (
+            array_element_fields(&resolved, ctx, visited),
+            array_element_variants(&resolved, ctx, visited),
+        )
     } else {
-        array_element_fields(&resolved, ctx, visited)
+        (Vec::new(), union_variants(&resolved, ctx, visited))
     };
     descent.leave(visited);
     FieldNode {
@@ -482,6 +502,7 @@ fn field_node(
         required,
         description,
         children,
+        variants,
     }
 }
 
@@ -543,6 +564,34 @@ fn array_element_fields(
     };
     descent.leave(visited);
     fields
+}
+
+/// For an array (resolved) schema whose element type is a genuine multi-shape
+/// union (e.g. `Vec<ScriptEntry>`, each entry a `string` or a `{ run, … }`
+/// object), return one [`FieldNode`] per accepted element shape. Mirrors
+/// [`array_element_fields`]'s walk to the (unwrapped, `$ref`-resolved) element
+/// schema, but hands it to [`union_variants`] instead of [`object_fields`].
+/// Returns an empty vec for an array of scalars or of plain objects — either
+/// already carries its shape in `type_desc`/`children` and has no second shape
+/// to disclose.
+fn array_element_variants(
+    schema: &Value,
+    ctx: SchemaCtx,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Vec<FieldNode> {
+    let Some(item) = array_item(schema) else {
+        return Vec::new();
+    };
+    let item = unwrap_single_subschema(item);
+    let descent = RefDescent::enter(&item, visited);
+    let resolved = resolve_ref(&item, ctx);
+    let variants = if descent.safe() {
+        union_variants(&resolved, ctx, visited)
+    } else {
+        Vec::new()
+    };
+    descent.leave(visited);
+    variants
 }
 
 /// The element schema of an array schema's `items`. Handles both the single-
@@ -665,9 +714,13 @@ fn is_object(schema: &Value) -> bool {
 }
 
 /// Map a (resolved) schema to cfgd's type description: `[]<inner>` for arrays,
-/// `object` for objects/maps, otherwise the JSON instance type (`string`,
-/// `integer`, `boolean`, …). Falls back to `object` when no type can be
-/// determined (untyped maps, a union of genuinely different types).
+/// `object` for objects/maps, the JSON instance type (`string`, `integer`,
+/// `boolean`, …) for a scalar, or a parenthesised `(a | b)` join of every
+/// accepted shape for a genuine multi-shape union (an untagged enum whose
+/// variants render to different types, e.g. `ScriptEntry`'s `(string |
+/// object)`) — see [`union_variants`] for the matching field-tree expansion.
+/// Falls back to `object` only when no type can be determined at all (an
+/// untyped map, or a union with a cyclic member).
 fn type_description(
     schema: &Value,
     ctx: SchemaCtx,
@@ -682,6 +735,9 @@ fn type_description(
     }
     if let Some(member) = union_member_type(schema, ctx, visited) {
         return member;
+    }
+    if let Some(joined) = union_type_join(schema, ctx, visited) {
+        return format!("({joined})");
     }
     match schema.as_object().and_then(|o| o.get("type")) {
         Some(Value::String(t)) => t.clone(),
@@ -741,6 +797,100 @@ fn union_member_type(
         }
     }
     found
+}
+
+/// Join every distinct accepted shape's type description with `" | "`, for the
+/// [`type_description`] fallback tier reached when [`union_member_type`] cannot
+/// collapse the union to one type. `None` when the union collapses to a single
+/// type after dedup (redundant with `union_member_type`'s tier) or a member
+/// sits on a cyclic `$ref` — either way the caller's final `object` fallback
+/// applies instead.
+fn union_type_join(
+    schema: &Value,
+    ctx: SchemaCtx,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let obj = schema.as_object()?;
+    let members = obj
+        .get("oneOf")
+        .or_else(|| obj.get("anyOf"))
+        .and_then(Value::as_array)?;
+    let mut parts: Vec<String> = Vec::new();
+    for member in members {
+        if is_null_schema(member) {
+            continue;
+        }
+        let descent = RefDescent::enter(member, visited);
+        if !descent.safe() {
+            descent.leave(visited);
+            return None;
+        }
+        let resolved = resolve_ref(member, ctx);
+        let desc = type_description(&resolved, ctx, visited);
+        descent.leave(visited);
+        if !parts.contains(&desc) {
+            parts.push(desc);
+        }
+    }
+    (parts.len() > 1).then(|| parts.join(" | "))
+}
+
+/// Field-tree expansion of a genuine multi-shape union: one [`FieldNode`] per
+/// distinct accepted shape, named by its own [`type_description`] (schemars
+/// drops Rust variant names for `#[serde(untagged)]` enums, so the type string
+/// is the only stable label available — e.g. `ScriptEntry` yields a `string`
+/// variant and an `object` variant carrying its `run`/`timeout`/… fields).
+/// Returns an empty vec when the union already collapses to one type via
+/// [`union_member_type`] (nothing to break down) or the schema is not a union.
+fn union_variants(
+    schema: &Value,
+    ctx: SchemaCtx,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Vec<FieldNode> {
+    if union_member_type(schema, ctx, visited).is_some() {
+        return Vec::new();
+    }
+    let Some(members) = schema
+        .as_object()
+        .and_then(|o| o.get("oneOf").or_else(|| o.get("anyOf")))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut variants = Vec::new();
+    for member in members {
+        if is_null_schema(member) {
+            continue;
+        }
+        let descent = RefDescent::enter(member, visited);
+        if !descent.safe() {
+            descent.leave(visited);
+            continue;
+        }
+        let resolved = resolve_ref(member, ctx);
+        let type_desc = type_description(&resolved, ctx, visited);
+        if seen.insert(type_desc.clone()) {
+            let description = schema_description(member)
+                .or_else(|| schema_description(&resolved))
+                .unwrap_or_default();
+            let children = if is_object(&resolved) {
+                object_fields(&resolved, ctx, visited)
+            } else {
+                Vec::new()
+            };
+            variants.push(FieldNode {
+                name: type_desc.clone(),
+                type_desc,
+                required: false,
+                description,
+                children,
+                variants: Vec::new(),
+            });
+        }
+        descent.leave(visited);
+    }
+    variants
 }
 
 /// Type description of an array element, guarding the element `$ref` against a
@@ -879,16 +1029,56 @@ mod tests {
     }
 
     /// A union of genuinely different types has no single answer, so the walk
-    /// must keep its `object` fallback rather than picking a member at random.
+    /// joins every distinct member type instead of picking one at random or
+    /// collapsing to the opaque `object` fallback.
     #[test]
-    fn a_mixed_type_union_stays_object() {
+    fn a_mixed_type_union_joins_member_types() {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
                 "either": { "anyOf": [{ "type": "string" }, { "type": "integer" }] }
             }
         });
-        assert_eq!(type_desc_of(schema, "either"), "object");
+        assert_eq!(type_desc_of(schema, "either"), "(string | integer)");
+    }
+
+    /// The field's `variants` carry one [`FieldNode`] per distinct accepted
+    /// shape, labeled by its own type description, with the object variant's
+    /// own fields expanded as `children` — the `ScriptEntry`-shaped case this
+    /// gap exists for (`string` or `{ run, timeout, … }`).
+    #[test]
+    fn a_mixed_type_union_expands_variants() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "hook": {
+                    "anyOf": [
+                        { "type": "string" },
+                        {
+                            "type": "object",
+                            "properties": { "run": { "type": "string" } },
+                            "required": ["run"]
+                        }
+                    ]
+                }
+            }
+        });
+        let schema: Schema = serde_json::from_value(schema).expect("schema parses");
+        let tree = field_tree_from_schema(&schema);
+        let hook = tree.iter().find(|f| f.name == "hook").expect("hook field");
+        let variant_types: Vec<&str> = hook.variants.iter().map(|v| v.type_desc.as_str()).collect();
+        assert_eq!(variant_types, vec!["string", "object"]);
+        let object_variant = hook
+            .variants
+            .iter()
+            .find(|v| v.type_desc == "object")
+            .expect("object variant");
+        let child_names: Vec<&str> = object_variant
+            .children
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(child_names, vec!["run"]);
     }
 
     /// An `Option<SomeObject>` union must still resolve through the member

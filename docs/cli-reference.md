@@ -780,6 +780,13 @@ cfgd explain --recursive machineconfig     # expand all fields
 Schemas are derived from the live resource types (the `cfgd-core` kind
 registry), so `explain` always matches what cfgd actually accepts.
 
+Drilling into an array-of-object field (`profile.backups`) lists the
+element's own fields, same as `kubectl explain`. A field that accepts more
+than one shape (e.g. `profile.scripts.preApply`, where each entry is either a
+bare string or a `{ run, timeout, … }` object) shows every accepted shape
+under a `Variants` section, each labeled by its own type and drillable into
+its own fields.
+
 Resource types: `module`, `profile`, `configsource`, `config` (aliases:
 `cfgdconfig`, `cfgd`), `machineconfig`, `configpolicy`, `clusterconfigpolicy`,
 `driftalert`, `module-crd` (the cluster-side Module CRD), `teamconfig`.
