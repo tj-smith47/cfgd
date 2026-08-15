@@ -165,6 +165,17 @@ pub fn find_schema(name: &str) -> Option<ResourceSchema> {
 }
 
 /// Walk a dot-separated field path to find nested fields.
+///
+/// Each segment matches a field by name within the current candidate list.
+/// A matched field with direct `children` (a plain object, or an array of
+/// plain objects) resolves the next segment against those. A matched field
+/// that is instead a genuine multi-shape union (`variants` non-empty, e.g.
+/// a `ScriptEntry` — a bare string or a `{ run, timeout, ... }` object) has
+/// NO children of its own, so the next segment is resolved against every
+/// variant's own children in turn — the first variant that resolves the
+/// REST of the path wins, deterministically, so a caller can drill straight
+/// past the variant boundary (`scripts.preApply.run` finds `run` inside the
+/// object variant without ever naming `object` in the path).
 fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&'a [FieldNode]> {
     if path_parts.is_empty() {
         return Some(fields);
@@ -179,7 +190,15 @@ fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Optio
                 }
                 return Some(&field.children);
             }
-            return resolve_field_path(&field.children, &path_parts[1..]);
+            if !field.children.is_empty() {
+                return resolve_field_path(&field.children, &path_parts[1..]);
+            }
+            for variant in &field.variants {
+                if let Some(found) = resolve_field_path(&variant.children, &path_parts[1..]) {
+                    return Some(found);
+                }
+            }
+            return None;
         }
     }
     None
@@ -342,11 +361,15 @@ pub fn build_explain_drilldown_doc(
     );
     let mut doc = Doc::new().heading(path_str.clone());
     if let [f] = fields {
-        // resolve_field_path returns a single-element slice only for the
-        // target field itself (never a sibling list), so its own header is
-        // always shown — the only question is whether it has structure
-        // (array-of-object children, or a oneOf's variants) to force-expand
-        // one level, same as kubectl explain on a field with sub-fields.
+        // resolve_field_path returns a single-element slice in two cases
+        // that are indistinguishable from the slice alone: the path names a
+        // leaf field with no children (the common case), or it names a
+        // parent whose own children list happens to contain exactly one
+        // field. Either way, showing that one field's own name/type/
+        // description is the correct view — a one-field "Fields" listing
+        // and a genuine leaf's own header render identically here — so the
+        // force-expand into `Variants`/`Fields` below is unconditionally
+        // correct regardless of which case produced it.
         let req = if f.required { " (required)" } else { "" };
         doc = doc
             .kv("field", f.name.clone())

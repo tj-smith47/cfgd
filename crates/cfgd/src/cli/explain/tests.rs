@@ -412,3 +412,65 @@ fn explain_field_path_oneof_json_shape_is_additive() {
     assert!(string_variant.get("children").is_none());
     assert!(string_variant.get("variants").is_none());
 }
+
+// --- Fix round 1: resolve_field_path must continue PAST a variant boundary ---
+
+#[test]
+fn explain_resolve_field_path_traverses_past_a_variant_into_its_object_shape() {
+    // `scripts.preApply` has no children of its own (it's a union field); the
+    // path must keep walking into the object variant's own children to find
+    // `run`, without the caller ever naming the variant ("object") in the
+    // path.
+    let profile = find_schema("Profile").unwrap();
+    let fields = resolve_field_path(&profile.fields, &["scripts", "preApply", "run"])
+        .expect("scripts.preApply.run must resolve past the variant boundary");
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name, "run");
+    assert_eq!(fields[0].type_desc, "string");
+}
+
+#[test]
+fn explain_resolve_field_path_traverses_past_a_variant_for_array_element_unions() {
+    // `backups[].preBackup` reaches its variants through
+    // `array_element_variants` rather than `union_variants` directly — same
+    // ScriptEntry shape, different path through field_node's 4-way branch.
+    let profile = find_schema("Profile").unwrap();
+    let fields = resolve_field_path(&profile.fields, &["backups", "preBackup", "run"])
+        .expect("backups.preBackup.run must resolve past the variant boundary");
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name, "run");
+    assert_eq!(fields[0].type_desc, "string");
+}
+
+#[test]
+fn explain_resolve_field_path_unknown_field_inside_a_variant_still_errors() {
+    // A field that exists on neither variant (string has no fields at all;
+    // object has no `bogus`) must still report unknown, not silently resolve
+    // to something else or panic.
+    let profile = find_schema("Profile").unwrap();
+    assert!(resolve_field_path(&profile.fields, &["scripts", "preApply", "bogus"]).is_none());
+}
+
+#[test]
+fn explain_cmd_field_path_past_variant_boundary_human_and_error() {
+    // Live end-to-end: the CLI command itself resolves past the variant
+    // boundary, and a nonexistent field inside a variant still reports the
+    // same "Unknown field path" error as any other unknown field.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("profile.scripts.preApply.run"), false).unwrap();
+    printer.flush();
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("run"),
+        "expected the run field past the variant boundary, got: {output}"
+    );
+    drop(output);
+    drop(printer);
+
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    let err = cmd_explain(&printer, Some("profile.scripts.preApply.bogus"), false).unwrap_err();
+    assert!(
+        err.to_string().contains("Unknown field path"),
+        "expected the standard unknown-field-path error, got: {err}"
+    );
+}
