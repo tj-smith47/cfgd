@@ -100,10 +100,10 @@ pub fn windows_setx(key: &str, value: &str) -> SessionSet {
 /// Linux/BSD: register a variable with the systemd user manager so units it
 /// later spawns inherit it. Best-effort — absent `systemctl` is a no-op.
 fn systemctl_user_setenv(key: &str, value: &str) -> SessionSet {
-    if !crate::command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl") {
+    if !crate::systemctl_available() {
         return SessionSet::Unavailable;
     }
-    let mut cmd = crate::tool_cmd(SYSTEMCTL_BIN_ENV, "systemctl");
+    let mut cmd = crate::systemctl_cmd();
     cmd.args(["--user", "set-environment", &format!("{key}={value}")]);
     run_setter(
         cmd,
@@ -197,10 +197,10 @@ pub fn refresh_session_env(vars: &[(String, String)]) -> SessionRefresh {
 /// per-variable [`read_session_var`].
 fn bulk_session_env() -> BTreeMap<String, String> {
     if cfg!(all(unix, not(target_os = "macos"))) {
-        if !crate::command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl") {
+        if !crate::systemctl_available() {
             return BTreeMap::new();
         }
-        let mut cmd = crate::tool_cmd(SYSTEMCTL_BIN_ENV, "systemctl");
+        let mut cmd = crate::systemctl_cmd();
         cmd.args(["--user", "show-environment"]);
         match crate::command_output_with_timeout(&mut cmd, ENV_REFRESH_TIMEOUT) {
             Ok(o) if o.status.success() => parse_kv_lines(&String::from_utf8_lossy(&o.stdout)),
