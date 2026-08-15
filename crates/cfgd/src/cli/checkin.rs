@@ -42,8 +42,15 @@ pub fn cmd_checkin(
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();
     let client = build_checkin_client(server_url, api_key, device_id, stored_cred.as_ref());
 
-    let config_yaml = serde_yaml::to_string(&resolved.merged.system)
-        .context("failed to serialize system config")?;
+    // The effective (profile ⊕ modules) system map, not the profile's own: a
+    // module's system settings are desired state like any other, and reading the
+    // profile-only view hid them from BOTH surfaces below — the hash the gateway
+    // uses to tell one desired config from another never moved when a module's
+    // settings changed, and the drift scan never checked a setting only a module
+    // declared.
+    let system = cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
+    let config_yaml =
+        serde_yaml::to_string(&system).context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
@@ -126,7 +133,7 @@ pub fn cmd_checkin(
     let available = registry.available_system_configurators();
     for configurator in &available {
         let key = configurator.name();
-        let desired = match resolved.merged.system.get(key) {
+        let desired = match system.get(key) {
             Some(v) => v,
             None => continue,
         };
@@ -570,6 +577,105 @@ spec: {}
         assert!(
             err_msg.contains("failed after") || err_msg.contains("server error"),
             "error should describe server failure: {err_msg}"
+        );
+        mock.assert();
+    }
+
+    /// The gateway tells one desired config from another by the hash checkin
+    /// sends it, so a system setting a MODULE contributes has to be inside that
+    /// hash. Read from the profile's own map it was not: a module could change
+    /// what the machine is supposed to be and every checkin reported the same
+    /// hash. The mock matches on the effective hash, so the profile-only one
+    /// never reaches it.
+    #[test]
+    #[serial_test::serial]
+    fn checkin_hashes_the_system_settings_a_module_contributes_not_the_profile_only_map() {
+        let config_dir = make_test_config_dir();
+        let module_dir = config_dir.path().join("modules").join("sysmod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: sysmod
+spec:
+  system:
+    sysctl:
+      net.core.somaxconn: 8192
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules: [sysmod]
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        // Spelled out rather than read back through the merge under test: the
+        // expectation is the map a reader of the two YAML files above would
+        // write, so nothing derives the answer from the code being checked.
+        let mut effective = cfgd_core::config::SystemSettings::new();
+        effective.insert(
+            "sysctl".to_string(),
+            serde_yaml::from_str("net.core.somaxconn: 8192").unwrap(),
+        );
+        let profile_only = cfgd_core::config::SystemSettings::new();
+        let expected_hash =
+            cfgd_core::sha256_hex(serde_yaml::to_string(&effective).unwrap().as_bytes());
+        let profile_only_hash =
+            cfgd_core::sha256_hex(serde_yaml::to_string(&profile_only).unwrap().as_bytes());
+        assert_ne!(
+            expected_hash, profile_only_hash,
+            "fixture is inert unless the module's settings change the hash"
+        );
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_body(mockito::Matcher::Regex(format!(
+                "\"configHash\":\"{expected_hash}\""
+            )))
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        // Whether the module's sysctl value is drifted on THIS host decides
+        // whether checkin also posts a drift report, so the endpoint is answered
+        // without being required — the subject here is the hash, not the host.
+        let _drift = server
+            .mock(
+                "POST",
+                mockito::Matcher::Regex(r"/api/v1/devices/.*/drift".to_string()),
+            )
+            .with_status(200)
+            .with_body("{}")
+            .expect_at_least(0)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, _cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(
+            result.is_ok(),
+            "checkin should have sent the effective-map hash: {result:?}"
         );
         mock.assert();
     }

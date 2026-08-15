@@ -168,6 +168,22 @@ require_dirs() {
     return 0
 }
 
+# The file-list counterpart: a gate driven by an enumerated set of paths skips a
+# renamed member (`[[ -f ]] || continue`) and still reports the set clean.
+require_files() {
+    local label="$1"
+    shift
+    local missing=() f
+    for f in "$@"; do
+        [[ -f "$f" ]] || missing+=("$f")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "$label: scanned file missing — this gate is skipping it (rename it here too): ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
 require_dirs "workspace source scan" "${SRC_ROOTS[@]}" || true
 
 # --- Fail loudly when a tool a gate SEARCHES WITH is missing ---
@@ -719,13 +735,27 @@ log_section "Effective-state routing (module↔profile coherence)"
 # does not match (the bans target the .system FIELD read, not .merged itself).
 # crates/cfgd-core/src/effective.rs is intentionally exempt — it IS the source
 # of truth and is simply not in the scanned list below.
+# The list is every command whose composition mode is `Report` in
+# output-module.md's table — the read paths — plus the two core engines they
+# share. It is enumerated rather than derived because "is this a read path?" is
+# a question about what the command MEANS, not about what it imports; the
+# maintenance rule is that a new `Report`-mode command joins this list in the
+# commit that adds it. `checkin.rs` was the gap that proves it matters: it
+# scanned drift against `resolved.merged.system`, so every system setting a
+# module contributed was invisible to the gateway and to the config hash.
 effective_read_paths=(
     crates/cfgd/src/cli/diff.rs
     crates/cfgd/src/cli/status.rs
     crates/cfgd/src/cli/live_drift.rs
+    crates/cfgd/src/cli/checkin.rs
+    crates/cfgd/src/cli/compliance.rs
+    crates/cfgd/src/cli/decide.rs
+    crates/cfgd/src/cli/verify.rs
+    crates/cfgd/src/cli/backup.rs
     crates/cfgd-core/src/reconciler/verify.rs
     crates/cfgd-core/src/compliance/mod.rs
 )
+require_files "effective-state routing scan" "${effective_read_paths[@]}" || true
 effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed'
 effective_violations=""
 for rsfile in "${effective_read_paths[@]}"; do
@@ -831,6 +861,16 @@ if [ -f "$rule_file" ]; then
     if [ -n "$missing" ]; then
         log_error "Commands missing from structured-output coverage table in $rule_file:"
         echo "$missing"
+    fi
+    # The other direction: a row for a command that no longer exists. The table
+    # is read as the inventory of what cfgd exposes, so a stale row describes a
+    # payload no consumer can ever receive — and it hides the rename that left
+    # it behind, since the new name trips the check above while the old one sits
+    # there looking answered.
+    stale=$(LC_ALL=C comm -13 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    if [ -n "$stale" ]; then
+        log_error "Rows in $rule_file naming a cmd_* that no longer exists in crates/cfgd/src/cli/:"
+        echo "$stale"
     fi
 else
     log_error "Structured-output coverage table missing: $rule_file"
