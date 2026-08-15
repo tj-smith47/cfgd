@@ -144,7 +144,7 @@ impl<'p> LiveRow<'p> {
             // leave the renderer routing lines through a MultiProgress that no
             // longer has anything in it.
             _live: None,
-            prefixed: true,
+            borrowed: true,
             _phantom: PhantomData,
         };
         spinner.set_message(subject.clone());
@@ -215,9 +215,11 @@ impl<'p> LiveRow<'p> {
     /// Take this row out of the live region. Called once the line has been
     /// committed to the scrollback permanently, or once the work it described
     /// will never happen.
+    ///
+    /// The erase itself is [`Drop`]'s, so a row that is dropped instead of
+    /// retired takes its line with it too.
     pub(crate) fn retire(self) {
-        self.multi.remove(&self.bar);
-        self.bar.finish_and_clear();
+        drop(self);
     }
 
     /// What the row currently says, unstyled — the live region's own state, so
@@ -226,6 +228,30 @@ impl<'p> LiveRow<'p> {
     #[cfg(test)]
     pub(crate) fn text(&self) -> String {
         super::strip_ansi(&format!("{}{}", self.bar.prefix(), self.bar.message()))
+    }
+}
+
+/// Erasing the row's line is the DROP, not the `retire` call, so a row cannot
+/// leave a line behind by ending any other way.
+///
+/// The order of the two statements is the whole of it. `MultiProgress::remove`
+/// points the bar's draw target at nowhere, so a `finish_and_clear` issued
+/// after it paints nothing at all: the line the region last drew for this row
+/// stays on the terminal until some LATER draw of the region happens to clear
+/// it. Every row but one gets that later draw — the next committed line
+/// repaints the region around itself — and the last row of a phase does not.
+/// The region empties, `emit_block` stops routing through a multi with no bars
+/// left in it, and everything after is written straight to the terminal BELOW
+/// the row's final paint, which is how one action came to stand in the
+/// scrollback twice: once as the committed line, once as a live paint,
+/// truncated to the terminal's width the way only a live paint is.
+///
+/// Cleared first and removed second, the clear draws while the bar is still a
+/// member, the region redraws one row shorter, and nothing survives the row.
+impl Drop for LiveRow<'_> {
+    fn drop(&mut self) {
+        self.bar.finish_and_clear();
+        self.multi.remove(&self.bar);
     }
 }
 
@@ -396,6 +422,32 @@ mod tests {
         row.set_status(&fields(Role::Ok, "apt-get install tmux"), 0);
         assert!(!row.bar.is_finished(), "the row's bar was retired early");
         assert_eq!(row.text(), "  ✓ apt-get install tmux");
+    }
+
+    #[test]
+    fn an_abandoned_window_leaves_the_row_able_to_speak_and_records_nothing() {
+        // A lane worker that panics drops its handle without releasing the
+        // window. The line is the ROW's, and an owned spinner's Drop would
+        // clear it and leave a `Status(Info)` behind — retiring a row its owner
+        // is still going to settle, and printing a second line for an action
+        // whose outcome that settle is about to write.
+        let (printer, buf) = Printer::for_test_with_live_bars();
+        let row = printer.live_row_at(1);
+        {
+            let mut window = row.window("pipx install pynvim");
+            window.push_line("installed package pynvim");
+        }
+        row.set_status(&fields(Role::Ok, "pipx install pynvim"), 0);
+        assert!(
+            !row.bar.is_finished(),
+            "the abandoned window retired the row's bar"
+        );
+        assert_eq!(row.text(), "  ✓ pipx install pynvim");
+        let drawn = super::super::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        assert!(
+            !drawn.contains('⊙'),
+            "the abandoned window left a record of its own: {drawn:?}"
+        );
     }
 
     #[test]

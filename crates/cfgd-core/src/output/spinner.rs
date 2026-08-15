@@ -69,12 +69,15 @@ pub struct Spinner<'p> {
     /// with no paired decrement to forget. `None` for a hidden bar, which is
     /// never added to the MultiProgress and so must not be counted.
     pub(crate) _live: Option<LiveBarGuard>,
-    /// The bar draws this row's indent itself, through a `{prefix}` field its
-    /// style carries, so a message must not repeat it. Set only by a
-    /// [`super::live_row::LiveRow`], which owns the bar for longer than the
-    /// spinner does and needs its running line to sit in the same column as
-    /// the settled line that replaces it.
-    pub(crate) prefixed: bool,
+    /// The bar belongs to a [`super::live_row::LiveRow`], which owns it for
+    /// longer than the spinner does. Two consequences, both from that one fact:
+    /// the row's style carries the indent in a `{prefix}` field, so a message
+    /// must not repeat it; and the spinner never ends the bar — not on
+    /// `Drop` either, which for an owned bar clears the line and leaves a
+    /// `Status(Info)` record. On a borrowed bar that would retire the row its
+    /// owner is still going to settle, and print a line for an action whose
+    /// outcome is about to be written by the row itself.
+    pub(crate) borrowed: bool,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
 
@@ -84,7 +87,7 @@ impl<'p> Spinner<'p> {
             self.sink.as_ref(),
             &text.into(),
             self.depth,
-            !self.prefixed,
+            !self.borrowed,
         ));
     }
 
@@ -120,6 +123,10 @@ impl<'p> Spinner<'p> {
     /// [`super::live_row::LiveRow`]'s, which the caller goes on to settle in
     /// place. `finish_silent` would clear that line and retire the row's bar
     /// with it, leaving the row unable to say anything ever again.
+    ///
+    /// The named end of the same thing `Drop` does for a `borrowed` spinner:
+    /// this is the call site saying it, `Drop` is the abandoned worker that
+    /// never reached one.
     pub(crate) fn release(mut self) {
         self.finished = true;
     }
@@ -152,7 +159,13 @@ impl<'p> Spinner<'p> {
 
 impl Drop for Spinner<'_> {
     fn drop(&mut self) {
-        if self.finished {
+        // A borrowed bar is its owner's to end: the row settles the action's
+        // one line, or the tree retires the row unsettled. Clearing it here
+        // would leave the row unable to speak, and the record below would be a
+        // second line for an action that already has one — which is what an
+        // abandoned lane (a worker that panicked before `LaneHandle::finish`)
+        // left in the scrollback.
+        if self.finished || self.borrowed {
             return;
         }
         self.bar.finish_and_clear();
@@ -377,7 +390,7 @@ mod tests {
             message: "doing work".into(),
             finished: false,
             _live: None,
-            prefixed: false,
+            borrowed: false,
             _phantom: std::marker::PhantomData,
         };
         let _ = sp.finish_ok("done");
@@ -400,7 +413,7 @@ mod tests {
                 message: "abandoned".into(),
                 finished: false,
                 _live: None,
-                prefixed: false,
+                borrowed: false,
                 _phantom: std::marker::PhantomData,
             };
         }

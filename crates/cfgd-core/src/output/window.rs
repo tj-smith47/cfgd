@@ -282,7 +282,7 @@ impl super::Printer {
             message: label.clone(),
             finished: false,
             _live: live,
-            prefixed: false,
+            borrowed: false,
             _phantom: PhantomData,
         };
         OutputWindow::new(spinner, label)
@@ -309,7 +309,7 @@ mod tests {
             message: "step".into(),
             finished: false,
             _live: None,
-            prefixed: false,
+            borrowed: false,
             _phantom: PhantomData,
         };
         (OutputWindow::new(spinner, "step".into()), buf)
@@ -420,7 +420,7 @@ mod tests {
             message: "step".into(),
             finished: false,
             _live: None,
-            prefixed: false,
+            borrowed: false,
             _phantom: PhantomData,
         };
         let mut w = OutputWindow::new(spinner, "step".into());

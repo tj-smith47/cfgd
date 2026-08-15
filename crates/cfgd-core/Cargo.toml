@@ -179,6 +179,12 @@ version = "1"
 optional = true
 
 [dev-dependencies]
+# `in_memory` builds indicatif's vt100-backed `InMemoryTerm`, the emulated
+# screen `Printer::for_test_live_terminal` draws the live region onto. A
+# recording buffer cannot answer "what is still on the terminal" — it holds
+# every repaint — so it is the only surface that can see a row's line the
+# region drew and never erased. Dev-only: no shipped binary compiles it.
+indicatif = { version = "0.18", features = ["in_memory"] }
 tempfile = "3"
 serial_test = "4"
 mockito = "1"

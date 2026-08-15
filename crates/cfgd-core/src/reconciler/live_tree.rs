@@ -1345,6 +1345,114 @@ mod tests {
         );
     }
 
+    /// What the emulated terminal is left holding, ANSI stripped — the screen
+    /// after every cursor move and line clear the region issued, rather than
+    /// the sequence of paints that produced it.
+    fn screen_of(term: &indicatif::InMemoryTerm) -> String {
+        strip_ansi(&term.contents())
+    }
+
+    #[test]
+    fn a_committed_row_leaves_no_live_paint_of_itself_on_the_screen() {
+        // The defect this pins: a row's line is erased by the NEXT draw of the
+        // region, and the last row of a phase has no next draw — the tree
+        // retires it, the region empties, and every line after that is written
+        // straight to the terminal. So the row's final live paint stayed on
+        // screen below the permanent line it had just committed, and the
+        // scrollback held that action twice, the second copy truncated to the
+        // terminal's width the way only a live paint is.
+        //
+        // Neither sibling constructor can see it: the hidden target draws
+        // nothing, and the recording buffer holds every repaint, where one
+        // paint too many is indistinguishable from one repaint too many.
+        let (printer, term) = Printer::for_test_live_terminal(24, 120);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let first = install("apt", "ripgrep");
+        let last = install("pipx", "pynvim");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        let running_first = tree.dispatched(&managers, &first);
+        let running_last = tree.dispatched(&managers, &last);
+        running_first.finish();
+        tree.settled(&managers, &first, done("apt install ripgrep"));
+        running_last.finish();
+        tree.settled(&managers, &last, done("pipx install pynvim"));
+        tree.finish();
+        drop(section);
+
+        let screen = screen_of(&term);
+        for subject in ["apt install ripgrep", "pipx install pynvim"] {
+            assert_eq!(
+                screen.matches(subject).count(),
+                1,
+                "{subject} is on the screen {} times: {screen}",
+                screen.matches(subject).count()
+            );
+        }
+    }
+
+    #[test]
+    fn a_region_that_closes_leaves_nothing_of_its_own_on_the_screen() {
+        // The same claim over every OTHER way a row can end: a line the budget
+        // took back, a row that stood for a blocked action, a row whose work
+        // never answered, a group heading, and the region's own summary line.
+        // None of them is ever committed, so a paint any of them left behind is
+        // a line in the scrollback that describes nothing that happened.
+        let (printer, term) = Printer::for_test_live_terminal(24, 120);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let nvim = Owner::module("nvim");
+        let actions = packages(3);
+        let blocked = install("brew", "neovim");
+
+        let mut tree =
+            PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30).with_budget(3);
+        let head = tree.dispatched(&managers, &actions[0]);
+        for action in &actions[1..] {
+            tree.dispatched(&managers, action).finish();
+        }
+        // Both settle behind a running head, so their lines are what the budget
+        // takes back and the summary line stands for them.
+        for (index, action) in actions.iter().enumerate().skip(1) {
+            tree.settled(&managers, action, done(&format!("apt install pkg{index}")));
+        }
+        tree.waiting(&Held {
+            waits: vec![Wait {
+                owner: &nvim,
+                action: Some(&blocked),
+                subject: "brew install neovim · waiting on apt".to_string(),
+            }],
+            pending_owners: vec![nvim.token()],
+        });
+        // The head never answers — the abort path — so its row, and the row of
+        // the action still waiting behind it, are retired unsettled.
+        drop(head);
+        tree.finish();
+        drop(section);
+
+        let screen = screen_of(&term);
+        for committed in ["apt install pkg1", "apt install pkg2"] {
+            assert_eq!(
+                screen.matches(committed).count(),
+                1,
+                "{committed} is on the screen {} times: {screen}",
+                screen.matches(committed).count()
+            );
+        }
+        for live_only in [
+            "held for commit",
+            "waiting on apt",
+            "apt install pkg0",
+            "module:nvim",
+        ] {
+            assert!(
+                !screen.contains(live_only),
+                "the closed region left {live_only:?} on the screen: {screen}"
+            );
+        }
+    }
+
     #[test]
     fn off_a_tty_the_tree_is_inert_and_draws_nothing() {
         // The off-TTY contract: no rows, no headings, and every outcome held

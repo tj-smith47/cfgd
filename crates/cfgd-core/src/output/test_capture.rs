@@ -62,6 +62,20 @@ impl indicatif::TermLike for RecordingTerm {
     }
 }
 
+/// The printer sink behind [`Printer::for_test_live_terminal`]: permanent lines
+/// land on the SAME emulated screen the bars repaint over, which is the
+/// relationship the two writers have in production, where both are stderr.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TermSink(pub(crate) indicatif::InMemoryTerm);
+
+#[cfg(test)]
+impl Writer for TermSink {
+    fn write_line(&self, text: &str) {
+        let _ = indicatif::TermLike::write_line(&self.0, text);
+    }
+}
+
 fn build_test_printer(
     buf: Arc<Mutex<String>>,
     theme: Theme,
@@ -210,7 +224,10 @@ impl Printer {
         let buf = Arc::new(Mutex::new(String::new()));
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
-        (Self::live_capture(multi, buf.clone()), buf)
+        (
+            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            buf,
+        )
     }
 
     /// Capture wired the way PRODUCTION wires a printer that has bars: the
@@ -228,7 +245,40 @@ impl Printer {
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::term_like(
                 Box::new(RecordingTerm { drawn: buf.clone() }),
             ));
-        (Self::live_capture(multi, buf.clone()), buf)
+        (
+            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            buf,
+        )
+    }
+
+    /// A live-region capture drawing onto an EMULATED SCREEN, so what a test
+    /// reads is what the terminal is left holding rather than every paint that
+    /// ever reached it.
+    ///
+    /// The one surface that can see a paint the region failed to erase, and the
+    /// reason neither sibling can: `for_test_live_scrollback` points indicatif
+    /// at a hidden draw target, where a stray paint writes nothing at all, and
+    /// `for_test_with_live_bars` records every repaint into one buffer, where a
+    /// row painted forty times appears forty times — one line too many is
+    /// indistinguishable from one repaint too many. Here the cursor moves and
+    /// the line clears indicatif issues are executed against a real screen
+    /// model, so a line the region drew and never took back is still on the
+    /// screen at the end and a line it erased is not.
+    ///
+    /// The printer's own sink writes to the same terminal, because in
+    /// production the sink IS the stream the bars repaint over: a committed
+    /// line and the region's repaints have to compete for the same rows here
+    /// exactly as they do on a tty.
+    #[cfg(test)]
+    pub(crate) fn for_test_live_terminal(rows: u16, cols: u16) -> (Self, indicatif::InMemoryTerm) {
+        let term = indicatif::InMemoryTerm::new(rows, cols);
+        let multi = indicatif::MultiProgress::with_draw_target(
+            indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
+        );
+        (
+            Self::live_capture(multi, Arc::new(TermSink(term.clone()))),
+            term,
+        )
     }
 
     /// The one `Printer` shape both live-region capture constructors take,
@@ -236,8 +286,7 @@ impl Printer {
     /// new field cannot be added to one of them and forgotten in the other —
     /// the two would then disagree about `colors` or `live_region` and the
     /// tests reading them would be describing different printers.
-    fn live_capture(multi: indicatif::MultiProgress, buf: Arc<Mutex<String>>) -> Self {
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
+    fn live_capture(multi: indicatif::MultiProgress, sink: Arc<dyn Writer>) -> Self {
         Printer {
             // Stamped explicitly, like every theme a Printer renders through:
             // the field below and the theme must never be able to disagree.

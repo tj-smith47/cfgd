@@ -546,7 +546,7 @@ impl Printer {
             message,
             finished: false,
             _live: live,
-            prefixed: false,
+            borrowed: false,
             _phantom: std::marker::PhantomData,
         }
     }
