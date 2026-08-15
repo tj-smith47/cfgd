@@ -357,7 +357,9 @@ Each manager supports querying available package versions without installing:
 
 ## Dry Run
 
-`cfgd apply --dry-run` shows the full package plan without making changes:
+`cfgd apply --dry-run` shows the full package plan without making changes. `toolbox`
+below is a custom manager declaring an `update:` command, which is why it takes a
+refresh node of its own:
 
 ```
 Plan
