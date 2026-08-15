@@ -203,12 +203,16 @@ pub enum FileError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
-    // The manager IS registered — `apply_package_action` reaches this only
-    // when a `--phase packages` (or similarly scoped) run bypassed the
-    // `Prerequisites` phase that would have provisioned it, so the recovery
-    // this names is always correct: run that phase, or drop the filter.
+    // The manager IS registered, and two paths reach it: a `--phase packages`
+    // run that bypassed the `Prerequisites` phase, and an unfiltered run whose
+    // provision node FAILED — the install is not a dependent of that node, so
+    // it is still dispatched and still asks. Naming a filter is therefore a
+    // guess, and it read as one ("or drop --phase" against a command line
+    // carrying no --phase); what holds for both is the phase that owns
+    // provisioning, which is where the filtered run's recovery and the failed
+    // run's reason both live.
     #[error(
-        "{manager} is not provisioned — run `cfgd apply --phase prerequisites.managers`, or drop --phase"
+        "{manager} is not provisioned — provisioning is the Prerequisites phase's: `cfgd apply --phase prerequisites.managers`"
     )]
     ManagerNotAvailable { manager: String },
 

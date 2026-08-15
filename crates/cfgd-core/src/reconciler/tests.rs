@@ -7361,6 +7361,62 @@ fn apply_manager_provision_unknown_manager_errors() {
 }
 
 #[test]
+fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() {
+    // The reach path the error's own comment once denied: no phase filter, a
+    // provision node that ran and failed, and the install behind it still
+    // dispatched — so a recovery naming `--phase` would name a flag the user
+    // never typed.
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder()
+        .with_package_manager(
+            crate::test_helpers::MockPackageManager::new("stub")
+                .unavailable()
+                .bootstrappable(),
+        )
+        .build();
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::cfgd("managers"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "stub".to_string(),
+                    via: "mock".to_string(),
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
+                    manager: "stub".to_string(),
+                    packages: vec!["foo".to_string()],
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let (result, _) = apply_manager_plan(&harness.registry, &harness.state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    let install = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("package:stub"))
+        .expect("the install is reported");
+    let err = install.error.clone().unwrap_or_default();
+    assert!(
+        err.contains("stub is not provisioned") && err.contains("--phase prerequisites.managers"),
+        "the install must name where provisioning happens: {err}"
+    );
+    assert!(
+        !err.contains("drop --phase"),
+        "this run carried no --phase to drop: {err}"
+    );
+}
+
+#[test]
 fn apply_package_install_unknown_manager_errors() {
     let state = test_state();
     let registry = ProviderRegistry::new(); // no managers
