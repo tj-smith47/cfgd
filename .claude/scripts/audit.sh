@@ -656,6 +656,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "version_meets_minimum" && \
         $2 != "resolved_prefix" && $2 != "record_resolved_prefix" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
+        $2 != "created_path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
         $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
         $2 != "cmd_status" && \

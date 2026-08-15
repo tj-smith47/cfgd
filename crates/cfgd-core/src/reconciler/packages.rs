@@ -54,8 +54,9 @@ pub fn stale_tracked_packages(
     Ok(stale)
 }
 
-/// The PATH directories one bootstrap made resolvable, paired with the manager
-/// that owns them.
+/// The PATH directories cfgd owns for one manager — created by its bootstrap,
+/// or by an install that had to make a prefix of its own — paired with that
+/// manager.
 ///
 /// Handed back rather than written where it is produced. The process-global
 /// registration has to happen inside the lane, because the next action in that
@@ -132,7 +133,7 @@ impl<'x> PackageExec<'x> {
         self
     }
 
-    /// Take the bootstraps performed so far, for the caller that owns the
+    /// Take the path-dir records queued so far, for the caller that owns the
     /// state connection to persist. Returned even when the action failed: the
     /// directories are already registered in this process, so a row that
     /// omitted them would disagree with what the run can actually resolve.
@@ -158,17 +159,42 @@ impl<'x> PackageExec<'x> {
     /// the running process unable to find it.
     fn record_bootstrap(&self, pm: &dyn PackageManager) {
         let cx = self.cx();
+        self.record_path_dirs(pm.name(), pm.path_dirs(&cx));
+    }
+
+    /// Record the directories an `install()` just created — the manager's own
+    /// [`PackageManager::created_path_dirs`].
+    ///
+    /// A directory cfgd made itself belongs in the generated env file however
+    /// the manager got onto the machine, so this runs after every install and
+    /// not only under a provision: npm's `~/.npm-global` is created during
+    /// `install()`, and a user-installed npm reaches no bootstrap at all.
+    ///
+    /// A manager that created nothing queues no row, so an install can never
+    /// blank the directories a provision of the same manager recorded — the row
+    /// is replaced wholesale, not merged.
+    fn record_created_path_dirs(&self, pm: &dyn PackageManager) {
+        let cx = self.cx();
+        let dirs = pm.created_path_dirs(&cx);
+        if dirs.is_empty() {
+            return;
+        }
+        self.record_path_dirs(pm.name(), dirs);
+    }
+
+    /// The ONE registration-and-queue for both kinds of owned directory, so a
+    /// bootstrap's and an install's records cannot be shaped differently.
+    fn record_path_dirs(&self, manager: &str, dirs: Vec<String>) {
         // The directories land in shell files that a Git-Bash and a PowerShell
         // session on the same Windows host both read, and in a state row those
         // reads are compared against.
-        let dirs: Vec<String> = pm
-            .path_dirs(&cx)
+        let dirs: Vec<String> = dirs
             .iter()
             .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
             .collect();
         crate::register_bootstrapped_path_dirs(&dirs);
         self.bootstrapped.borrow_mut().push(BootstrapRecord {
-            manager: pm.name().to_string(),
+            manager: manager.to_string(),
             dirs,
         });
     }
@@ -211,6 +237,7 @@ impl<'x> PackageExec<'x> {
                         // IDENTITIES so the tracked key matches what prune later
                         // compares against (`go/2fa`, not `go/rsc.io/2fa`).
                         pm.install(packages, &cx)?;
+                        self.record_created_path_dirs(pm);
                         let identities: Vec<String> =
                             packages.iter().map(|p| pm.package_identity(p)).collect();
                         return Ok(format!(
@@ -310,7 +337,9 @@ impl<'x> PackageExec<'x> {
             ManagerAction::Prerequisite {
                 tool, installer, ..
             } => {
-                lookup(installer)?.install(std::slice::from_ref(tool), &cx)?;
+                let pm = lookup(installer)?;
+                pm.install(std::slice::from_ref(tool), &cx)?;
+                self.record_created_path_dirs(pm.as_ref());
             }
             // Nothing to run: the node IS the refusal. It fails rather than
             // succeeding at nothing, because the packages that named this
@@ -454,6 +483,7 @@ impl<'x> PackageExec<'x> {
                 if let Some(pm) = pm {
                     let cx = self.cx();
                     pm.install(&pkg_names, &cx)?;
+                    self.record_created_path_dirs(pm.as_ref());
                     manager_changed = true;
                 }
             }

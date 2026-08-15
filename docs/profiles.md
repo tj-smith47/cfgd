@@ -204,11 +204,13 @@ cfgd writes a managed `~/.cfgd.env` and wires it into the user's shells and sess
 
 `spec.env` is **per-user**. For system-wide (all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md). See the [profile spec](spec/profile.md#specenvscope) for the full target list and the dotfile-safety rules.
 
-The same file also carries the `PATH` entries of any package manager **cfgd bootstrapped for you**
-— so a profile with no `env` at all still gets a `~/.cfgd.env` and its source lines when cfgd
-installs Homebrew, and `brew`'s binaries are reachable from the next shell without you editing a
-dotfile. A manager that was already on the machine is left alone: cfgd only wires up what it
-installed. cfgd prints a `Shell environment changed` reminder after any apply that touched either.
+The same file also carries every `PATH` entry **cfgd created for a package manager**, so a
+profile with no `env` at all still gets a `~/.cfgd.env` and its source lines when cfgd installs
+Homebrew, and `brew`'s binaries are reachable from the next shell without you editing a dotfile.
+The test is who made the directory, not who installed the manager: a manager that was already on
+the machine keeps its own locations untouched, while a prefix cfgd had to create for it (npm's
+`$HOME/.npm-global`, when npm's own prefix is not writable) is exported like any other. cfgd
+prints a `Shell environment changed` reminder after any apply that touched either.
 
 ### Example: make `EDITOR` reach everywhere
 

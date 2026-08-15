@@ -176,15 +176,27 @@ fn effective_elevated() -> bool {
     cfgd_core::is_root()
 }
 
+/// "No override installed", the value the elevation seam holds outside a
+/// guard's lifetime.
 #[cfg(test)]
-thread_local! {
-    static TEST_ELEVATED_OVERRIDE: std::cell::RefCell<Option<bool>> =
-        const { std::cell::RefCell::new(None) };
-}
+const TEST_ELEVATED_UNSET: i8 = -1;
+
+/// Test seam for [`effective_elevated`] — process-global rather than
+/// thread-local, because an apply dispatches its package work onto worker
+/// threads: a per-thread override is invisible exactly where the install runs,
+/// so a test driving the real reconciler could never reach the unelevated
+/// branch and would silently assert about the elevated one instead. Every
+/// consumer is `#[serial]`, which is what makes one shared cell safe.
+#[cfg(test)]
+static TEST_ELEVATED_OVERRIDE: std::sync::atomic::AtomicI8 =
+    std::sync::atomic::AtomicI8::new(TEST_ELEVATED_UNSET);
 
 #[cfg(test)]
 fn test_elevated_override() -> Option<bool> {
-    TEST_ELEVATED_OVERRIDE.with(|o| *o.borrow())
+    match TEST_ELEVATED_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
+        TEST_ELEVATED_UNSET => None,
+        value => Some(value != 0),
+    }
 }
 
 /// RAII guard restoring the previous elevation override on drop (including on panic).
@@ -197,20 +209,19 @@ fn test_elevated_override() -> Option<bool> {
 #[cfg(all(test, unix))]
 #[must_use = "dropping the guard immediately restores the previous override"]
 struct TestElevatedGuard {
-    prev: Option<bool>,
+    prev: i8,
 }
 
 #[cfg(all(test, unix))]
 impl Drop for TestElevatedGuard {
     fn drop(&mut self) {
-        let prev = self.prev.take();
-        TEST_ELEVATED_OVERRIDE.with(|o| *o.borrow_mut() = prev);
+        TEST_ELEVATED_OVERRIDE.store(self.prev, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[cfg(all(test, unix))]
 fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
-    let prev = TEST_ELEVATED_OVERRIDE.with(|o| o.replace(Some(elevated)));
+    let prev = TEST_ELEVATED_OVERRIDE.swap(i8::from(elevated), std::sync::atomic::Ordering::SeqCst);
     TestElevatedGuard { prev }
 }
 
@@ -468,6 +479,19 @@ pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
     }
 }
 
+/// The prefix decision behind both PATH-reporting methods, or `None` after
+/// warning. The ONE degrade shared by them, so a resolver failure reads the
+/// same whichever asked and neither reports a directory it could not resolve.
+fn npm_prefix_for_path(state: &dyn PackageStateStore) -> Option<NpmPrefixDecision> {
+    match resolve_npm_prefix(state) {
+        Ok(decision) => Some(decision),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
+            None
+        }
+    }
+}
+
 impl PackageManager for NpmManager {
     fn name(&self) -> &str {
         "npm"
@@ -483,17 +507,24 @@ impl PackageManager for NpmManager {
         // reconcile tick's PATH computation agrees with whatever prefix
         // `install()`/`installed_packages()` already persisted instead of
         // re-deriving (and potentially disagreeing, if live inputs shifted).
-        match resolve_npm_prefix(cx.state) {
-            Ok(NpmPrefixDecision {
-                prefix: Some(prefix),
-                ..
-            }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
-            Ok(NpmPrefixDecision { prefix: None, .. }) => Vec::new(),
-            Err(e) => {
-                tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
-                Vec::new()
-            }
-        }
+        npm_prefix_for_path(cx.state)
+            .and_then(|decision| decision.prefix)
+            .map(|prefix| vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))])
+            .unwrap_or_default()
+    }
+
+    /// The bin directory of the `$HOME/.npm-global` fallback, which
+    /// [`PackageManager::install`] creates — and only then. A writable
+    /// configured prefix is npm's own or the system's, so nothing there is
+    /// cfgd's to publish and this answers empty.
+    fn created_path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
+        let Some(decision) = npm_prefix_for_path(cx.state) else {
+            return Vec::new();
+        };
+        decision
+            .fallback_prefix()
+            .map(|prefix| vec![cfgd_core::to_posix_string(npm_bin_dir(prefix))])
+            .unwrap_or_default()
     }
 
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
@@ -572,13 +603,17 @@ impl PackageManager for NpmManager {
         let decision = resolve_npm_prefix(cx.state)?;
         if let Some(prefix) = decision.fallback_prefix() {
             ensure_npm_fallback_prefix(prefix)?;
+            // Where the packages went and why, and nothing about PATH: the bin
+            // directory under this prefix is reported through
+            // `created_path_dirs` and written into the generated env file, so
+            // an instruction to add it by hand would be stale the moment the
+            // env layer runs.
             cx.report(
                 Role::Info,
                 "npm",
                 format!(
-                    "npm has no writable global prefix; installing into {} — add {} to PATH",
+                    "npm has no writable global prefix; installing into {}",
                     prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
-                    npm_bin_dir(prefix).display(), // native-ok: human-facing terminal notice, not a persisted key
                 ),
             );
         }
@@ -2025,6 +2060,162 @@ mod tests {
                 dirs,
                 vec![cfgd_core::to_posix_string(npm_bin_dir(&fallback))],
                 "path_dirs must report the fallback prefix's bin dir when npm has no usable configured prefix"
+            );
+        }
+
+        /// `created_path_dirs` answers for the directory cfgd MADE, which is
+        /// only ever the `$HOME/.npm-global` fallback: a configured prefix
+        /// belongs to npm or to the system, so it stays out of the generated
+        /// env file even though it is exactly where npm's binaries live —
+        /// which `path_dirs` keeps saying.
+        #[test]
+        #[serial]
+        fn npm_created_path_dirs_reports_only_the_prefix_cfgd_makes_itself() {
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let printer = test_printer();
+
+            let home = tempfile::tempdir().expect("tempdir");
+            // Empty stdout for `config get prefix` lands in the fallback branch
+            // without invoking the write-probe — root-independent by
+            // construction.
+            let fallback_shim = NpmShim::install(Path::new(""), 0, "", "");
+            let fallback_state = cfgd_core::test_helpers::test_state();
+            let fallback_cx = PackageContext::new(&printer, &fallback_state);
+            let (created, fallback) = cfgd_core::with_test_home(home.path(), || {
+                (
+                    NpmManager.created_path_dirs(&fallback_cx),
+                    npm_fallback_prefix(),
+                )
+            });
+            assert_eq!(
+                created,
+                vec![cfgd_core::to_posix_string(npm_bin_dir(&fallback))],
+                "the fallback prefix is cfgd's own creation and must be reported"
+            );
+            drop(fallback_shim);
+
+            let (_shim, prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = PackageContext::new(&printer, &state);
+            assert!(
+                NpmManager.created_path_dirs(&cx).is_empty(),
+                "a writable configured prefix is not cfgd's to publish"
+            );
+            assert_eq!(
+                NpmManager.path_dirs(&cx),
+                vec![cfgd_core::to_posix_string(npm_bin_dir(prefix_dir.path()))],
+                "that same prefix is still where npm's binaries live"
+            );
+        }
+
+        /// A directory cfgd created earns an env entry however the manager got
+        /// onto the machine. Nothing provisions npm here — the plan holds one
+        /// install and no `Provision` — yet the prefix `install()` created has
+        /// to reach the recorded PATH directories, which is what the generated
+        /// env file is built from. Recorded through the install path, this is
+        /// the case that used to reach the user only as an instruction to edit
+        /// their own PATH.
+        #[test]
+        #[serial]
+        fn an_install_that_creates_a_prefix_records_it_with_no_provision_in_the_run() {
+            use cfgd_core::providers::{PackageAction, ProviderRegistry};
+            use cfgd_core::reconciler::{
+                Action, Owner, Phase, PhaseName, Plan, ReconcileContext, Reconciler,
+            };
+
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture();
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let _shim = NpmShim::install(&unwritable, 0, "", "");
+
+            let home = tempfile::tempdir().expect("tempdir");
+            let _home_guard = cfgd_core::with_test_home_guard(home.path());
+
+            let state = cfgd_core::test_helpers::test_state();
+            let mut registry = ProviderRegistry::new();
+            registry.package_managers = crate::packages::all_package_managers();
+            let reconciler = Reconciler::new(&registry, &state);
+
+            let plan = Plan {
+                phases: vec![Phase::from_actions(
+                    PhaseName::Packages,
+                    &Owner::profile("work"),
+                    vec![Action::Package(PackageAction::Install {
+                        manager: "npm".to_string(),
+                        packages: vec!["typescript".to_string()],
+                        origin: "local".to_string(),
+                    })],
+                )],
+                warnings: vec![],
+            };
+
+            let printer = test_printer();
+            reconciler
+                .apply(
+                    &plan,
+                    &cfgd_core::test_helpers::make_empty_resolved(),
+                    Path::new("."),
+                    &printer,
+                    None,
+                    &[],
+                    ReconcileContext::Apply,
+                    false,
+                    None,
+                    &cfgd_core::AbortFlag::new(),
+                )
+                .expect("apply");
+
+            assert_eq!(
+                state
+                    .bootstrapped_managers()
+                    .expect("read path-dir records"),
+                vec![(
+                    "npm".to_string(),
+                    vec![cfgd_core::to_posix_string(
+                        home.path().join(".npm-global").join("bin")
+                    )]
+                )],
+                "the prefix install() created must be recorded for the env file"
+            );
+        }
+
+        /// cfgd owns `~/.cfgd.env`, so a directory it just created is written
+        /// there rather than handed to the user as an errand. The note keeps
+        /// only what writing a file cannot fix — where the packages went, and
+        /// why the prefix moved.
+        #[test]
+        #[serial]
+        fn the_fallback_prefix_note_tells_the_user_nothing_to_do_about_path() {
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let _shim = NpmShim::install(&unwritable, 0, "", "");
+
+            let home = tempfile::tempdir().expect("tempdir");
+            let _home_guard = cfgd_core::with_test_home_guard(home.path());
+
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = PackageContext::new(&printer, &state);
+            NpmManager
+                .install(&["typescript".to_string()], &cx)
+                .expect("install");
+
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            let note = out
+                .lines()
+                .find(|l| l.contains("no writable global prefix"))
+                .expect("the fallback note is reported");
+            assert!(
+                !note.contains("PATH") && !note.contains("add"),
+                "the note must not ask the user to edit PATH: {note}"
+            );
+            assert!(
+                note.contains(&home.path().join(".npm-global").display().to_string()),
+                "the note must still say where the packages went: {note}"
             );
         }
 

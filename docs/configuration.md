@@ -756,7 +756,7 @@ On Linux, cfgd supports desktop environment-specific system configurators in add
 | Desktop configurators | `gsettings` (GNOME/GTK), `kdeConfig` (KDE Plasma), `xfconf` (XFCE) — each active only when its CLI tool is installed |
 | System configurators | `systemdUnits`, `environment`; plus node-level configurators (`sysctl`, `kernelModules`, `containerd`, `kubelet`, `apparmor`, `seccomp`, `certificates`) |
 | `spec.env` reach | `envScope: All` (default) writes `~/.config/environment.d/cfgd.conf` (read by `systemd --user` + Wayland GUI sessions) and refreshes the live session via `systemctl --user set-environment` |
-| Bootstrapped `PATH` | An apply that bootstraps Homebrew records `/home/linuxbrew/.linuxbrew/{bin,sbin}` and exports them from `~/.cfgd.env`, sourced by `~/.bashrc`/`~/.zshrc` — no `brew shellenv` line to add by hand. A brew you installed yourself is left untouched |
+| Bootstrapped `PATH` | An apply that bootstraps Homebrew records `/home/linuxbrew/.linuxbrew/{bin,sbin}` and exports them from `~/.cfgd.env`, sourced by `~/.bashrc`/`~/.zshrc` — no `brew shellenv` line to add by hand. A brew you installed yourself is left untouched. A prefix cfgd created for a manager you installed (npm's `$HOME/.npm-global`) is exported all the same |
 | Daemon service | Registered as a systemd user service; starts at login |
 
 ## Windows

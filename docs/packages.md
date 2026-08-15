@@ -47,9 +47,10 @@ as installed:
    absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
 
 The first time the fallback is used, `cfgd apply` prints a one-time notice
-naming the fallback prefix and that its `bin` directory needs to be added to
-`PATH` — cfgd bootstraps installs into `$HOME/.npm-global` but does not
-silently rewrite your shell's `PATH` for you.
+naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
+directory cfgd created, so its `bin` directory is written into the generated
+env file (`~/.cfgd.env`) like every other `PATH` entry cfgd owns, whether cfgd
+installed npm itself or you did.
 
 Once resolved, the decision (prefix + whether it was the fallback) is
 persisted in cfgd's state store and reused by every later `install` /

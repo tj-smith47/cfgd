@@ -469,7 +469,26 @@ pub trait PackageManager: Send + Sync {
 
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
+    ///
+    /// Answered from what THIS run decided, never from a probe of live machine
+    /// state: it is read once while the plan is built and again right after the
+    /// bootstrap, and a probe can answer those two moments differently — the
+    /// plan then promises one directory and the apply records another, which is
+    /// a diff that never converges.
     fn path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
+        let _ = cx;
+        Vec::new()
+    }
+
+    /// PATH directories cfgd itself created on this machine for this manager.
+    ///
+    /// Separate from [`path_dirs`](Self::path_dirs), which answers where the
+    /// manager's binaries live however it got there: these are directories that
+    /// would not exist if cfgd had not made them, so they reach the generated
+    /// env file even when the user installed the manager. A manager that only
+    /// ever writes into locations the system or the user already owns returns
+    /// nothing, which is the default.
+    fn created_path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
         let _ = cx;
         Vec::new()
     }
@@ -1409,6 +1428,17 @@ mod tests {
         let printer = crate::output::Printer::for_test().0;
         let state = StateStore::open_in_memory().unwrap();
         assert!(stub.path_dirs(&test_cx(&printer, &state)).is_empty());
+    }
+
+    #[test]
+    fn stub_default_created_path_dirs_empty() {
+        let stub = StubPackageManager::new("apt");
+        let printer = crate::output::Printer::for_test().0;
+        let state = StateStore::open_in_memory().unwrap();
+        assert!(
+            stub.created_path_dirs(&test_cx(&printer, &state))
+                .is_empty()
+        );
     }
 
     #[test]

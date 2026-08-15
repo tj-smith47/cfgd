@@ -12646,6 +12646,7 @@ struct BootstrappingPackageManager {
     install_calls: std::sync::Mutex<Vec<Vec<String>>>,
     path_dirs_after: Vec<String>,
     bootstrap_creates: Vec<String>,
+    install_creates: Vec<String>,
 }
 
 impl BootstrappingPackageManager {
@@ -12657,7 +12658,24 @@ impl BootstrappingPackageManager {
             install_calls: std::sync::Mutex::new(Vec::new()),
             path_dirs_after: path_dirs.iter().map(|s| s.to_string()).collect(),
             bootstrap_creates: Vec::new(),
+            install_creates: Vec::new(),
         }
+    }
+
+    /// The user-installed shape: available before this run does anything, so
+    /// the planner has no reason to provision it and nothing records its
+    /// directories at bootstrap time.
+    fn already_available(self) -> Self {
+        *self.available.lock().unwrap() = true;
+        self
+    }
+
+    /// Report `dirs` as directories this manager's `install()` created — npm's
+    /// `~/.npm-global` shape, where the prefix is cfgd's own doing rather than
+    /// the installer's.
+    fn creating_on_install(mut self, dirs: &[&str]) -> Self {
+        self.install_creates = dirs.iter().map(|s| s.to_string()).collect();
+        self
     }
 
     /// Also declare `dirs` on the `BootstrapPlan` itself — the population
@@ -12708,6 +12726,111 @@ impl PackageManager for BootstrappingPackageManager {
     fn path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
         self.path_dirs_after.clone()
     }
+    fn created_path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
+        self.install_creates.clone()
+    }
+}
+
+/// A one-install plan for `manager`, with no `Provision` node anywhere in it.
+fn install_only_plan(manager: &str, package: &str) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            vec![Action::Package(PackageAction::Install {
+                manager: manager.to_string(),
+                packages: vec![package.to_string()],
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+/// A directory cfgd created earns an env entry however the manager got onto
+/// the machine: this manager is available from the start, so nothing
+/// provisions it and no bootstrap records anything — yet the prefix its
+/// `install()` made still has to reach the recorded directories the generated
+/// env file is built from.
+#[test]
+#[serial_test::serial]
+fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("npm", &[])
+            .already_available()
+            .creating_on_install(&["/home/u/.npm-global/bin"]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("npm", "typescript"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "npm".to_string(),
+            vec!["/home/u/.npm-global/bin".to_string()]
+        )],
+    );
+}
+
+/// The row is replaced wholesale, so a manager that created nothing must queue
+/// no record at all: an ordinary install after an earlier run's provision would
+/// otherwise blank the directories that provision recorded, and the env file
+/// would drop them on the next apply.
+#[test]
+#[serial_test::serial]
+fn an_install_that_creates_nothing_leaves_an_earlier_provisions_record_intact() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    record_brew_bootstrap(&state);
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS).already_available(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("brew", "ripgrep"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "brew".to_string(),
+            BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect()
+        )],
+    );
 }
 
 /// Build the single-module fixture both out-of-band-write tests drive:

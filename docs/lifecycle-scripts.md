@@ -165,7 +165,8 @@ a command the same way. A module's own `spec.env` PATH is layered on top of that
 value, so `PATH: $HOME/.local/bin:$PATH` keeps the bootstrapped entries rather than
 dropping them.
 
-Only a manager **cfgd itself bootstrapped** contributes here. A Homebrew the user
+Only a directory **cfgd itself created** contributes here: a manager it bootstrapped, or a
+prefix it had to create during an install (npm's `$HOME/.npm-global`). A Homebrew the user
 installed is already on their PATH and is recorded nowhere.
 
 ## Interactive Scripts

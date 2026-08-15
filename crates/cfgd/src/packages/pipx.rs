@@ -114,8 +114,17 @@ impl PackageManager for PipxManager {
         }
     }
 
-    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
-        match detect_brew_system_method(PIPX_FALLBACK_METHOD) {
+    fn path_dirs(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        // The method this run already decided, not a fresh probe: the plan
+        // resolves the method once and binds the bootstrap to it, so re-probing
+        // here can name a directory the plan never promised — brew appearing
+        // between the two calls is enough. A context carrying no planned method
+        // belongs to a caller outside a plan (`cfgd doctor`, a direct caller),
+        // which has no decision to read and resolves the cascade as before.
+        let method = cx
+            .planned_method()
+            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD));
+        match method {
             "pip" => pipx_pip_scripts_dir()
                 .into_iter()
                 .map(cfgd_core::to_posix_string)
@@ -521,6 +530,36 @@ mod tests {
                 assert!(plan.requires.is_empty());
                 assert!(plan.creates_path_dirs.is_empty());
             }
+        }
+    }
+
+    /// One host, two planned methods, two answers: `path_dirs` reads the
+    /// decision the run already made rather than the machine as it looks right
+    /// now. Re-deriving here is what let the plan promise one directory while
+    /// the record written after the bootstrap named another — brew appearing
+    /// between the two calls is enough to move a live probe.
+    #[test]
+    fn pipx_path_dirs_answers_from_the_planned_method() {
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+
+        let via_brew =
+            cfgd_core::test_helpers::test_package_context(&printer, &state).for_provision("brew");
+        assert!(
+            PipxManager.path_dirs(&via_brew).is_empty(),
+            "a brew-mediated pipx lands on the system PATH and declares nothing"
+        );
+
+        // The pip arm's directory is `~/.local/bin` on every Unix; on Windows it
+        // carries the interpreter's own version and is unnameable without a pip
+        // to ask, so only the method-dispatch half of the claim holds there.
+        #[cfg(unix)]
+        {
+            let via_pip = cfgd_core::test_helpers::test_package_context(&printer, &state)
+                .for_provision("pip");
+            let dirs = PipxManager.path_dirs(&via_pip);
+            assert_eq!(dirs.len(), 1, "{dirs:?}");
+            assert!(dirs[0].ends_with("/.local/bin"), "{dirs:?}");
         }
     }
 

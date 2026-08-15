@@ -4,8 +4,14 @@ use super::StateStore;
 use crate::errors::{Result, StateError};
 
 impl StateStore {
-    /// Record the PATH directories `manager` contributes, replacing any earlier
-    /// record for it.
+    /// Record the PATH directories cfgd owns for `manager`, replacing any
+    /// earlier record for it.
+    ///
+    /// "Owns" is broader than "bootstrapped", which the table name still says:
+    /// a directory cfgd created during an `install()` is recorded here too, so
+    /// a manager the user installed themselves still contributes the prefix
+    /// cfgd made for it. Renaming the table would buy a migration and no
+    /// behavior.
     ///
     /// `dirs` is stored in the order given and read back in that order. The
     /// shell env file generated from these entries is hashed and compared on
@@ -28,8 +34,9 @@ impl StateStore {
         Ok(())
     }
 
-    /// Every package manager cfgd has bootstrapped, paired with the PATH
-    /// directories it contributed, ordered by manager name.
+    /// Every package manager cfgd holds PATH directories for — bootstrapped by
+    /// cfgd, or handed a prefix cfgd created during an install — paired with
+    /// those directories, ordered by manager name.
     pub fn bootstrapped_managers(&self) -> Result<Vec<(String, Vec<String>)>> {
         let mut stmt = self
             .conn

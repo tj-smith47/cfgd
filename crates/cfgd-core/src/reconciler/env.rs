@@ -12,24 +12,27 @@ use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
 use super::verify::merge_module_env_aliases;
 
-/// PATH directories cfgd recorded when it bootstrapped a package manager,
-/// narrowed to the managers the desired state still names and deduped.
+/// PATH directories cfgd recorded as its own for a package manager, narrowed
+/// to the managers the desired state still names and deduped.
 ///
-/// A bootstrapped manager (Homebrew, an npm global prefix) installs binaries
-/// into a directory no login shell has on PATH yet. Feeding those directories
-/// into the generated env file — rather than appending to it out of band right
-/// after `bootstrap()` — gives the file a single writer, so the wholesale
-/// rewrite on the second apply still holds them.
+/// A manager cfgd provisioned (Homebrew, an npm global prefix) installs
+/// binaries into a directory no login shell has on PATH yet. Feeding those
+/// directories into the generated env file — rather than appending to it out of
+/// band right after `bootstrap()` — gives the file a single writer, so the
+/// wholesale rewrite on the second apply still holds them.
 ///
 /// The directories come from the state store and never from a live
-/// `PackageManager::path_dirs()` probe. That probe touches the machine: npm's
-/// creates the global prefix directory, and brew's answer depends on which
-/// prefix already exists, so before bootstrap it names the wrong one on Apple
-/// Silicon. Reading a value recorded at bootstrap keeps planning and
-/// verification free of both.
+/// `PackageManager::path_dirs()` call. That call can touch the machine: npm's
+/// spawns npm to ask where its global prefix is, which every reconcile tick
+/// would then pay for. Reading a recorded value keeps planning and verification
+/// free of it.
 ///
-/// Only a manager cfgd itself bootstrapped has a record, so a brew the user
-/// installed contributes nothing and earns no rc-file write.
+/// A record exists for a manager cfgd bootstrapped AND for one whose install
+/// had to create a prefix of its own (`PackageManager::created_path_dirs`) —
+/// the discriminator is who created the directory, not who installed the
+/// manager. So cfgd's own `~/.npm-global` reaches the env file under a
+/// user-installed npm, while a brew the user installed contributes nothing and
+/// earns no rc-file write, because nothing under it is cfgd's to publish.
 ///
 /// Filtering to the still-named managers lets a manager dropped from the config
 /// age out of the generated file instead of lingering forever.
@@ -74,8 +77,8 @@ pub(super) fn recorded_managed_env_files(state: &StateStore) -> Vec<String> {
     }
 }
 
-/// Every PATH directory cfgd recorded when it bootstrapped a package manager,
-/// with no narrowing to the desired state.
+/// Every PATH directory cfgd recorded as its own for a package manager, with
+/// no narrowing to the desired state.
 ///
 /// Lifecycle scripts take this unfiltered view where the generated env file
 /// takes the narrowed one. The env file is a durable artifact a login shell

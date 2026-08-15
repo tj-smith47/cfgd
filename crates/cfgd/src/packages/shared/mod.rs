@@ -721,17 +721,48 @@ pub(super) fn brew_path_dirs() -> Vec<String> {
             "/home/linuxbrew/.linuxbrew/sbin".to_string(),
         ]
     } else if cfg!(target_os = "macos") {
-        // Apple Silicon vs Intel
-        if std::path::Path::new("/opt/homebrew/bin").exists() {
-            vec![
-                "/opt/homebrew/bin".to_string(),
-                "/opt/homebrew/sbin".to_string(),
-            ]
-        } else {
-            vec!["/usr/local/bin".to_string(), "/usr/local/sbin".to_string()]
-        }
+        let prefix = macos_brew_prefix();
+        vec![format!("{prefix}/bin"), format!("{prefix}/sbin")]
     } else {
         Vec::new()
+    }
+}
+
+/// The macOS Homebrew prefixes, in the order an installed one is looked for.
+const MACOS_BREW_PREFIXES: [&str; 2] = ["/opt/homebrew", "/usr/local"];
+
+/// Which macOS prefix brew lives under — the same answer before and after a
+/// bootstrap.
+///
+/// This value is read twice per run, once while the plan is built and once
+/// right after brew is installed, and the two reads have to agree or the plan
+/// promises one directory while the apply records another. So an installed brew
+/// answers for itself (including an Intel-prefix brew running under Rosetta on
+/// Apple Silicon), and a machine with no brew answers from the architecture the
+/// installer will target rather than from anything the install would change.
+fn macos_brew_prefix() -> &'static str {
+    MACOS_BREW_PREFIXES
+        .into_iter()
+        .find(|prefix| brew_prefix_holds_brew(std::path::Path::new(prefix)))
+        .unwrap_or_else(|| macos_brew_prefix_for_arch(std::env::consts::ARCH))
+}
+
+/// Whether `prefix` holds a real brew. The probe is the `bin/brew` binary and
+/// never the bin directory: stock macOS ships a `/usr/local/bin` with no brew
+/// in it, so a directory probe would answer `/usr/local` on a bare Apple
+/// Silicon machine and `/opt/homebrew` once the installer had run — the moving
+/// answer this derivation exists to rule out.
+fn brew_prefix_holds_brew(prefix: &std::path::Path) -> bool {
+    prefix.join("bin/brew").is_file()
+}
+
+/// Where the Homebrew installer puts a prefix on an `arch` machine that has
+/// none yet: Apple Silicon gets `/opt/homebrew`, Intel keeps `/usr/local`.
+fn macos_brew_prefix_for_arch(arch: &str) -> &'static str {
+    if arch == "aarch64" {
+        MACOS_BREW_PREFIXES[0]
+    } else {
+        MACOS_BREW_PREFIXES[1]
     }
 }
 

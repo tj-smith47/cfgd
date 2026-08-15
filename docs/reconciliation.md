@@ -8,7 +8,7 @@ Apply runs in a fixed phase order:
 
 1. **Modules** — modules skipped because they do not apply to this host (a `platform:` gate that excluded it), reported before any work starts
 2. **Pre-Scripts** — `preApply` or `preReconcile` hooks (context-dependent)
-3. **Prerequisites** — everything the run needs before it can install anything: refresh the index of each package manager that keeps one, provision the managers that are missing (and install the tools their installers shell out to), then write env vars, shell aliases, and the PATH entries recorded for every package manager cfgd itself bootstrapped to `~/.cfgd.env`, and inject shell rc source lines
+3. **Prerequisites** — everything the run needs before it can install anything: refresh the index of each package manager that keeps one, provision the managers that are missing (and install the tools their installers shell out to), then write env vars, shell aliases, and the PATH entries cfgd recorded as its own for a package manager (bootstrapped by cfgd, or a prefix cfgd created for it during an install) to `~/.cfgd.env`, and inject shell rc source lines
 4. **Packages** — install/uninstall across all package managers
 5. **Files** — copy, template, set permissions
 6. **System** — shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates

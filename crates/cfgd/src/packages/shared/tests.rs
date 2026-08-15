@@ -805,6 +805,37 @@ fn brew_path_dirs_is_non_empty_on_linux_or_macos() {
     }
 }
 
+/// The macOS prefix must not move across the bootstrap boundary — the plan
+/// reads it before brew is installed and the record is written right after —
+/// so the probe asks for the brew BINARY. A `bin` directory that exists without
+/// one decides nothing: stock macOS ships `/usr/local/bin`, and a directory
+/// probe would answer `/usr/local` on a bare Apple Silicon machine and
+/// `/opt/homebrew` the moment the installer had run.
+#[test]
+fn a_bin_directory_with_no_brew_in_it_is_not_a_brew_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+    assert!(
+        !brew_prefix_holds_brew(dir.path()),
+        "an empty bin directory is not evidence of brew"
+    );
+
+    std::fs::write(dir.path().join("bin/brew"), b"#!/bin/sh\n").unwrap();
+    assert!(
+        brew_prefix_holds_brew(dir.path()),
+        "an installed brew is authoritative about its own prefix"
+    );
+}
+
+/// With no brew installed the prefix is decided by the architecture the
+/// installer targets and by nothing the install itself would change, so the
+/// answer is identical before and after the bootstrap.
+#[test]
+fn the_macos_brew_prefix_with_no_brew_installed_comes_from_the_architecture() {
+    assert_eq!(macos_brew_prefix_for_arch("aarch64"), "/opt/homebrew");
+    assert_eq!(macos_brew_prefix_for_arch("x86_64"), "/usr/local");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn brew_path_dirs_linux_uses_linuxbrew_paths() {
