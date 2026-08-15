@@ -42,7 +42,7 @@ have to be supplied, never inherited:
 | Ambient input | Supply it with |
 |---|---|
 | **Colour** — a styled render used to re-read `console::colors_enabled()`, which is on under a pty | a `Printer::for_test*` constructor (all pin `colors: false`); `for_test_with_theme_colored` is the one that pins it ON |
-| **Live region** — a spinner's start line is written when there is none and repainted away when there is | a `Printer::for_test*` constructor (all pin `live_region: false`); `for_test_with_live_bars` is the one that pins it ON |
+| **Live region** — a spinner's start line is written when there is none and repainted away when there is | a `Printer::for_test*` constructor (they pin `live_region: false`); the three `live_capture` constructors — `for_test_live_scrollback`, `for_test_with_live_bars`, `for_test_live_terminal` — pin it ON, and which one to reach for is in `shared-utils.md`'s Test guards section |
 | **stdin TTY** — the interactive-script gate | `execute_script_with_tty(stdin_is_tty, …)`, never the `execute_script` wrapper that reads `stdin().is_terminal()` |
 
 Colour is decided ONCE, per `Printer`, at construction, and folded into its theme

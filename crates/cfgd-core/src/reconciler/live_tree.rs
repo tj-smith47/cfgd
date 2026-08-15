@@ -1345,13 +1345,6 @@ mod tests {
         );
     }
 
-    /// What the emulated terminal is left holding, ANSI stripped — the screen
-    /// after every cursor move and line clear the region issued, rather than
-    /// the sequence of paints that produced it.
-    fn screen_of(term: &indicatif::InMemoryTerm) -> String {
-        strip_ansi(&term.contents())
-    }
-
     #[test]
     fn a_committed_row_leaves_no_live_paint_of_itself_on_the_screen() {
         // The defect this pins: a row's line is erased by the NEXT draw of the
@@ -1365,7 +1358,7 @@ mod tests {
         // Neither sibling constructor can see it: the hidden target draws
         // nothing, and the recording buffer holds every repaint, where one
         // paint too many is indistinguishable from one repaint too many.
-        let (printer, term) = Printer::for_test_live_terminal(24, 120);
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
         let section = printer.section_phase(&PhaseName::Packages.section_label());
         let managers = Owner::cfgd("managers");
         let first = install("apt", "ripgrep");
@@ -1381,13 +1374,13 @@ mod tests {
         tree.finish();
         drop(section);
 
-        let screen = screen_of(&term);
+        let held = screen.contents();
         for subject in ["apt install ripgrep", "pipx install pynvim"] {
             assert_eq!(
-                screen.matches(subject).count(),
+                held.matches(subject).count(),
                 1,
-                "{subject} is on the screen {} times: {screen}",
-                screen.matches(subject).count()
+                "{subject} is on the screen {} times: {held}",
+                held.matches(subject).count()
             );
         }
     }
@@ -1399,7 +1392,7 @@ mod tests {
         // never answered, a group heading, and the region's own summary line.
         // None of them is ever committed, so a paint any of them left behind is
         // a line in the scrollback that describes nothing that happened.
-        let (printer, term) = Printer::for_test_live_terminal(24, 120);
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
         let section = printer.section_phase(&PhaseName::Packages.section_label());
         let managers = Owner::cfgd("managers");
         let nvim = Owner::module("nvim");
@@ -1431,13 +1424,13 @@ mod tests {
         tree.finish();
         drop(section);
 
-        let screen = screen_of(&term);
+        let held = screen.contents();
         for committed in ["apt install pkg1", "apt install pkg2"] {
             assert_eq!(
-                screen.matches(committed).count(),
+                held.matches(committed).count(),
                 1,
-                "{committed} is on the screen {} times: {screen}",
-                screen.matches(committed).count()
+                "{committed} is on the screen {} times: {held}",
+                held.matches(committed).count()
             );
         }
         for live_only in [
@@ -1447,8 +1440,8 @@ mod tests {
             "module:nvim",
         ] {
             assert!(
-                !screen.contains(live_only),
-                "the closed region left {live_only:?} on the screen: {screen}"
+                !held.contains(live_only),
+                "the closed region left {live_only:?} on the screen: {held}"
             );
         }
     }

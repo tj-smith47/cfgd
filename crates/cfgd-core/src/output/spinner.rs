@@ -5,7 +5,11 @@
 //! / `.target` before the Status commits on Drop.
 //!
 //! A `Spinner` dropped without an explicit finish emits a `Status(Info)` so
-//! the spinner doesn't disappear silently — abandonment leaves a record.
+//! the spinner doesn't disappear silently — abandonment leaves a record. The
+//! one exception is a spinner whose bar it BORROWED from a
+//! [`super::live_row::LiveRow`]: that line has an owner who will settle or
+//! retire it, so an abandoned one leaves it alone rather than clearing it and
+//! recording a second line for the action the row is about to describe.
 use std::io::IsTerminal;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -57,7 +61,8 @@ pub(super) fn clamp_label(
 
 /// Live spinner. Drop without `finish_*()` emits a `Status(Info)` with the
 /// spinner message at the active depth — leaves a record so the spinner
-/// doesn't disappear silently.
+/// doesn't disappear silently. A `borrowed` spinner is the exception and ends
+/// silently, because the line is not its to end (see the field's own doc).
 pub struct Spinner<'p> {
     pub(crate) renderer: Arc<Renderer>,
     pub(crate) sink: Arc<dyn Writer>,

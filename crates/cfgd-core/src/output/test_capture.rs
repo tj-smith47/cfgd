@@ -62,17 +62,49 @@ impl indicatif::TermLike for RecordingTerm {
     }
 }
 
+/// The emulated terminal [`Printer::for_test_live_terminal`] hands back — an
+/// `output/`-owned name for it, so a test anywhere else can read the screen
+/// without naming an indicatif type (hard rule #1: every `console` / `indicatif`
+/// type stays inside this module, and a fully-qualified path evades the audit's
+/// `use` pattern rather than satisfying the rule).
+///
+/// Opaque on purpose: it answers the one question the fixture exists to ask.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct LiveScreen(indicatif::InMemoryTerm);
+
+#[cfg(test)]
+impl LiveScreen {
+    /// What the terminal is holding, top down, trailing blank rows dropped.
+    ///
+    /// Plain text with no stripping needed: the screen model stores each cell's
+    /// CONTENT, so an escape that reached it was consumed as a cursor move or a
+    /// colour change and never lands in a row.
+    pub(crate) fn contents(&self) -> String {
+        self.0.contents()
+    }
+}
+
 /// The printer sink behind [`Printer::for_test_live_terminal`]: permanent lines
 /// land on the SAME emulated screen the bars repaint over, which is the
 /// relationship the two writers have in production, where both are stderr.
 #[cfg(test)]
 #[derive(Debug)]
-pub(crate) struct TermSink(pub(crate) indicatif::InMemoryTerm);
+struct TermSink(indicatif::InMemoryTerm);
 
 #[cfg(test)]
 impl Writer for TermSink {
     fn write_line(&self, text: &str) {
         let _ = indicatif::TermLike::write_line(&self.0, text);
+    }
+
+    /// The width the SCREEN wraps at, not the renderer's fallback. In
+    /// production the sink is a `console::Term` reporting the real terminal's
+    /// columns; a sink answering `None` here would have the renderer lay out
+    /// for 100 columns while the emulated screen hard-wrapped at its own, and a
+    /// line counted once in the fixture would be two rows on the screen.
+    fn wrap_columns(&self) -> Option<usize> {
+        Some(usize::from(indicatif::TermLike::width(&self.0)))
     }
 }
 
@@ -270,22 +302,22 @@ impl Printer {
     /// line and the region's repaints have to compete for the same rows here
     /// exactly as they do on a tty.
     #[cfg(test)]
-    pub(crate) fn for_test_live_terminal(rows: u16, cols: u16) -> (Self, indicatif::InMemoryTerm) {
+    pub(crate) fn for_test_live_terminal(rows: u16, cols: u16) -> (Self, LiveScreen) {
         let term = indicatif::InMemoryTerm::new(rows, cols);
         let multi = indicatif::MultiProgress::with_draw_target(
             indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
         );
         (
             Self::live_capture(multi, Arc::new(TermSink(term.clone()))),
-            term,
+            LiveScreen(term),
         )
     }
 
-    /// The one `Printer` shape both live-region capture constructors take,
-    /// differing only in where their `MultiProgress` draws. Written once so a
-    /// new field cannot be added to one of them and forgotten in the other —
-    /// the two would then disagree about `colors` or `live_region` and the
-    /// tests reading them would be describing different printers.
+    /// The one `Printer` shape every live-region capture constructor takes,
+    /// the three differing only in where their `MultiProgress` draws. Written
+    /// once so a new field cannot be added to one of them and forgotten in the
+    /// others — they would then disagree about `colors` or `live_region` and
+    /// the tests reading them would be describing different printers.
     fn live_capture(multi: indicatif::MultiProgress, sink: Arc<dyn Writer>) -> Self {
         Printer {
             // Stamped explicitly, like every theme a Printer renders through:
