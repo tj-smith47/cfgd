@@ -338,41 +338,88 @@ fn sysctl_validate_key_special_chars_rejected() {
 
 // --- sysctl diff with populated mapping ---
 
+/// A desired sysctl mapping of one key.
+fn sysctl_desire(key: &str, value: serde_yaml::Value) -> serde_yaml::Value {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(serde_yaml::Value::String(key.to_string()), value);
+    serde_yaml::Value::Mapping(mapping)
+}
+
 #[test]
 fn sysctl_diff_detects_drift_for_unreadable_keys() {
-    // On a test machine without /proc/sys, read_sysctl returns "<unreadable>"
-    // so any desired value will drift
-    let sc = SysctlConfigurator;
-    let mut mapping = serde_yaml::Mapping::new();
-    mapping.insert(
-        serde_yaml::Value::String("net.ipv4.ip_forward".into()),
-        serde_yaml::Value::String("1".into()),
+    // No kernel exposes this knob, so the read fails on every host and the
+    // drift is the same everywhere. Anchoring on a REAL knob instead reports
+    // drift only on hosts whose value happens to differ from the desired one,
+    // which is the assertion silently skipping itself.
+    let drifts = SysctlConfigurator
+        .diff(&sysctl_desire(
+            "net.ipv4.cfgd_no_such_knob",
+            serde_yaml::Value::String("1".into()),
+        ))
+        .unwrap();
+    assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+    assert_eq!(drifts[0].key, "net.ipv4.cfgd_no_such_knob");
+    assert_eq!(drifts[0].expected, "1");
+    assert_eq!(
+        drifts[0].actual, "<unreadable>",
+        "a knob that cannot be read is reported as unreadable, not as absent"
     );
-    let desired = serde_yaml::Value::Mapping(mapping);
-    let drifts = sc.diff(&desired).unwrap();
-    // The key may or may not be readable depending on the test environment,
-    // but the diff should return without error
-    assert!(drifts.len() <= 1);
-    if !drifts.is_empty() {
-        assert_eq!(drifts[0].key, "net.ipv4.ip_forward");
-        assert_eq!(drifts[0].expected, "1");
-    }
 }
 
 #[test]
 fn sysctl_diff_bool_true_converts_to_1() {
-    let sc = SysctlConfigurator;
-    let mut mapping = serde_yaml::Mapping::new();
-    mapping.insert(
-        serde_yaml::Value::String("net.ipv4.ip_forward".into()),
-        serde_yaml::Value::Bool(true),
+    // `true` and `"1"` are the same desire, so they must produce the same
+    // drift — compared against each other rather than against the host, which
+    // has no opinion about a knob that does not exist.
+    let key = "net.ipv4.cfgd_no_such_knob";
+    let from_bool = SysctlConfigurator
+        .diff(&sysctl_desire(key, serde_yaml::Value::Bool(true)))
+        .unwrap();
+    let from_string = SysctlConfigurator
+        .diff(&sysctl_desire(key, serde_yaml::Value::String("1".into())))
+        .unwrap();
+    assert_eq!(from_bool.len(), 1, "unexpected drifts: {from_bool:?}");
+    assert_eq!(
+        from_bool[0].expected, "1",
+        "`true` renders as the kernel's 1"
     );
-    let desired = serde_yaml::Value::Mapping(mapping);
-    let drifts = sc.diff(&desired).unwrap();
-    // yaml_value_with_numeric_bools converts true to "1"
-    if !drifts.is_empty() {
-        assert_eq!(drifts[0].expected, "1");
-    }
+    assert_eq!(from_bool, from_string);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sysctl_diff_reports_nothing_for_a_knob_already_at_its_desired_value() {
+    // The readable half of the same question: read a real knob, desire what it
+    // already holds, and desire something it does not. The host supplies the
+    // input here rather than the verdict, so the assertion holds on any kernel.
+    let key = "kernel.pid_max";
+    let Ok(current) = std::fs::read_to_string("/proc/sys/kernel/pid_max") else {
+        return; // no procfs (a container without /proc mounted) — nothing to read
+    };
+    let current = current.trim().to_string();
+
+    let matched = SysctlConfigurator
+        .diff(&sysctl_desire(
+            key,
+            serde_yaml::Value::String(current.clone()),
+        ))
+        .unwrap();
+    assert!(
+        matched.is_empty(),
+        "a knob already at its desired value has not drifted: {matched:?}"
+    );
+
+    let differing = SysctlConfigurator
+        .diff(&sysctl_desire(
+            key,
+            serde_yaml::Value::String(format!("{current}0")),
+        ))
+        .unwrap();
+    assert_eq!(differing.len(), 1, "unexpected drifts: {differing:?}");
+    assert_eq!(
+        differing[0].actual, current,
+        "drift must report the kernel's own value, not a placeholder"
+    );
 }
 
 #[test]

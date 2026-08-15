@@ -606,22 +606,26 @@ fn resolve_from_nonexistent_path_errors() {
     assert!(result.unwrap_err().to_string().contains("does not exist"));
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn check_prerequisites_returns_true_when_git_available() {
-    // git should be available in CI and dev environments
-    let printer = quiet_printer();
-    let result = check_prerequisites(&printer);
-    if cfgd_core::command_available("git") {
-        assert!(
-            result,
-            "check_prerequisites should return true when git is available"
-        );
-    } else {
-        assert!(
-            !result,
-            "check_prerequisites should return false when git is missing"
-        );
+    // Both arms are driven from a probe PATH. Read off the host, the
+    // git-is-missing arm — the one that prints the install hint a first-run
+    // user actually needs — never executes anywhere cfgd is developed or
+    // tested, so nothing would notice it breaking.
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
+        let printer = quiet_printer();
+        assert!(check_prerequisites(&printer), "git resolves");
     }
+
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let printer = quiet_printer();
+    assert!(!check_prerequisites(&printer), "no git, no prerequisites");
 }
 
 #[test]
@@ -1764,27 +1768,39 @@ fn ensure_dir_writable_nonexistent_path_returns_ok() {
 
 // ─── check_prerequisites — git availability ──────────────────
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn check_prerequisites_with_test_printer() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
+        let (printer, cap) = Printer::for_test_doc();
+        let result = check_prerequisites(&printer);
+        drop(printer);
+        assert!(result, "should return true when git available");
+        assert!(
+            !cap.human().contains("not installed"),
+            "should not show error when git is available"
+        );
+    }
+
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let (printer, cap) = Printer::for_test_doc();
     let result = check_prerequisites(&printer);
     drop(printer);
     let output = cap.human();
-
-    if cfgd_core::command_available("git") {
-        assert!(result, "should return true when git available");
-        // No error output when git is available
-        assert!(
-            !output.contains("not installed"),
-            "should not show error when git is available"
-        );
-    } else {
-        assert!(!result, "should return false when git unavailable");
-        assert!(
-            output.contains("not installed"),
-            "should show error when git is missing, got: {output}"
-        );
-    }
+    assert!(!result, "should return false when git unavailable");
+    assert!(
+        output.contains("git is not installed"),
+        "should show error when git is missing, got: {output}"
+    );
+    assert!(
+        output.contains("Install with:"),
+        "the install hint is the actionable half of the message: {output}"
+    );
 }
 
 // ─── ensure_config_file — edge cases ─────────────────────────

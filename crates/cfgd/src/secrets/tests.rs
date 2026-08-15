@@ -957,27 +957,44 @@ fn sops_encrypt_command_no_config_when_missing() {
 
 // --- AgeBackend key path resolution tests ---
 
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
-fn age_backend_available_with_key_file() {
+fn age_backend_needs_both_a_key_file_and_the_cli() {
     // `is_available` uses `command_available_with_seam(CFGD_AGE_BIN, "age")`,
     // so a stale CFGD_AGE_BIN from a parallel `age_shim` test would force the
     // available branch even when `age` is not on PATH. Pin the env to the
-    // PATH-only path for the duration of this test.
+    // PATH-only path for the duration of this test, and supply the binary
+    // half from a probe PATH: read off the host, the two halves of the AND
+    // are never both true on a runner without `age`, and the test passes
+    // while proving only that a missing CLI is missing.
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_AGE_BIN");
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let dir = tempfile::tempdir().unwrap();
     let key_path = dir.path().join("age-key.txt");
     std::fs::write(&key_path, "# public key: age1test\nAGE-SECRET-KEY-1TEST\n").unwrap();
 
     let backend = AgeBackend::new(key_path.clone());
-    // is_available checks key_path.exists() AND command_available("age")
-    // Key exists, but age may or may not be installed
-    if cfgd_core::command_available("age") {
-        assert!(backend.is_available());
-    } else {
-        // Key exists but CLI missing — not available
-        assert!(!backend.is_available());
+    let missing_key = AgeBackend::new(dir.path().join("absent-key.txt"));
+
+    {
+        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+        assert!(
+            !backend.is_available(),
+            "a key file with no `age` CLI cannot decrypt anything"
+        );
     }
+
+    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["age"]);
+    assert!(
+        backend.is_available(),
+        "key file present and `age` resolves — both halves hold"
+    );
+    assert!(
+        !missing_key.is_available(),
+        "the CLI alone is not enough; the key file is the other half"
+    );
 }
 
 #[test]

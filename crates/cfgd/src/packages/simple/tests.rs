@@ -1,4 +1,3 @@
-use cfgd_core::command_available;
 use cfgd_core::providers::PackageManager;
 
 use super::*;
@@ -300,28 +299,55 @@ fn pkg_manager_install_uses_dash_y() {
     assert_eq!(mgr.uninstall_cmd, &["pkg", "remove", "-y"]);
 }
 
+#[cfg(unix)]
 #[test]
-fn yum_manager_is_available_uses_custom_fn() {
-    // yum_manager has is_available_fn that checks !dnf && yum
-    // This exercises the is_available_fn dispatch path (line 861-863)
+#[serial_test::serial]
+fn yum_manager_yields_to_dnf_wherever_both_resolve() {
+    // yum's custom is_available_fn is `!dnf && yum`. Asserted against a probe
+    // PATH rather than the host's: on a host carrying neither binary — every
+    // CI runner cfgd builds on — a test that reads the host proves only that
+    // false is false, and the yields-to-dnf rule it exists for never runs.
+    let _dnf_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_DNF_BIN");
+    let _yum_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_YUM_BIN");
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let yum = yum_manager();
-    // On most CI systems, neither yum nor dnf is available, so this returns false.
-    // The key is that it exercises the is_available_fn dispatch path.
-    let available = yum.is_available();
-    // If dnf is available, yum should NOT be available (they're mutually exclusive)
-    if command_available("dnf") {
+
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["yum"]);
+        assert!(yum.is_available(), "yum alone on PATH is yum's host");
+    }
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["yum", "dnf"]);
         assert!(
-            !available,
-            "yum should not be available when dnf is present"
+            !yum.is_available(),
+            "dnf supersedes yum — a host with both is dnf's"
         );
     }
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    assert!(!yum.is_available(), "no yum binary, no yum manager");
 }
 
+#[cfg(unix)]
 #[test]
-fn simple_manager_is_available_without_custom_fn() {
-    // apk_manager has is_available_fn = None, uses default command_available
+#[serial_test::serial]
+fn simple_manager_without_a_custom_fn_probes_its_own_name() {
+    // apk_manager carries `is_available_fn: None`, so availability falls
+    // through to a probe for the manager's own name.
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APK_BIN");
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let apk = apk_manager();
-    let _available = apk.is_available(); // exercises the None branch (line 864)
+
+    {
+        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+        assert!(!apk.is_available());
+    }
+    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["apk"]);
+    assert!(
+        apk.is_available(),
+        "the binary this manager probes for is named `apk`"
+    );
 }
 
 #[test]
