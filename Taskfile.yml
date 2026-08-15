@@ -637,7 +637,11 @@ tasks:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
       # font VHS still exits 0 and records a take full of tofu boxes. The font
       # is read from the tape itself so the gate cannot drift from what VHS
-      # will actually request.
+      # will actually request. The declaration check comes first: with no
+      # FontFamily line the extraction below is empty and `grep -qF ""`
+      # matches anything, which would let the gate pass vacuously.
+      - sh: grep -q '^Set FontFamily "' demo/init.tape
+        msg: "demo/init.tape declares no `Set FontFamily` — the gate cannot know which font VHS will render."
       - sh: >-
           fc-list : family | grep -qF "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/init.tape | head -1)"
         msg: "The font demo/init.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
