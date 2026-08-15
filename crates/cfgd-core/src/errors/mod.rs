@@ -251,6 +251,16 @@ pub enum PackageError {
     #[error("{manager} dispatch stalled — no lane ever became available for this action")]
     LaneStalled { manager: String },
 
+    // The coordinator's inbox disconnected with work still outstanding: every
+    // worker handle was dropped without a `Finished` message ever landing,
+    // which a lane's own panic guard cannot see (a worker the OS killed, a
+    // scoped thread that never started). Reported per outstanding action for
+    // the same reason `LaneStalled` is — an action neither the exit code nor
+    // the tree ever hears about is a shortfall the run would walk away from
+    // reporting success.
+    #[error("{manager} lane ended without reporting — this action never ran to completion")]
+    LaneLost { manager: String },
+
     // A `Prerequisites` node whose dependency failed. It never ran: what it was
     // waiting to be handed does not exist, so running it anyway would be the
     // silent bootstrap that phase exists to replace. Named after the ROOT

@@ -29,7 +29,10 @@
 //!    waits for every action of its transitive dependencies, and a
 //!    `Prerequisites` node waits for every node its plan named. A node whose
 //!    dependency FAILED never runs at all: it settles as a failure naming the
-//!    ancestor, because what it was waiting to be handed does not exist.
+//!    ancestor, because what it was waiting to be handed does not exist —
+//!    unless the run is aborting, where nothing that never began is reported
+//!    at all and the shortfall is the rollup's to name, for a dependent and a
+//!    sibling alike.
 //! 3. **The per-family lane** — at most one action per manager FAMILY is in
 //!    flight, so the maximum parallelism is the number of distinct families.
 //!    `brew`, `brew-tap` and `brew-cask` are one binary and share a lane; the
@@ -431,6 +434,64 @@ fn node_subject(action: &Action) -> Option<&str> {
     }
 }
 
+/// Why a dispatch stopped with planned work still unanswered.
+///
+/// Both arms report every outstanding slot, because an action that neither the
+/// exit code nor the tree ever hears about is a shortfall the run walks away
+/// from green. A cooperative ABORT is deliberately not one of them: there the
+/// run's own status is `Aborted` and the rollup names the shortfall as
+/// `{applied} of {planned}`, so the dispatcher reports only what it began.
+enum Unrun {
+    /// `pick_next` left work `Waiting` with nothing running to unblock it — a
+    /// coordinator invariant failure.
+    Stalled,
+    /// The inbox disconnected: every worker handle was dropped without a
+    /// `Finished` message ever landing, which the lane's own panic guard
+    /// cannot see.
+    Lost,
+}
+
+impl Unrun {
+    fn error(&self, manager: String) -> crate::errors::CfgdError {
+        match self {
+            Unrun::Stalled => PackageError::LaneStalled { manager }.into(),
+            Unrun::Lost => PackageError::LaneLost { manager }.into(),
+        }
+    }
+}
+
+/// Answer every slot the dispatch never settled, in plan order.
+///
+/// The ONE rule for outstanding work, applied to dependents and siblings alike:
+/// a slot still `Waiting` because nothing ever offered it a lane and a slot
+/// still `Running` because its worker vanished are both actions the run
+/// planned and did not complete, and each gets a line of its own naming why.
+/// Marked `Done` as it goes, so a second exit path cannot report one twice.
+fn settle_unrun(
+    slots: &mut [Slot<'_>],
+    reason: &Unrun,
+    journal_ids: &mut HashMap<usize, Option<i64>>,
+    collect: &mut dyn FnMut(&Action, LaneCollected),
+) {
+    for (index, slot) in slots.iter_mut().enumerate() {
+        if slot.state == SlotState::Done {
+            continue;
+        }
+        slot.state = SlotState::Done;
+        let manager = slot.manager.clone().unwrap_or_default();
+        collect(
+            slot.action,
+            LaneCollected {
+                journal_id: journal_ids.remove(&index).flatten(),
+                result: Err(reason.error(manager)),
+                elapsed: Duration::ZERO,
+                notes: Vec::new(),
+                body: Vec::new(),
+            },
+        );
+    }
+}
+
 /// Settle every node downstream of the failure at `root` as a failure of its
 /// own, without running any of them.
 ///
@@ -679,6 +740,10 @@ impl super::Reconciler<'_> {
         let mut draining: Option<usize> = None;
         let mut running: usize = 0;
         let mut aborted: Option<u8> = None;
+        // Set when the loop leaves planned work unanswered for a reason that is
+        // not a cooperative abort. Settled once, below the loop, so the two
+        // exits that can do it cannot answer a slot differently — or twice.
+        let mut unrun: Option<Unrun> = None;
         let mut journal_ids: HashMap<usize, Option<i64>> = HashMap::new();
         let mut bars = WaitBars {
             groups: HashMap::new(),
@@ -875,33 +940,13 @@ impl super::Reconciler<'_> {
                     // left to alternate to). An abort in progress already
                     // explains an empty `running`; this is the OTHER way to
                     // get here, and every slot still `Waiting` never enters
-                    // `collect` on its own, so without this loop it vanishes
-                    // from both the exit code (`results` never sees it) and
-                    // the rendered tree (`recorded` never sees it) — a run
-                    // that reached none of its plan would otherwise print
-                    // `✓ Apply complete` and exit 0. `bars.groups` /
-                    // `bars.actions` are cleared for the same reason the
-                    // abort branch above clears them: no further
-                    // `refresh_wait_bars` call follows this `break`, so a
-                    // wait line for a slot this loop just failed would
-                    // otherwise be the last thing drawn for it.
+                    // `collect` on its own, so without `settle_unrun` it
+                    // vanishes from both the exit code (`results` never sees
+                    // it) and the rendered tree (`recorded` never sees it) —
+                    // a run that reached none of its plan would otherwise
+                    // print `✓ Apply complete` and exit 0.
                     if aborted.is_none() {
-                        bars.groups.clear();
-                        bars.actions.clear();
-                        for slot in slots.iter_mut().filter(|s| s.state == SlotState::Waiting) {
-                            slot.state = SlotState::Done;
-                            let manager = slot.manager.clone().unwrap_or_default();
-                            collect(
-                                slot.action,
-                                LaneCollected {
-                                    journal_id: None,
-                                    result: Err(PackageError::LaneStalled { manager }.into()),
-                                    elapsed: Duration::ZERO,
-                                    notes: Vec::new(),
-                                    body: Vec::new(),
-                                },
-                            );
-                        }
+                        unrun = Some(Unrun::Stalled);
                     }
                     break;
                 }
@@ -957,20 +1002,55 @@ impl super::Reconciler<'_> {
                         // thing it was waiting to be handed does not exist, and
                         // running it anyway is the silent bootstrap this phase
                         // replaces.
+                        //
+                        // Not once the run is ABORTING, though: from there
+                        // nothing further will be dispatched at all, so a
+                        // cascade would put a failure line under the dependents
+                        // of this one node while every other action the abort
+                        // stopped renders nothing — two rules for the same
+                        // "planned, never began" fact inside one run. An
+                        // aborted run reports what it began and leaves the
+                        // shortfall to the rollup, for dependents and siblings
+                        // alike.
                         if failed {
-                            fail_dependents(&mut slots, index, collect);
+                            // Re-read rather than reuse the sample taken at the
+                            // top of this iteration: that read happened before
+                            // this action ran, and what the cascade needs to
+                            // know is whether the run is stopping NOW.
+                            if aborted.is_none() {
+                                aborted = run.abort.aborted();
+                            }
+                            if aborted.is_none() {
+                                fail_dependents(&mut slots, index, collect);
+                            }
                         }
                     }
                     // Reachable only once the coordinator has dropped its own
                     // `tx` above AND every worker's clone is also gone
                     // without a `Finished` ever landing — a worker killed by
                     // something the panic guard in the spawned closure
-                    // cannot see. Whatever is still `Waiting` or `Running` is
-                    // left uncollected; the caller reports the run as not
-                    // having reached that work, the same as any other
-                    // aborted dispatch.
-                    Err(_) => break,
+                    // cannot see. Whatever is still outstanding never ran to
+                    // completion and is reported as such, for the same reason
+                    // the stall above is: this is not an abort, so nothing
+                    // else in the run will account for it.
+                    Err(_) => {
+                        if aborted.is_none() {
+                            unrun = Some(Unrun::Lost);
+                        }
+                        break;
+                    }
                 }
+            }
+
+            // Cleared before the outstanding slots are settled, for the same
+            // reason the abort branch above clears them: no further
+            // `refresh_wait_bars` call follows the break, so a wait line for a
+            // slot that is about to be reported as never-run would otherwise
+            // be the last thing drawn for it.
+            if let Some(reason) = &unrun {
+                bars.groups.clear();
+                bars.actions.clear();
+                settle_unrun(&mut slots, reason, &mut journal_ids, collect);
             }
         });
 
@@ -1974,5 +2054,70 @@ mod tests {
              a serial walk would cost at least {:?}",
             delay * 3
         );
+    }
+
+    #[test]
+    fn settling_outstanding_work_answers_every_slot_once_and_in_plan_order() {
+        // The `Lost` exit is the one a test cannot stage — it needs a worker
+        // the panic guard never sees — so the rule it shares with the stall
+        // exit is pinned here instead: a slot still RUNNING when the dispatch
+        // ends is outstanding exactly like one still waiting, each is answered
+        // once, and a second sweep finds nothing left to blame twice.
+        let owner = Owner::profile("work");
+        let first = probe_action();
+        let second = probe_action();
+        let done = probe_action();
+        let mut slots = vec![
+            slot(&owner, Tier::Rest, "brew", &first),
+            slot(&owner, Tier::Rest, "cargo", &second),
+            slot(&owner, Tier::Rest, "npm", &done),
+        ];
+        slots[0].state = SlotState::Running;
+        slots[2].state = SlotState::Done;
+        let mut journal_ids: HashMap<usize, Option<i64>> = HashMap::from([(0, Some(7))]);
+
+        let mut answered: Vec<(String, Option<i64>)> = Vec::new();
+        settle_unrun(
+            &mut slots,
+            &Unrun::Lost,
+            &mut journal_ids,
+            &mut |_action, collected| {
+                let message = collected
+                    .result
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                answered.push((message, collected.journal_id));
+            },
+        );
+
+        assert_eq!(
+            answered.len(),
+            2,
+            "the completed slot must not be answered again: {answered:?}"
+        );
+        assert!(
+            answered[0].0.contains("brew lane ended") && answered[1].0.contains("cargo lane ended"),
+            "answered out of plan order, or with the wrong reason: {answered:?}"
+        );
+        assert_eq!(
+            answered[0].1,
+            Some(7),
+            "a running slot's open journal row must be closed by its answer"
+        );
+        assert!(
+            slots.iter().all(|s| s.state == SlotState::Done),
+            "an answered slot stays answered"
+        );
+
+        let mut again = 0;
+        settle_unrun(
+            &mut slots,
+            &Unrun::Stalled,
+            &mut journal_ids,
+            &mut |_action, _collected| again += 1,
+        );
+        assert_eq!(again, 0, "a second exit path must not report a slot twice");
     }
 }

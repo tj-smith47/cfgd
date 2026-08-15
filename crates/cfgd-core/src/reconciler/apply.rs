@@ -178,12 +178,13 @@ fn emit_action_line(printer: &Printer, section: &SectionGuard<'_>, outcome: &Act
 ///
 /// A group whose actions an abort reached before any of them were considered
 /// for dispatch produces nothing — the shortfall is the rollup's to name, not
-/// an empty heading's. A STALLED action (`dispatch_lanes` ran out of runnable
-/// work with this one still `Waiting`) is different: it was handed to
-/// `collect` as a synthetic failure before dispatch returned, so it IS in
-/// `recorded` and renders here like any other failed action — never
-/// dispatching is itself the failure being reported, not a reason to say
-/// nothing.
+/// an empty heading's, and that holds for every action an abort stopped
+/// whether or not it was downstream of one that failed. An action left
+/// outstanding for a reason that is NOT an abort is different: `dispatch_lanes`
+/// hands every one of them to `collect` as a synthetic failure (stalled, or a
+/// lane that ended without reporting) before it returns, so they ARE in
+/// `recorded` and render here like any other failed action — never dispatching
+/// is itself the failure being reported, not a reason to say nothing.
 ///
 /// `preopened` is the group whose label the caller already committed — the
 /// single-owner case, where the label belongs above the live region rather
@@ -988,10 +989,19 @@ impl<'a> super::Reconciler<'a> {
             self.record_managed_resources(apply_id, &results)?;
             self.update_module_state(module_actions, apply_id, &results)?;
             let succeeded = results.iter().filter(|r| r.success).count();
+            // `total` is what the run PLANNED, not what it reached: an aborted
+            // run's whole point is that those two numbers differ, and a stored
+            // record whose total is the reached count reads as a clean sweep
+            // of a smaller plan. `notRun` is the difference stated outright,
+            // and it is the only place the actions the abort stopped are
+            // accounted for — the dispatcher deliberately reports none of them
+            // action by action.
+            let not_run = planned_total.saturating_sub(results.len());
             let summary = serde_json::json!({
-                "total": results.len(),
+                "total": planned_total,
                 "succeeded": succeeded,
                 "failed": results.len() - succeeded,
+                "notRun": not_run,
                 "aborted": true,
             })
             .to_string();

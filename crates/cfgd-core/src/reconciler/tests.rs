@@ -17494,6 +17494,14 @@ impl ConcurrentApply {
         self
     }
 
+    /// Drive the run with a flag the test also holds, so a driver closure can
+    /// request cancellation at a rendezvous it chose rather than racing a
+    /// timer for it.
+    fn with_abort(mut self, abort: crate::AbortFlag) -> Self {
+        self.abort = abort;
+        self
+    }
+
     fn run(self, drive: impl FnOnce()) -> ConcurrentOutcome {
         self.run_watching(|_| drive())
     }
@@ -18930,6 +18938,83 @@ fn a_failed_node_fails_its_dependents_with_the_root_cause() {
         .map(|e| e.resource_id)
         .collect();
     assert_eq!(journalled, vec!["provision:brew".to_string()]);
+}
+
+#[test]
+fn an_aborted_run_reports_neither_a_failures_dependents_nor_its_siblings() {
+    // One rule for everything an abort stopped. brew's provision fails at the
+    // instant cancellation arrives, taking down a node that depends on it and
+    // leaving a sibling queued behind its lane. Reporting the dependent as a
+    // failure while the sibling says nothing would be two rules for one
+    // "planned, never began" fact inside a single run — so an aborted run
+    // reports what it BEGAN, and the shortfall is the rollup's to name.
+    let probe = LaneProbe::holding(&["bootstrap:brew"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false)
+            .stays_unavailable()
+            .with_probe(&probe),
+        DispatchLogManager::new("npm", &log, false),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        // Downstream of the failure.
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+        // A sibling with no edge at all, held only by brew's family lane.
+        prerequisite_node("git", "brew", &["npm"]),
+    ]);
+
+    let abort = crate::AbortFlag::new();
+    let requested = abort.clone();
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_abort(abort)
+        .run(move || {
+            assert!(
+                driver.await_started("bootstrap:brew"),
+                "the provision never began: {:?}",
+                driver.events()
+            );
+            requested.set(130);
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.aborted, Some(130));
+    assert_eq!(outcome.result.status, ApplyStatus::Aborted);
+    let reported: Vec<&str> = outcome
+        .result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert_eq!(
+        reported,
+        vec!["manager:provision:brew"],
+        "only the action the run began may be reported"
+    );
+    assert!(
+        !outcome.transcript.contains("did not run —"),
+        "an aborted run must not blame a dependent it never began: {}",
+        outcome.transcript
+    );
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["bootstrap:brew"],
+        "nothing may be dispatched after the abort"
+    );
+    // The shortfall is named once, numerically, for the dependent and the
+    // sibling alike — the record must not read as a clean sweep of a
+    // three-action plan that only ever attempted one.
+    assert_eq!(outcome.result.planned_total, 3);
+    let summary = outcome
+        .state
+        .get_apply(outcome.result.apply_id)
+        .unwrap()
+        .and_then(|record| record.summary)
+        .unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&summary).expect("summary json");
+    assert_eq!(parsed["total"], 3, "total is the plan, not what it reached");
+    assert_eq!(parsed["notRun"], 2, "both unstarted actions are accounted");
 }
 
 #[test]
