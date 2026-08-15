@@ -838,9 +838,9 @@ fn execute_script_inner(
                 None => child.wait()?,
             };
             if !status.success() {
-                let exit_code = status.code().unwrap_or(-1);
+                let reason = crate::exit_status_reason(&status);
                 return Err(CfgdError::Config(ConfigError::Invalid {
-                    message: format!("script '{}' failed (exit {})", run_label, exit_code),
+                    message: format!("script '{run_label}' failed ({reason})"),
                 }));
             }
             return Ok((resource_desc, true, None));
@@ -943,9 +943,9 @@ fn execute_script_inner(
                 let captured = combine_script_output(&stdout_str, &stderr_str);
 
                 if !status.success() {
-                    let exit_code = status.code().unwrap_or(-1);
-                    st.finish_fail(&format!("exit {exit_code}"), Some(start.elapsed()));
-                    let base = format!("script '{}' failed (exit {})", run_label, exit_code);
+                    let reason = crate::exit_status_reason(&status);
+                    st.finish_fail(&reason, Some(start.elapsed()));
+                    let base = format!("script '{run_label}' failed ({reason})");
                     let message = match captured.as_deref().filter(|s| !s.is_empty()) {
                         Some(c) => format!("{base}\n{c}"),
                         None => base,

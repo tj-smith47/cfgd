@@ -239,6 +239,47 @@ pub fn hostname_string() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+/// How a finished child process ended, as one clause a message can embed.
+///
+/// The ONE rendering of an `ExitStatus` for a human, and the reason no caller
+/// writes `status.code().unwrap_or(-1)`: a process killed by a signal has no
+/// exit code at all, so that idiom prints `exit code -1` — a number no process
+/// ever returned — for the most common failure an interrupted run produces. A
+/// `cfgd apply` stopped with Ctrl-C reported exactly that for the install it
+/// killed.
+pub fn exit_status_reason(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return match signal_name(signal) {
+                Some(name) => format!("killed by signal {signal} ({name})"),
+                None => format!("killed by signal {signal}"),
+            };
+        }
+    }
+    "terminated without an exit code".to_string()
+}
+
+/// The name for the signals a user is likely to have sent or to recognise;
+/// `None` for the rest, which the number alone describes well enough.
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    match signal {
+        1 => Some("SIGHUP"),
+        2 => Some("SIGINT"),
+        6 => Some("SIGABRT"),
+        9 => Some("SIGKILL"),
+        11 => Some("SIGSEGV"),
+        13 => Some("SIGPIPE"),
+        15 => Some("SIGTERM"),
+        _ => None,
+    }
+}
+
 /// Extract stdout from a `Command` output as a trimmed, lossy UTF-8 string.
 pub fn stdout_lossy_trimmed(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
@@ -458,6 +499,28 @@ pub fn command_available_with_seam(env_var: &str, default: &str) -> bool {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn a_signal_killed_child_is_named_by_its_signal_not_by_a_code_it_never_returned() {
+        let ok = std::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .status()
+            .expect("spawn");
+        assert_eq!(exit_status_reason(&ok), "exit code 7");
+
+        #[cfg(unix)]
+        {
+            let killed = std::process::Command::new("sh")
+                .args(["-c", "kill -INT $$"])
+                .status()
+                .expect("spawn");
+            assert_eq!(
+                exit_status_reason(&killed),
+                "killed by signal 2 (SIGINT)",
+                "`status.code().unwrap_or(-1)` renders this as `exit code -1`"
+            );
+        }
+    }
 
     #[test]
     fn hostname_string_returns_non_empty() {

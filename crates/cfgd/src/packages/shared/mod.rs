@@ -314,12 +314,12 @@ pub(super) fn report_abandoned_step(
 /// stays in the message so an operator can still tell "unknown failure" from a
 /// tool that exited non-zero saying nothing.
 pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
-    let code = output.status.code().unwrap_or(-1);
+    let reason = cfgd_core::exit_status_reason(&output.status);
     let stderr = collapse_to_subject_line(output.stderr.trim());
     if stderr.is_empty() {
-        format!("exit code {code}")
+        reason
     } else {
-        format!("exit code {code}: {stderr}")
+        format!("{reason}: {stderr}")
     }
 }
 

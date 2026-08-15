@@ -1842,7 +1842,7 @@ fn execute_script_nonzero_exit_errors_with_exit_code() {
     match err {
         CfgdError::Config(ConfigError::Invalid { message }) => {
             assert!(
-                message.contains("failed (exit 7)"),
+                message.contains("failed (exit code 7)"),
                 "message should name the real exit code: {message}"
             );
             assert!(
