@@ -33,9 +33,11 @@ use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
+use common::profile_with_packages_setup;
 use common::{
     apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
-    profile_with_packages_setup, tiny_profile_setup,
+    tiny_profile_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
