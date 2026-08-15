@@ -208,7 +208,7 @@ pub enum PackageError {
     // `Prerequisites` phase that would have provisioned it, so the recovery
     // this names is always correct: run that phase, or drop the filter.
     #[error(
-        "{manager} is not provisioned — run `cfgd apply --phase prerequisites`, or drop --phase"
+        "{manager} is not provisioned — run `cfgd apply --phase prerequisites.managers`, or drop --phase"
     )]
     ManagerNotAvailable { manager: String },
 

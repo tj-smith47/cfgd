@@ -1638,8 +1638,8 @@ mod tests {
         );
         let error = cargo_install.error.as_deref().unwrap_or_default();
         assert!(
-            error.contains("cargo") && error.contains("cfgd apply --phase prerequisites"),
-            "the failure names the manager and points at the fix: {error}"
+            error.contains("cargo") && error.contains("cfgd apply --phase prerequisites.managers"),
+            "the failure names the manager and points at the owner-group-scoped fix, not the coarse phase: {error}"
         );
     }
 
