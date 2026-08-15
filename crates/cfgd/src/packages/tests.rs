@@ -3109,6 +3109,11 @@ fn all_package_managers_bootstrap_consistency() {
 fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
     // One gate over the whole registry, so a manager added later cannot declare
     // a prerequisite nothing can install or a PATH entry nothing can resolve.
+    // The read guard brackets BOTH probe passes: `feasible == obtainable`
+    // holds only while the PATH answers stay put, and a concurrent
+    // PATH-emptying test between the two passes turns an obtainable `curl`
+    // into a refusal on one side of the comparison.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let home = tempfile::tempdir().unwrap();
     let plans: Vec<(String, cfgd_core::providers::BootstrapPlan, bool)> =
         cfgd_core::with_test_home(home.path(), || {
