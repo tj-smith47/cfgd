@@ -866,13 +866,24 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         // The one line that folds the title's case: it is pinned as a lowercase
         // sentence by `tests/apply_signal_abort.rs` and by the sample in
         // `docs/safety.md`, and it reads correctly for every other title.
+        //
+        // A signal reaches the child process too, so an abort can carry a
+        // failure: the install that was in flight dies with it. Naming only
+        // what was applied and what was never attempted leaves that action in
+        // neither count, and the closing line — the one a reader keeps —
+        // accounts for every planned action or it accounts for none.
         ApplyStatus::Aborted => vec![(
             Role::Warn,
             format!(
-                "{} aborted by signal — {} of {} action(s) applied; no partial writes, rerun to converge",
+                "{} aborted by signal — {} of {} action(s) applied{}; no partial writes, rerun to converge",
                 title.as_str().to_ascii_lowercase(),
                 tally.succeeded,
-                tally.planned_total
+                tally.planned_total,
+                if tally.failed > 0 {
+                    format!(", {} failed", tally.failed)
+                } else {
+                    String::new()
+                }
             ),
         )],
     }

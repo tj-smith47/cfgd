@@ -304,6 +304,24 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
 }
 
 #[test]
+fn an_abort_that_killed_an_action_names_the_failure_too() {
+    // The signal reaches the child: `brew install` dies with the run. Without
+    // the failure clause that action is in neither the applied count nor the
+    // not-attempted line, and the closing line reads as a clean stop.
+    let tally = RunTally {
+        succeeded: 2,
+        failed: 1,
+        planned_total: 3,
+        status: ApplyStatus::Aborted,
+        aborted: Some(130),
+    };
+    assert_eq!(
+        rollup_lines(&tally, RunTitle::Apply)[0].1,
+        "apply aborted by signal — 2 of 3 action(s) applied, 1 failed; no partial writes, rerun to converge"
+    );
+}
+
+#[test]
 fn rollup_attaches_elapsed_to_the_last_line_emitted() {
     // Partial with no shortfall: the duration belongs to the failure line.
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);

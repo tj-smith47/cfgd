@@ -574,6 +574,7 @@ pub fn run_apply(
             aborted: true,
             signal: signal.to_string(),
             applied: result.succeeded(),
+            failed: result.failed(),
             total: result.planned_total,
         }));
         // An aborted run can still have completed the Env phase, so the user's
@@ -665,6 +666,11 @@ struct AbortOutput {
     aborted: bool,
     signal: String,
     applied: usize,
+    /// Actions the abort caught mid-flight: the signal reaches the child
+    /// process too, so an interrupted install dies with the run. Without it a
+    /// consumer differencing `total - applied` reads a killed action as one
+    /// that never started.
+    failed: usize,
     total: usize,
 }
 

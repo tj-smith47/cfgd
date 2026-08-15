@@ -120,10 +120,16 @@ $ cfgd apply --yes -o json   # same run, interrupted the same way
 {
   "aborted": true,
   "applied": 2,
+  "failed": 0,
   "signal": "SIGINT",
   "total": 3
 }
 ```
+
+A signal reaches the child process too, so an install that was in flight can die with
+the run rather than merely stopping before it. That action is a failure, and both
+surfaces say so — the closing line gains `, 1 failed` and the payload's `failed` count
+rises — so `total - applied` is never read as "never started".
 
 Already-applied actions are real and recorded; rerun `cfgd apply` to converge the rest. On Windows, cooperative abort is not available and Ctrl-C falls back to the OS default disposition.
 
