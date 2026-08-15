@@ -1427,6 +1427,19 @@ fn resolve_run_target_whole_string_naming_a_directory_is_left_untouched() {
     }
 }
 
+// The expectation for a substituted leading token under `ScriptShell::Auto`,
+// which quotes for the shell it will actually dispatch to: cmd.exe double
+// quoting on Windows, POSIX single quoting everywhere else (see
+// `quote_resolved_script_path`). The substitution/tail behavior under test is
+// identical on both arms; only the quote dialect follows the host.
+fn auto_quoted(path: &std::path::Path) -> String {
+    if cfg!(windows) {
+        crate::cmd_double_quoted(&path.to_string_lossy())
+    } else {
+        crate::posix_single_quoted(&path.to_string_lossy())
+    }
+}
+
 // A relative `run:` carrying trailing text is the shell arm (never
 // direct-exec, even though the leading token names a real file) — the
 // remainder is untouched so the shell, not this function, parses it. The
@@ -1439,8 +1452,7 @@ fn resolve_run_target_relative_with_args_substitutes_leading_token_only() {
     let script_dir = tempfile::tempdir().unwrap();
     std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
     let target = resolve_run_target("foo.sh --flag value", script_dir.path(), ScriptShell::Auto);
-    let expected_path =
-        crate::posix_single_quoted(&script_dir.path().join("foo.sh").to_string_lossy());
+    let expected_path = auto_quoted(&script_dir.path().join("foo.sh"));
     match target {
         RunTarget::Inline(cmd) => {
             assert_eq!(cmd, format!("{expected_path} --flag value"));
@@ -1476,7 +1488,7 @@ fn resolve_run_target_absolute_with_args_substitutes_leading_token_only() {
     std::fs::write(&absolute, "#!/bin/sh\n").unwrap();
     let run_str = format!("{} --flag value", absolute.to_str().unwrap());
     let target = resolve_run_target(&run_str, script_dir.path(), ScriptShell::Auto);
-    let expected_path = crate::posix_single_quoted(&absolute.to_string_lossy());
+    let expected_path = auto_quoted(&absolute);
     match target {
         RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} --flag value")),
         RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
@@ -1554,8 +1566,7 @@ fn resolve_run_target_single_line_block_scalar_trailing_newline_is_shell_arm() {
     let script_dir = tempfile::tempdir().unwrap();
     std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
     let target = resolve_run_target("foo.sh\n", script_dir.path(), ScriptShell::Auto);
-    let expected_path =
-        crate::posix_single_quoted(&script_dir.path().join("foo.sh").to_string_lossy());
+    let expected_path = auto_quoted(&script_dir.path().join("foo.sh"));
     match target {
         RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path}\n")),
         RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
@@ -1595,8 +1606,7 @@ fn resolve_run_target_preserves_shell_metacharacters_in_tail() {
         script_dir.path(),
         ScriptShell::Auto,
     );
-    let expected_path =
-        crate::posix_single_quoted(&script_dir.path().join("deploy.sh").to_string_lossy());
+    let expected_path = auto_quoted(&script_dir.path().join("deploy.sh"));
     match target {
         RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} && echo done")),
         RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
@@ -1615,8 +1625,7 @@ fn resolve_run_target_preserves_quoted_tail() {
         script_dir.path(),
         ScriptShell::Auto,
     );
-    let expected_path =
-        crate::posix_single_quoted(&script_dir.path().join("greet.sh").to_string_lossy());
+    let expected_path = auto_quoted(&script_dir.path().join("greet.sh"));
     match target {
         RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} \"hello world\"")),
         RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),

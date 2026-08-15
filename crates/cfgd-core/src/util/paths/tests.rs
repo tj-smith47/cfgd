@@ -693,6 +693,7 @@ fn absolutize_path_absolute_input_is_returned_unchanged() {
 
 #[test]
 #[serial_test::serial]
+#[cfg(unix)]
 fn absolutize_path_relative_input_resolves_against_cwd() {
     // `getcwd(3)` — which both `std::env::current_dir()` and
     // `absolutize_path`'s CWD join read — resolves through symlinks (macOS's
@@ -700,7 +701,10 @@ fn absolutize_path_relative_input_resolves_against_cwd() {
     // before the chdir keeps whatever unresolved name it was built from.
     // Chdir'ing through an *explicit* symlink reproduces that split on every
     // OS rather than only on macOS's temp layout, so this proves the fix
-    // instead of merely tolerating the mac case.
+    // instead of merely tolerating the mac case. Unix-only because the
+    // divergence under test does not exist on Windows: GetCurrentDirectory
+    // keeps the symlink in the CWD, and `canonicalize` answers in `\\?\`
+    // verbatim form, so neither side of this comparison has a Windows shape.
     let root = tempfile::TempDir::new().unwrap();
     let real_dir = root.path().join("real");
     std::fs::create_dir(&real_dir).unwrap();
@@ -722,10 +726,13 @@ fn absolutize_path_relative_input_resolves_against_cwd() {
 
 #[test]
 #[serial_test::serial]
+#[cfg(unix)]
 fn absolutize_path_does_not_relocate_through_a_symlinked_directory() {
     // Pins M1: a symlinked config dir (the dotfiles-repo pattern
     // `atomic_write_resolved` exists to support) must keep the path the user
     // named, not jump to the real target `realpath(3)` would resolve to.
+    // Unix-only for the same reason as the test above: the expectation's
+    // canonicalized-CWD shape only exists where `getcwd(3)` resolves links.
     let root = tempfile::TempDir::new().unwrap();
     let real_target = root.path().join("dotfiles");
     std::fs::create_dir(&real_target).unwrap();

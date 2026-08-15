@@ -1866,8 +1866,17 @@ fn is_unmanaged_file_managed_path_returns_false() {
     std::fs::write(&file_path, "content").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
+    // The production id is minted posix-folded (`reconciler::format`), and
+    // `is_unmanaged_file` folds its lookup to match — a `display()` id would
+    // never be found on Windows.
     state
-        .upsert_managed_resource("file", &file_path.display().to_string(), "test", None, None)
+        .upsert_managed_resource(
+            "file",
+            &cfgd_core::to_posix_string(&file_path),
+            "test",
+            None,
+            None,
+        )
         .unwrap();
 
     let config_dir = PathBuf::from("/config");

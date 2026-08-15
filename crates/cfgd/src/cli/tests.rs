@@ -3051,7 +3051,9 @@ fn is_unmanaged_file_tracked_in_state() {
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("tracked-file");
     std::fs::write(&target, "content").unwrap();
-    let target_str = target.display().to_string();
+    // Posix-folded to match the id production mints (`reconciler::format`);
+    // `is_unmanaged_file` folds its lookup the same way.
+    let target_str = cfgd_core::to_posix_string(&target);
     state
         .upsert_managed_resource("file", &target_str, "local", None, None)
         .unwrap();
@@ -5694,13 +5696,24 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
 }
 
 #[test]
+#[cfg(unix)]
 fn cmd_apply_with_env_vars() {
     cmd_apply_with_env_vars_for_host(true, 6);
 }
 
 #[test]
+#[cfg(unix)]
 fn cmd_apply_with_env_vars_no_zsh() {
     cmd_apply_with_env_vars_for_host(false, 5);
+}
+
+// The Windows env plan never consults the probe's shell shape: its target set
+// is `.cfgd-env.ps1` + both PowerShell profile injections + the live-session
+// refresh, all under the test home — 4 actions on every Windows host.
+#[test]
+#[cfg(windows)]
+fn cmd_apply_with_env_vars_windows() {
+    cmd_apply_with_env_vars_for_host(false, 4);
 }
 
 #[test]
