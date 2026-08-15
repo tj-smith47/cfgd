@@ -389,6 +389,35 @@ fn build_actions(graph: &Graph, installer: Option<&str>) -> Vec<Action> {
 /// pruned along with it — the same silent, alert-free bookkeeping as a
 /// purposeless refresh, never the stranded-install alert (that fires only for
 /// a `Provision` a `--skip` pattern matched directly).
+/// Every value a `Prerequisites` node's [`ManagerAction::filter_subject`] can
+/// carry on this host — the vocabulary a `--phase prerequisites.<selector>` is
+/// legal against.
+///
+/// Derived from the registry rather than listed at the CLI, and from the SAME
+/// two rules the planner seeds nodes with: a manager is named by the node it
+/// would be planned under ([`node_manager`]'s family collapse, which folds
+/// `brew-cask` onto `brew` only when `brew` is itself registered), and a tool
+/// is named by the bootstrap plan that shells out to it. A validator listing
+/// families alone refused `--phase prerequisites.curl` — a spelling
+/// [`ManagerAction::filter_subject`] is written to match and `--skip` already
+/// accepts — so the two halves of one grammar disagreed about what the user
+/// may type.
+///
+/// Vocabulary, not presence: a tool already installed plans no node, and a
+/// selector naming it matches nothing and does nothing. That is the same
+/// answer `prerequisites.brew` gives on a host with brew already current, and
+/// it is what keeps this a spelling gate rather than a second planner.
+pub fn prerequisite_selectors(registry: &ProviderRegistry) -> BTreeSet<String> {
+    let mut selectors = BTreeSet::new();
+    for pm in &registry.package_managers {
+        selectors.insert(node_manager(registry, pm.name()).to_string());
+        if let Some(plan) = pm.bootstrap_plan() {
+            selectors.extend(plan.requires);
+        }
+    }
+    selectors
+}
+
 pub fn prune_to_surviving_consumers(plan: &mut Plan) {
     let consumers = surviving_consumers(plan);
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();

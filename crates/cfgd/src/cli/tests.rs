@@ -19799,8 +19799,10 @@ fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites
 
 /// A named, always-available package manager, for tests that need
 /// `ProviderRegistry::manager_names()` to answer with a specific set without
-/// depending on a real `PackageManager` implementation.
-struct NamedManagerStub(&'static str);
+/// depending on a real `PackageManager` implementation. The second field names
+/// the tools its bootstrap cascade shells out to — the population a
+/// `Prerequisites` node is keyed on, and so part of the selector vocabulary.
+struct NamedManagerStub(&'static str, &'static [&'static str]);
 
 impl cfgd_core::providers::PackageManager for NamedManagerStub {
     fn name(&self) -> &str {
@@ -19810,7 +19812,7 @@ impl cfgd_core::providers::PackageManager for NamedManagerStub {
         true
     }
     fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
-        None
+        Some(cfgd_core::providers::BootstrapPlan::new("stub").requiring(self.1.to_vec()))
     }
     fn bootstrap(
         &self,
@@ -19854,7 +19856,7 @@ fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabula
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers
-        .push(Box::new(NamedManagerStub("brew")));
+        .push(Box::new(NamedManagerStub("brew", &[])));
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
@@ -19869,6 +19871,54 @@ fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabula
     assert!(
         msg.contains("unknown selector 'bogus'") && msg.contains("brew") && msg.contains("env"),
         "error must name the rejected selector and list groups + manager families:\n{msg}"
+    );
+}
+
+#[test]
+fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+
+    // `ManagerAction::filter_subject` keys a prerequisite node on its TOOL, and
+    // `--skip prerequisites.curl` has always accepted that spelling — but the
+    // `--phase` validator listed manager families only, so one grammar was
+    // legal on one flag and rejected on the other.
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(NamedManagerStub("brew", &["curl"])));
+    let (printer, _buf) = test_printer_capture();
+    let filter = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("curl".to_string()),
+        }),
+        &registry,
+        &printer,
+    )
+    .expect("a tool a registered manager's cascade names is a legal selector");
+    assert_eq!(
+        filter,
+        Some(PhaseFilter::Selector(
+            PhaseName::Prerequisites,
+            "curl".to_string()
+        ))
+    );
+
+    // Still a spelling gate: a name no manager and no cascade mentions is
+    // refused, and the tool now appears in what the refusal offers.
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("bogus".to_string()),
+        }),
+        &registry,
+        &printer,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("unknown selector 'bogus'") && err.contains("curl"),
+        "the legal list must offer the tool it now accepts:\n{err}"
     );
 }
 

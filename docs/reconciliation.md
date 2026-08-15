@@ -202,10 +202,11 @@ packages.module:brew` selects the module. The pre-routing spellings `modules` an
 
 `--phase`/`--skip`/`--only` also take the dotted grammar one level up, scoped to a
 single phase: `<phase>.<selector>`, where the selector names an owner group
-(`managers`, `env`, `session` — the three `Prerequisites` always carries) or a
+(`managers`, `env`, `session` — the three `Prerequisites` always carries), a
 manager (family-collapsed, so `prerequisites.brew` also covers `brew-tap`/`brew-cask`,
-but never a prerequisite tool a manager's installer merely depends on — `curl` is
-keyed on its own name, `prerequisites.curl`, not on whichever manager needed it).
+but never a prerequisite tool a manager's installer merely depends on), or that
+tool itself — `curl` is keyed on its own name, `prerequisites.curl`, not on
+whichever manager needed it.
 `prerequisites.managers` is the whole-group equivalent of `cfgd:managers`, scoped to
 that one phase. A selector is only valid scoped to `prerequisites`; naming one after
 any other phase (`--phase packages.brew`) errors rather than silently matching

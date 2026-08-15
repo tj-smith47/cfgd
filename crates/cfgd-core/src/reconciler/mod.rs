@@ -76,7 +76,7 @@ pub(crate) use env::all_recorded_path_dirs;
 /// by name" are different questions and this function only answers the
 /// first — `filter_plan` satisfies that by calling it only after a
 /// `--skip`-only pass, never after `--only` narrowed the plan.
-pub use managers::prune_to_surviving_consumers;
+pub use managers::{prerequisite_selectors, prune_to_surviving_consumers};
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,

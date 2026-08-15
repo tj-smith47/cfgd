@@ -2144,12 +2144,11 @@ fn resolve_phase_filter(
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-    let families: std::collections::BTreeSet<String> = registry
-        .manager_names()
-        .iter()
-        .map(|m| cfgd_core::manager_family(m).to_string())
-        .collect();
-    legal.extend(families);
+    // The planner's own vocabulary, not a second one derived here: a
+    // prerequisite node is keyed on its TOOL, so a list of manager names alone
+    // refused `--phase prerequisites.curl` while `--skip prerequisites.curl`
+    // accepted it and the matcher was written to serve both.
+    legal.extend(reconciler::prerequisite_selectors(registry));
     if !legal.contains(&selector) {
         anyhow::bail!(
             "unknown selector '{selector}' for `--phase prerequisites`: legal values are {}",

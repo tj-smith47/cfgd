@@ -232,8 +232,9 @@ the `brew` package manager never collide:
 `--phase`/`--skip`/`--only` all accept the same dot-notation one level up,
 scoped to a single phase: `<phase>.<selector>`, where the selector is either
 an owner group (`managers`, `env`, `session` — the three `Prerequisites`
-always carries) or a manager name (family-collapsed, so `prerequisites.brew`
-also covers `brew-tap`/`brew-cask`). A selector is only valid on
+always carries), a manager name (family-collapsed, so `prerequisites.brew`
+also covers `brew-tap`/`brew-cask`), or a prerequisite tool a registered
+manager's installer shells out to (`prerequisites.curl`). A selector is only valid on
 `prerequisites` — a group or manager name after any other phase errors,
 naming the input and the legal shapes; `--phase packages.brew` errors
 pointing at `--phase prerequisites.brew` instead, since manager work lives in
