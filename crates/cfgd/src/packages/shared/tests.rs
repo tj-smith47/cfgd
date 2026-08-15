@@ -836,6 +836,44 @@ fn the_macos_brew_prefix_with_no_brew_installed_comes_from_the_architecture() {
     assert_eq!(macos_brew_prefix_for_arch("x86_64"), "/usr/local");
 }
 
+/// The composition of the two: an installed brew wins over the architecture's
+/// answer, the FIRST candidate holding one wins when several do (which is what
+/// keeps an Apple Silicon machine on `/opt/homebrew` rather than on a stray
+/// Intel prefix), and a machine with none falls through to the architecture.
+#[test]
+fn the_macos_brew_prefix_prefers_an_installed_brew_in_candidate_order() {
+    let root = tempfile::tempdir().unwrap();
+    let install_brew = |name: &str| {
+        let prefix = root.path().join(name);
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(prefix.join("bin/brew"), b"#!/bin/sh\n").unwrap();
+    };
+    let bare = root.path().join("bare").to_string_lossy().into_owned();
+    let first = root.path().join("first").to_string_lossy().into_owned();
+    let second = root.path().join("second").to_string_lossy().into_owned();
+    std::fs::create_dir_all(root.path().join("bare/bin")).unwrap();
+
+    assert_eq!(
+        macos_brew_prefix_from(&[&bare, &first, &second], "aarch64"),
+        "/opt/homebrew",
+        "no candidate holds a brew, so the architecture decides"
+    );
+
+    install_brew("second");
+    assert_eq!(
+        macos_brew_prefix_from(&[&bare, &first, &second], "aarch64"),
+        second,
+        "an installed brew is authoritative even when it is not the first candidate"
+    );
+
+    install_brew("first");
+    assert_eq!(
+        macos_brew_prefix_from(&[&bare, &first, &second], "aarch64"),
+        first,
+        "with two installed brews the earlier candidate wins"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn brew_path_dirs_linux_uses_linuxbrew_paths() {

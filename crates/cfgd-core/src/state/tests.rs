@@ -3066,6 +3066,58 @@ fn bootstrap_path_dirs_replaces_an_earlier_record_for_the_same_manager() {
 }
 
 #[test]
+fn adding_a_created_dir_keeps_the_recorded_dirs_and_their_order() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs(
+            "brew",
+            &[
+                "/opt/homebrew/bin".to_string(),
+                "/opt/homebrew/sbin".to_string(),
+            ],
+        )
+        .unwrap();
+    store
+        .add_bootstrapped_path_dirs("brew", &["/opt/homebrew/opt/bin".to_string()])
+        .unwrap();
+    // Adding one the row already holds must not move it or repeat it: the env
+    // file built from this row is hashed and compared every tick.
+    store
+        .add_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![(
+            "brew".to_string(),
+            vec![
+                "/opt/homebrew/bin".to_string(),
+                "/opt/homebrew/sbin".to_string(),
+                "/opt/homebrew/opt/bin".to_string(),
+            ]
+        )]
+    );
+}
+
+#[test]
+fn adding_a_created_dir_for_an_unrecorded_manager_starts_the_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .add_bootstrapped_path_dirs("npm", &["/home/u/.npm-global/bin".to_string()])
+        .unwrap();
+
+    // The user installed npm themselves, so no bootstrap ever wrote a row —
+    // the prefix cfgd made still has to reach the generated env file.
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![(
+            "npm".to_string(),
+            vec!["/home/u/.npm-global/bin".to_string()]
+        )]
+    );
+}
+
+#[test]
 fn bootstrap_path_dirs_orders_managers_deterministically() {
     let store = StateStore::open_in_memory().unwrap();
     store

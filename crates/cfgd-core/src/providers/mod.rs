@@ -488,6 +488,14 @@ pub trait PackageManager: Send + Sync {
     /// env file even when the user installed the manager. A manager that only
     /// ever writes into locations the system or the user already owns returns
     /// nothing, which is the default.
+    ///
+    /// What this returns is ADDED to whatever cfgd already recorded for the
+    /// manager, never written over it, so answering with a narrow subset of
+    /// [`path_dirs`](Self::path_dirs) is safe: an implementor that creates one
+    /// prefix while its bootstrap declares several does not cost the others
+    /// their place in the generated env file. It is asked after every install,
+    /// including one that failed, because the directory exists on disk either
+    /// way.
     fn created_path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
         let _ = cx;
         Vec::new()

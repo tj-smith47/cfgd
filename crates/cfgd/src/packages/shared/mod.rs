@@ -741,10 +741,24 @@ const MACOS_BREW_PREFIXES: [&str; 2] = ["/opt/homebrew", "/usr/local"];
 /// Apple Silicon), and a machine with no brew answers from the architecture the
 /// installer will target rather than from anything the install would change.
 fn macos_brew_prefix() -> &'static str {
-    MACOS_BREW_PREFIXES
-        .into_iter()
+    macos_brew_prefix_from(&MACOS_BREW_PREFIXES, std::env::consts::ARCH)
+}
+
+/// The derivation itself, over the candidates and architecture it is given: the
+/// first candidate holding a real brew wins, and a machine holding none answers
+/// from `arch`.
+///
+/// Parameterized so the wiring is drivable on any host. Reading the real
+/// absolutes would make the search untestable everywhere except a Mac with the
+/// right brew already installed, and the order candidates are tried in is the
+/// half of this that decides what an Intel-prefix brew on Apple Silicon
+/// answers.
+fn macos_brew_prefix_from<'p>(candidates: &[&'p str], arch: &str) -> &'p str {
+    candidates
+        .iter()
+        .copied()
         .find(|prefix| brew_prefix_holds_brew(std::path::Path::new(prefix)))
-        .unwrap_or_else(|| macos_brew_prefix_for_arch(std::env::consts::ARCH))
+        .unwrap_or_else(|| macos_brew_prefix_for_arch(arch))
 }
 
 /// Whether `prefix` holds a real brew. The probe is the `bin/brew` binary and

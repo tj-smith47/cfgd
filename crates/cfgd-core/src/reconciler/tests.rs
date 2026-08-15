@@ -12647,6 +12647,8 @@ struct BootstrappingPackageManager {
     path_dirs_after: Vec<String>,
     bootstrap_creates: Vec<String>,
     install_creates: Vec<String>,
+    path_dirs_per_method: bool,
+    install_fails: bool,
 }
 
 impl BootstrappingPackageManager {
@@ -12659,6 +12661,8 @@ impl BootstrappingPackageManager {
             path_dirs_after: path_dirs.iter().map(|s| s.to_string()).collect(),
             bootstrap_creates: Vec::new(),
             install_creates: Vec::new(),
+            path_dirs_per_method: false,
+            install_fails: false,
         }
     }
 
@@ -12675,6 +12679,24 @@ impl BootstrappingPackageManager {
     /// the installer's.
     fn creating_on_install(mut self, dirs: &[&str]) -> Self {
         self.install_creates = dirs.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Fail every `install()`. The prefix a real manager makes is created
+    /// before the packages are fetched, so the failure arrives with the
+    /// directory already on disk.
+    fn failing_install(mut self) -> Self {
+        self.install_fails = true;
+        self
+    }
+
+    /// Answer `path_dirs` from the method the plan chose — pipx's shape, where
+    /// the directories depend on which mediator installed the manager. With no
+    /// planned method in the context it answers `PROBED_PATH_DIR` instead,
+    /// standing in for the live re-probe whose answer has already moved by the
+    /// time the record is written.
+    fn path_dirs_per_method(mut self) -> Self {
+        self.path_dirs_per_method = true;
         self
     }
 
@@ -12708,6 +12730,13 @@ impl PackageManager for BootstrappingPackageManager {
     }
     fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.install_calls.lock().unwrap().push(packages.to_vec());
+        if self.install_fails {
+            return Err(crate::errors::PackageError::InstallFailed {
+                manager: self.name.clone(),
+                message: format!("stub failure installing {}", packages.join(",")),
+            }
+            .into());
+        }
         Ok(())
     }
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
@@ -12723,11 +12752,38 @@ impl PackageManager for BootstrappingPackageManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
-    fn path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
+    fn path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
+        if self.path_dirs_per_method {
+            return match cx.planned_method() {
+                Some(via) => vec![format!("/opt/{via}/bin")],
+                None => vec![PROBED_PATH_DIR.to_string()],
+            };
+        }
         self.path_dirs_after.clone()
     }
     fn created_path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
         self.install_creates.clone()
+    }
+}
+
+/// What a live re-probe would answer at record time, once the bootstrap it is
+/// supposed to describe has already changed the machine.
+const PROBED_PATH_DIR: &str = "/opt/probed-after-the-fact/bin";
+
+/// A one-provision plan for `manager`, naming `via` as the method the planner
+/// chose — the string the action line the user read says.
+fn provision_only_plan(manager: &str, via: &str) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: manager.to_string(),
+                via: via.to_string(),
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
     }
 }
 
@@ -12757,6 +12813,9 @@ fn install_only_plan(manager: &str, package: &str) -> Plan {
 fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() {
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp_home.path());
+    // The apply registers the created directory into the process-global
+    // registry, which production never clears.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.package_managers.push(Box::new(
@@ -12791,10 +12850,144 @@ fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() 
     );
 }
 
-/// The row is replaced wholesale, so a manager that created nothing must queue
-/// no record at all: an ordinary install after an earlier run's provision would
-/// otherwise blank the directories that provision recorded, and the env file
-/// would drop them on the next apply.
+/// The record a provision writes comes from the method the plan named, so a
+/// manager whose directories depend on its mediator records what the plan
+/// promised. The bootstrap itself changes what a live probe sees, so a record
+/// derived by re-probing would disagree with the plan-time answer and the env
+/// file would never converge.
+#[test]
+#[serial_test::serial]
+fn a_provision_records_the_directories_the_planned_method_names() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("pipx", &[]).path_dirs_per_method(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &provision_only_plan("pipx", "pip"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![("pipx".to_string(), vec!["/opt/pip/bin".to_string()])],
+        "the recorded directories must come from the plan's method, not from a \
+         re-probe at record time"
+    );
+}
+
+/// The directory is on disk whether or not the install that followed it
+/// succeeded, so it is recorded either way. Leaving a created directory
+/// unrecorded is the state where a binary a later run installs lands somewhere
+/// no login shell reads; a record for a directory holding nothing yet costs a
+/// PATH entry and nothing else.
+#[test]
+#[serial_test::serial]
+fn a_failed_install_still_records_the_directory_it_had_already_created() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("npm", &[])
+            .already_available()
+            .creating_on_install(&["/home/u/.npm-global/bin"])
+            .failing_install(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    let result = reconciler
+        .apply(
+            &install_only_plan("npm", "typescript"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "npm".to_string(),
+            vec!["/home/u/.npm-global/bin".to_string()]
+        )],
+    );
+}
+
+/// A manager whose install creates one prefix while its bootstrap declared
+/// several keeps them all: the created directory is ADDED to the record, so a
+/// narrower answer cannot cost a provision's other directories their place in
+/// the generated env file.
+#[test]
+#[serial_test::serial]
+fn an_install_that_created_one_directory_keeps_the_rest_of_the_recorded_row() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    record_brew_bootstrap(&state);
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
+            .already_available()
+            .creating_on_install(&[BREW_PATH_DIRS[0]]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("brew", "ripgrep"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "brew".to_string(),
+            BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect()
+        )],
+        "a created directory adds to the row and never replaces it"
+    );
+}
+
+/// A manager that created nothing queues no record at all, so an ordinary
+/// install costs no write and an earlier provision's directories are read back
+/// exactly as recorded.
 #[test]
 #[serial_test::serial]
 fn an_install_that_creates_nothing_leaves_an_earlier_provisions_record_intact() {

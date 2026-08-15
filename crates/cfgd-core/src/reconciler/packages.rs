@@ -65,6 +65,24 @@ pub fn stale_tracked_packages(
 pub(super) struct BootstrapRecord {
     pub(super) manager: String,
     pub(super) dirs: Vec<String>,
+    pub(super) kind: PathDirRecord,
+}
+
+/// How a queued [`BootstrapRecord`] meets the row already stored for its
+/// manager.
+///
+/// The distinction is what keeps a narrow record from erasing a broad one: a
+/// manager whose `install()` creates one prefix while its bootstrap declares
+/// several would otherwise replace the row with the single directory, and the
+/// rest would vanish from the generated env file.
+pub(super) enum PathDirRecord {
+    /// The manager's whole declaration of what it needs on PATH, from
+    /// [`PackageManager::path_dirs`]. It replaces the row, so a corrected
+    /// answer supersedes an earlier one.
+    Declared,
+    /// One directory cfgd created, from [`PackageManager::created_path_dirs`].
+    /// It is added to the row and removes nothing.
+    Created,
 }
 
 /// Everything the module-install arm needs beyond the package plumbing: a
@@ -157,9 +175,16 @@ impl<'x> PackageExec<'x> {
     /// may install through a binary that just landed in one of these
     /// directories, and a state write that fails later is no reason to leave
     /// the running process unable to find it.
-    fn record_bootstrap(&self, pm: &dyn PackageManager) {
-        let cx = self.cx();
-        self.record_path_dirs(pm.name(), pm.path_dirs(&cx));
+    ///
+    /// `via` is the method the plan line named, and it travels into the record
+    /// context exactly as it travels into the bootstrap: a manager whose
+    /// directories depend on the mediator (pipx lands in `~/.local/bin` under
+    /// pip and inside the brew prefix under brew) would otherwise re-derive
+    /// them from a live probe whose answer has already moved — the same
+    /// bootstrap that made the manager available changes what the probe sees.
+    fn record_bootstrap(&self, pm: &dyn PackageManager, via: &str) {
+        let cx = self.cx().for_provision(via);
+        self.record_path_dirs(pm.name(), pm.path_dirs(&cx), PathDirRecord::Declared);
     }
 
     /// Record the directories an `install()` just created — the manager's own
@@ -170,21 +195,41 @@ impl<'x> PackageExec<'x> {
     /// not only under a provision: npm's `~/.npm-global` is created during
     /// `install()`, and a user-installed npm reaches no bootstrap at all.
     ///
-    /// A manager that created nothing queues no row, so an install can never
-    /// blank the directories a provision of the same manager recorded — the row
-    /// is replaced wholesale, not merged.
+    /// A manager that created nothing queues no row at all, so an ordinary
+    /// install costs no write; one that created something adds it to the row
+    /// rather than replacing it, so a provision's other directories survive.
     fn record_created_path_dirs(&self, pm: &dyn PackageManager) {
         let cx = self.cx();
         let dirs = pm.created_path_dirs(&cx);
         if dirs.is_empty() {
             return;
         }
-        self.record_path_dirs(pm.name(), dirs);
+        self.record_path_dirs(pm.name(), dirs, PathDirRecord::Created);
+    }
+
+    /// Install through `pm` and record whatever that install created, whichever
+    /// way it went.
+    ///
+    /// The recording is not conditional on success, for the same reason
+    /// [`Self::take_bootstrapped`] hands back its records after a failure: the
+    /// directory is on disk either way. A failed `npm install` has already made
+    /// `~/.npm-global`, and an unrecorded directory cfgd created is exactly the
+    /// state where a binary lands somewhere no login shell reads. A record for
+    /// a directory holding nothing yet is inert by comparison.
+    fn install_recording_created(
+        &self,
+        pm: &dyn PackageManager,
+        packages: &[String],
+        cx: &PackageContext<'_>,
+    ) -> Result<()> {
+        let result = pm.install(packages, cx);
+        self.record_created_path_dirs(pm);
+        result
     }
 
     /// The ONE registration-and-queue for both kinds of owned directory, so a
     /// bootstrap's and an install's records cannot be shaped differently.
-    fn record_path_dirs(&self, manager: &str, dirs: Vec<String>) {
+    fn record_path_dirs(&self, manager: &str, dirs: Vec<String>, kind: PathDirRecord) {
         // The directories land in shell files that a Git-Bash and a PowerShell
         // session on the same Windows host both read, and in a state row those
         // reads are compared against.
@@ -196,6 +241,7 @@ impl<'x> PackageExec<'x> {
         self.bootstrapped.borrow_mut().push(BootstrapRecord {
             manager: manager.to_string(),
             dirs,
+            kind,
         });
     }
 
@@ -236,8 +282,7 @@ impl<'x> PackageExec<'x> {
                         // module path), but build the tracking description from
                         // IDENTITIES so the tracked key matches what prune later
                         // compares against (`go/2fa`, not `go/rsc.io/2fa`).
-                        pm.install(packages, &cx)?;
-                        self.record_created_path_dirs(pm);
+                        self.install_recording_created(pm, packages, &cx)?;
                         let identities: Vec<String> =
                             packages.iter().map(|p| pm.package_identity(p)).collect();
                         return Ok(format!(
@@ -325,7 +370,7 @@ impl<'x> PackageExec<'x> {
                     // whose lane this action holds.
                     pm.bootstrap(&cx.for_provision(via))?;
                 }
-                self.record_bootstrap(pm.as_ref());
+                self.record_bootstrap(pm.as_ref(), via);
                 if !pm.is_available() {
                     return Err(crate::errors::PackageError::BootstrapFailed {
                         manager: manager.clone(),
@@ -338,8 +383,7 @@ impl<'x> PackageExec<'x> {
                 tool, installer, ..
             } => {
                 let pm = lookup(installer)?;
-                pm.install(std::slice::from_ref(tool), &cx)?;
-                self.record_created_path_dirs(pm.as_ref());
+                self.install_recording_created(pm.as_ref(), std::slice::from_ref(tool), &cx)?;
             }
             // Nothing to run: the node IS the refusal. It fails rather than
             // succeeding at nothing, because the packages that named this
@@ -482,8 +526,7 @@ impl<'x> PackageExec<'x> {
 
                 if let Some(pm) = pm {
                     let cx = self.cx();
-                    pm.install(&pkg_names, &cx)?;
-                    self.record_created_path_dirs(pm.as_ref());
+                    self.install_recording_created(pm.as_ref(), &pkg_names, &cx)?;
                     manager_changed = true;
                 }
             }
@@ -561,10 +604,15 @@ impl super::Reconciler<'_> {
     /// `bootstrapped_path_dirs` outside the coordinator's own collection point.
     pub(super) fn persist_bootstraps(&self, records: Vec<BootstrapRecord>) {
         for record in records {
-            if let Err(e) = self
-                .state
-                .record_bootstrapped_path_dirs(&record.manager, &record.dirs)
-            {
+            let written = match record.kind {
+                PathDirRecord::Declared => self
+                    .state
+                    .record_bootstrapped_path_dirs(&record.manager, &record.dirs),
+                PathDirRecord::Created => self
+                    .state
+                    .add_bootstrapped_path_dirs(&record.manager, &record.dirs),
+            };
+            if let Err(e) = written {
                 tracing::warn!(
                     "cannot record PATH directories for bootstrapped {}: {e}",
                     record.manager

@@ -2209,13 +2209,18 @@ mod tests {
                 .lines()
                 .find(|l| l.contains("no writable global prefix"))
                 .expect("the fallback note is reported");
+            let prefix = home.path().join(".npm-global").display().to_string();
             assert!(
-                !note.contains("PATH") && !note.contains("add"),
-                "the note must not ask the user to edit PATH: {note}"
-            );
-            assert!(
-                note.contains(&home.path().join(".npm-global").display().to_string()),
+                note.contains(&prefix),
                 "the note must still say where the packages went: {note}"
+            );
+            // The prefix is a random tempdir path, and any substring test would
+            // be answering about THAT rather than about the sentence: `add`
+            // turns up in a tempdir name roughly once in 100k runs.
+            let sentence = note.replace(&prefix, "<prefix>");
+            assert!(
+                !sentence.contains("PATH") && !sentence.contains("add"),
+                "the note must not ask the user to edit PATH: {note}"
             );
         }
 
