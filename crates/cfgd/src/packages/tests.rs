@@ -2360,12 +2360,31 @@ fn simple_manager_default_versions_unknown() {
 
 // --- SimpleManager available_version dispatch ---
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn simple_manager_available_version_dispatches() {
-    // Verify the function pointer is set (can't run without actual managers)
-    let apt = apt_manager();
-    // query_version is a function pointer — it exists
-    assert_eq!(apt.mgr_name, "apt");
+    // apt's query_version pointer is `query_version_apt`, which asks
+    // `apt-cache policy` rather than `apt info` — the dispatch this test is
+    // named for. Asserting only that the manager is called "apt" pinned its
+    // name, not the pointer.
+    let shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_APT_CACHE_BIN",
+        0,
+        "vim:\n  Installed: (none)\n  Candidate: 2:9.0.1378-2\n",
+        "",
+    );
+    let version = apt_manager().available_version("vim").expect("Ok");
+    assert_eq!(
+        version.as_deref(),
+        Some("9.0.1378"),
+        "the epoch and revision are stripped from apt's candidate"
+    );
+    assert_eq!(
+        shim.argv_log().trim(),
+        "policy vim",
+        "apt versions come from `apt-cache policy`"
+    );
 }
 
 // =========================================================================

@@ -837,7 +837,13 @@ fn build_inline_command_default_spawns_own_process_group() {
         child_pgid, child_pid,
         "set_process_group=true must make the child its own group leader"
     );
-    let _ = child.kill();
+    // Signal the GROUP, not the leader: whether `sh -c 'sleep …'` execs the
+    // sleep or forks it is the host's choice of /bin/sh (dash execs, bash
+    // forks), and killing only the leader leaves a bash host's grandchild
+    // holding the test's stdio — which is what nextest reports as a leak.
+    // Safe here precisely because the assertion above proved the group is the
+    // child's own.
+    let _ = nix::sys::signal::killpg(child_pgid, nix::sys::signal::Signal::SIGKILL);
     let _ = child.wait();
 }
 

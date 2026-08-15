@@ -411,10 +411,30 @@ fn simple_manager_parse_list_fns_are_set() {
     assert!(pkg_result.contains("curl"));
 }
 
+#[cfg(unix)]
 #[test]
-fn simple_manager_query_version_fns_handle_missing_commands() {
-    // On CI without these package managers, the commands will fail gracefully
-    // This exercises the query_version function pointer dispatch in available_version()
+#[serial_test::serial]
+fn simple_manager_query_version_fns_name_their_own_manager_when_the_tool_is_missing() {
+    // With nothing on PATH every query_version fn hits the same spawn failure,
+    // so the manager each one NAMES in the error is what distinguishes them —
+    // that is the dispatch this test exists to pin. Run against the host's own
+    // PATH the outcome is whatever the host installed, which is why the
+    // original discarded the result and asserted nothing.
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _seams: Vec<_> = [
+        "CFGD_APT_CACHE_BIN",
+        "CFGD_DNF_BIN",
+        "CFGD_APK_BIN",
+        "CFGD_PACMAN_BIN",
+        "CFGD_ZYPPER_BIN",
+        "CFGD_PKG_BIN",
+    ]
+    .iter()
+    .map(|v| cfgd_core::test_helpers::EnvVarGuard::unset(v))
+    .collect();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
     let managers: Vec<SimpleManager> = vec![
         apt_manager(),
         dnf_manager(),
@@ -424,11 +444,15 @@ fn simple_manager_query_version_fns_handle_missing_commands() {
         pkg_manager(),
     ];
     for mgr in &managers {
-        // available_version dispatches to (self.query_version)(self.mgr_name, package)
-        // The underlying functions handle command-not-found gracefully
-        let _result = mgr.available_version("nonexistent-package-12345");
-        // We don't assert on the result because it depends on system state,
-        // but this exercises the dispatch path
+        let err = mgr
+            .available_version("nonexistent-package-12345")
+            .expect_err("no binary resolves, so the query cannot succeed");
+        assert!(
+            err.to_string().contains(mgr.name()),
+            "{}'s error must name {}, got: {err}",
+            mgr.name(),
+            mgr.name()
+        );
     }
 }
 
@@ -439,9 +463,17 @@ fn simple_manager_display_cmd_concatenates_correctly() {
         &["sudo", "dnf", "install", "-y"],
         &["vim".to_string(), "git".to_string()],
     );
-    // Exercises strip_sudo_for_exec within display_cmd
+    // Exercises strip_sudo_for_exec within display_cmd: root drops the `sudo`
+    // prefix, everyone else keeps it. Both arms assert — under the one-armed
+    // shape the non-root case (which is every CI runner) checked nothing about
+    // the very prefix the test is named for.
     if cfgd_core::is_root() {
-        assert!(!label.starts_with("sudo"));
+        assert!(!label.starts_with("sudo"), "root needs no sudo: {label}");
+    } else {
+        assert!(
+            label.starts_with("sudo"),
+            "a non-root install keeps its sudo: {label}"
+        );
     }
     assert!(label.contains("dnf"));
     assert!(label.contains("vim"));
