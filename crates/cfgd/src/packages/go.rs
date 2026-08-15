@@ -10,9 +10,8 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    any_system_manager_available, bootstrap_brew_arm, bootstrap_via_system_manager,
-    detect_brew_system_method, resolve_tool_with_fallbacks, run_pkg_cmd_live,
-    tool_cmd_with_resolver,
+    bootstrap_brew_arm, bootstrap_via_system_manager, detect_go_bootstrap_method,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
@@ -52,7 +51,15 @@ impl PackageManager for GoInstallManager {
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
         // The toolchain lands on the system PATH whichever manager installs it,
         // so the plan creates no directory of its own.
-        any_system_manager_available().then(|| BootstrapPlan::new(detect_brew_system_method("dnf")))
+        //
+        // Feasibility and method come from ONE probe of the mediators
+        // `bootstrap` can actually spawn — brew, then apt/dnf/zypper. Asking a
+        // wider question (is ANY system manager present?) and then naming a
+        // fallback answered `via dnf` on a winget-only Windows host: a
+        // mediator that cannot run, which under a binding plan is a guaranteed
+        // failure rather than a provision. `go` has no bootstrap arm of its
+        // own, so when none of them is present there is no plan.
+        detect_go_bootstrap_method().map(BootstrapPlan::new)
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
@@ -213,7 +220,6 @@ pub(super) fn parse_go_module_version(output: &str) -> Option<String> {
 mod tests {
     use cfgd_core::providers::PackageManager;
 
-    use super::super::shared::any_system_manager_available;
     use super::*;
 
     #[test]
@@ -340,16 +346,42 @@ mod tests {
         assert_eq!(parse_go_module_version(output), Some("0.15.3".to_string()));
     }
 
+    /// A plan's method is BINDING at execution, so `go` may only be planned
+    /// through a mediator this host can spawn — and must not be dropped while
+    /// one is present. Ground truth is spelled out here rather than read back
+    /// from the detector, and probes the same seams the bootstrap spawns from.
     #[test]
-    fn go_bootstrap_plan_follows_the_brew_system_cascade() {
-        let plan = GoInstallManager.bootstrap_plan();
-        assert_eq!(plan.is_some(), any_system_manager_available());
-        if let Some(plan) = plan {
-            // `bootstrap` installs the toolchain through brew or a system
-            // manager, which put `go` on the system PATH — nothing to declare.
-            assert_eq!(plan.method, detect_brew_system_method("dnf"));
-            assert!(plan.requires.is_empty());
-            assert!(plan.creates_path_dirs.is_empty());
+    fn go_is_planned_only_through_a_mediator_this_host_can_actually_run() {
+        let runnable = |tool: &str| {
+            cfgd_core::command_available_with_seam(
+                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                tool,
+            )
+        };
+        let brew = super::super::shared::brew_available();
+        match GoInstallManager.bootstrap_plan() {
+            Some(plan) => {
+                // `bootstrap` installs the toolchain through brew or a system
+                // manager, which put `go` on the system PATH — nothing to declare.
+                let ok = match plan.method.as_str() {
+                    "brew" => brew,
+                    "apt" => runnable("apt-get"),
+                    "dnf" => runnable("dnf"),
+                    "zypper" => runnable("zypper"),
+                    other => panic!("go planned through an unknown mediator: {other}"),
+                };
+                assert!(
+                    ok,
+                    "a plan may only name a mediator this host can run, got {}",
+                    plan.method
+                );
+                assert!(plan.requires.is_empty());
+                assert!(plan.creates_path_dirs.is_empty());
+            }
+            None => assert!(
+                !brew && !["apt-get", "dnf", "zypper"].into_iter().any(runnable),
+                "a runnable mediator must not be answered with no plan"
+            ),
         }
     }
 

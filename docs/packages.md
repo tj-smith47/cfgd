@@ -105,6 +105,10 @@ same system manager are the exception: `provision npm via apt` and
 `provision pipx via apt` are both `apt-get` runs, so they take apt's lane and
 run one at a time instead of racing for the dpkg lock. A node whose dependency
 failed does not run at all; its line names the failure that stopped it.
+Inside `Packages`, work runs one lane per manager family concurrently. The lane
+is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
+drive one binary — formulae, taps and casks queue behind each other so only one
+`brew` process ever runs.
 
 **The `via` on a provision line is binding, not a preview.** cfgd resolves the
 mediator while planning — that is the manager named on the line you read, and
@@ -121,10 +125,10 @@ naming it. cfgd does not fall through to whatever else happens to be installed:
 a substitute would run outside the lane the node holds (two dpkg-class installs
 at once is exactly what the lane prevents) and would install through a manager
 the line never mentioned. Re-run to re-plan against the host as it is now.
-Inside `Packages`, work runs one lane per manager family concurrently. The lane
-is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
-drive one binary — formulae, taps and casks queue behind each other so only one
-`brew` process ever runs.
+
+For the same reason a manager is only planned through a mediator this host can
+actually run: on a machine with none of them, cfgd says the manager cannot be
+provisioned and why, instead of naming one and failing on it.
 
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the

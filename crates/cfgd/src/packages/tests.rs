@@ -1761,14 +1761,27 @@ fn test_simple_manager_no_aliases_for_pacman() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn detect_system_method_returns_valid_manager() {
-    // detect_system_method cascades apt → dnf → zypper
-    let method = shared::detect_system_method();
-    assert!(
-        method == "apt" || method == "dnf" || method == "zypper",
-        "expected apt, dnf, or zypper, got: {}",
-        method
-    );
+fn detect_system_method_names_only_a_manager_this_host_can_run() {
+    // The detector answers `None` rather than a hopeful default: a plan's
+    // method is binding at execution, so naming a manager that is not here
+    // would be a guaranteed failure. Whichever it picks, the command that
+    // would run it must resolve.
+    let runnable = |tool: &str| {
+        cfgd_core::command_available_with_seam(
+            &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+            tool,
+        )
+    };
+    match shared::detect_system_method() {
+        Some("apt") => assert!(runnable("apt-get")),
+        Some("dnf") => assert!(runnable("dnf")),
+        Some("zypper") => assert!(runnable("zypper")),
+        Some(other) => panic!("expected apt, dnf, or zypper, got: {other}"),
+        None => assert!(
+            !["apt-get", "dnf", "zypper"].into_iter().any(runnable),
+            "a runnable system manager must not be answered with None"
+        ),
+    }
 }
 
 #[test]
@@ -3078,20 +3091,28 @@ fn all_package_managers_bootstrap_consistency() {
             // this test cannot guarantee.
             #[cfg(not(target_os = "freebsd"))]
             {
-                use super::shared::any_system_manager_available;
-
-                // `go` alone bootstraps only through a *system* package manager
-                // (not curl, which the others fall back to), so a shell without
-                // one on PATH — e.g. brew not exported into a non-login macOS
-                // session — correctly reports it non-bootstrappable. Assert the
-                // wiring in whichever direction the environment dictates instead
-                // of a blanket true that false-fails there; CI runners have a
-                // system manager, so this still asserts go IS bootstrappable.
+                // `go` alone bootstraps only through brew or a *system* package
+                // manager (not curl, which the others fall back to), so a shell
+                // without one on PATH — e.g. brew not exported into a non-login
+                // macOS session — correctly reports it non-bootstrappable.
+                // Assert the wiring in whichever direction the environment
+                // dictates instead of a blanket true that false-fails there;
+                // CI runners have a system manager, so this still asserts go IS
+                // bootstrappable. The mediators are named here rather than read
+                // back from the detector, so a detector that stopped seeing one
+                // of them fails this test instead of agreeing with itself.
                 if m.name() == "go" {
+                    let mediator_present = super::shared::brew_available()
+                        || ["apt-get", "dnf", "zypper"].into_iter().any(|tool| {
+                            cfgd_core::command_available_with_seam(
+                                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                                tool,
+                            )
+                        });
                     assert_eq!(
                         m.bootstrap_plan().is_some(),
-                        any_system_manager_available(),
-                        "go bootstrappability must track system-manager availability"
+                        mediator_present,
+                        "go bootstrappability must track the mediators its bootstrap can run"
                     );
                 } else {
                     assert!(

@@ -16,6 +16,11 @@ use super::shared::{
 
 pub struct PipxManager;
 
+/// pipx's own bootstrap arm, reached when no brew/system mediator is present.
+/// The ONE spelling, for the same reason npm has one: the planner resolves the
+/// method against it and the cascade declines toward it.
+const PIPX_FALLBACK_METHOD: &str = "pip";
+
 fn pipx_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
         .map(|h| pipx_fallbacks_for_home(std::path::Path::new(&h)))
@@ -92,7 +97,7 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
-        match detect_brew_system_method("pip") {
+        match detect_brew_system_method(PIPX_FALLBACK_METHOD) {
             // Only the pip fallback installs into the user's own tree; brew and
             // the system managers land pipx on the system PATH.
             // The tool the pip arm would run: whichever is present, else the
@@ -110,7 +115,7 @@ impl PackageManager for PipxManager {
     }
 
     fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
-        match detect_brew_system_method("pip") {
+        match detect_brew_system_method(PIPX_FALLBACK_METHOD) {
             "pip" => pipx_pip_scripts_dir()
                 .into_iter()
                 .map(cfgd_core::to_posix_string)
@@ -124,7 +129,7 @@ impl PackageManager for PipxManager {
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Returns false without probing anything when the plan named `pip` —
         // pipx's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(cx, "pipx", "pipx", &["pipx"])? {
+        if bootstrap_via_brew_then_system(cx, "pipx", "pipx", &["pipx"], PIPX_FALLBACK_METHOD)? {
             return Ok(());
         }
 

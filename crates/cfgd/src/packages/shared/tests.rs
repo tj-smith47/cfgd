@@ -703,8 +703,7 @@ fn brew_path_returns_option() {
 
 // ---------------------------------------------------------------------------
 // Pure-helper coverage for tool_seam_var, resolve_tool_with_fallbacks,
-// path_with_brew, brew_path_dirs, sudo_cmd_with_seam,
-// linux_system_manager_available, any_system_manager_available.
+// path_with_brew, brew_path_dirs, sudo_cmd_with_seam.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -866,17 +865,6 @@ fn sudo_cmd_with_seam_falls_back_to_sudo_cmd_when_unset() {
     } else {
         assert!(prog.contains("sudo"), "expected sudo prefix, got: {prog}");
     }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn linux_system_manager_available_returns_bool_without_panic() {
-    let _b = linux_system_manager_available();
-}
-
-#[test]
-fn any_system_manager_available_returns_bool_without_panic() {
-    let _b = any_system_manager_available();
 }
 
 #[cfg(unix)]
@@ -1293,6 +1281,7 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     );
     assert!(
         result.expect("should succeed via brew"),
@@ -1329,6 +1318,7 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     );
     assert!(
         !result.expect("no error when both paths simply unavailable"),
@@ -1435,6 +1425,7 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     );
     assert!(
         result.expect("apt-get fallback should succeed"),
@@ -1638,6 +1629,7 @@ fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() 
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     )
     .expect("the planned apt arm exits 0");
 
@@ -1677,6 +1669,7 @@ fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substi
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     )
     .expect_err("a planned method that cannot run fails the provision");
 
@@ -1711,6 +1704,7 @@ fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     )
     .expect_err("a failed planned method ends the provision");
 
@@ -1742,6 +1736,7 @@ fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_enti
         "npm",
         "node",
         &["nodejs", "npm"],
+        "nvm",
     )
     .expect("declining is not an error");
 
@@ -1778,6 +1773,7 @@ fn an_unplanned_bootstrap_still_cascades_brew_then_system() {
         "test-mgr",
         "ripgrep",
         &["ripgrep"],
+        "test-mgr-own-arm",
     )
     .expect("the apt fallback exits 0");
 
@@ -1799,6 +1795,10 @@ fn child_path_env(cmd: &Command) -> Option<String> {
 #[test]
 #[serial_test::serial]
 fn a_package_manager_child_inherits_the_dirs_bootstrapped_this_run() {
+    // The assert below reads the process PATH and counts its entries;
+    // `serial` excludes only other serial tests, and the non-serial majority
+    // is what empties PATH out from under a read like this.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let dir = tempfile::tempdir().unwrap();
     let registered = cfgd_core::to_posix_string(dir.path());
@@ -1822,6 +1822,7 @@ fn a_package_manager_child_inherits_the_dirs_bootstrapped_this_run() {
 #[test]
 #[serial_test::serial]
 fn a_path_the_command_builder_already_chose_is_left_alone() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let dir = tempfile::tempdir().unwrap();
     cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir.path())]);
@@ -1850,4 +1851,95 @@ fn a_run_that_bootstrapped_nothing_sets_no_path_at_all() {
         None,
         "with nothing registered the child's environment is not touched"
     );
+}
+
+/// The cascade declines toward the caller's DECLARED fallback arm and nothing
+/// else. A method that is neither an arm here nor that string is a provision
+/// nothing can run, so it fails naming itself rather than being answered by
+/// whatever the caller happens to try next — the silent substitution this
+/// whole binding path exists to remove.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_planned_method_neither_this_cascade_nor_the_caller_can_run_fails_instead_of_deferring() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // zypper is a real system manager, and is NOT an arm of the brew cascade.
+    let err = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("zypper"),
+        "npm",
+        "node",
+        &["nodejs", "npm"],
+        "nvm",
+    )
+    .expect_err("a method this cascade cannot run must not be deferred to the nvm arm");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("zypper") && msg.contains("npm"),
+        "the error names the planned method and the manager: {msg}"
+    );
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "brew never ran: {}",
+        brew.argv_log()
+    );
+    assert_eq!(
+        apt.invocation_count(),
+        0,
+        "apt never ran: {}",
+        apt.argv_log()
+    );
+}
+
+/// `run_pkg_cmd` and `run_pkg_query` spawn a manager's own queries — npm's
+/// `npm config get prefix` runs before every install through `run_pkg_query`.
+/// A resolved full-path npm still shells out to `node` via its shebang, so a
+/// query left un-augmented fails with exit 127 one call ahead of the install
+/// that was fixed, and the caller reads that as "no prefix configured".
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn every_package_manager_spawn_wrapper_hands_the_child_the_bootstrapped_dirs() {
+    use std::os::unix::fs::PermissionsExt;
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+    // A probe that answers with the PATH it was handed, so each wrapper's
+    // child reports what it could actually resolve through.
+    let dir = tempfile::tempdir().unwrap();
+    let probe = dir.path().join("echo-path");
+    std::fs::write(&probe, "#!/bin/sh\nprintf '%s' \"$PATH\"\n").unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let registered = cfgd_core::to_posix_string(dir.path());
+    cfgd_core::register_bootstrapped_path_dirs(std::slice::from_ref(&registered));
+
+    let leads = |stdout: &[u8], wrapper: &str| {
+        let path = String::from_utf8_lossy(stdout).into_owned();
+        assert_eq!(
+            std::env::split_paths(&path).next(),
+            Some(std::path::PathBuf::from(&registered)),
+            "{wrapper} must hand its child the bootstrapped dir first: {path}"
+        );
+    };
+
+    let out =
+        run_pkg_cmd("test-mgr", &mut Command::new(&probe), "list").expect("the probe exits 0");
+    leads(&out.stdout, "run_pkg_cmd");
+
+    let out = run_pkg_query("test-mgr", &mut Command::new(&probe)).expect("the probe exits 0");
+    leads(&out.stdout, "run_pkg_query");
+
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let notes = NoteSink::default();
+    let out = pkg_run(
+        &cx_for(&printer, &notes),
+        &mut Command::new(&probe),
+        "probing",
+    )
+    .expect("the probe exits 0");
+    leads(out.stdout.as_bytes(), "pkg_run");
 }

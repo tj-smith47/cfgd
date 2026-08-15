@@ -222,6 +222,7 @@ fn run_pkg_cmd_prefixed(
     error_kind: &str,
     msg_prefix: Option<&str>,
 ) -> std::result::Result<Output, PackageError> {
+    hand_child_bootstrapped_path(cmd);
     // Ensure stdout/stderr are captured for timeout-based execution
     let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
         PackageError::CommandFailed {
@@ -269,6 +270,7 @@ pub(super) fn run_pkg_query(
     manager: &str,
     cmd: &mut Command,
 ) -> std::result::Result<Output, PackageError> {
+    hand_child_bootstrapped_path(cmd);
     cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
         PackageError::CommandFailed {
             manager: manager.into(),
@@ -364,6 +366,12 @@ pub(super) fn pkg_run(
 /// A PATH the command builder set deliberately is left alone: `brew_cmd`'s
 /// augmented PATH is how brew finds its own tools, and overwriting it would
 /// undo a decision made with more context than this has.
+///
+/// Every spawn wrapper in this module calls it — `pkg_run`, `run_pkg_cmd*` and
+/// `run_pkg_query` alike. A manager's install path reaches all three (npm's
+/// `install` asks `npm config get prefix` through `run_pkg_query` before it
+/// builds the install command), so augmenting one of them leaves the same
+/// availability/spawn disagreement live one call earlier.
 fn hand_child_bootstrapped_path(cmd: &mut Command) {
     let dirs = cfgd_core::bootstrapped_path_dirs();
     if dirs.is_empty()
@@ -373,8 +381,11 @@ fn hand_child_bootstrapped_path(cmd: &mut Command) {
     {
         return;
     }
-    let current = std::env::var("PATH").unwrap_or_default();
-    if let Some(joined) = cfgd_core::path_with_dirs_prepended(&current, &dirs) {
+    // Through the core reader, which brackets the process `PATH` read with the
+    // same guard every other production reader takes: the read happens BEFORE
+    // the guarded spawn, so an unsynchronized one re-opens the window the lock
+    // exists to close.
+    if let Some(joined) = cfgd_core::process_path_with_dirs_prepended(&dirs) {
         cmd.env("PATH", joined);
     }
 }
@@ -512,22 +523,31 @@ pub(super) fn brew_available() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
 }
 
-/// True when a Linux system package manager (apt, dnf, or zypper) is on PATH.
-/// Used by Linux-only managers (snap, flatpak) to decide bootstrappability.
-#[cfg(target_os = "linux")]
-pub(super) fn linux_system_manager_available() -> bool {
-    command_available("apt") || command_available("dnf") || command_available("zypper")
-}
+/// A system manager a bootstrap cascade can mediate through, as
+/// `(plan method, command)`.
+///
+/// The plan names the MANAGER — `apt` is what the user reads on the line and
+/// what the concurrency lane is keyed on — while the binary a bootstrap spawns
+/// is `apt-get`. Both halves live in one table so a method and the arm it
+/// authorizes cannot drift apart, and so the detector that PICKS a method
+/// probes exactly the command that will run it. That pairing is what makes a
+/// planned method safe to treat as binding: a plan can only name a mediator
+/// execution can spawn.
+type SystemArm = (&'static str, &'static str);
 
-/// True when any cross-platform system package manager is available.
-/// Covers brew (macOS/Linux), apt/dnf (Linux), and winget/choco/scoop (Windows).
-pub(super) fn any_system_manager_available() -> bool {
-    brew_available()
-        || command_available("apt")
-        || command_available("dnf")
-        || command_available("winget")
-        || command_available("choco")
-        || command_available("scoop")
+/// The system arms of [`bootstrap_via_brew_then_system`].
+const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf")];
+
+/// The arms of [`bootstrap_via_system_manager`], which reaches one manager more
+/// than the brew cascade does.
+const SYSTEM_MANAGER_ARMS: &[SystemArm] =
+    &[("apt", "apt-get"), ("dnf", "dnf"), ("zypper", "zypper")];
+
+/// The first arm of `arms` this host can actually run, or `None`.
+fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
+    arms.iter()
+        .find(|(_, tool)| system_tool_available(tool))
+        .map(|(method, _)| *method)
 }
 
 /// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
@@ -539,47 +559,41 @@ pub(super) fn any_system_manager_available() -> bool {
 /// [`PackageContext::planned_method`] and [`bootstrap_via_brew_then_system`])
 /// and fails rather than substituting a manager that became available after
 /// planning.
-pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
-    if brew_available() {
-        "brew"
-    } else if command_available("apt") {
-        "apt"
-    } else if command_available("dnf") {
-        "dnf"
-    } else {
-        fallback
-    }
-}
-
-/// Which manager an apt→dnf→zypper cascade would pick. Linux-only, like the two
-/// managers whose plans resolve their method through it. Binding on execution
-/// for the same reason [`detect_brew_system_method`] is.
-#[cfg(target_os = "linux")]
-pub(super) fn detect_system_method() -> &'static str {
-    if command_available("apt") {
-        "apt"
-    } else if command_available("dnf") {
-        "dnf"
-    } else {
-        "zypper"
-    }
-}
-
-/// The command a planned system-manager method actually runs, or `None` when
-/// the method names no system manager (`brew`, or a manager's own fallback like
-/// npm's `nvm` / pipx's `pip`).
 ///
-/// A plan says `apt` — that is the manager's name, what the user reads and what
-/// the concurrency lane is keyed on — while the binary a bootstrap invokes is
-/// `apt-get`. One place owns that translation so a planned method and the arm
-/// it authorizes cannot drift apart.
-fn planned_system_tool(method: &str) -> Option<&'static str> {
-    match method {
-        "apt" => Some("apt-get"),
-        "dnf" => Some("dnf"),
-        "zypper" => Some("zypper"),
-        _ => None,
+/// `fallback` must be the caller's OWN bootstrap arm (npm's `nvm`, pipx's
+/// `pip`) — the same string it hands the cascade — because a method naming
+/// neither this cascade nor that arm is a provision nothing can run.
+pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
+    detect_brew_or_system_method(BREW_SYSTEM_ARMS).unwrap_or(fallback)
+}
+
+/// The mediator a brew-then-system bootstrap can actually run on this host, or
+/// `None` when none is present.
+///
+/// The strict counterpart of [`detect_brew_system_method`], for a manager with
+/// no bootstrap arm of its own: naming a mediator the host cannot run used to
+/// degrade into a cascade that tried something else, and under a binding plan
+/// it would be a guaranteed failure instead.
+pub(super) fn detect_brew_or_system_method(arms: &[SystemArm]) -> Option<&'static str> {
+    if brew_available() {
+        return Some("brew");
     }
+    detect_system_arm(arms)
+}
+
+/// Which manager an apt→dnf→zypper cascade can run here, or `None` when none of
+/// them is present. Linux-only, like the two managers whose plans resolve their
+/// method through it. Binding on execution for the same reason
+/// [`detect_brew_system_method`] is.
+#[cfg(target_os = "linux")]
+pub(super) fn detect_system_method() -> Option<&'static str> {
+    detect_system_arm(SYSTEM_MANAGER_ARMS)
+}
+
+/// Every mediator a `go` bootstrap can run: brew, then the full system cascade
+/// (`bootstrap_via_system_manager`, which reaches zypper as well).
+pub(super) fn detect_go_bootstrap_method() -> Option<&'static str> {
+    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS)
 }
 
 /// The plan named a mediator that cannot deliver on this host any more.
@@ -842,30 +856,35 @@ pub(super) fn bootstrap_brew_arm(
     }
 }
 
-/// Install `pkgs` from the first of `tools` that answers — or, when the plan
-/// chose one of them, from that one alone.
+/// Install `pkgs` from the first of `arms` this host can run — or, when the
+/// plan chose one of them, from that one alone.
 ///
-/// `subject` is what the live window says is being installed; the cascade order
-/// is the caller's, because a manager's own bootstrap probes exactly the
-/// managers its `bootstrap_plan` resolved against.
+/// `subject` is what the live window says is being installed. `fallback_method`
+/// is the caller's OWN bootstrap arm, the one thing this cascade may decline
+/// toward: `Ok(false)` under a planned method means the plan named exactly that
+/// string, never merely "a method this cascade does not recognize". A method
+/// that is neither an arm here nor the caller's own arm is a provision nothing
+/// can run, and fails naming itself rather than being answered by whatever the
+/// caller happens to try next.
 fn bootstrap_system_arms(
     cx: &PackageContext<'_>,
     manager_name: &str,
     subject: &str,
     pkgs: &[&str],
-    tools: &[&str],
+    arms: &[SystemArm],
+    fallback_method: Option<&str>,
 ) -> Result<bool> {
     if let Some(method) = cx.planned_method() {
-        // A method naming no tool in this cascade is the manager's own fallback
-        // arm (npm's `nvm`, pipx's `pip`): the caller runs it next, and this
-        // cascade must not probe ahead of it.
-        let Some(tool) = planned_system_tool(method).filter(|tool| tools.contains(tool)) else {
+        if fallback_method == Some(method) {
             return Ok(false);
+        }
+        let Some((_, tool)) = arms.iter().find(|(arm, _)| *arm == method) else {
+            return Err(planned_method_unavailable(manager_name, method).into());
         };
         if !system_tool_available(tool) {
             return Err(planned_method_unavailable(manager_name, method).into());
         }
-        let result = run_system_install(cx, manager_name, subject, pkgs, tool)?;
+        let result = run_system_install(cx, manager_name, subject, pkgs, method, tool)?;
         return if result.status.success() {
             Ok(true)
         } else {
@@ -873,9 +892,9 @@ fn bootstrap_system_arms(
         };
     }
 
-    for tool in tools {
+    for (method, tool) in arms {
         if system_tool_available(tool) {
-            let result = run_system_install(cx, manager_name, subject, pkgs, tool)?;
+            let result = run_system_install(cx, manager_name, subject, pkgs, method, tool)?;
             if result.status.success() {
                 return Ok(true);
             }
@@ -894,11 +913,15 @@ fn system_tool_available(tool: &str) -> bool {
     cfgd_core::command_available_with_seam(&tool_seam_var(tool), tool)
 }
 
+/// Run one system arm's install. The window's label names the COMMAND that is
+/// running (`apt-get`), while a failure names the METHOD (`apt`) — the manager
+/// the plan line, the concurrency lane and every other binding failure use.
 fn run_system_install(
     cx: &PackageContext<'_>,
     manager_name: &str,
     subject: &str,
     pkgs: &[&str],
+    method: &str,
     tool: &str,
 ) -> Result<CommandOutput> {
     pkg_run(
@@ -909,7 +932,7 @@ fn run_system_install(
     .map_err(|e| {
         PackageError::BootstrapFailed {
             manager: manager_name.into(),
-            message: format!("{} install failed: {}", tool, e),
+            message: format!("{} install failed: {}", method, e),
         }
         .into()
     })
@@ -917,6 +940,9 @@ fn run_system_install(
 
 /// Try to install a package via common system package managers (apt, then dnf, then zypper).
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
+///
+/// There is no fallback arm past this one: a caller reaching here has nothing
+/// else to try, so a planned method these arms cannot run fails naming itself.
 pub(super) fn bootstrap_via_system_manager(
     cx: &PackageContext<'_>,
     target_pkg: &str,
@@ -927,7 +953,8 @@ pub(super) fn bootstrap_via_system_manager(
         manager_name,
         target_pkg,
         &[target_pkg],
-        &["apt-get", "dnf", "zypper"],
+        SYSTEM_MANAGER_ARMS,
+        None,
     )? {
         return Ok(());
     }
@@ -945,13 +972,15 @@ pub(super) fn bootstrap_via_system_manager(
 ///
 /// When the context carries a planned method ([`PackageContext::planned_method`])
 /// exactly one arm runs: the one the plan named. `Ok(false)` then means the plan
-/// named the CALLER's own fallback arm (npm's nvm, pipx's pip), never that this
-/// cascade tried and gave up.
+/// named `fallback_method` — the caller's own arm, which it runs next — never
+/// that this cascade tried and gave up. `fallback_method` must be the same
+/// string the caller passed `detect_brew_system_method`.
 pub(super) fn bootstrap_via_brew_then_system(
     cx: &PackageContext<'_>,
     manager_name: &str,
     brew_pkg: &str,
     system_pkgs: &[&str],
+    fallback_method: &str,
 ) -> Result<bool> {
     if bootstrap_brew_arm(cx, manager_name, brew_pkg)? {
         return Ok(true);
@@ -961,7 +990,8 @@ pub(super) fn bootstrap_via_brew_then_system(
         manager_name,
         manager_name,
         system_pkgs,
-        &["apt-get", "dnf"],
+        BREW_SYSTEM_ARMS,
+        Some(fallback_method),
     )
 }
 

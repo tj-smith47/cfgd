@@ -423,6 +423,22 @@ pub fn path_with_dirs_prepended(current: &str, dirs: &[std::path::PathBuf]) -> O
     }
 }
 
+/// [`path_with_dirs_prepended`] over THIS PROCESS's `PATH`.
+///
+/// The read is bracketed by the same re-entrant read guard every other
+/// production `PATH` reader in the workspace takes, which is why it lives here
+/// rather than at the call site: a consumer outside cfgd-core cannot name the
+/// `test-helpers` feature the guard is gated on, and an unsynchronized read
+/// ahead of a guarded spawn re-opens the window the lock exists to close.
+pub fn process_path_with_dirs_prepended(dirs: &[std::path::PathBuf]) -> Option<String> {
+    if dirs.is_empty() {
+        return None;
+    }
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+    path_with_dirs_prepended(&std::env::var("PATH").unwrap_or_default(), dirs)
+}
+
 /// Snapshot of the directories registered by [`register_bootstrapped_path_dirs`].
 pub fn bootstrapped_path_dirs() -> Vec<std::path::PathBuf> {
     BOOTSTRAPPED_PATH_DIRS

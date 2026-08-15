@@ -17,6 +17,12 @@ use super::shared::{
 
 pub struct NpmManager;
 
+/// npm's own bootstrap arm, reached when no brew/system mediator is present.
+/// The ONE spelling: the planner resolves the method against it and the
+/// cascade declines toward it, so the two must name the same string or a
+/// planned `nvm` is a method nothing can run.
+const NPM_FALLBACK_METHOD: &str = "nvm";
+
 /// Where a global npm operation should point, resolved once per operation so
 /// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,8 +500,10 @@ impl PackageManager for NpmManager {
         // No declared PATH directory: npm's global bin lives under a prefix that
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
-        match detect_brew_system_method("nvm") {
-            "nvm" => Some(BootstrapPlan::new("nvm").requiring(["curl"])),
+        match detect_brew_system_method(NPM_FALLBACK_METHOD) {
+            NPM_FALLBACK_METHOD => {
+                Some(BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl"]))
+            }
             method => Some(BootstrapPlan::new(method)),
         }
     }
@@ -503,7 +511,13 @@ impl PackageManager for NpmManager {
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         // Returns false without probing anything when the plan named `nvm` —
         // npm's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(cx, "npm", "node", &["nodejs", "npm"])? {
+        if bootstrap_via_brew_then_system(
+            cx,
+            "npm",
+            "node",
+            &["nodejs", "npm"],
+            NPM_FALLBACK_METHOD,
+        )? {
             return Ok(());
         }
 

@@ -7,12 +7,12 @@ use std::process::Command;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
+#[cfg(target_os = "linux")]
+use super::shared::detect_system_method;
 use super::shared::{
     bootstrap_via_system_manager, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
     sudo_cmd_with_seam, tool_cmd_with_resolver,
 };
-#[cfg(target_os = "linux")]
-use super::shared::{detect_system_method, linux_system_manager_available};
 
 pub struct SnapManager;
 
@@ -43,7 +43,9 @@ impl PackageManager for SnapManager {
         // on the system PATH, so the plan creates no directory of its own.
         #[cfg(target_os = "linux")]
         {
-            linux_system_manager_available().then(|| BootstrapPlan::new(detect_system_method()))
+            // `None` rather than a hopeful name when no system manager can run
+            // it: the method a plan carries is binding at execution.
+            detect_system_method().map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -171,7 +173,6 @@ mod tests {
     use cfgd_core::providers::PackageManager;
 
     #[cfg(target_os = "linux")]
-    use super::super::shared::linux_system_manager_available;
     use super::*;
 
     #[test]
@@ -287,13 +288,43 @@ channels:
         let plan = SnapManager.bootstrap_plan();
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(plan.is_some(), linux_system_manager_available());
-            if let Some(plan) = plan {
-                // `bootstrap` runs `<system manager> install snapd`, which puts
-                // the client on the system PATH.
-                assert_eq!(plan.method, super::super::shared::detect_system_method());
-                assert!(plan.requires.is_empty());
-                assert!(plan.creates_path_dirs.is_empty());
+            // Ground truth spelled out here rather than read back from the
+            // detector: a plan's method is BINDING at execution, so the one
+            // thing worth asserting is that this host can actually spawn the
+            // manager the plan names — and that a runnable one is never
+            // dropped. Probed through the same seams `sudo_cmd_with_seam`
+            // spawns from, so a concurrently-installed shim cannot make the
+            // two answers disagree.
+            let runnable = |tool: &str| {
+                cfgd_core::command_available_with_seam(
+                    &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                    tool,
+                )
+            };
+            let arm_of = |method: &str| match method {
+                "apt" => Some("apt-get"),
+                "dnf" => Some("dnf"),
+                "zypper" => Some("zypper"),
+                _ => None,
+            };
+            match plan {
+                Some(plan) => {
+                    // `bootstrap` runs `<system manager> install snapd`, which
+                    // puts the client on the system PATH.
+                    let tool = arm_of(&plan.method)
+                        .unwrap_or_else(|| panic!("unknown method {}", plan.method));
+                    assert!(
+                        runnable(tool),
+                        "a plan may only name a manager this host can run, got {}",
+                        plan.method
+                    );
+                    assert!(plan.requires.is_empty());
+                    assert!(plan.creates_path_dirs.is_empty());
+                }
+                None => assert!(
+                    !["apt-get", "dnf", "zypper"].into_iter().any(runnable),
+                    "a runnable system manager must not be answered with no plan"
+                ),
             }
         }
         #[cfg(not(target_os = "linux"))]
