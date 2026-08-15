@@ -11,7 +11,86 @@ use super::scripts::{
 };
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext};
 
+/// Whether a module file's deployment would write bytes the target already
+/// holds, with the mode it already carries.
+///
+/// True only for a whole-content write whose content is knowable before it runs
+/// — a `Copy`/`Template` entry, both of which deploy the source verbatim, or a
+/// `Patch` entry whose merge has already been evaluated. A link entry has no
+/// content to compare, and a target that is a symlink or a directory is a thing
+/// to replace rather than content to match, so both answer false.
+fn converged_content_file(
+    file: &crate::modules::ResolvedFile,
+    target: &std::path::Path,
+    patched: Option<&str>,
+    mode: Option<u32>,
+) -> bool {
+    let Ok(meta) = target.symlink_metadata() else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    // A declared mode the target does not already carry is itself drift, and
+    // the deployment is what corrects it.
+    if let Some(declared) = mode
+        && crate::file_permissions_mode(&meta).is_some_and(|actual| actual != declared)
+    {
+        return false;
+    }
+    let Ok(actual) = std::fs::read(target) else {
+        return false;
+    };
+    if let Some(content) = patched {
+        return actual == content.as_bytes();
+    }
+    if !matches!(
+        file.strategy,
+        Some(crate::config::FileStrategy::Copy) | Some(crate::config::FileStrategy::Template)
+    ) {
+        return false;
+    }
+    std::fs::read(&file.source).is_ok_and(|desired| desired == actual)
+}
+
 impl<'a> super::Reconciler<'a> {
+    /// Record one deployed module file in the module file manifest.
+    ///
+    /// Runs for a converged file too: the manifest is the module's inventory of
+    /// what it owns, and a row skipped because nothing needed writing would
+    /// strand the file at module-removal time.
+    fn record_module_file(
+        &self,
+        action: &ModuleAction,
+        target: &std::path::Path,
+        strategy: crate::config::FileStrategy,
+        apply_id: i64,
+    ) -> Result<()> {
+        let hash = if target.exists() && !target.is_symlink() {
+            match std::fs::read(target) {
+                Ok(bytes) => crate::sha256_hex(&bytes),
+                Err(e) => {
+                    tracing::warn!("cannot read {} for hashing: {e}", target.posix());
+                    String::new()
+                }
+            }
+        } else {
+            String::new()
+        };
+        // Persisted key AND a path a later apply reopens, so it folds with
+        // `to_posix_fs_key`: the UNIQUE(module_name, file_path) row a Windows
+        // apply writes is the one every later apply derives, without renaming a
+        // POSIX target whose filename legitimately contains a backslash.
+        self.state.upsert_module_file(
+            &action.module_name,
+            &crate::to_posix_fs_key(target),
+            &hash,
+            &format!("{:?}", strategy),
+            apply_id,
+        )?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_module_action(
         &self,
@@ -52,6 +131,7 @@ impl<'a> super::Reconciler<'a> {
                 outcome
             }
             ModuleActionKind::DeployFiles { files } => {
+                let mut deployed_any = false;
                 for file in files {
                     let target = expand_tilde(&file.target);
                     if let Some(parent) = target.parent() {
@@ -99,6 +179,16 @@ impl<'a> super::Reconciler<'a> {
                     } else {
                         None
                     };
+
+                    // A target already holding the desired bytes needs no backup,
+                    // no removal and no write: the sole effect of doing the work
+                    // anyway is a redundant `file_backups` row and a run that
+                    // claims to have changed a file it did not touch.
+                    if converged_content_file(file, &target, patched.as_deref(), mode) {
+                        self.record_module_file(action, &target, strategy, apply_id)?;
+                        continue;
+                    }
+                    deployed_any = true;
 
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
@@ -158,35 +248,12 @@ impl<'a> super::Reconciler<'a> {
                         crate::set_file_permissions(&target, mode)?;
                     }
 
-                    // Record in module file manifest
-                    let hash = if target.exists() && !target.is_symlink() {
-                        match std::fs::read(&target) {
-                            Ok(bytes) => crate::sha256_hex(&bytes),
-                            Err(e) => {
-                                tracing::warn!("cannot read {} for hashing: {e}", target.posix());
-                                String::new()
-                            }
-                        }
-                    } else {
-                        String::new()
-                    };
-                    // Persisted key AND a path a later apply reopens, so it folds
-                    // with `to_posix_fs_key`: the UNIQUE(module_name, file_path)
-                    // row a Windows apply writes is the one every later apply
-                    // derives, without renaming a POSIX target whose filename
-                    // legitimately contains a backslash.
-                    self.state.upsert_module_file(
-                        &action.module_name,
-                        &crate::to_posix_fs_key(&target),
-                        &hash,
-                        &format!("{:?}", strategy),
-                        apply_id,
-                    )?;
+                    self.record_module_file(action, &target, strategy, apply_id)?;
                 }
 
                 Ok((
                     format!("module:{}:files:{}", action.module_name, files.len()),
-                    true,
+                    deployed_any,
                 ))
             }
             ModuleActionKind::RunScript {

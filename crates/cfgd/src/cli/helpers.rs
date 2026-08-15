@@ -326,6 +326,24 @@ pub(in crate::cli) fn empty_resolved_profile(
     }
 }
 
+/// Suffix of the sidecar copy cfgd leaves beside a target it adopted.
+pub(in crate::cli) const CFGD_BACKUP_SUFFIX: &str = ".cfgd-backup";
+
+/// The sidecar path for `target`, suffixed with `extra` (empty for the primary
+/// `<target>.cfgd-backup`).
+///
+/// The ONE derivation of that name: the adoption path writes it, module removal
+/// and profile update offer to restore it, and a byte of disagreement between
+/// them orphans a user's only copy of their original file. Built by appending
+/// to the target's `OsStr` rather than to a rendered `Display`, so a filename
+/// no `str` can round-trip still names the file beside it.
+pub(in crate::cli) fn cfgd_backup_path(target: &Path, extra: &str) -> PathBuf {
+    let mut name = target.as_os_str().to_os_string();
+    name.push(CFGD_BACKUP_SUFFIX);
+    name.push(extra);
+    PathBuf::from(name)
+}
+
 /// Collect known package manager names from the registry.
 pub(in crate::cli) fn known_manager_names() -> Vec<String> {
     packages::all_package_managers()

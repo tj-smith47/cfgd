@@ -153,6 +153,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
 /// Default `ApplyArgs` for a non-dry-run `--yes` apply.
 pub fn apply_args() -> ApplyArgs {
     ApplyArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -169,6 +170,7 @@ pub fn apply_args() -> ApplyArgs {
 /// Default `ApplyArgs` for a `--dry-run --yes` apply.
 pub fn apply_args_dry_run() -> ApplyArgs {
     ApplyArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,

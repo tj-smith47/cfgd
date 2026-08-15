@@ -41,6 +41,7 @@ fn init_happy_human() {
     let target = tmp.path().join("happy-cfg");
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -77,6 +78,7 @@ fn init_happy_json() {
     let target = tmp.path().join("happy-cfg-json");
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -123,6 +125,7 @@ fn init_already_initialized_human() {
 
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -197,6 +200,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     .unwrap();
 
     let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -369,6 +373,7 @@ fn init_apply_lock_honors_state_dir_override() {
     .unwrap();
 
     let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",

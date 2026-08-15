@@ -8751,6 +8751,119 @@ fn apply_module_deploy_files_creates_target() {
 }
 
 #[test]
+fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes() {
+    // Re-deploying content the target already holds must not back it up,
+    // rewrite it, or report the run as having changed anything.
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("module-source.txt");
+    let target_file = dir.path().join("module-target.txt");
+    std::fs::write(&source_file, "module content").unwrap();
+    std::fs::write(&target_file, "module content").unwrap();
+    // A hard link shares the target's inode; an atomic rewrite rename-replaces
+    // the target and breaks that identity, so this witnesses the write itself
+    // rather than a timestamp the filesystem may round.
+    let witness = dir.path().join("witness");
+    std::fs::hard_link(&target_file, &witness).unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let file = ResolvedFile {
+        source: source_file.clone(),
+        target: target_file.clone(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Copy),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![file.clone()],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !result.action_results[0].changed,
+        "a deployment that wrote nothing must not claim a change"
+    );
+    assert!(
+        crate::is_same_inode(&target_file, &witness),
+        "a converged target must not be rewritten"
+    );
+    // One row, not two: the post-apply rollback snapshot every managed target
+    // gets, without the pre-write backup an actual overwrite would have added.
+    let key = crate::to_posix_fs_key(&target_file);
+    let rows = state
+        .get_apply_backups(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.file_path == key)
+        .count();
+    assert_eq!(
+        rows, 1,
+        "a file that was never overwritten needs no pre-write backup row"
+    );
+    // The manifest row still records the file as this module's, so removal
+    // still cleans it up.
+    assert!(
+        state
+            .module_deployed_files("mymod")
+            .unwrap()
+            .iter()
+            .any(|f| f.file_path == crate::to_posix_fs_key(&target_file)),
+        "the module must still own the file it deployed earlier"
+    );
+}
+
+#[test]
 fn apply_module_deploy_files_patch_merges_into_the_target() {
     // A `Patch` module file has no source; the merge must run against the
     // target's own content and leave everything the spec does not name alone.

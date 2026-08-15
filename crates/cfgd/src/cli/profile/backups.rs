@@ -91,7 +91,7 @@ pub(crate) fn prompt_restore_backups(
     printer: &cfgd_core::output::Printer,
 ) -> anyhow::Result<()> {
     for target in targets {
-        let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
+        let backup_path = cfgd_backup_path(target, "");
         if backup_path.exists() {
             // Decline-on-IO-error is the safe default for an unattended path,
             // but the underlying failure is logged so it's not invisible.

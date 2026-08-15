@@ -497,6 +497,30 @@ pub struct ApplyArgs {
     /// scripts are unaffected. Intended for debugging.
     #[arg(long, value_enum)]
     pub shell: Option<ApplyShell>,
+    /// How to handle a managed target that already exists as an unmanaged file
+    #[arg(long, value_enum, default_value_t = OnConflict::Ask)]
+    pub on_conflict: OnConflict,
+}
+
+/// What `apply` does with a managed target that already holds an unmanaged
+/// file — one the user (or another tool) put there and cfgd has never written.
+///
+/// The default is [`OnConflict::Ask`], which resolves to a prompt when there is
+/// a human at stdin and to [`OnConflict::Backup`] when there is not, so
+/// `--yes` keeps meaning "do not stop to ask" rather than "discard my file".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum OnConflict {
+    /// Ask per file; falls back to `backup` when nothing can be asked (default)
+    #[default]
+    Ask,
+    /// Copy the existing file to `<target>.cfgd-backup`, then write
+    Backup,
+    /// Replace the existing file, keeping no copy of it
+    Overwrite,
+    /// Leave the existing file alone and skip cfgd's write
+    Skip,
+    /// Abort the apply without touching the file
+    Fail,
 }
 
 #[derive(Parser)]
@@ -532,7 +556,7 @@ pub struct PlanArgs {
 pub enum Command {
     /// Initialize a new cfgd configuration repository
     #[command(
-        long_about = "Scaffold or clone a cfgd configuration repository.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\nAn existing path always wins over the shorthand.\n\nExamples:\n  cfgd init\n  cfgd init --from acme/cfgd-config                         # GitHub shorthand\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init --from https://gitlab.example.com/acme/cfgd-config.git\n  cfgd init --from git@git.example.com:acme/cfgd-config.git\n  cfgd init --from ~/existing/config\n  cfgd init ~/cfgd --theme solarized-dark --apply"
+        long_about = "Scaffold or clone a cfgd configuration repository.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\nAn existing path always wins over the shorthand.\n\nExamples:\n  cfgd init\n  cfgd init --from acme/cfgd-config                         # GitHub shorthand\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init --from https://gitlab.example.com/acme/cfgd-config.git\n  cfgd init --from git@git.example.com:acme/cfgd-config.git\n  cfgd init --from ~/existing/config\n  cfgd init ~/cfgd --theme solarized-dark --apply\n  cfgd init --from acme/cfgd-config --apply --yes --on-conflict backup"
     )]
     Init {
         /// Directory to initialize (default: current directory)
@@ -585,11 +609,15 @@ pub enum Command {
         /// Apply specific modules (repeatable, errors if not found)
         #[arg(long = "apply-module")]
         apply_modules: Vec<String>,
+
+        /// How to handle a managed target that already exists as an unmanaged file
+        #[arg(long, value_enum, default_value_t = OnConflict::Ask)]
+        on_conflict: OnConflict,
     },
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
@@ -2292,6 +2320,7 @@ pub fn execute(
             theme,
             apply_profile,
             apply_modules,
+            on_conflict,
         } => init::cmd_init(
             printer,
             &init::InitArgs {
@@ -2310,6 +2339,7 @@ pub fn execute(
                 state_dir: cli.state_dir.as_deref(),
                 runtime_dir: cli.runtime_dir.as_deref(),
                 scope: cli.scope(),
+                on_conflict: *on_conflict,
             },
         ),
         Command::Module { command } => match command {

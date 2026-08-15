@@ -437,9 +437,16 @@ pub fn run_apply(
 
     // --- Apply mode ---
 
-    // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
-    // adopt (proceed), backup (rename to .cfgd-backup), or skip.
-    handle_unmanaged_file_targets(&mut plan, &config_dir, &state, printer, yes)?;
+    // Handle unmanaged file targets: a target that already holds a file cfgd
+    // never wrote is settled by `--on-conflict` before anything is applied.
+    handle_unmanaged_file_targets(
+        &mut plan,
+        &config_dir,
+        &state,
+        printer,
+        yes,
+        args.on_conflict,
+    )?;
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the
     // no-op early-return: a row whose package vanished (partial-uninstall

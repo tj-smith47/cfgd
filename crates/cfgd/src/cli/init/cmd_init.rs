@@ -27,6 +27,7 @@ pub struct InitArgs<'a> {
     pub state_dir: Option<&'a Path>,
     pub runtime_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
+    pub on_conflict: crate::cli::OnConflict,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -196,7 +197,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             )?;
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(
+            let mut plan = reconciler.plan(
                 &resolved,
                 Vec::new(),
                 Vec::new(),
@@ -205,7 +206,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             )?;
 
             apply_status = apply_plan(
-                &plan,
+                &mut plan,
                 &reconciler,
                 &resolved,
                 &resolved_modules,
@@ -216,6 +217,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     state_dir: args.state_dir,
                     scope: args.scope,
                     profile: None,
+                    state: &store,
+                    on_conflict: args.on_conflict,
                 },
                 printer,
             )?;
@@ -310,7 +313,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             registry.file_manager = Some(Box::new(fm));
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(
+            let mut plan = reconciler.plan(
                 &resolved,
                 file_actions,
                 pkg_actions,
@@ -319,7 +322,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             )?;
 
             apply_status = apply_plan(
-                &plan,
+                &mut plan,
                 &reconciler,
                 &resolved,
                 &resolved_modules,
@@ -330,6 +333,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     state_dir: args.state_dir,
                     scope: args.scope,
                     profile: Some(&profile_name),
+                    state: &store,
+                    on_conflict: args.on_conflict,
                 },
                 printer,
             )?;
@@ -498,6 +503,11 @@ pub(super) struct ApplyPlanOpts<'a> {
     /// The profile this apply reconciles, for the run header's `Profile` row.
     /// `None` on the module-only path, which resolves no profile at all.
     pub profile: Option<&'a str>,
+    /// The state store the conflict pass asks whether a target is already
+    /// cfgd-managed.
+    pub state: &'a cfgd_core::state::StateStore,
+    /// What to do with a target that already holds a file cfgd never wrote.
+    pub on_conflict: crate::cli::OnConflict,
 }
 
 /// Run the scaffolded configuration through the one run skeleton: header,
@@ -509,7 +519,7 @@ pub(super) struct ApplyPlanOpts<'a> {
 /// confirmation) report [`ApplyStatus::Success`]: nothing failed because
 /// nothing ran.
 pub(super) fn apply_plan(
-    plan: &cfgd_core::reconciler::Plan,
+    plan: &mut cfgd_core::reconciler::Plan,
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
     resolved: &config::ResolvedProfile,
     modules: &[cfgd_core::modules::ResolvedModule],
@@ -517,6 +527,22 @@ pub(super) fn apply_plan(
     opts: ApplyPlanOpts<'_>,
     printer: &Printer,
 ) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
+    // A first apply is exactly where a machine is fullest of files cfgd never
+    // wrote, so the conflict pass runs here on the same terms `cfgd apply`
+    // gives it — before the plan is borrowed by the run, and never for a
+    // preview, which writes nothing to conflict with.
+    if !opts.dry_run {
+        crate::cli::plan_ops::handle_unmanaged_file_targets(
+            plan,
+            config_dir,
+            opts.state,
+            printer,
+            opts.yes,
+            opts.on_conflict,
+        )?;
+    }
+    let plan = &*plan;
+
     // The names the run acts on, not the names the flags asked for: a module
     // that failed to resolve is absent from the plan, so naming it in the
     // header would describe work no phase below can show.

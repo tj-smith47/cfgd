@@ -4610,6 +4610,7 @@ fn cmd_log_with_empty_state() {
 fn cmd_apply_dry_run_empty_profile() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4645,6 +4646,7 @@ fn cmd_apply_from_flag_parses() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: Some("https://github.com/example/config.git".to_string()),
         dry_run: true,
         phase: None,
@@ -4721,6 +4723,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
     };
     let printer = test_printer();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4763,6 +4766,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         .profile("default", ENV_ONLY_PROFILE_YAML)
         .build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
@@ -4802,6 +4806,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
 fn cmd_apply_dry_run_with_skip() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4826,6 +4831,7 @@ fn cmd_apply_dry_run_with_skip() {
 fn cmd_apply_dry_run_with_only() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4859,6 +4865,7 @@ fn cmd_apply_real_with_empty_profile() {
             .profile("empty", "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n")
             .build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4898,6 +4905,7 @@ fn cmd_status_after_apply() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4935,6 +4943,7 @@ fn cmd_log_after_apply() {
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5010,6 +5019,7 @@ fn cmd_apply_dry_run_with_files() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -5068,6 +5078,7 @@ fn cmd_apply_creates_file() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5116,6 +5127,7 @@ fn cmd_apply_idempotent() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5372,6 +5384,7 @@ fn execute_config_set() {
 fn execute_apply_dry_run() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Apply(ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -5561,6 +5574,7 @@ fn cmd_apply_with_module_filter() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -5604,6 +5618,7 @@ fn cmd_apply_with_env_vars() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5704,6 +5719,7 @@ fn cmd_status_with_drift_events() {
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6057,6 +6073,7 @@ fn cmd_apply_dry_run_each_phase() {
     ];
     for phase in all_phases {
         let args = ApplyArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: true,
             phase: Some(PhaseArg::bare(phase)),
@@ -6101,6 +6118,7 @@ fn cmd_verify_after_apply_with_env() {
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6472,6 +6490,7 @@ fn cmd_rollback_after_file_apply() {
 
     // Apply to create the file
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6551,6 +6570,7 @@ fn apply_one_file_and_record(
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6922,6 +6942,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -10726,6 +10747,7 @@ fn cmd_apply_module_only_no_profile() {
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -11027,6 +11049,7 @@ fn cmd_apply_with_aliases() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -11685,6 +11708,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -12270,6 +12294,7 @@ fn cmd_apply_real_records_state() {
     .unwrap();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: false,
         yes: true,
         phase: None,
@@ -12306,6 +12331,7 @@ fn cmd_apply_real_records_state() {
 fn cmd_apply_with_skip_and_only() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12332,6 +12358,7 @@ fn cmd_apply_with_skip_and_only() {
 fn cmd_apply_skip_scripts_flag() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12358,6 +12385,7 @@ fn cmd_apply_skip_scripts_flag() {
 fn cmd_apply_invalid_context_fails() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12431,6 +12459,7 @@ fn apply_shell_flag_rejects_unknown_value() {
 fn cmd_apply_reconcile_context_threads_through() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12486,6 +12515,7 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: Some(PhaseArg::bare(ApplyPhase::PostScripts)),
@@ -12646,6 +12676,7 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: Some(PhaseArg::bare(ApplyPhase::Files)),
@@ -20855,6 +20886,7 @@ fn plan_args() -> PlanArgs {
 /// `--yes`; the confirm path has its own test below.
 fn apply_args(dry_run: bool) -> ApplyArgs {
     ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run,
         phase: None,
@@ -21098,6 +21130,7 @@ fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
         cfgd_core::output::Verbosity::Normal,
     );
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         yes: false,
         ..apply_args(false)
     };
@@ -21302,6 +21335,7 @@ fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
     .unwrap();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         module: Some("nonexistent".into()),
         ..apply_args(false)
     };
@@ -21432,6 +21466,7 @@ fn an_apply_declined_at_the_prompt_records_nothing() {
         cfgd_core::output::Verbosity::Normal,
     );
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         yes: false,
         ..apply_args(false)
     };
@@ -22103,6 +22138,7 @@ fn a_declined_apply_records_no_auto_accepted_row() {
         cfgd_core::output::Verbosity::Normal,
     );
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         yes: false,
         ..apply_args(false)
     };

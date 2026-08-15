@@ -78,6 +78,7 @@ cfgd init --from <source> --branch dev                # specify branch
 cfgd init --from <source> --apply-profile work-mac    # clone, activate profile, apply
 cfgd init --from <source> --apply-module nvim         # clone, apply just one module
 cfgd init --from <source> --apply --yes --install-daemon  # full one-liner bootstrap
+cfgd init --from <source> --apply --yes --on-conflict fail  # stop at the first stranger
 ```
 
 `--from` accepts any git URL, a local path, or the GitHub shorthand `owner/repo` —
@@ -101,6 +102,7 @@ repository reference — `cfgd apply --from`, `cfgd plan --from`,
 | `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, exits `6` if not found) |
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--yes`, `-y` | Skip confirmation prompts (used with --apply) |
+| `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What the `--apply` step does with a target that already holds a file cfgd never wrote (default `ask`; see [`cfgd apply`](#unmanaged-files-at-a-managed-target)) |
 | `--install-daemon` | Install daemon service after init |
 | `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, minimal) |
 
@@ -131,6 +133,8 @@ cfgd apply --skip prerequisites.session  # skip the live-session broadcast
 cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl     # skip specific items
 cfgd apply --skip-scripts           # apply without running any hooks
+cfgd apply --yes --on-conflict backup    # copy every stranger aside, then write
+cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wrote
 ```
 
 | Flag | Description |
@@ -145,6 +149,41 @@ cfgd apply --skip-scripts           # apply without running any hooks
 | `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
 | `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
+| `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
+
+#### Unmanaged files at a managed target
+
+A target that already exists but that cfgd has never written — your own `.zshrc`,
+a config another tool dropped — is a **conflict**. `--on-conflict` decides what
+happens to it:
+
+| Policy | What happens |
+|---|---|
+| `ask` (default) | Prompt per file. With `--yes`, under `-o json`, or with no terminal at stdin, resolves to `backup` |
+| `backup` | Copy the file to `<target>.cfgd-backup`, then write the managed version |
+| `overwrite` | Write the managed version, keeping no copy |
+| `skip` | Leave the file alone; the action is reported as skipped |
+| `fail` | Abort the apply (exit `1`) without touching anything |
+
+```console
+$ cfgd apply --yes
+⚠ Target exists as unmanaged file: /home/u/.config/app/app.conf
+✓ Backed up to /home/u/.config/app/app.conf.cfgd-backup
+...
+    ✓ update /home/u/.config/app/app.conf
+
+$ cfgd apply --yes --on-conflict fail
+⚠ Target exists as unmanaged file: /home/u/.config/app/app.conf
+✗ target exists as unmanaged file: /home/u/.config/app/app.conf (--on-conflict fail)
+```
+
+A target that already holds **exactly** the bytes cfgd would write is not a
+conflict under any policy: nothing is prompted, nothing is copied aside, and
+nothing is rewritten. See [File Safety](safety.md#unmanaged-file-adoption) for
+what the backup copy guarantees.
+
+`cfgd init --apply` takes the same flag and runs the same pass — the first apply
+on a machine is the one that meets the most files cfgd never wrote.
 
 `apply` reconciles exactly what `plan` previews, so a [source item awaiting a
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.

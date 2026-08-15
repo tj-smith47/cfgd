@@ -29,6 +29,33 @@ These backups are automatic, cover only files cfgd itself is about to write, and
 database, a photo library — declare them in `spec.backups[]`; see
 [Declarative Backups](backups.md).
 
+## Unmanaged-File Adoption
+
+When `cfgd apply` reaches a target that already holds a file cfgd has never
+written, [`--on-conflict`](cli-reference.md#unmanaged-files-at-a-managed-target)
+decides what happens to it. The default (`backup`, once `--yes` or a
+non-interactive stdin has ruled out asking) leaves a sidecar copy at
+`<target>.cfgd-backup`.
+
+That sidecar is a **copy, never a move**:
+
+- The original stays at the target until the managed write rename-replaces it,
+  so at every instant the content is readable at the sidecar, at the target, or
+  at both — a crash mid-apply cannot leave it at neither
+- The copied bytes are re-read and hashed before the copy is accepted; a short
+  write is an error, not a sidecar quietly holding less than it claims
+- The copy carries the original's permission bits
+- A symlinked target is copied as a symlink, so the link is preserved rather
+  than flattened into its destination
+- An existing `<target>.cfgd-backup` holding *different* content is never
+  clobbered: the newer copy lands at `<target>.cfgd-backup.<timestamp>`, so the
+  sidecar `cfgd profile update` and module removal offer to restore is always
+  the content that predates cfgd
+
+A target that already holds exactly the bytes cfgd would write is not adopted at
+all — no prompt, no sidecar, no rewrite, and the run does not report a change it
+did not make.
+
 ## Transaction Journal
 
 Each `cfgd apply` creates a transaction journal (`apply_journal` table) that records:
