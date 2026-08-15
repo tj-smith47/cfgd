@@ -210,28 +210,7 @@ impl Printer {
         let buf = Arc::new(Mutex::new(String::new()));
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
-        let p = Printer {
-            renderer: Arc::new(Renderer::with_bars(
-                Theme::default().with_colors(false),
-                Verbosity::Normal,
-                multi.clone(),
-            )),
-            output_format: OutputFormat::Table,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: multi,
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: None,
-            prompt_queue: None,
-            output_error: std::sync::atomic::AtomicBool::new(false),
-            live_region: true,
-            interactive_stdin: false,
-            colors: false,
-            list_envelope: false,
-        };
-        (p, buf)
+        (Self::live_capture(multi, buf.clone()), buf)
     }
 
     /// Capture wired the way PRODUCTION wires a printer that has bars: the
@@ -249,8 +228,17 @@ impl Printer {
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::term_like(
                 Box::new(RecordingTerm { drawn: buf.clone() }),
             ));
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
-        let p = Printer {
+        (Self::live_capture(multi, buf.clone()), buf)
+    }
+
+    /// The one `Printer` shape both live-region capture constructors take,
+    /// differing only in where their `MultiProgress` draws. Written once so a
+    /// new field cannot be added to one of them and forgotten in the other —
+    /// the two would then disagree about `colors` or `live_region` and the
+    /// tests reading them would be describing different printers.
+    fn live_capture(multi: indicatif::MultiProgress, buf: Arc<Mutex<String>>) -> Self {
+        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
+        Printer {
             // Stamped explicitly, like every theme a Printer renders through:
             // the field below and the theme must never be able to disagree.
             renderer: Arc::new(Renderer::with_bars(
@@ -267,15 +255,14 @@ impl Printer {
             test_doc_capture: None,
             prompt_queue: None,
             output_error: std::sync::atomic::AtomicBool::new(false),
-            // The whole point of this constructor: the repainting path is
+            // The whole point of these constructors: the repainting path is
             // reachable without a real terminal, so the proof obligation it
             // carries runs in the ordinary suite rather than only under a pty.
             live_region: true,
             interactive_stdin: false,
             colors: false,
             list_envelope: false,
-        };
-        (p, buf)
+        }
     }
 
     /// Capture + canned prompt responses.

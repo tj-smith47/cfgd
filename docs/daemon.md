@@ -125,7 +125,7 @@ The `tracing` lines around it are unchanged, so existing log consumers keep work
 tree is strictly additional. Under `driftPolicy: NotifyOnly` (or `Prompt`, which has no
 terminal to prompt at in daemon context) the same header renders with the *preview* tree —
 what drifted, never what was done — and closes on
-`⚠ Drift detected — N action(s); policy is notify-only, nothing applied` instead of a
+`⚠ Drift detected — N actions; policy is notify-only, nothing applied` instead of a
 completion rollup. Daemon lifecycle lines (the startup banner, SIGHUP reload, shutdown) stay flat
 status lines at column 0: they describe the process, not a run over a plan.
 
@@ -298,7 +298,7 @@ partial set:
 
 ```sh
 # → status: "Backup schedules NOT reloaded: config did not fully resolve —
-#            keeping the 2 running schedule(s), retrying automatically"
+#            keeping the 2 running schedules, retrying automatically"
 ```
 
 The same retry covers startup: a daemon that boots while its profile is

@@ -189,6 +189,29 @@ impl<'p> LiveRow<'p> {
             .set_message(wrap::clamp(&label.styled(&self.renderer.theme), width));
     }
 
+    /// Draw this row as a NOTE about the region rather than a step of it: a
+    /// leading ellipsis and muted text.
+    ///
+    /// The one line a live region writes about itself — what it is holding back
+    /// because the terminal has no room for it. It carries no status glyph on
+    /// purpose: a `✓` or `○` would read as an action of the phase, and this
+    /// line stands for several of them.
+    pub(crate) fn set_note(&self, text: &str) {
+        if self.bar.is_hidden() {
+            return;
+        }
+        let width = wrap::available_width(self.sink.as_ref(), self.depth);
+        let body = self
+            .renderer
+            .theme
+            .muted
+            .apply_to(format!("… {text}"))
+            .to_string();
+        self.bar.disable_steady_tick();
+        self.bar.set_style(plain_style());
+        self.bar.set_message(wrap::clamp(&body, width));
+    }
+
     /// Take this row out of the live region. Called once the line has been
     /// committed to the scrollback permanently, or once the work it described
     /// will never happen.
@@ -214,11 +237,32 @@ fn plain_style() -> ProgressStyle {
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
+/// Where a new row joins the live region.
+enum RowSlot<'a> {
+    /// The bottom, under everything already there.
+    Foot,
+    /// The top, above everything already there.
+    First,
+    /// Directly below an existing row.
+    After(&'a LiveRow<'a>),
+}
+
 impl super::Printer {
     /// Append a row to the bottom of the live region, at `depth`.
     #[must_use]
     pub(crate) fn live_row_at(&self, depth: usize) -> LiveRow<'_> {
-        self.build_live_row(depth, None)
+        self.build_live_row(depth, RowSlot::Foot)
+    }
+
+    /// Insert a row at the TOP of the live region, at `depth`.
+    ///
+    /// For a line that is about the region rather than about one step of it:
+    /// the top is the only position no later append pushes down, and an
+    /// over-full region truncates from the FOOT, so it is also the only
+    /// position that cannot be the line the terminal drops.
+    #[must_use]
+    pub(crate) fn live_row_first(&self, depth: usize) -> LiveRow<'_> {
+        self.build_live_row(depth, RowSlot::First)
     }
 
     /// Insert a row directly below `after`, at `depth`.
@@ -228,7 +272,7 @@ impl super::Printer {
     /// the foot of the region under someone else's heading.
     #[must_use]
     pub(crate) fn live_row_after(&self, depth: usize, after: &LiveRow<'_>) -> LiveRow<'_> {
-        self.build_live_row(depth, Some(after))
+        self.build_live_row(depth, RowSlot::After(after))
     }
 
     /// How many rows the live region can hold before indicatif stops drawing
@@ -247,12 +291,13 @@ impl super::Printer {
         usize::from(rows).saturating_sub(LIVE_REGION_HEADROOM)
     }
 
-    fn build_live_row(&self, depth: usize, after: Option<&LiveRow<'_>>) -> LiveRow<'_> {
+    fn build_live_row(&self, depth: usize, slot: RowSlot<'_>) -> LiveRow<'_> {
         let (bar, live) = if self.live_bars() {
             let fresh = IndProgressBar::new_spinner();
-            let bar = match after {
-                Some(row) => self.multi_progress.insert_after(&row.bar, fresh),
-                None => self.multi_progress.add(fresh),
+            let bar = match slot {
+                RowSlot::After(row) => self.multi_progress.insert_after(&row.bar, fresh),
+                RowSlot::First => self.multi_progress.insert(0, fresh),
+                RowSlot::Foot => self.multi_progress.add(fresh),
             };
             bar.set_prefix("  ".repeat(depth));
             bar.set_style(plain_style());

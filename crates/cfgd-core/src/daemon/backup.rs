@@ -449,7 +449,7 @@ impl BackupTimers {
                 tracing::warn!(
                     backup = %task.spec.name,
                     missed_fires = missed,
-                    "backup: schedule elapsed while the daemon was busy — skipped the missed fire(s)"
+                    "backup: schedule elapsed while the daemon was busy — skipped the missed fires"
                 );
             }
             due.push((task.profile_name.clone(), task.spec.clone()));

@@ -20,7 +20,8 @@ use pretty_assertions::assert_eq;
 
 use common::{
     rollback_state_no_changes_setup, rollback_state_with_backups_setup,
-    rollback_state_with_multiline_script_action_setup, rollback_state_with_non_file_actions_setup,
+    rollback_state_with_created_files_setup, rollback_state_with_multiline_script_action_setup,
+    rollback_state_with_non_file_actions_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -49,6 +50,41 @@ fn rollback_happy_human() {
         .replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/happy.txt", &stripped);
+}
+
+/// A rollback that UNDOES a create rather than restoring content — the
+/// `N newly created files removed` line, which no other golden covers and
+/// which is a count and a noun in the middle of a sentence rather than at the
+/// head of one.
+#[test]
+fn rollback_removed_files_human() {
+    let (_workspace, state_dir, created, apply_id) = rollback_state_with_created_files_setup();
+
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
+    drop(printer);
+
+    for path in &created {
+        assert!(!path.exists(), "{} must be removed", path.display());
+    }
+    let mut normalized = cap.human();
+    for (index, path) in created.iter().enumerate() {
+        normalized = normalized.replace(&path.display().to_string(), &format!("<TARGET{index}>"));
+    }
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "rollback/removed_files.txt",
+        &stripped
+    );
 }
 
 /// JSON payload roundtrip — RollbackOutput shape via build_rollback_doc + cap.json().

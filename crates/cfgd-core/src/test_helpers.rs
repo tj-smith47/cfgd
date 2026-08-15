@@ -1622,7 +1622,10 @@ pub fn install_named_path_shim_logged(
     let bin_dir = tempfile::tempdir().expect("tempdir");
     let log_path = bin_dir.path().join("argv.log");
     // The log path is baked into the script rather than read from the
-    // environment, so only this shim's own invocations can land in it.
+    // environment, so no OTHER shim can write to it. Invocations of THIS name
+    // by a concurrently-running test still can — the shim is on the
+    // process-global PATH — so a test asserting on the log must be `serial`
+    // along with every other test that spawns the same binary.
     let script = format!(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
         log_path.display().to_string().replace('\'', "'\\''"),

@@ -256,7 +256,10 @@ pub fn cmd_diff(
 fn close_system_phase(sec: &SectionGuard<'_>, drift: bool, unchecked: usize) {
     if unchecked > 0 {
         sec.status(Role::Warn, "System drift undetermined")
-            .detail(format!("{unchecked} configurator(s) could not be checked"));
+            .detail(format!(
+                "{} could not be checked",
+                cfgd_core::pluralize(unchecked, "configurator")
+            ));
     } else if !drift {
         sec.status_simple(Role::Ok, "No system drift");
     }

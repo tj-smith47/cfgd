@@ -298,7 +298,13 @@ mod tests {
         );
     }
 
+    // Serial because it SPAWNS `gsettings`: the shimmed apply test above
+    // prepends its shim to the process-global PATH, so a `gsettings get` run
+    // concurrently resolves to that shim and appends a line to the argv log the
+    // other test is asserting on — observed as a stray
+    // `get org.gnome.cfgd-test-schema color-scheme` failing the apply test.
     #[test]
+    #[serial_test::serial]
     fn gsettings_diff_via_nested_mapping_helper_returns_drift_entries() {
         let gc = GsettingsConfigurator;
         let mut inner = serde_yaml::Mapping::new();

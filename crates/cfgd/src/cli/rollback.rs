@@ -120,8 +120,9 @@ pub fn cmd_rollback(
             rb_sec.status_simple(
                 Role::Ok,
                 format!(
-                    "{} newly created removed",
-                    cfgd_core::pluralize(r.files_removed, "file")
+                    "{} newly created {} removed",
+                    r.files_removed,
+                    cfgd_core::plural_noun(r.files_removed, "file")
                 ),
             );
         }

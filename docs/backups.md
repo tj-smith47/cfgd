@@ -508,7 +508,7 @@ Timer behaviour:
   retries on its own, so one `SIGHUP` over a transient error can never retire a working timer set:
 
   ```console
-  ⚠ Backup schedules NOT reloaded: config did not fully resolve — keeping the 2 running schedule(s), retrying automatically
+  ⚠ Backup schedules NOT reloaded: config did not fully resolve — keeping the 2 running schedules, retrying automatically
   ```
 - **A degraded start is visible and temporary.** If sources cannot be composed at startup, the
   daemon installs the locally-declared backups rather than none, says so in the banner, holds their

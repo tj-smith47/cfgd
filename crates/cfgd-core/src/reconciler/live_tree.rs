@@ -17,7 +17,7 @@
 //!     ○ provision pipx via apt · waiting on apt     ← blocked, in its own row
 //! ```
 //!
-//! Three rules hold it together, and every one of them exists because the
+//! Four rules hold it together, and every one of them exists because the
 //! alternative lies about the run:
 //!
 //! 1. **A row never moves.** A row is appended the first time the scheduler has
@@ -37,6 +37,13 @@
 //!    its own heading twice. A group therefore keeps its guard open until it
 //!    can gain no more rows (`sealed`), and the next group's rows wait behind
 //!    it rather than being misfiled under it.
+//! 4. **The region never outgrows the terminal.** indicatif draws top down and
+//!    stops at the last line, so an over-full region drops the rows at its
+//!    FOOT — the work in flight. When the head row is slow, every row behind it
+//!    piles up, so the region pays for itself out of the rows with nothing left
+//!    to say: a settled row gives up its LINE while keeping its outcome, and a
+//!    single `… N settled rows held for commit` line at the top accounts for
+//!    every one of them. A running row's line is never taken.
 //!
 //! Off a TTY nothing here draws: rows are never built, the tree is inert, and
 //! the phase's outcomes are written by `apply::emit_phase_tree` in PLAN order
@@ -87,6 +94,9 @@ struct Row<'p> {
     /// had no room to draw.
     line: Option<LiveRow<'p>>,
     state: RowState,
+    /// This row has settled and the region gave its LINE up for the work still
+    /// running; the elision row counts it until it commits.
+    elided: bool,
 }
 
 struct Group<'p> {
@@ -135,6 +145,15 @@ pub(super) struct PhaseTree<'p, 'g> {
     /// How many groups have been committed and closed.
     flushed: usize,
     open: Option<OpenGroup<'g>>,
+    /// Lines the region may hold before the terminal starts dropping the ones
+    /// at its foot.
+    budget: usize,
+    /// The region's own summary line, standing in for the settled rows whose
+    /// lines it gave up. Drawn at the TOP, which is the one position an
+    /// over-full region never truncates.
+    elision: Option<LiveRow<'p>>,
+    /// Settled rows currently holding no line.
+    elided: usize,
 }
 
 impl<'p, 'g> PhaseTree<'p, 'g> {
@@ -155,7 +174,18 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             groups: Vec::new(),
             flushed: 0,
             open: None,
+            budget: printer.live_row_budget(),
+            elision: None,
+            elided: 0,
         }
+    }
+
+    /// Pin the region's line budget, for a test that must drive the tree past
+    /// a terminal height it cannot set.
+    #[cfg(test)]
+    pub(super) fn with_budget(mut self, budget: usize) -> Self {
+        self.budget = budget;
+        self
     }
 
     /// Whether outcomes settle HERE, in the rows the region already shows.
@@ -185,6 +215,10 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             // gives up.
             self.groups[gi].rows[ri].line = Some(self.draw_row(gi, ri));
         }
+        // The new line may have pushed the region past the terminal's height;
+        // paying for it out of rows that have nothing left to say keeps the
+        // running frontier — this row included — on screen.
+        self.enforce_budget();
         match &self.groups[gi].rows[ri].line {
             Some(line) => self.printer.lane_on_row(line, subject),
             // Unreachable: the row was just drawn.
@@ -238,6 +272,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                 .any(|token| *token == group.owner.token());
         }
         self.commit_from_head();
+        self.enforce_budget();
     }
 
     /// Settle `action`'s row in place, and commit whatever that unblocks.
@@ -257,6 +292,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         }
         self.groups[gi].rows[ri].state = RowState::Settled(outcome);
         self.commit_from_head();
+        self.enforce_budget();
     }
 
     /// Commit everything the tree still holds and take the live region down.
@@ -286,6 +322,17 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             self.flushed == self.groups.len(),
             "a settled row outlived the tree that was to commit it"
         );
+        // A group that committed nothing never opened its heading, so nothing
+        // has retired that heading's live row; and the summary line has by now
+        // nothing left to summarise.
+        for group in &mut self.groups {
+            if let Some(heading) = group.heading.take() {
+                heading.retire();
+            }
+        }
+        if let Some(elision) = self.elision.take() {
+            elision.retire();
+        }
     }
 
     /// Commit the settled rows at the head of the tree, in order, stopping at
@@ -293,9 +340,6 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     fn commit_from_head(&mut self) {
         while self.flushed < self.groups.len() {
             let index = self.flushed;
-            if !self.open_group(index) {
-                return;
-            }
             while self.groups[index].flushed < self.groups[index].rows.len() {
                 if !matches!(
                     self.groups[index].rows[self.groups[index].flushed].state,
@@ -303,7 +347,16 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                 ) {
                     return;
                 }
+                // The heading is earned by the line about to be written under
+                // it, and asked for no earlier: a group whose every row was
+                // retired unsettled — the abort path — must produce nothing at
+                // all, which is the account `emit_phase_tree` gives it off a
+                // TTY and the account the rollup's shortfall gives it here.
+                if !self.open_group(index) {
+                    return;
+                }
                 self.commit_head_row(index);
+                self.paint_elision();
             }
             // The group is drained, but a group that can still gain a row must
             // keep its heading open for it — see rule 3.
@@ -311,6 +364,86 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                 return;
             }
             self.flushed += 1;
+        }
+    }
+
+    /// Keep the live region inside the terminal's height.
+    ///
+    /// indicatif draws a `MultiProgress` top down and stops at the terminal's
+    /// last line, so an over-full region drops the rows at its FOOT — the work
+    /// that started most recently, which is exactly the work a reader is
+    /// waiting on. The region therefore pays for its own overflow out of the
+    /// rows that have nothing left to say.
+    fn enforce_budget(&mut self) {
+        while self.drawn_lines() > self.budget && self.free_one_line() {}
+    }
+
+    /// Give up ONE line, cheapest first, or answer `false` when every line left
+    /// is one the region must keep.
+    ///
+    /// A settled row goes first: its outcome is held in the tree and still
+    /// commits, in order, from the head, so the only cost is that a finished
+    /// line leaves the screen and returns in the scrollback. Then a pending
+    /// row, which describes work that has not started and is redrawn when it
+    /// does. A RUNNING row's line is never taken — a region showing finished
+    /// work while hiding what is in flight is the reading this whole tree
+    /// exists to prevent.
+    fn free_one_line(&mut self) -> bool {
+        for gi in 0..self.groups.len() {
+            for ri in 0..self.groups[gi].rows.len() {
+                let row = &self.groups[gi].rows[ri];
+                if matches!(row.state, RowState::Settled(_)) && row.line.is_some() {
+                    self.elide(gi, ri);
+                    return true;
+                }
+            }
+        }
+        // Taken from the foot: the furthest a pending row can be from the head
+        // is the longest before anything needs to be read about it.
+        for gi in (0..self.groups.len()).rev() {
+            for ri in (0..self.groups[gi].rows.len()).rev() {
+                if matches!(self.groups[gi].rows[ri].state, RowState::Pending)
+                    && let Some(line) = self.groups[gi].rows[ri].line.take()
+                {
+                    line.retire();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Take a settled row's line, keeping the outcome the commit still owes.
+    fn elide(&mut self, gi: usize, ri: usize) {
+        if let Some(line) = self.groups[gi].rows[ri].line.take() {
+            line.retire();
+        }
+        self.groups[gi].rows[ri].elided = true;
+        self.elided += 1;
+        self.paint_elision();
+    }
+
+    /// Keep the summary line in step with what it stands for, drawing it when
+    /// the region first gives a line up and retiring it once every row it
+    /// counted has been committed.
+    ///
+    /// It is never allowed to be silent: a dispatched action is on screen as a
+    /// row, or committed to the scrollback, or counted here.
+    fn paint_elision(&mut self) {
+        if self.elided == 0 {
+            if let Some(elision) = self.elision.take() {
+                elision.retire();
+            }
+            return;
+        }
+        if self.elision.is_none() {
+            self.elision = Some(self.printer.live_row_first(self.depth.saturating_sub(1)));
+        }
+        if let Some(elision) = &self.elision {
+            elision.set_note(&format!(
+                "{} held for commit",
+                crate::pluralize(self.elided, "settled row")
+            ));
         }
     }
 
@@ -322,6 +455,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             groups,
             open,
             preopened,
+            elided,
             ..
         } = self;
         let Some(target) = open
@@ -336,6 +470,9 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         let group = &mut groups[index];
         let row = &mut group.rows[group.flushed];
         group.flushed += 1;
+        if std::mem::take(&mut row.elided) {
+            *elided = elided.saturating_sub(1);
+        }
         let RowState::Settled(outcome) = std::mem::replace(&mut row.state, RowState::Flushed)
         else {
             debug_assert!(false, "an unsettled row reached the commit");
@@ -388,6 +525,14 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
 
     /// The row for `action` (or the group's own wait row when `action` is
     /// `None`), appended if it does not exist yet.
+    ///
+    /// Identity is the POINTER: every caller reads its `&'p Action` out of the
+    /// plan's own `OwnerGroup::actions` storage, which outlives the phase, so
+    /// the wait path and the dispatch path name the same address for the same
+    /// action. A clone introduced between the scheduler and here would compare
+    /// unequal and mint a SECOND row for one action — silently, since nothing
+    /// in the type system says the reference must be the plan's own.
+    /// `apply.rs`'s `action_key` rests on the same invariant.
     fn row_for(&mut self, owner: &'p Owner, action: Option<&'p Action>) -> (usize, usize) {
         let gi = self.group_for(owner);
         let existing = self.groups[gi].rows.iter().position(|row| match action {
@@ -401,6 +546,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             action,
             line: None,
             state: RowState::Pending,
+            elided: false,
         });
         (gi, self.groups[gi].rows.len() - 1)
     }
@@ -456,7 +602,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             // tree can choose not to draw, and an over-full live region hides
             // the rows at its FOOT — the work actually running. So the budget
             // is spent on what is happening before what is not.
-            if self.drawn_lines() >= self.printer.live_row_budget() {
+            if self.drawn_lines() >= self.budget {
                 return;
             }
             self.groups[gi].rows[ri].line = Some(self.draw_row(gi, ri));
@@ -475,15 +621,37 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         }
     }
 
-    /// Lines the live region currently holds.
-    fn drawn_lines(&self) -> usize {
-        self.groups
+    /// Every line the region currently holds, top down — the live region's own
+    /// state, for a test that has to tell a row being REWRITTEN from a second
+    /// row being added. The recording buffer shows both as one more line
+    /// drawn, so it cannot answer that question and this can.
+    #[cfg(test)]
+    pub(super) fn drawn_rows(&self) -> Vec<String> {
+        self.elision
             .iter()
-            .map(|group| {
-                usize::from(group.heading.is_some())
-                    + group.rows.iter().filter(|row| row.line.is_some()).count()
-            })
-            .sum()
+            .map(super::super::output::live_row::LiveRow::text)
+            .chain(self.groups.iter().flat_map(|group| {
+                group
+                    .heading
+                    .iter()
+                    .chain(group.rows.iter().filter_map(|row| row.line.as_ref()))
+                    .map(super::super::output::live_row::LiveRow::text)
+            }))
+            .collect()
+    }
+
+    /// Lines the live region currently holds — the summary line included, since
+    /// it occupies one like any other.
+    fn drawn_lines(&self) -> usize {
+        usize::from(self.elision.is_some())
+            + self
+                .groups
+                .iter()
+                .map(|group| {
+                    usize::from(group.heading.is_some())
+                        + group.rows.iter().filter(|row| row.line.is_some()).count()
+                })
+                .sum::<usize>()
     }
 }
 
@@ -526,36 +694,51 @@ mod tests {
     }
 
     #[test]
-    fn a_row_settles_below_a_row_that_started_earlier_and_is_still_running() {
-        // The invariant, at the moment it is easiest to break: the SECOND
-        // action finishes first. Its settled line belongs in the row it has
-        // occupied since dispatch — below the first action's running row —
-        // and not above it, which is where every append-to-the-top writer
-        // would have put it.
+    fn a_row_settles_between_the_rows_it_was_dispatched_between() {
+        // The invariant, at the position that can tell the two hypotheses
+        // apart: the MIDDLE action finishes first. A two-row fixture cannot —
+        // its settled line is last either way, whether it settled in its own
+        // slot or was appended at the foot of the region. Here, an
+        // append-at-the-foot writer puts `brew` BELOW `cargo`, and a reader is
+        // told the second thing to start finished after the third.
         let (printer, buf) = Printer::for_test_with_live_bars();
         let section = printer.section_phase(&PhaseName::Packages.section_label());
         let managers = Owner::cfgd("managers");
-        let slow = install("apt", "ripgrep");
-        let quick = install("brew", "neovim");
+        let first = install("apt", "ripgrep");
+        let middle = install("brew", "neovim");
+        let last = install("cargo", "just");
 
         let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
-        let running = tree.dispatched(&managers, &slow);
-        let finished = tree.dispatched(&managers, &quick);
-        let before = last_at(
-            &drawn(&buf),
-            &["apt install ripgrep", "brew install neovim"],
-        );
+        let running_first = tree.dispatched(&managers, &first);
+        let running_middle = tree.dispatched(&managers, &middle);
+        let running_last = tree.dispatched(&managers, &last);
 
-        finished.finish();
-        tree.settled(&managers, &quick, done("brew install neovim"));
+        running_middle.finish();
+        tree.settled(&managers, &middle, done("brew install neovim"));
 
         let after = drawn(&buf);
-        let settled = last_at(&after, &["apt install ripgrep", "✓ brew install neovim"]);
-        assert!(
-            before[0] < before[1] && settled[0] < settled[1],
-            "the settled row jumped above the row still running: {after:?}"
+        let order = last_at(
+            &after,
+            &[
+                "apt install ripgrep",
+                "✓ brew install neovim",
+                "cargo install just",
+            ],
         );
-        drop(running);
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the settled row left the slot it was dispatched into: {after:?}"
+        );
+        // The same claim read off the region itself, where a row appended at
+        // the foot is a FOURTH line rather than a reordered one.
+        let rows = tree.drawn_rows();
+        assert_eq!(
+            rows.iter().filter(|l| l.contains("neovim")).count(),
+            1,
+            "the settled action was drawn twice: {rows:?}"
+        );
+        drop(running_first);
+        drop(running_last);
     }
 
     #[test]
@@ -698,6 +881,230 @@ mod tests {
         assert!(
             order[0] < order[1],
             "the blocked action left the row it waited in: {after:?}"
+        );
+    }
+
+    #[test]
+    fn a_blocked_action_starts_in_the_row_it_waited_in_rather_than_a_new_one() {
+        // The half an ordering assertion cannot see: a dispatch that APPENDED
+        // a row would leave the wait row behind, so the action would occupy
+        // two lines at once and the sentence about what is blocking it would
+        // outlive the block. Read off the region, because the recording buffer
+        // shows a rewrite and an append as the same one extra line.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let running = install("brew", "neovim");
+        let blocked = install("brew-cask", "firefox");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        let lane = tree.dispatched(&managers, &running);
+        tree.waiting(&Held {
+            waits: vec![Wait {
+                owner: &managers,
+                action: Some(&blocked),
+                subject: "brew-cask install firefox · waiting on brew".to_string(),
+            }],
+            pending_owners: vec![managers.token()],
+        });
+        assert_eq!(
+            tree.drawn_rows()
+                .iter()
+                .filter(|line| line.contains("firefox"))
+                .count(),
+            1,
+            "the blocked action must hold exactly one row: {:?}",
+            tree.drawn_rows()
+        );
+
+        lane.finish();
+        tree.settled(&managers, &running, done("brew install neovim"));
+        let dispatched = tree.dispatched(&managers, &blocked);
+
+        let rows = tree.drawn_rows();
+        let naming: Vec<&String> = rows
+            .iter()
+            .filter(|line| line.contains("firefox"))
+            .collect();
+        assert_eq!(
+            naming.len(),
+            1,
+            "dispatch appended a second row instead of starting the one that waited: {rows:?}"
+        );
+        assert!(
+            !naming[0].contains("waiting on"),
+            "the row still says it is blocked while it runs: {naming:?}"
+        );
+        dispatched.finish();
+    }
+
+    /// Dispatch `count` installs into one group, then settle the rows named by
+    /// `settle` — everything else stays running. Returns the tree and the
+    /// still-running handles, which the caller drops when it is done reading.
+    fn over_full<'a>(
+        printer: &'a Printer,
+        section: &'a SectionGuard<'a>,
+        owner: &'a Owner,
+        actions: &'a [Action],
+        settle: &[usize],
+        budget: usize,
+    ) -> (PhaseTree<'a, 'a>, Vec<LaneHandle<'a>>) {
+        let mut tree =
+            PhaseTree::new(printer, Some(section), None, section.depth + 1, 30).with_budget(budget);
+        let mut lanes: Vec<Option<LaneHandle<'a>>> = actions
+            .iter()
+            .map(|action| Some(tree.dispatched(owner, action)))
+            .collect();
+        for &index in settle {
+            if let Some(lane) = lanes[index].take() {
+                lane.finish();
+            }
+            tree.settled(
+                owner,
+                &actions[index],
+                done(&format!("apt install pkg{index}")),
+            );
+        }
+        (tree, lanes.into_iter().flatten().collect())
+    }
+
+    fn packages(count: usize) -> Vec<Action> {
+        (0..count)
+            .map(|i| install("apt", &format!("pkg{i}")))
+            .collect()
+    }
+
+    #[test]
+    fn an_over_full_region_keeps_the_running_rows_and_counts_what_it_hid() {
+        // A terminal shorter than the phase is the ordinary case, not an edge:
+        // the head row is a slow install and every row dispatched behind it
+        // stays in the region until it clears. indicatif truncates from the
+        // FOOT, so an unbounded region hides the work in flight and shows only
+        // finished lines — the "is it hung?" reading this tree exists to
+        // remove, arrived at from the other side. Settled rows are what the
+        // region gives up, because their outcome is already held and still
+        // commits in order.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(8);
+
+        // Rows 1..=5 finish while row 0 — the head — is still running, so
+        // none of them can be committed yet.
+        let (tree, running) =
+            over_full(&printer, &section, &managers, &actions, &[1, 2, 3, 4, 5], 5);
+
+        let rows = tree.drawn_rows();
+        assert!(
+            rows.len() <= 5,
+            "the region outgrew the terminal it was told it had: {rows:?}"
+        );
+        for still_running in ["pkg0", "pkg6", "pkg7"] {
+            assert!(
+                rows.iter().any(|line| line.contains(still_running)),
+                "{still_running} is running and left the screen: {rows:?}"
+            );
+        }
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("5 settled rows held for commit")),
+            "the region hid five rows without accounting for them: {rows:?}"
+        );
+        for hidden in ["pkg1", "pkg2", "pkg3", "pkg4", "pkg5"] {
+            assert!(
+                !rows.iter().any(|line| line.contains(hidden)),
+                "{hidden} settled but was not given up: {rows:?}"
+            );
+        }
+        drop(running);
+    }
+
+    #[test]
+    fn a_region_that_gave_up_lines_still_commits_every_row_once_in_order() {
+        // The line leaves the screen; the outcome does not leave the tree. What
+        // the reader loses is a finished line for a while, which is the whole
+        // trade — and the permanent record must be byte-for-byte what it would
+        // have been on a terminal tall enough to hold everything.
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(8);
+
+        let (mut tree, running) =
+            over_full(&printer, &section, &managers, &actions, &[1, 2, 3, 4, 5], 5);
+        assert!(
+            !drawn(&buf).contains("pkg1"),
+            "a row behind a running head reached the scrollback early: {:?}",
+            drawn(&buf)
+        );
+
+        for lane in running {
+            lane.finish();
+        }
+        for index in [0, 6, 7] {
+            tree.settled(
+                &managers,
+                &actions[index],
+                done(&format!("apt install pkg{index}")),
+            );
+        }
+        tree.finish();
+
+        let scrollback = drawn(&buf);
+        let subjects: Vec<String> = (0..8).map(|i| format!("apt install pkg{i}")).collect();
+        for subject in &subjects {
+            assert_eq!(
+                scrollback.matches(subject.as_str()).count(),
+                1,
+                "{subject} reached the permanent record {} times: {scrollback:?}",
+                scrollback.matches(subject.as_str()).count()
+            );
+        }
+        let order = last_at(
+            &scrollback,
+            &subjects.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the scrollback left dispatch order: {scrollback:?}"
+        );
+    }
+
+    #[test]
+    fn a_group_that_commits_nothing_prints_no_heading() {
+        // The abort path: a group whose actions were dispatched and then lost
+        // when the run was cut short has nothing to say, and a heading over an
+        // empty body says the opposite — that something happened here and the
+        // renderer could not name it. Off a TTY `emit_phase_tree` skips such a
+        // group entirely; the live path must give the same account.
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let nvim = Owner::module("nvim");
+        let tmux = Owner::module("tmux");
+        let finished = install("brew", "neovim");
+        let lost = install("apt", "tmux");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        tree.dispatched(&nvim, &finished).finish();
+        let interrupted = tree.dispatched(&tmux, &lost);
+        tree.settled(&nvim, &finished, done("brew install neovim"));
+        // The worker never answered for it — an abort, or a lane that ended
+        // under one.
+        drop(interrupted);
+        tree.finish();
+
+        let scrollback = drawn(&buf);
+        assert!(
+            scrollback.contains("module:nvim") && scrollback.contains("brew install neovim"),
+            "the group that DID commit must still be written: {scrollback:?}"
+        );
+        assert!(
+            !scrollback.contains("module:tmux"),
+            "a group that committed nothing opened a heading anyway: {scrollback:?}"
+        );
+        assert!(
+            !scrollback.contains("(none)"),
+            "an empty group body reached the transcript: {scrollback:?}"
         );
     }
 

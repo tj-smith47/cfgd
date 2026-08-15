@@ -37,7 +37,9 @@ pub use spinner::{ProgressBar, Spinner};
 pub mod window;
 pub use window::OutputWindow;
 
-pub mod live_row;
+// Every item is `pub(crate)`: a row is a live-region primitive the reconciler
+// draws its phase tree with, never a published surface.
+pub(crate) mod live_row;
 
 pub mod lane;
 pub use lane::LaneOutput;

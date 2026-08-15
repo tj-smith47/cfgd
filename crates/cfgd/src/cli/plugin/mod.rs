@@ -677,9 +677,9 @@ pub fn cmd_deploy(
                 .status(
                     Role::Ok,
                     format!(
-                        "Applied {} document(s), {} reference(s) pinned",
-                        out_docs.len(),
-                        rewrites.len()
+                        "Applied {}, {} pinned",
+                        cfgd_core::pluralize(out_docs.len(), "document"),
+                        cfgd_core::pluralize(rewrites.len(), "reference")
                     ),
                 )
                 .with_data(payload),

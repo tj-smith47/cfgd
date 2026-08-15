@@ -587,6 +587,52 @@ pub fn permission_change_source_setup() -> (
 // state shape.
 // ---------------------------------------------------------------------------
 
+/// Seed a state DB whose rollback REMOVES files rather than restoring content:
+/// apply 1 settles with the workspace empty, apply 2 creates two files (each
+/// recorded as an absent backup, the marker that says the path did not exist
+/// when apply 1 finished). Rolling back to apply 1 therefore undoes both
+/// creates — the `N newly created files removed` line, in the plural.
+///
+/// Returns `(workspace, state_dir, created_paths, apply_id_1)`.
+pub fn rollback_state_with_created_files_setup()
+-> (tempfile::TempDir, tempfile::TempDir, Vec<PathBuf>, i64) {
+    let workspace = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
+
+    let apply_id_1 = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply_id_2 = state
+        .record_apply("test", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+
+    let created: Vec<PathBuf> = ["new-config.txt", "new-aliases.sh"]
+        .iter()
+        .map(|name| workspace.path().join(name))
+        .collect();
+    for (index, path) in created.iter().enumerate() {
+        state
+            .store_absent_backup(apply_id_2, &path.display().to_string())
+            .unwrap();
+        let jid = state
+            .journal_begin(
+                apply_id_2,
+                index,
+                "files",
+                "file",
+                &format!("file:create:{}", path.display()),
+                None,
+            )
+            .unwrap();
+        state.journal_complete(jid, index, None, None).unwrap();
+        std::fs::write(path, "created by apply 2").unwrap();
+    }
+
+    (workspace, state_dir, created, apply_id_1)
+}
+
 /// Seed a state DB with a target apply that has subsequent file changes to
 /// roll back: apply 1 creates a file, apply 2 modifies it (capturing a
 /// backup of apply 1's content). `cmd_rollback(apply_id_1)` rolls back to

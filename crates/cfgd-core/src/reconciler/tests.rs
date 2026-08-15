@@ -17220,7 +17220,16 @@ struct LaneProbeState {
     held: HashSet<String>,
 }
 
-const LANE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a probe waits before it gives up and reports what it saw. It turns
+/// a hang into a failure, so it is not a rendezvous budget and nothing here
+/// spends it on a green run.
+///
+/// Generous because a lane worker is SPAWNED, and a spawn takes the shared
+/// `PATH` guard: another test in this binary holding the exclusive one
+/// (`CwdGuard`, any `PATH` mutation) stalls every worker for as long as its
+/// body runs. Ten seconds was not enough under a loaded parallel run, and a
+/// wait that expires early reports the harness rather than the code.
+const LANE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl LaneProbe {
     /// A probe whose named operations block until the test releases them.
@@ -18769,7 +18778,17 @@ fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
     // dispatched ahead of it and a row never moves. Each line is written
     // exactly once — the tree settles what it drew, so `emit_phase_tree` has
     // nothing left to re-emit.
-    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    //
+    // `zsh` is the rendezvous rather than a third subject: it shares tmux's
+    // apt lane, and the coordinator collects a finished action — settling its
+    // row — BEFORE the dispatch pass that can hand that lane to the next
+    // action. So `start:apt:zsh` is the observable that tmux is SETTLED,
+    // where `end:apt:tmux` says only that the manager's `install` returned.
+    // Waiting on the weaker one leaves "nvim still running while tmux is
+    // already settled" to timing; waiting on this one establishes it. Its name
+    // sorts last because groups render in `Owner::sort_key` order, which is
+    // the dispatch order this test is about.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux", "apt:zsh"]);
     let log = new_dispatch_log();
     let registry = lane_registry(vec![
         DispatchLogManager::new("brew", &log, true).with_probe(&probe),
@@ -18778,10 +18797,12 @@ fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
     let plan = packages_phase(vec![
         module_install_action("nvim", "brew", "neovim"),
         module_install_action("tmux", "apt", "tmux"),
+        module_install_action("zsh", "apt", "zsh"),
     ]);
     let modules = vec![
         module_for("nvim", "brew", "neovim"),
         module_for("tmux", "apt", "tmux"),
+        module_for("zsh", "apt", "zsh"),
     ];
 
     let driver = std::sync::Arc::clone(&probe);
@@ -18790,7 +18811,7 @@ fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
         .run_live(move || {
             assert!(driver.await_in_flight(2), "{:?}", driver.events());
             driver.release("apt:tmux");
-            assert!(driver.await_finished("apt:tmux"));
+            assert!(driver.await_started("apt:zsh"), "{:?}", driver.events());
             driver.release_all();
         });
 
@@ -18799,8 +18820,10 @@ fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
     for once in [
         "brew install neovim",
         "apt install tmux",
+        "apt install zsh",
         "module:nvim",
         "module:tmux",
+        "module:zsh",
     ] {
         assert_eq!(
             transcript.matches(once).count(),
@@ -18816,6 +18839,10 @@ fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
     assert!(
         at("brew install neovim") < at("apt install tmux"),
         "the scrollback followed completion order rather than dispatch order: {transcript}"
+    );
+    assert!(
+        at("apt install tmux") < at("apt install zsh"),
+        "the rest of the phase followed the head out of order: {transcript}"
     );
 }
 
