@@ -430,6 +430,11 @@ mod tests {
         // Expect drift entries for both child values (actual is empty on non-Windows).
         assert_eq!(drifts.len(), 2);
         assert!(drifts.iter().all(|d| d.actual.is_empty()));
+        // The registry path key never opens with "windowsRegistry." — this
+        // configurator names the key path itself, not its own name — so this
+        // must hold on every OS, not just the ones that can actually read the
+        // registry.
+        crate::system::assert_keys_undoubled(&wrc, &drifts);
     }
 
     #[test]
@@ -651,5 +656,68 @@ mod tests {
             WindowsRegistryConfigurator::read_reg_type(r"HKCU\Test", "Key"),
             None
         );
+    }
+
+    // Cross-platform on purpose: `apply()`'s narration is unconditional and
+    // `write_reg_value` no-ops before it ever reaches `Command::new("reg")`
+    // off Windows (see the guard at the top of `write_reg_value`), so this is
+    // the one bridge fixture in this crate that produces the SAME golden
+    // whichever OS runs it — including Windows, where `reg add` also runs for
+    // real against a key this fixture doesn't need to exist first.
+    mod bridge {
+        use super::*;
+        use crate::system::tests_snapshot_bridge::{
+            BridgeApply, assert_single_seam, capture_attached_apply,
+        };
+        use cfgd_core::output::Role;
+        use cfgd_core::output::test_capture::assert_snapshot_at;
+
+        fn snapshot_dir() -> std::path::PathBuf {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")
+        }
+
+        fn assert_snapshot(name: &str, actual: &str) {
+            assert_snapshot_at(&snapshot_dir(), name, actual);
+        }
+
+        #[derive(serde::Serialize)]
+        struct RegistryApplySummary {
+            keys_processed: usize,
+        }
+
+        #[test]
+        fn snapshot_windows_registry_clean() {
+            let mut inner = serde_yaml::Mapping::new();
+            inner.insert(
+                serde_yaml::Value::String("HideFileExt".into()),
+                serde_yaml::Value::Number(0.into()),
+            );
+            let mut outer = serde_yaml::Mapping::new();
+            outer.insert(
+                serde_yaml::Value::String(
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced".into(),
+                ),
+                serde_yaml::Value::Mapping(inner),
+            );
+            let desired = serde_yaml::Value::Mapping(outer);
+
+            let wrc = WindowsRegistryConfigurator;
+            let summary = RegistryApplySummary { keys_processed: 1 };
+            let captured = capture_attached_apply(
+                &BridgeApply {
+                    configurator: &wrc,
+                    desired: &desired,
+                    key: r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced.HideFileExt",
+                    current: "1",
+                    target: "0",
+                    summary_role: Role::Ok,
+                    summary: "Windows registry applied",
+                },
+                &summary,
+            );
+
+            assert_single_seam("windows_registry_clean", &captured);
+            assert_snapshot("windows_registry_clean.txt", &captured);
+        }
     }
 }

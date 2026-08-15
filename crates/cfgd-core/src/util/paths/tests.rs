@@ -694,18 +694,30 @@ fn absolutize_path_absolute_input_is_returned_unchanged() {
 #[test]
 #[serial_test::serial]
 fn absolutize_path_relative_input_resolves_against_cwd() {
-    let dir = tempfile::TempDir::new().unwrap();
+    // `getcwd(3)` — which both `std::env::current_dir()` and
+    // `absolutize_path`'s CWD join read — resolves through symlinks (macOS's
+    // `/tmp` is itself `/private/tmp`), while a directory handle created
+    // before the chdir keeps whatever unresolved name it was built from.
+    // Chdir'ing through an *explicit* symlink reproduces that split on every
+    // OS rather than only on macOS's temp layout, so this proves the fix
+    // instead of merely tolerating the mac case.
+    let root = tempfile::TempDir::new().unwrap();
+    let real_dir = root.path().join("real");
+    std::fs::create_dir(&real_dir).unwrap();
+    let link_dir = root.path().join("link");
+    crate::create_symlink(&real_dir, &link_dir).unwrap();
+
     let original_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_current_dir(&link_dir).unwrap();
     let result = super::absolutize_path(Path::new("cfgd.yaml"));
     std::env::set_current_dir(original_cwd).unwrap();
 
     assert!(result.is_absolute(), "must be absolute: {result:?}");
-    // Compare through the same lexical (non-canonicalizing) join the
-    // production code performs, so a symlinked temp dir (macOS's `/tmp` is
-    // itself `/private/tmp`) doesn't fail this assertion for a reason
-    // unrelated to what it pins.
-    assert_eq!(result, dir.path().join("cfgd.yaml"));
+    // Canonicalize the handle we chdir'd through before deriving the
+    // expectation, so both sides of the comparison sit on the same
+    // (resolved) side of the symlink `getcwd(3)` already walked past.
+    let expected_dir = link_dir.canonicalize().unwrap();
+    assert_eq!(result, expected_dir.join("cfgd.yaml"));
 }
 
 #[test]
@@ -725,7 +737,14 @@ fn absolutize_path_does_not_relocate_through_a_symlinked_directory() {
     let result = super::absolutize_path(Path::new("linked-config/cfgd.yaml"));
     std::env::set_current_dir(original_cwd).unwrap();
 
-    assert_eq!(result, root.path().join("linked-config/cfgd.yaml"));
+    // `getcwd(3)` resolves `root.path()` itself if it sits behind a symlink
+    // (macOS's `/tmp` -> `/private/tmp`); canonicalize it before deriving the
+    // expectation so the comparison sits on the same side of *that* symlink.
+    // The `linked-config` segment must stay UNresolved — canonicalizing it
+    // too would silently pass the M1 pin below by relocating to
+    // `real_target` on both sides of the assertion.
+    let expected_root = root.path().canonicalize().unwrap();
+    assert_eq!(result, expected_root.join("linked-config/cfgd.yaml"));
     assert!(
         !result.starts_with(&real_target),
         "must not relocate to the symlink target: {result:?}"

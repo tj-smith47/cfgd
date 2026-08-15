@@ -191,11 +191,16 @@ pub(crate) fn yaml_value_with_numeric_bools(value: &serde_yaml::Value) -> String
 /// those are persisted, undoubling one later costs a state migration. Every
 /// configurator's diff test calls this against its own fixture, so the shape is
 /// pinned per configurator rather than only where an exact key is asserted.
-// Unix-only because every caller is: the configurator test modules that run this
-// check (gpg's shim tests, ssh_keys, node) are themselves `#[cfg(unix)]`, and an
-// item with no caller on a platform is dead code there — which `-D warnings`
-// makes a build failure rather than a warning.
-#[cfg(all(test, unix))]
+//
+// Plain `test` rather than `test-and-unix`: `windowsRegistry` and
+// `windowsServices` mint the same persisted key shape as every unix
+// configurator and their `diff()` tests are cross-platform already (neither
+// shells out to read state), so they call this from every OS including
+// Windows. gpg's shim tests, `ssh_keys` and `node` stay `#[cfg(unix)]` at
+// their own call sites — they diff real filesystem/service state that only
+// exists on unix — so this function needs no narrower gate of its own; it
+// would be dead only if every caller vanished at once.
+#[cfg(test)]
 pub(crate) fn assert_keys_undoubled(
     configurator: &dyn cfgd_core::providers::SystemConfigurator,
     drifts: &[SystemDrift],
@@ -212,11 +217,17 @@ pub(crate) fn assert_keys_undoubled(
     }
 }
 
-// The widest bridge that drives this capture is `ssh_keys`', which runs on every
-// unix; `systemd_unit`'s and `node`'s are narrower (`target_os = "linux"`). The
-// shared half follows the widest of them rather than standing dead on Windows,
-// where no bridge compiles at all.
-#[cfg(all(test, unix))]
+// `windows_registry`'s bridge test is the cross-platform caller: its
+// `apply()` always emits the narration this capture pins, on every OS,
+// because the actual `reg add` shell-out is itself `cfg!(windows)`-guarded
+// inside `write_reg_value` rather than the narration around it — so driving
+// it needs no platform gate here and this module compiles (and its Windows
+// caller runs) on Windows too. `ssh_keys`'s and `node`'s consumers stay
+// `#[cfg(unix)]`, and `systemd_unit`'s stays `target_os = "linux"`, at THEIR
+// own call sites: their `apply()` genuinely shells out to a command that
+// does not exist off that platform, so a bridge fixture driving them there
+// would error rather than produce a golden.
+#[cfg(test)]
 mod tests_snapshot_bridge;
 
 #[cfg(test)]

@@ -5598,14 +5598,39 @@ fn cmd_apply_with_module_filter() {
     );
 }
 
-#[test]
-fn cmd_apply_with_env_vars() {
+/// Declares a host with no fish, no pre-existing `.bash_profile`/`.bash_login`
+/// — the only variable across hosts left open is `zsh_present`, which each
+/// caller pins explicitly. `EnvHostProbe::detect` reads `$SHELL` and PATH,
+/// neither of which `with_test_home_guard` isolates, so a real `cmd_apply`
+/// run gets whatever shell shape the *runner* happens to have rather than
+/// what the test declares — pinning through this seam is what makes the
+/// planned-action count below deterministic on every host.
+fn declared_env_host_probe(zsh_present: bool) -> cfgd_core::reconciler::EnvHostProbeOverride {
+    cfgd_core::reconciler::EnvHostProbeOverride {
+        shell: "/bin/bash".to_string(),
+        fish_present: false,
+        bash_profile_exists: false,
+        bash_login_exists: false,
+        git_bash_present: false,
+        zsh_present,
+    }
+}
+
+/// Shared body for the zsh-present / no-zsh env-target-count variants below.
+/// `expected_actions` is the exact `env_targets` count for the declared shape
+/// (see `EnvHostProbe`'s field docs for which target each flag adds/removes):
+/// `.cfgd.env` + interactive rc + `.profile` + `environment.d` + live-session
+/// refresh (5), plus `.zshenv` only when `zsh_present` (6).
+fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
     let (config_dir, state_dir) = setup_test_env();
     // A real (non-dry-run) apply of a profile carrying `spec.env` writes the
     // managed env surfaces under `~`; without this the run rewrites the
     // operator's own `~/.cfgd.env`.
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        declared_env_host_probe(zsh_present),
+    );
 
     // Profile with env vars
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n      value: less\n  modules: []\n";
@@ -5646,10 +5671,12 @@ fn cmd_apply_with_env_vars() {
             "should contain Apply header, got: {output}"
         );
         // `--yes` drops the pre-confirmation preview, so the header's count is
-        // where an executing run states the work it took on.
+        // where an executing run states the work it took on. The host shape
+        // is pinned above, so the count is exact rather than a fallback.
+        let expected = format!("Actions  {expected_actions} planned");
         assert!(
-            output.contains("Actions  6 planned") || output.contains("Nothing to do"),
-            "should state the planned action count or nothing to do, got: {output}"
+            output.contains(&expected),
+            "should state {expected}, got: {output}"
         );
     }
 
@@ -5664,6 +5691,16 @@ fn cmd_apply_with_env_vars() {
         resolved.merged.env.iter().any(|e| e.name == "PAGER"),
         "resolved profile should contain PAGER env var"
     );
+}
+
+#[test]
+fn cmd_apply_with_env_vars() {
+    cmd_apply_with_env_vars_for_host(true, 6);
+}
+
+#[test]
+fn cmd_apply_with_env_vars_no_zsh() {
+    cmd_apply_with_env_vars_for_host(false, 5);
 }
 
 #[test]

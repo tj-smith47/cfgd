@@ -697,6 +697,11 @@ fn service_diff_missing_service_with_binary_path_emits_absent_drift() {
     assert_eq!(d.key, "GhostService.exists");
     assert_eq!(d.expected, "present");
     assert_eq!(d.actual, "absent");
+    // The service name never opens with "windowsServices." — `diff()` keys
+    // on the service's own name, not this configurator's — so this holds on
+    // every OS; `query_service` returning `None` off Windows is exactly what
+    // produces the drift this test is pinning in the first place.
+    crate::system::assert_keys_undoubled(&wsc, &drifts);
 }
 
 #[test]

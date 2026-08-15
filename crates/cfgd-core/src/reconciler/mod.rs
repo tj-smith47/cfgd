@@ -32,6 +32,10 @@ mod tests;
 
 pub use apply::{action_matches_phase_filter, emit_action_notes};
 pub use env_engine::launchd_env_plist;
+#[cfg(any(test, feature = "test-helpers"))]
+pub use env_engine::{
+    EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
+};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
     DisplaySubject, action_display_subject, bare_script_subject, condense_action_desc_for_display,
