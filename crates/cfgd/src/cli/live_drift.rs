@@ -138,7 +138,7 @@ pub(super) fn live_drift_results(
         &pkg_actions,
         &[],
     )) {
-        drift.push(manager_action_drift(&ma));
+        drift.extend(manager_action_drift(&ma));
     }
 
     // System: any configurator reporting a non-empty diff is drift. The desired
@@ -218,31 +218,56 @@ pub(in crate::cli) fn manager_drift_actions(actions: Vec<Action>) -> Vec<Manager
         .collect()
 }
 
+/// How a drifted manager stands, in the ONE phrasing every surface renders it
+/// in: the state it is in, and what can be done about it.
+///
+/// Two surfaces say this fact and they must say it the same way — `diff` as a
+/// status line (`<manager>: not installed` with the detail after it) and
+/// `verify` / `status -e` folded into a [`VerifyResult::actual`]. Derived here
+/// rather than at each of them, because a reader matching a `verify` row
+/// against the `diff` that explains it is matching the same words.
+pub(in crate::cli) struct ManagerDriftPhrase {
+    /// What the manager's state IS, with no subject — the `diff` line prepends
+    /// `<manager>: ` and the `actual` string stands alone.
+    pub(in crate::cli) state: &'static str,
+    /// What can be done about it: `can bootstrap via <method>`, or
+    /// `cannot bootstrap: <reason>`.
+    pub(in crate::cli) detail: String,
+}
+
+/// The phrase for one drift [`ManagerAction`], or `None` for a node that is not
+/// drift at all — a refresh and a prerequisite run every apply regardless, so
+/// neither has a state to report. [`manager_drift_actions`] already filters
+/// both out; answering `None` rather than panicking keeps that filter an
+/// optimisation instead of a precondition a second caller has to know about.
+pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<ManagerDriftPhrase> {
+    match action {
+        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
+        ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
+            state: "not installed",
+            detail: format!("can bootstrap via {via}"),
+        }),
+        ManagerAction::Refuse { reason, .. } => Some(ManagerDriftPhrase {
+            state: "not installed",
+            detail: format!("cannot bootstrap: {reason}"),
+        }),
+    }
+}
+
 /// Map a drift [`ManagerAction`] (already filtered by [`manager_drift_actions`])
 /// to a `VerifyResult`. The `resource_id` uses the journal's own tail grammar
 /// for the same fact (`provision:<manager>` / `refuse:<manager>`) rather than
 /// the bare manager name, so a `package`-row consumer meets the persisted
 /// identity instead of a third grammar.
-fn manager_action_drift(action: &ManagerAction) -> VerifyResult {
-    match action {
-        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
-            unreachable!("manager_drift_actions excludes RefreshIndex and Prerequisite")
-        }
-        ManagerAction::Provision { manager, via, .. } => VerifyResult {
-            resource_type: "package".to_string(),
-            resource_id: format!("provision:{manager}"),
-            matches: false,
-            expected: "installed".to_string(),
-            actual: format!("not installed (bootstrap via {via})"),
-        },
-        ManagerAction::Refuse { manager, reason } => VerifyResult {
-            resource_type: "package".to_string(),
-            resource_id: format!("refuse:{manager}"),
-            matches: false,
-            expected: "installed".to_string(),
-            actual: format!("not installed (cannot bootstrap — {reason})"),
-        },
-    }
+fn manager_action_drift(action: &ManagerAction) -> Option<VerifyResult> {
+    let phrase = manager_drift_phrase(action)?;
+    Some(VerifyResult {
+        resource_type: "package".to_string(),
+        resource_id: action.resource_id(),
+        matches: false,
+        expected: "installed".to_string(),
+        actual: format!("{} ({})", phrase.state, phrase.detail),
+    })
 }
 
 /// Manager-drift half of [`live_drift_results`], usable standalone by
@@ -270,7 +295,7 @@ pub(super) fn manager_verify_results(
         &[],
     ))
     .iter()
-    .map(manager_action_drift)
+    .filter_map(manager_action_drift)
     .collect())
 }
 
@@ -719,7 +744,7 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "provision:npm")
             .unwrap_or_else(|| panic!("a provisionable manager must register as drift: {drift:?}"));
         assert_eq!(
-            manager_row.actual, "not installed (bootstrap via pip install npm-bootstrap)",
+            manager_row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
             "must name the method `diff` would show, got: {manager_row:?}"
         );
     }
@@ -805,7 +830,7 @@ mod tests {
             "must fail verify — this is what flips exit code 5"
         );
         assert_eq!(
-            row.actual, "not installed (bootstrap via pip install npm-bootstrap)",
+            row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
             "must name the method, same as diff/status, got: {row:?}"
         );
     }
@@ -845,8 +870,55 @@ mod tests {
         );
         assert!(
             row.actual
-                .contains("cannot bootstrap — a-tool-nothing-provides"),
+                .contains("cannot bootstrap: a-tool-nothing-provides"),
             "must name the refusal reason, got: {row:?}"
+        );
+    }
+
+    /// One unprovisionable manager, read on both surfaces that report it.
+    ///
+    /// `diff` renders a status line and `verify`/`status -e` a `VerifyResult`,
+    /// and the two used to word the same fact differently (`cannot bootstrap:
+    /// <reason>` against `not installed (cannot bootstrap — <reason>)`), so a
+    /// reader matching a verify row against the diff explaining it met two
+    /// spellings of one refusal. Captured from the real renders rather than
+    /// from the derivation, so re-hardcoding either surface's words fails here.
+    #[test]
+    fn a_refused_manager_reads_identically_on_diff_and_on_verify() {
+        let action = ManagerAction::Refuse {
+            manager: "snap".into(),
+            reason: "no available system manager".into(),
+        };
+        let phrase = manager_drift_phrase(&action).expect("a refusal is drift");
+
+        let (printer, cap) = Printer::for_test_doc();
+        let mut payload = crate::cli::output_types::DiffOutput::default();
+        {
+            let section =
+                printer.section_phase(&cfgd_core::reconciler::PhaseName::Packages.section_label());
+            crate::cli::diff::print_package_drift(
+                &[],
+                std::slice::from_ref(&action),
+                &section,
+                &cfgd_core::reconciler::Owner::profile("tiny"),
+                &mut payload,
+            );
+        }
+        drop(printer);
+        // `for_test_doc` pins colour off and both substrings sit inside a
+        // single theme slot, so no escape can land within either of them.
+        let rendered = cap.human();
+
+        let row = manager_action_drift(&action).expect("a refusal is drift");
+        assert!(
+            rendered.contains(&format!("snap: {}", phrase.state))
+                && rendered.contains(&phrase.detail),
+            "the diff line must be the shared phrase, got: {rendered}"
+        );
+        assert_eq!(
+            row.actual,
+            format!("{} ({})", phrase.state, phrase.detail),
+            "the verify row must be the same phrase, parenthesised"
         );
     }
 

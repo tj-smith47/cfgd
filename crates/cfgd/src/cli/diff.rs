@@ -423,7 +423,7 @@ fn package_missing_drift(
 /// plan that fixes it. `RefreshIndex`/`Prerequisite` nodes are not drift (an
 /// index refresh and a tool install are not something the user declared and
 /// can be missing) and never reach this function's caller.
-fn print_package_drift(
+pub(super) fn print_package_drift(
     pkg_actions: &[PackageAction],
     manager_actions: &[ManagerAction],
     section: &SectionGuard<'_>,
@@ -452,11 +452,17 @@ fn print_package_drift(
         let group = section.section_owner(&owner_label(owner));
         if *owner == managers_owner {
             for ma in manager_actions {
+                // The line's words come from the one derivation `verify` and
+                // `status -e` fold into their own rows, so the two surfaces
+                // cannot describe one unprovisionable manager two ways.
+                let Some(phrase) = super::live_drift::manager_drift_phrase(ma) else {
+                    continue;
+                };
+                group
+                    .status(Role::Warn, format!("{}: {}", ma.manager(), phrase.state))
+                    .detail(phrase.detail);
                 match ma {
                     ManagerAction::Provision { manager, via, .. } => {
-                        group
-                            .status(Role::Warn, format!("{manager}: not installed"))
-                            .detail(format!("can bootstrap via {via}"));
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
                             shape: "provision".to_string(),
@@ -466,9 +472,6 @@ fn print_package_drift(
                         });
                     }
                     ManagerAction::Refuse { manager, reason } => {
-                        group
-                            .status(Role::Warn, format!("{manager}: not installed"))
-                            .detail(format!("cannot bootstrap: {reason}"));
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
                             shape: "refused".to_string(),
