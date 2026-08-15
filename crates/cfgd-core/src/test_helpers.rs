@@ -2243,10 +2243,11 @@ pub struct MockPackageManager {
     /// `is_available()` is read again immediately after, and `available`
     /// itself is a plain `bool` a `&self` call cannot flip.
     became_available: std::sync::atomic::AtomicBool,
-    /// Sleep this long inside `install()` before returning — lets a test prove
-    /// two managers' lanes ran concurrently rather than serially, by timing a
-    /// wall-clock window against N-times the per-manager delay.
+    /// Sleep this long inside `install()` before returning — holds a lane open
+    /// long enough for the others to be seen in it.
     install_delay: Option<std::time::Duration>,
+    /// Shared counter of installs in flight, for a test proving lanes overlap.
+    witness: Option<std::sync::Arc<ConcurrencyWitness>>,
     /// Whether this manager keeps a local index. `true` by default because
     /// most fixtures want the refresh node in the tree; `without_index()` is
     /// the `cargo`/`npm` shape, which must plan none.
@@ -2268,6 +2269,7 @@ impl MockPackageManager {
             bootstrap_succeeds: false,
             became_available: std::sync::atomic::AtomicBool::new(false),
             install_delay: None,
+            witness: None,
             keeps_index: true,
         }
     }
@@ -2332,6 +2334,57 @@ impl MockPackageManager {
         self.install_delay = Some(delay);
         self
     }
+
+    /// Report this manager's installs to a witness shared with its peers.
+    pub fn with_concurrency_witness(mut self, witness: std::sync::Arc<ConcurrencyWitness>) -> Self {
+        self.witness = Some(witness);
+        self
+    }
+}
+
+/// How many mock installs were ever in flight at the same moment.
+///
+/// The direct observation of the thing a concurrency test is about. A wall
+/// clock cannot make that claim: "faster than a serial walk would be" is a
+/// margin, and a loaded test binary spends it on scheduling rather than on
+/// work — the same run reads 200ms alone and 400ms beside 800 other tests, so
+/// the bound is either too tight to be reliable or too loose to falsify
+/// anything. A peak of one IS a serial walk, whatever the clock said.
+#[derive(Default)]
+pub struct ConcurrencyWitness {
+    live: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl ConcurrencyWitness {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::default())
+    }
+
+    /// The most installs seen running at once.
+    pub fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn enter(&self) -> WitnessGuard<'_> {
+        let live = self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        self.peak
+            .fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+        WitnessGuard { witness: self }
+    }
+}
+
+/// Leaves the count where it found it, including on a panicking install.
+struct WitnessGuard<'a> {
+    witness: &'a ConcurrencyWitness,
+}
+
+impl Drop for WitnessGuard<'_> {
+    fn drop(&mut self) {
+        self.witness
+            .live
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl crate::providers::PackageManager for MockPackageManager {
@@ -2378,6 +2431,7 @@ impl crate::providers::PackageManager for MockPackageManager {
         packages: &[String],
         _cx: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<()> {
+        let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
             std::thread::sleep(delay);
         }

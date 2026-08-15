@@ -6,7 +6,7 @@ Rollback
 Phase: Files
   ⊙ No files affected
 
-⚠ 1 non-file action(s) require manual review
+⚠ 1 non-file action requires manual review
 
 Actions
   - package:brew:install:ripgrep

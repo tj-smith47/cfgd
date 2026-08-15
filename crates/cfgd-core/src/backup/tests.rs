@@ -2594,7 +2594,7 @@ fn rendered_item_lines(human: &str) -> Vec<String> {
         // The rollup begins at the first unindented line: every item lives
         // under an owner group and is indented, and only the phase heading
         // above (skipped) shares column 0 with the rollup. Terminating on the
-        // words `action(s)` instead read a rollup line that names no count —
+        // word `action` instead read a rollup line that names no count —
         // the partial run's leading verdict — as an item of the phase.
         .take_while(|line| line.trim().is_empty() || line.starts_with(char::is_whitespace))
         .map(|line| line.trim().to_string())
@@ -2669,11 +2669,11 @@ fn backup_pre_hook_failure_reports_the_shortfall() {
         "the failed hook and the snapshot it cost: {human}"
     );
     assert!(
-        human.contains("⊙ 1 action(s) not attempted"),
+        human.contains("⊙ 1 action not attempted"),
         "the hook the abort never reached must be counted: {human}"
     );
     assert!(
-        human.contains("2 action(s) failed"),
+        human.contains("2 actions failed"),
         "both rendered lines are failures: {human}"
     );
 }
@@ -2700,11 +2700,11 @@ fn backup_tally_counts_the_lines_it_rendered() {
         "two hooks and two snapshots are four lines: {human}"
     );
     assert!(
-        human.contains("✓ 3 action(s) succeeded"),
+        human.contains("✓ 3 actions succeeded"),
         "the rollup counts the lines it rendered: {human}"
     );
     assert!(
-        human.contains("1 action(s) failed"),
+        human.contains("1 action failed"),
         "the failed hook is the only failure: {human}"
     );
     assert!(
@@ -2733,7 +2733,7 @@ fn backup_run_header_counts_hooks_and_snapshots() {
         "two hooks plus one snapshot per unit is four: {human}"
     );
     assert!(
-        human.contains("✓ Backup complete — 4 action(s) succeeded"),
+        human.contains("✓ Backup complete — 4 actions succeeded"),
         "the rollup reconciles against the header: {human}"
     );
     assert_eq!(status, crate::state::ApplyStatus::Success);
@@ -2830,11 +2830,11 @@ fn a_store_failure_counts_only_the_lines_it_rendered() {
         lines[1]
     );
     assert!(
-        human.contains("✓ 1 action(s) succeeded"),
+        human.contains("✓ 1 action succeeded"),
         "only the hook succeeded — the snapshot's line was never rendered: {human}"
     );
     assert!(
-        human.contains("1 action(s) failed"),
+        human.contains("1 action failed"),
         "the store failure is the one failure: {human}"
     );
     assert!(

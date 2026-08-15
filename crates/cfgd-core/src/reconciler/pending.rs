@@ -1562,7 +1562,7 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
     if withheld > 0 {
         tracing::info!(
             actions = withheld,
-            "withheld action(s) whose resource awaits a source decision"
+            "withheld actions whose resource awaits a source decision"
         );
     }
     withheld

@@ -185,7 +185,7 @@ fn rollup_lines_covers_every_apply_status() {
     drop(printer);
     let out = strip_ansi(&buf.lock().unwrap());
     assert!(
-        out.contains("3 action(s) not attempted"),
+        out.contains("3 actions not attempted"),
         "shortfall line missing: {out:?}"
     );
     let glyph_line = out
@@ -200,7 +200,7 @@ fn rollup_lines_covers_every_apply_status() {
 
 /// A run that planned work and reached none of it did not complete. `cfgd
 /// backup run` refused by another holder of the unit's lock exits 1, and used
-/// to close with `✓ Backup complete — 0 action(s) succeeded` above the
+/// to close with `✓ Backup complete — 0 actions succeeded` above the
 /// shortfall — the tick and the exit code were the only two things on screen
 /// saying what happened, and they disagreed.
 #[test]
@@ -218,7 +218,7 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
         lines,
         vec![(
             Role::Skipped,
-            "Backup did not run — 3 action(s) not attempted".to_string()
+            "Backup did not run — 3 actions not attempted".to_string()
         )]
     );
 
@@ -237,10 +237,7 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
     // do, and must keep saying so.
     assert_eq!(
         rollup_lines(&RunTally::empty(), RunTitle::Apply),
-        vec![(
-            Role::Ok,
-            "Apply complete — 0 action(s) succeeded".to_string()
-        )]
+        vec![(Role::Ok, "Apply complete — 0 actions succeeded".to_string())]
     );
 }
 
@@ -282,8 +279,8 @@ fn a_completed_rollup_names_the_run_it_finished() {
         lines,
         vec![
             (Role::Warn, "Apply partial — 1 of 2 applied".to_string()),
-            (Role::Ok, "1 action(s) succeeded".to_string()),
-            (Role::Accent, "1 action(s) failed".to_string()),
+            (Role::Ok, "1 action succeeded".to_string()),
+            (Role::Accent, "1 action failed".to_string()),
         ],
         "a partial rollup leads with its own verdict and keeps both counts"
     );
@@ -298,7 +295,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
 /// A run that failed actions must not OPEN on a tick. The two count lines are
 /// deliberately split so `9 succeeded, 1 failed` and `1 succeeded, 9 failed`
 /// do not read the same colour — but with the success count first, the first
-/// line of the closing block was `✓ N action(s) succeeded` for both, and a
+/// line of the closing block was `✓ N actions succeeded` for both, and a
 /// reader who takes the first line as the verdict reads a failed run as a
 /// clean one. Every rollup that carries a failure now leads with its verdict.
 #[test]
@@ -345,11 +342,11 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
     let lines = rollup_lines(&tally, RunTitle::Apply);
     assert_eq!(
         lines[0].1,
-        "apply aborted by signal — 2 of 5 action(s) applied; no partial writes, rerun to converge"
+        "apply aborted by signal — 2 of 5 actions applied; no partial writes, rerun to converge"
     );
     assert_eq!(
         rollup_lines(&tally, RunTitle::Reconcile)[0].1,
-        "reconcile aborted by signal — 2 of 5 action(s) applied; no partial writes, rerun to converge"
+        "reconcile aborted by signal — 2 of 5 actions applied; no partial writes, rerun to converge"
     );
 }
 
@@ -367,7 +364,7 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
     };
     assert_eq!(
         rollup_lines(&tally, RunTitle::Apply)[0].1,
-        "apply aborted by signal — 2 of 3 action(s) applied, 1 failed; no partial writes, rerun to converge"
+        "apply aborted by signal — 2 of 3 actions applied, 1 failed; no partial writes, rerun to converge"
     );
 }
 
@@ -391,7 +388,7 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
     let out = strip_ansi(&buf.lock().unwrap());
     let failed_line = out
         .lines()
-        .find(|l| l.contains("action(s) failed"))
+        .find(|l| l.contains("1 action failed"))
         .unwrap_or_default();
     assert!(
         failed_line.contains("(0.4s)"),
@@ -399,7 +396,7 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
     );
     assert!(
         !out.lines()
-            .find(|l| l.contains("action(s) succeeded"))
+            .find(|l| l.contains("1 action succeeded"))
             .unwrap_or_default()
             .contains("(0.4s)"),
         "duration must not also ride the success line: {out:?}"
@@ -851,7 +848,7 @@ fn execute_skips_the_preview_when_confirmation_is_skipped() {
         "the header still states the count: {out:?}"
     );
     assert!(
-        out.contains("Apply complete — 1 action(s) succeeded"),
+        out.contains("Apply complete — 1 action succeeded"),
         "rollup missing: {out:?}"
     );
 }

@@ -3092,7 +3092,7 @@ mod profile_update_module_cleanup {
         // state-cleanup arms.
         let out = buf.lock().unwrap().clone();
         assert!(
-            out.contains("Module 'statemod' deployed 1 file(s)"),
+            out.contains("Module 'statemod' deployed 1 file"),
             "should announce deployed-file count: {out}"
         );
         assert!(
@@ -4549,7 +4549,7 @@ fn profile_migrate_all_moves_every_legacy_profile() {
         );
     }
     assert!(
-        output.contains("Migrated 2 profile(s)"),
+        output.contains("Migrated 2 profiles"),
         "should summarize both moves, got: {output}"
     );
 }
@@ -5051,7 +5051,7 @@ fn profile_migrate_execute_move_failure_records_failed() {
         "per-profile failure must be reported, got: {output}"
     );
     assert!(
-        output.contains("1 profile(s) failed to migrate"),
+        output.contains("1 profile failed to migrate"),
         "summary must reflect the all-failed case, got: {output}"
     );
     // The legacy manifest is left in place — a failed move must not delete it.

@@ -136,7 +136,11 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
     doc = if output.fail_count == 0 {
         doc.status(
             Role::Ok,
-            format!("All {} resource(s) match desired state", output.pass_count),
+            format!(
+                "All {} {} desired state",
+                cfgd_core::pluralize(output.pass_count, "resource"),
+                cfgd_core::agreeing_verb(output.pass_count, "match")
+            ),
         )
     } else {
         doc.status(
@@ -193,7 +197,7 @@ mod tests {
             "expected expected-value, got: {human}"
         );
         assert!(
-            human.contains("All 1 resource(s) match desired state"),
+            human.contains("All 1 resource matches desired state"),
             "expected summary line, got: {human}"
         );
     }

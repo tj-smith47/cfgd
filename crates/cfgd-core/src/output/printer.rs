@@ -546,6 +546,7 @@ impl Printer {
             message,
             finished: false,
             _live: live,
+            prefixed: false,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -1088,7 +1089,7 @@ mod tests {
         assert_eq!(p.verbosity(), Verbosity::Quiet);
 
         p.status_simple(Role::Warn, "ordinary warning");
-        p.alert("2 package action(s) will not apply");
+        p.alert("2 package actions will not apply");
         p.flush();
 
         let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1097,7 +1098,7 @@ mod tests {
             "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
         );
         assert!(
-            out.contains("2 package action(s) will not apply"),
+            out.contains("2 package actions will not apply"),
             "alert must be force-shown under structured/Quiet; got: {out:?}"
         );
     }

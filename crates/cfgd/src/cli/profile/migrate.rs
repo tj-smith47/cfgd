@@ -203,14 +203,18 @@ pub(crate) fn run_profile_migrate(
             (
                 Role::Warn,
                 format!(
-                    "Dry run: {} profile(s) would be migrated, {} failed",
-                    move_count, failed
+                    "Dry run: {} would be migrated, {} failed",
+                    cfgd_core::pluralize(move_count, "profile"),
+                    failed
                 ),
             )
         } else {
             (
                 Role::Info,
-                format!("Dry run: {} profile(s) would be migrated", move_count),
+                format!(
+                    "Dry run: {} would be migrated",
+                    cfgd_core::pluralize(move_count, "profile")
+                ),
             )
         };
         printer.emit(
@@ -227,7 +231,10 @@ pub(crate) fn run_profile_migrate(
                 printer.status_simple(Role::Pending, format!("{} → {}", from.posix(), to.posix()));
             }
         }
-        if !printer.prompt_confirm(&format!("Migrate {} profile(s)?", move_count))? {
+        if !printer.prompt_confirm(&format!(
+            "Migrate {}?",
+            cfgd_core::pluralize(move_count, "profile")
+        ))? {
             printer.emit(
                 Doc::new()
                     .status(Role::Info, "Cancelled")
@@ -282,8 +289,14 @@ pub(crate) fn run_profile_migrate(
     let failed = count_action(&records, "failed");
     let (role, summary) = match (migrated, failed) {
         (0, 0) => (Role::Ok, "All profiles already canonical".to_string()),
-        (m, 0) => (Role::Ok, format!("Migrated {} profile(s)", m)),
-        (0, f) => (Role::Fail, format!("{} profile(s) failed to migrate", f)),
+        (m, 0) => (
+            Role::Ok,
+            format!("Migrated {}", cfgd_core::pluralize(m, "profile")),
+        ),
+        (0, f) => (
+            Role::Fail,
+            format!("{} failed to migrate", cfgd_core::pluralize(f, "profile")),
+        ),
         (m, f) => (Role::Warn, format!("Migrated {}, failed {}", m, f)),
     };
     printer.emit(

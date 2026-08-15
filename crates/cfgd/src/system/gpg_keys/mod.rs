@@ -391,7 +391,11 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 drifts.push(SystemDrift {
                     key: format!("{}.expiry", spec.name),
                     expected: "key not expired".to_string(),
-                    actual: format!("key(s) expired: {}", fingerprints.join(", ")),
+                    actual: format!(
+                        "{} expired: {}",
+                        cfgd_core::plural_noun(fingerprints.len(), "key"),
+                        fingerprints.join(", ")
+                    ),
                 });
             }
             // If at least one valid key exists, no drift for this entry.
@@ -436,8 +440,10 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 cx.report(
                     Role::Warn,
                     format!(
-                        "gpgKeys: existing key(s) for {} <{}> are expired; generating new key",
-                        spec.real_name, spec.email
+                        "gpgKeys: existing {} for {} <{}> expired; generating new key",
+                        cfgd_core::plural_noun(matching.len(), "key"),
+                        spec.real_name,
+                        spec.email
                     ),
                 );
             }

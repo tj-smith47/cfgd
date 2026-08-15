@@ -677,7 +677,11 @@ pub fn cmd_module_update_local(
         Doc::new()
             .status(
                 Role::Ok,
-                format!("Updated module '{}' ({} change(s))", name, changes),
+                format!(
+                    "Updated module '{}' ({})",
+                    name,
+                    cfgd_core::pluralize(changes as usize, "change")
+                ),
             )
             .with_data(serde_json::json!({
                 "name": name,
@@ -804,8 +808,9 @@ pub fn cmd_module_delete(
             name,
             "in_use",
             format!(
-                "Cannot delete module '{}' — referenced by profile(s): {}. Remove it from those profiles first.",
+                "Cannot delete module '{}' — referenced by {}: {}. Remove it from those profiles first.",
                 name,
+                cfgd_core::plural_noun(referencing.len(), "profile"),
                 referencing.join(", ")
             ),
             serde_json::json!({ "profiles": &referencing }),

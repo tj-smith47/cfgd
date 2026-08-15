@@ -237,9 +237,9 @@ Phase: Prerequisites
     ✓ inject source line into /home/you/.profile
     ✓ write /home/you/.config/environment.d/cfgd.conf
   cfgd:session
-    ✓ refresh live session (1 var(s))
+    ✓ refresh live session (1 var)
 
-✓ Apply complete — 6 action(s) succeeded (0.3s)
+✓ Apply complete — 6 actions succeeded (0.3s)
 
 Shell environment changed
   - run: source ~/.cfgd.env

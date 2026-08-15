@@ -6392,7 +6392,7 @@ fn cmd_module_create_interactive_imports_file_and_script_with_empty_description(
 fn cmd_module_create_apply_declined_emits_applied_false_and_leaves_unapplied() {
     // Drives the `if args.apply` block with a NON-empty plan and the
     // confirmation prompt DECLINED. This exercises the plan-table render
-    // + "N action(s) planned" + prompt_confirm(false) early-return arm
+    // + "N actions planned" + prompt_confirm(false) early-return arm
     // that emits {"applied": false} and returns before acquiring the
     // apply lock or mutating anything. An env-var spec gives the plan a
     // single action without needing any package manager.

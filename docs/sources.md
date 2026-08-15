@@ -343,11 +343,11 @@ Phase: Packages
   profile:default
     - brew install ripgrep
 
-⊙ 2 action(s) planned
+⊙ 2 actions planned
 
 $ cfgd decide accept packages.brew.k9s
 $ cfgd plan            # k9s now plans alongside ripgrep
-⊙ 3 action(s) planned
+⊙ 3 actions planned
 ```
 
 `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.

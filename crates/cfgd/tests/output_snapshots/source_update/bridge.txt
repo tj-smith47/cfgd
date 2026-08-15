@@ -7,4 +7,4 @@ Update Sources
 source:bridge-upd
   ✓ updated
 
-✓ Updated 1 source(s)
+✓ Updated 1 source

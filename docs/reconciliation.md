@@ -81,25 +81,46 @@ failed earlier in this phase`), rather than as a separate mystery or as a silent
 success. `cfgd:env` and `cfgd:session` run after that group finishes, in order, because
 they publish what it created.
 
-While a lane is held back, the live region shows one dimmed line per waiting group or
-action naming what it is waiting on (`module:nvim · waiting on apt`). A node held by an
-**edge** rather than by a lane names the node ahead of it, and heads the line with its own
-subject rather than with an owner token — every node in `cfgd:managers` shares one owner,
-so a token there would name none of them (`provision npm via brew · waiting on brew`).
-With more than one edge outstanding it names the last of them to finish, so the line never
-has to take back what it said. Those lines exist only on a terminal — they are never
-logged, never in `-o json`, and never in scrollback.
+On a terminal the live region **is** the phase's tree, drawn while it happens: each
+action takes a row the moment the scheduler has something to say about it, and that row
+then changes state in place — waiting, running (with its command's output beneath it),
+settled — without ever moving.
 
-Because the lanes finish out of order, a phase's lane half is written as a tree the moment
-the lanes drain, in the displayed group order rather than the order things happened.
-Whatever the phase then runs serially — `cfgd:env` and `cfgd:session` in `Prerequisites` —
-streams its own lines below that tree as each action settles.
+```text
+Phase: Prerequisites
+  cfgd:managers
+    ✓ refresh apt index                       (9.5s)
+    ⠹ provision brew via homebrew installer
+        ==> Downloading and installing Homebrew…
+    ○ provision pipx via apt · waiting on apt
+```
+
+A row held back is dimmed and says what it is waiting on. The right-hand side names the
+lane or the node in the way; the left-hand side names the blocked action itself, not its
+owner — the group heading above names the owner once, so repeating it on every row would
+say nothing new (`provision npm via brew · waiting on brew`). A node held by an **edge**
+rather than by a lane names the node ahead of it, and with more than one edge outstanding
+it names the last of them to finish, so the line never has to take back what it said. One
+row can stand for a whole group when the tier barrier is what holds it, because the
+barrier holds every action the group has. Waiting is a live state only — it is never
+logged, never in `-o json`, and never in the scrollback a settled row leaves behind.
+
+Because the rows are appended in dispatch order and settle in place, **the order you read
+is the order the work started**, whatever order it finished in: a lane that drains first
+rewrites its own row rather than jumping above a slower one that started earlier. Rows
+leave the live region for the permanent scrollback from the head only, so what scrolls
+past reads in exactly the order the screen did. Whatever the phase then runs serially —
+`cfgd:env` and `cfgd:session` in `Prerequisites` — streams its own lines below.
 
 A phase whose lane work belongs to a single owner — `Prerequisites`, always — names that
-group before its lanes start, so the wait lines and command output paint underneath the
-label they belong to. A phase running several groups at once (`Packages`, with a group per
-module) labels each one above its own tree instead: scrollback is append-only, so labels
-committed upfront would end up separated from the actions they introduce.
+group before its lanes start. A phase running several groups at once (`Packages`, with a
+group per module) opens each heading as that group's first action is dispatched, and keeps
+it open until the group can gain no more rows: scrollback is append-only, so a heading
+written twice is the only other way to file a late-arriving row under the owner it belongs
+to.
+
+Off a terminal — a pipe, a log, `-o json`, `--quiet` — nothing is drawn live and the phase
+writes its tree in plan order when it closes, which is the shape the goldens pin.
 
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the
@@ -179,7 +200,7 @@ Phase: Post-Scripts
 Backups (run on apply)
   ⊙ mydata
 
-⊙ 9 action(s) planned
+⊙ 9 actions planned
 ```
 
 The header block states the scope every line below is read against: which

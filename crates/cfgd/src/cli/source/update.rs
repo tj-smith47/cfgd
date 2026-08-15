@@ -224,8 +224,14 @@ pub(crate) fn run_source_update(
         .filter(|e| e.status == "skipped" || e.status == "cancelled")
         .count();
     let (role, summary) = match (updated_count, error_count, skipped_count) {
-        (0, e, _) if e > 0 => (Role::Fail, format!("{} source(s) failed to update", e)),
-        (_, 0, 0) => (Role::Ok, format!("Updated {} source(s)", updated_count)),
+        (0, e, _) if e > 0 => (
+            Role::Fail,
+            format!("{} failed to update", cfgd_core::pluralize(e, "source")),
+        ),
+        (_, 0, 0) => (
+            Role::Ok,
+            format!("Updated {}", cfgd_core::pluralize(updated_count, "source")),
+        ),
         _ => (
             Role::Warn,
             format!(

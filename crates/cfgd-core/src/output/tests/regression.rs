@@ -49,13 +49,13 @@ golden_doc!(regression, registry_script, |p, cap| {
 
 // BEFORE: cli/compliance.rs:230  printer.success(&format!("  + {}", check_key(check)));
 golden_doc!(regression, compliance_added, |p, cap| {
-    let s = p.section_or_collapse("Added (1 check(s))");
+    let s = p.section_or_collapse("Added (1 check)");
     s.bullet("hardening.firewall.enabled");
 });
 
 // BEFORE: cli/compliance.rs:238  printer.warning(&format!("  - {}", check_key(check)));
 golden_doc!(regression, compliance_removed, |p, cap| {
-    let s = p.section_or_collapse("Removed (1 check(s))");
+    let s = p.section_or_collapse("Removed (1 check)");
     s.bullet("legacy.telnet.disabled");
 });
 
@@ -287,14 +287,12 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
             ("Snapshot 1", "2026-05-13 10:14:02 UTC"),
             ("Snapshot 2", "2026-05-14 09:02:11 UTC"),
         ])
-        .section_or_collapse("Added (2 check(s))", |s| {
+        .section_or_collapse("Added (2 checks)", |s| {
             s.bullet("hardening.firewall.enabled")
                 .bullet("hardening.audit.enabled")
         })
-        .section_or_collapse("Removed (1 check(s))", |s| {
-            s.bullet("legacy.telnet.disabled")
-        })
-        .section_or_collapse("Changed (1 check(s))", |s| {
+        .section_or_collapse("Removed (1 check)", |s| s.bullet("legacy.telnet.disabled"))
+        .section_or_collapse("Changed (1 check)", |s| {
             s.status_with(Role::Fail, "ssh.password-auth (Pass → Violation)", |sf| {
                 sf.detail("sshd_config sets PasswordAuthentication=yes")
             })

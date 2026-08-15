@@ -404,7 +404,7 @@ Phase: Packages
     - toolbox uninstall beta
     - skip absent: 'absent' not available — cannot auto-install on this platform
 
-⊙ 6 action(s) planned
+⊙ 6 actions planned
 ```
 
 Every manager's work is one line per operation: an install names the manager and the

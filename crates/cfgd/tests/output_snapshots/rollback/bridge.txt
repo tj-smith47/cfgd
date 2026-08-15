@@ -3,6 +3,6 @@ Rollback
   File backups to restore  1
 
 Phase: Files
-  ✓ 1 file(s) processed
+  ✓ 1 file processed
 
 ✓ Rollback complete

@@ -45,6 +45,10 @@ pub(crate) struct LaneHandle<'p> {
     /// `Verbosity::Quiet` and whenever a window is live, so the two renderings
     /// can never both produce a body for one action.
     captured: Option<Mutex<Vec<String>>>,
+    /// The window draws on a line the coordinator owns — a
+    /// [`super::live_row::LiveRow`] it will settle in place — so closing the
+    /// lane releases that line instead of clearing it.
+    borrowed_line: bool,
 }
 
 impl LaneOutput for LaneHandle<'_> {
@@ -83,10 +87,12 @@ impl<'p> LaneHandle<'p> {
     /// should carry, which is empty whenever the window already showed it.
     pub(crate) fn finish(self) -> Vec<String> {
         if let Some(window) = self.window {
-            window
-                .into_inner()
-                .unwrap_or_else(|e| e.into_inner())
-                .finish_silent();
+            let window = window.into_inner().unwrap_or_else(|e| e.into_inner());
+            if self.borrowed_line {
+                window.release();
+            } else {
+                window.finish_silent();
+            }
         }
         self.captured
             .map(|c| c.into_inner().unwrap_or_else(|e| e.into_inner()))
@@ -107,6 +113,25 @@ impl Printer {
             window: live.then(|| Mutex::new(self.output_window_at(depth, label))),
             captured: (!live && self.verbosity() != Verbosity::Quiet)
                 .then(|| Mutex::new(Vec::new())),
+            borrowed_line: false,
+        }
+    }
+
+    /// A lane whose live view is drawn on a row the coordinator owns.
+    ///
+    /// The capture half is the same as [`Printer::lane_at`]'s: a row exists
+    /// only where there is a live region, so a caller holding one never
+    /// captures — and one that has no row calls `lane_at` and does.
+    #[must_use]
+    pub(crate) fn lane_on_row<'p>(
+        &self,
+        row: &super::live_row::LiveRow<'p>,
+        label: impl Into<String>,
+    ) -> LaneHandle<'p> {
+        LaneHandle {
+            window: Some(Mutex::new(row.window(label))),
+            captured: None,
+            borrowed_line: true,
         }
     }
 }

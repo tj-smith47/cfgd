@@ -275,6 +275,7 @@ impl<'p> SectionGuard<'p> {
             message,
             finished: false,
             _live: live,
+            prefixed: false,
             _phantom: std::marker::PhantomData,
         }
     }

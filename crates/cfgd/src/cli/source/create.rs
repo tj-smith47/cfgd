@@ -125,8 +125,8 @@ pub fn cmd_source_create(
         doc = doc.status(
             Role::Info,
             format!(
-                "Included {} profile(s): {}",
-                profile_names.len(),
+                "Included {}: {}",
+                cfgd_core::pluralize(profile_names.len(), "profile"),
                 profile_names.join(", ")
             ),
         );
@@ -135,8 +135,8 @@ pub fn cmd_source_create(
         doc = doc.status(
             Role::Info,
             format!(
-                "Included {} module(s): {}",
-                module_names.len(),
+                "Included {}: {}",
+                cfgd_core::pluralize(module_names.len(), "module"),
                 module_names.join(", ")
             ),
         );

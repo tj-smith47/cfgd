@@ -456,6 +456,65 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// A count and its noun, agreeing: `1 action`, `22 actions`, `0 actions`.
+///
+/// The ONE plural rendering in the workspace, because the alternative shipped
+/// for a year: `22 actions succeeded` is a program telling the reader it did
+/// not bother to look at a number it is printing IN THE SAME SENTENCE. Every
+/// count-carrying line — the apply/backup rollups, the daemon's notifications,
+/// the plan's totals — reads from here.
+///
+/// English-regular nouns only (`action`, `check`, `file`, `resource`). A noun
+/// whose plural is not `+s` has no business being formatted by a rule this
+/// small; spell that one out at its call site.
+pub fn pluralize(count: usize, noun: &str) -> String {
+    format!("{count} {}", plural_noun(count, noun))
+}
+
+/// The noun alone, in the number `count` calls for — for a sentence that names
+/// the things rather than counting them (`referenced by profiles: work, home`).
+pub fn plural_noun(count: usize, noun: &str) -> String {
+    if count == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    }
+}
+
+/// A regular verb in the form `count` calls for: `1 resource matches`,
+/// `2 resources match`.
+///
+/// The counterpart to [`plural_noun`] and the other half of making a counted
+/// sentence read: a line that pluralizes its noun and leaves the verb behind
+/// says `1 non-file action require manual review`, which is worse than the
+/// `(s)` it replaced. Regular verbs only — `be` and `have` are not spelled by
+/// any rule this small.
+pub fn agreeing_verb(count: usize, verb: &str) -> String {
+    if count != 1 {
+        return verb.to_string();
+    }
+    // The third-person singular of a regular verb: `-es` after a sibilant or a
+    // bare `o` (`match` → `matches`, `go` → `goes`), `-ies` for a consonant
+    // followed by `y` (`apply` → `applies`), `-s` otherwise. A bare `+ "s"`
+    // renders `matchs`.
+    let sibilant = ["s", "x", "z", "ch", "sh"]
+        .iter()
+        .any(|end| verb.ends_with(end))
+        || (verb.ends_with('o') && !verb.ends_with("oo"));
+    if sibilant {
+        format!("{verb}es")
+    } else if verb.ends_with('y')
+        && verb
+            .chars()
+            .nth_back(1)
+            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+    {
+        format!("{}ies", &verb[..verb.len() - 1])
+    } else {
+        format!("{verb}s")
+    }
+}
+
 /// Escape a string for safe inclusion in XML/plist content (single pass).
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 8);
@@ -475,6 +534,38 @@ pub fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_count_agrees_with_its_noun_in_both_numbers() {
+        assert_eq!(pluralize(1, "action"), "1 action");
+        assert_eq!(pluralize(0, "action"), "0 actions");
+        assert_eq!(pluralize(22, "action"), "22 actions");
+        assert_eq!(plural_noun(1, "profile"), "profile");
+        assert_eq!(plural_noun(2, "profile"), "profiles");
+    }
+
+    #[test]
+    fn a_singular_verb_takes_the_ending_its_stem_calls_for() {
+        // The bug this exists to prevent is a bare `+ "s"`, which renders
+        // `1 resource matchs desired state`.
+        assert_eq!(agreeing_verb(1, "match"), "matches");
+        assert_eq!(agreeing_verb(1, "require"), "requires");
+        assert_eq!(agreeing_verb(1, "name"), "names");
+        assert_eq!(agreeing_verb(1, "apply"), "applies");
+        assert_eq!(agreeing_verb(1, "go"), "goes");
+        assert_eq!(agreeing_verb(1, "pass"), "passes");
+        assert_eq!(agreeing_verb(1, "fix"), "fixes");
+        assert_eq!(agreeing_verb(1, "push"), "pushes");
+        assert_eq!(agreeing_verb(1, "stay"), "stays");
+    }
+
+    #[test]
+    fn a_plural_verb_is_the_stem_itself() {
+        for count in [0, 2, 22] {
+            assert_eq!(agreeing_verb(count, "match"), "match");
+            assert_eq!(agreeing_verb(count, "apply"), "apply");
+        }
+    }
 
     #[test]
     fn format_bytes_zero() {

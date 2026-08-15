@@ -576,13 +576,14 @@ pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &Scop
     printer.status_simple(
         Role::Warn,
         format!(
-            "No actions in scope — the active filter excluded all {} planned action(s); the system was not reconciled",
-            scope.unfiltered_total
+            "No actions in scope — the active filter excluded all {} planned; the system was not reconciled",
+            cfgd_core::pluralize(scope.unfiltered_total, "action")
         ),
     );
     if !scope.phases_with_work.is_empty() {
         printer.hint(format!(
-            "actions exist in phase(s): {}",
+            "actions exist in {}: {}",
+            cfgd_core::plural_noun(scope.phases_with_work.len(), "phase"),
             scope.phases_with_work.join(", ")
         ));
     }
@@ -601,7 +602,10 @@ pub(in crate::cli) fn report_plan_verdict(
     scope: Option<&ScopeReport>,
 ) {
     if total_actions > 0 {
-        printer.status_simple(Role::Info, format!("{total_actions} action(s) planned"));
+        printer.status_simple(
+            Role::Info,
+            format!("{} planned", cfgd_core::pluralize(total_actions, "action")),
+        );
         return;
     }
     match scope {
@@ -1785,8 +1789,10 @@ fn warn_stranded_installs(
         .collect::<Vec<_>>()
         .join(" ");
     printer.alert(format!(
-        "{culprit} removes {} bootstrap(s); {stranded_actions} package action(s) still name a manager that is not installed. They will not apply. Use `{flags}` to drop that work too.",
-        removals.count,
+        "{culprit} removes {}; {} still {} a manager that is not installed and will not apply. Use `{flags}` to drop that work too.",
+        cfgd_core::pluralize(removals.count, "bootstrap"),
+        cfgd_core::pluralize(stranded_actions, "package action"),
+        cfgd_core::agreeing_verb(stranded_actions, "name"),
     ));
 }
 

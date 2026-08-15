@@ -101,19 +101,28 @@ pub fn cmd_rollback(
         let (role, msg) = if processed == 0 {
             (Role::Info, "No files affected".to_string())
         } else {
-            (Role::Ok, format!("{} file(s) processed", processed))
+            (
+                Role::Ok,
+                format!("{} processed", cfgd_core::pluralize(processed, "file")),
+            )
         };
         rb_sec.status_simple(role, msg);
         if r.files_restored > 0 {
             rb_sec.status_simple(
                 Role::Ok,
-                format!("{} file(s) restored from backup", r.files_restored),
+                format!(
+                    "{} restored from backup",
+                    cfgd_core::pluralize(r.files_restored, "file")
+                ),
             );
         }
         if r.files_removed > 0 {
             rb_sec.status_simple(
                 Role::Ok,
-                format!("{} newly created file(s) removed", r.files_removed),
+                format!(
+                    "{} newly created removed",
+                    cfgd_core::pluralize(r.files_removed, "file")
+                ),
             );
         }
         r
@@ -123,8 +132,9 @@ pub fn cmd_rollback(
         printer.status_simple(
             Role::Warn,
             format!(
-                "{} non-file action(s) require manual review",
-                result.non_file_actions.len()
+                "{} {} manual review",
+                cfgd_core::pluralize(result.non_file_actions.len(), "non-file action"),
+                cfgd_core::agreeing_verb(result.non_file_actions.len(), "require")
             ),
         );
         let nf_sec = printer.section("Actions");

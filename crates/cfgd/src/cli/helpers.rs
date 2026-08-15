@@ -188,7 +188,8 @@ fn decorate_profile_not_found(
     // local active profile.
     let hints = vec![
         cfgd_core::output::collapse_to_subject_line(format!(
-            "Profile '{profile_name}' is delivered by source(s): {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one."
+            "Profile '{profile_name}' is delivered by {}: {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one.",
+            cfgd_core::plural_noun(providers.len(), "source")
         )),
         cfgd_core::output::collapse_to_subject_line(format!(
             "Set the source's subscription.profile in {}:",

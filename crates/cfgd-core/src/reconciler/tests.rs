@@ -17873,6 +17873,34 @@ impl ConcurrentApply {
     fn run_watching(self, drive: impl FnOnce(&crate::output::DocCapture)) -> ConcurrentOutcome {
         let (printer, cap) = crate::output::Printer::for_test_doc();
         let watch = cap.clone();
+        let (result, state) = self.run_on(printer, || drive(&watch));
+        ConcurrentOutcome {
+            result,
+            state,
+            transcript: crate::output::strip_ansi(&cap.human()),
+        }
+    }
+
+    /// The run as a TERMINAL leaves it: the phase's rows are drawn in a live
+    /// region, and the transcript is the permanent scrollback they committed
+    /// to — what the reader still has once the region is gone.
+    fn run_live(self, drive: impl FnOnce()) -> ConcurrentOutcome {
+        let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+        let (result, state) = self.run_on(printer, drive);
+        let transcript = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        ConcurrentOutcome {
+            result,
+            state,
+            transcript,
+        }
+    }
+
+    /// Apply on a worker thread with `printer`, running `drive` here meanwhile.
+    fn run_on(
+        self,
+        printer: crate::output::Printer,
+        drive: impl FnOnce(),
+    ) -> (ApplyResult, crate::state::StateStore) {
         let Self {
             registry,
             state,
@@ -17898,15 +17926,10 @@ impl ConcurrentApply {
                     )
                     .expect("apply")
             };
-            (result, state, crate::output::strip_ansi(&cap.human()))
+            (result, state)
         });
-        drive(&watch);
-        let (result, state, transcript) = worker.join().expect("apply thread");
-        ConcurrentOutcome {
-            result,
-            state,
-            transcript,
-        }
+        drive();
+        worker.join().expect("apply thread")
     }
 }
 
@@ -18736,6 +18759,63 @@ fn a_failing_laned_script_install_reports_its_own_exit_status() {
     assert!(
         settled.iter().any(|l| l.contains("exit 3")),
         "and reaches the action's status line: {settled:?}"
+    );
+}
+
+#[test]
+fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
+    // The whole contract, through the real dispatcher: `tmux`'s apt work is
+    // released FIRST and still commits second, because `nvim`'s brew work was
+    // dispatched ahead of it and a row never moves. Each line is written
+    // exactly once — the tree settles what it drew, so `emit_phase_tree` has
+    // nothing left to re-emit.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run_live(move || {
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            driver.release("apt:tmux");
+            assert!(driver.await_finished("apt:tmux"));
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let transcript = &outcome.transcript;
+    for once in [
+        "brew install neovim",
+        "apt install tmux",
+        "module:nvim",
+        "module:tmux",
+    ] {
+        assert_eq!(
+            transcript.matches(once).count(),
+            1,
+            "{once:?} reached the scrollback twice: {transcript}"
+        );
+    }
+    let at = |needle: &str| {
+        transcript
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in {transcript}"))
+    };
+    assert!(
+        at("brew install neovim") < at("apt install tmux"),
+        "the scrollback followed completion order rather than dispatch order: {transcript}"
     );
 }
 
@@ -19986,7 +20066,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
         "a skip is an in-scope action and is counted: {out}"
     );
     assert!(
-        out.contains("2 action(s) succeeded"),
+        out.contains("2 actions succeeded"),
         "the rollup reconciles against the planned count: {out}"
     );
 
@@ -20042,7 +20122,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             "Profile  work".to_string(),
             "Modules  wsl-tools skipped: platform not matched (requires: windows)".to_string(),
             "Actions  1 planned".to_string(),
-            "\u{2713} Apply complete \u{2014} 1 action(s) succeeded".to_string(),
+            "\u{2713} Apply complete \u{2014} 1 action succeeded".to_string(),
         ],
         "header + annotation + rollup and nothing else"
     );

@@ -496,7 +496,10 @@ pub fn format_plan_item(action: &Action) -> String {
                 format!("inject source line into {}", rc_path.posix())
             }
             EnvAction::RefreshLiveSession { vars } => {
-                format!("refresh live session ({} var(s))", vars.len())
+                format!(
+                    "refresh live session ({})",
+                    crate::pluralize(vars.len(), "var")
+                )
             }
         },
         Action::Manager(ma) => format_manager_action_item(ma),

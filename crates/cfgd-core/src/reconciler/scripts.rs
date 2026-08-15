@@ -354,6 +354,9 @@ struct ScriptStatus<'p> {
     /// field. A per-call-site role parameter is the shape that lets one arm
     /// disagree.
     failure_role: Role,
+    /// The subject's marker, unsuffixed — the status renderer appends the `:`
+    /// it paints in its own style, and [`DisplaySubject`] appends it when the
+    /// two halves are joined into one string.
     marker: Option<String>,
     state: ScriptState<'p>,
 }
@@ -399,7 +402,7 @@ impl<'p> ScriptStatus<'p> {
             } else {
                 Role::Fail
             },
-            marker: marker.map(|m| format!("{m}:")),
+            marker,
             state: match report.lane {
                 Some(lane) => ScriptState::Laned { lane },
                 None => ScriptState::Pending {
@@ -415,7 +418,7 @@ impl<'p> ScriptStatus<'p> {
     /// no-op. All three become `Reported`, so the window is moved out rather
     /// than left for `Drop`.
     fn settle(&mut self, role: Role, detail: Option<&str>, duration: Option<std::time::Duration>) {
-        let marker = self.marker.clone();
+        let marker = self.marker.as_ref().map(|m| format!("{m}:"));
         let apply = |mut builder: crate::output::StatusBuilder<'_>| {
             if let Some(m) = marker {
                 builder = builder.marker(m);
@@ -451,13 +454,27 @@ impl<'p> ScriptStatus<'p> {
     }
 
     /// `Pending` -> `Windowed`, at the inherited depth.
-    fn open_window(&mut self, label: &str) {
+    ///
+    /// The window's label is the SAME subject the settle writes, joined by
+    /// [`DisplaySubject`]'s own `Display`. One action must not be spelled two
+    /// ways on one screen: the running line read `Running script: nvim …` while
+    /// the settled line replacing it read `postApply: nvim …`, so the two
+    /// halves of one step's life named it differently.
+    fn open_window(&mut self) {
+        let marker = self.marker.clone();
         let taken = std::mem::replace(&mut self.state, ScriptState::Reported);
         self.state = match taken {
-            ScriptState::Pending { printer, subject } => ScriptState::Windowed {
-                window: printer.output_window(label),
-                subject,
-            },
+            ScriptState::Pending { printer, subject } => {
+                let label = DisplaySubject {
+                    marker,
+                    body: subject.clone(),
+                }
+                .to_string();
+                ScriptState::Windowed {
+                    window: printer.output_window(&label),
+                    subject,
+                }
+            }
             other => other,
         };
     }
@@ -606,13 +623,12 @@ fn execute_script_inner(
 
     ensure_working_dir(&run_label, working_dir)?;
 
-    let label = format!("Running script: {}", run_label);
     // Resource-id / state-matching key, NOT a display string: the onChange /
     // module-onChange callers in `apply.rs` push this return value straight
     // into `ActionResult.description`, which `parse_resource_from_description`
-    // parses back into a `managed_resource` id. `label` (built from the
-    // condensed `run_label`) is correct for the spinner text below but must
-    // never be returned — that would reshape the id and orphan every
+    // parses back into a `managed_resource` id. The window's own label (the
+    // condensed subject `ScriptStatus` holds) is correct for the running line
+    // but must never be returned — that would reshape the id and orphan every
     // already-recorded state row for a module with a multi-line inline
     // script. Mirrors `format_action_description` in `format.rs` and
     // `apply_script_action` in `scripts_apply.rs`, which already return the
@@ -869,7 +885,7 @@ fn execute_script_inner(
     // moment the script exits. The window sanitizes each line itself — a child
     // like `nvim --headless` emits screen-reset and cursor-move sequences that
     // would otherwise execute against the real terminal.
-    st.open_window(&label);
+    st.open_window();
 
     // Channel for live display + Arc buffers for final capture.
     // Reader threads feed both so we get live scrolling output AND full capture.

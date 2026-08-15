@@ -8968,9 +8968,15 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
         "both onDrift owners must open a group inside the pseudo-phase:\n{out}"
     );
 
-    // One status per script, at owner depth, carrying the `onDrift` marker.
-    // A `Role::Ok` glyph is the evidence the script ran and exited zero.
-    let hook_lines: Vec<&str> = out.lines().filter(|l| l.contains("onDrift:")).collect();
+    // One SETTLED status per script, at owner depth, carrying the `onDrift`
+    // marker. A `Role::Ok` glyph is the evidence the script ran and exited
+    // zero. The running line above each one names the same subject — a capture
+    // has no live region to repaint that announcement away — so only settled
+    // lines are counted.
+    let hook_lines: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("onDrift:") && !l.trim_start().starts_with('\u{25d0}'))
+        .collect();
     assert_eq!(hook_lines.len(), 2, "one status per hook, got:\n{out}");
     for (line, body) in hook_lines.iter().zip([profile_hook, module_hook]) {
         assert!(
@@ -8995,7 +9001,7 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
         "a notify-only tick still shows WHAT drifted:\n{out}"
     );
     assert!(
-        out.contains("Drift detected — 1 action(s); policy is notify-only, nothing applied"),
+        out.contains("Drift detected — 1 action; policy is notify-only, nothing applied"),
         "a non-applying tick closes on a verdict:\n{out}"
     );
     assert!(
@@ -9073,7 +9079,7 @@ async fn auto_apply_tick_renders_header_tree_and_rollup() {
         "the executed work renders as a phase/owner tree:\n{out}"
     );
     assert!(
-        out.contains("Reconcile complete — 1 action(s) succeeded"),
+        out.contains("Reconcile complete — 1 action succeeded"),
         "the run closes on one rollup naming the title:\n{out}"
     );
     assert!(target.exists(), "the tick actually applied the action");
@@ -9304,7 +9310,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
         "the header must count the pruned plan, not the withheld resources:\n{out}"
     );
     assert!(
-        out.contains("Reconcile complete — 3 action(s) succeeded"),
+        out.contains("Reconcile complete — 3 actions succeeded"),
         "the rollup must agree with the header:\n{out}"
     );
     // The tmp root is substituted first: a random temp-dir name could otherwise
@@ -10769,13 +10775,13 @@ fn notifier_desktop_does_not_panic() {
 fn build_webhook_payload_emits_expected_schema() {
     let body = super::build_webhook_payload(
         "cfgd: drift detected",
-        "5 file(s) changed",
+        "5 files changed",
         "2026-05-07T05:30:00Z",
     );
     let parsed: serde_json::Value =
         serde_json::from_str(&body).expect("payload must be valid JSON");
     assert_eq!(parsed["event"], "cfgd: drift detected");
-    assert_eq!(parsed["message"], "5 file(s) changed");
+    assert_eq!(parsed["message"], "5 files changed");
     assert_eq!(parsed["timestamp"], "2026-05-07T05:30:00Z");
     assert_eq!(
         parsed["source"], "cfgd",
@@ -17894,7 +17900,12 @@ mod backup_timers {
         let block: Vec<&str> = plain
             .lines()
             .skip_while(|line| line.trim() != "Backups")
-            .take_while(|line| !line.contains("action(s)"))
+            // The rollup opens the run's closing block and names the surface
+            // that dispatched it (`Apply complete` / `Backup complete`), which
+            // is the one line the group's grammar is deliberately not compared
+            // on. Every line of the group itself is an icon + subject; only a
+            // rollup counts actions.
+            .take_while(|line| !line.contains("action"))
             .map(str::trim_end)
             .collect();
         let mut out = block.join("\n");

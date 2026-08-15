@@ -667,8 +667,8 @@ pub(super) fn apply_sighup_reload(
                 printer.status_simple(
                     Role::Warn,
                     format!(
-                        "Backup schedules NOT reloaded: config did not fully resolve — keeping the {} running schedule(s), retrying automatically",
-                        backup_timers.len()
+                        "Backup schedules NOT reloaded: config did not fully resolve — keeping the {} running, retrying automatically",
+                        crate::pluralize(backup_timers.len(), "schedule")
                     ),
                 );
             }

@@ -7,4 +7,4 @@ Backups
   backup:docs
     ✓ snapshot notes.txt.<TIMESTAMP> — 12 B
 
-✓ Backup complete — 1 action(s) succeeded (XXs)
+✓ Backup complete — 1 action succeeded (XXs)

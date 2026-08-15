@@ -295,7 +295,7 @@ fn apply_bridge_one_blank_line() {
         let work = printer.section("Files");
         work.status(Role::Ok, "Wrote /etc/hosts");
     }
-    printer.status_simple(Role::Ok, "Apply complete — 1 action(s) succeeded");
+    printer.status_simple(Role::Ok, "Apply complete — 1 action succeeded");
 
     // Buffered Doc carrying both a human section and the ApplyOutput payload.
     // Combining both surfaces is what the bridge invariant guards.

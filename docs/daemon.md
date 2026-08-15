@@ -117,7 +117,7 @@ Phase: Files
   profile:driftdemo
     ✓ update /home/you/.gitconfig
 
-✓ Reconcile complete — 1 action(s) succeeded (0.1s)
+✓ Reconcile complete — 1 action succeeded (0.1s)
  INFO auto-apply complete succeeded=1 failed=0
 ```
 

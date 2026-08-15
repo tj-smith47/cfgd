@@ -114,26 +114,22 @@ impl Renderer {
                 // only the first call writes anything.
                 self.flush_pending_section_headers(w);
             }
-            StatusRoute::Live(width) => {
-                let width = self.affordable_column(w, depth, f, width);
-                let padded = pad_subject(f.subject, width, f.has_trailing());
-                match padded {
-                    Some(subject) => self.render_status_immediate(
-                        w,
-                        depth,
-                        &StatusFields {
-                            role: f.role,
-                            subject: &subject,
-                            detail: f.detail,
-                            duration: f.duration,
-                            target: f.target,
-                            subject_style: f.subject_style.clone(),
-                            detail_style: f.detail_style.clone(),
-                        },
-                    ),
-                    None => self.render_status_immediate(w, depth, f),
-                }
-            }
+            StatusRoute::Live(width) => match self.padded_for_column(w, depth, f, width) {
+                Some(subject) => self.render_status_immediate(
+                    w,
+                    depth,
+                    &StatusFields {
+                        role: f.role,
+                        subject: &subject,
+                        detail: f.detail,
+                        duration: f.duration,
+                        target: f.target,
+                        subject_style: f.subject_style.clone(),
+                        detail_style: f.detail_style.clone(),
+                    },
+                ),
+                None => self.render_status_immediate(w, depth, f),
+            },
             StatusRoute::Immediate => {
                 // The group bookkeeping runs inside the SAME acquisition as
                 // the lines: a concurrent emission landing between
@@ -151,6 +147,25 @@ impl Renderer {
                 });
             }
         }
+    }
+
+    /// `f`'s subject padded to the live column it renders against, or `None`
+    /// when this status is one neither alignment path pads.
+    ///
+    /// The ONE derivation of that decision, because a live-region row draws the
+    /// same status line twice: once as a bar the caller repaints in place, and
+    /// once as the permanent line committed when the row leaves the region. A
+    /// row padded differently from the line that replaces it shifts sideways at
+    /// the moment it settles.
+    pub(crate) fn padded_for_column(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        f: &StatusFields<'_>,
+        column: usize,
+    ) -> Option<String> {
+        let width = self.affordable_column(w, depth, f, column);
+        pad_subject(f.subject, width, f.has_trailing())
     }
 
     /// The column `f` can be padded to at `depth` without pushing its trailing
@@ -209,7 +224,7 @@ impl Renderer {
     /// Build a status line and its continuation tails. Reads the theme only,
     /// so both emission routes compose the same bytes and neither needs the
     /// state lock to do it.
-    fn compose_status(&self, f: &StatusFields<'_>) -> (String, Vec<String>) {
+    pub(crate) fn compose_status(&self, f: &StatusFields<'_>) -> (String, Vec<String>) {
         let (icon_opt, style) = role_glyph(&self.theme, f.role);
         let mut line = String::new();
         if let Some(icon) = icon_opt {

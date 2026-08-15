@@ -102,7 +102,7 @@ fn apply_partial_failure_exits_with_apply_failed_code() {
         .arg(state_tmp.path())
         .assert()
         .code(7)
-        .stderr(predicate::str::contains("action(s) failed"));
+        .stderr(predicate::str::contains("action failed"));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn apply_total_failure_exits_with_apply_failed_code() {
         .arg(state_tmp.path())
         .assert()
         .code(7)
-        .stderr(predicate::str::contains("action(s) failed"));
+        .stderr(predicate::str::contains("action failed"));
 }
 
 #[test]

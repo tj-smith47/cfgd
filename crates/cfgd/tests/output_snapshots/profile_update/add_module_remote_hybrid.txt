@@ -16,4 +16,4 @@ module:mymod
 
 → Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
 
-✓ Updated profile 'default' (1 change(s))
+✓ Updated profile 'default' (1 change)

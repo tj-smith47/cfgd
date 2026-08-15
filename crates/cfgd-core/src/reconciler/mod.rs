@@ -11,6 +11,7 @@ mod file_action;
 mod files;
 mod format;
 mod lanes;
+mod live_tree;
 mod managers;
 mod modules;
 mod packages;

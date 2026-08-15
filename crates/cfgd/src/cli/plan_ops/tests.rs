@@ -747,7 +747,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
     let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
-        out.contains("`--skip prerequisites` removes 1 bootstrap(s)")
+        out.contains("`--skip prerequisites` removes 1 bootstrap")
             && out.contains("--skip packages.brew"),
         "dropping the node that would have installed brew must name the work it strands:\n{out}"
     );
@@ -867,7 +867,7 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
         plan.phases
     );
     assert!(
-        out.contains("`--skip prerequisites.managers` removes 2 bootstrap(s)")
+        out.contains("`--skip prerequisites.managers` removes 2 bootstraps")
             && out.contains("--skip packages.brew")
             && out.contains("--skip packages.npm"),
         "the alert must name both stranded managers:\n{out}"
@@ -932,7 +932,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
         "the surviving node must be npm's: {remaining:?}"
     );
     assert!(
-        out.contains("`--skip prerequisites.brew` removes 1 bootstrap(s)")
+        out.contains("`--skip prerequisites.brew` removes 1 bootstrap")
             && out.contains("--skip packages.brew")
             && !out.contains("--skip packages.npm"),
         "the alert must name only the manager the pattern actually removed:\n{out}"
@@ -3406,7 +3406,7 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
         "the provision node is gone, which is what strands the installs"
     );
     assert_eq!(
-        out.matches("bootstrap(s)").count(),
+        out.matches("removes 1 bootstrap").count(),
         1,
         "one warning per run, not one per stranded manager: {out}"
     );
@@ -3493,7 +3493,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
     let out = buf.lock().unwrap().clone();
 
     assert!(
-        out.contains("2 package action(s)"),
+        out.contains("2 package actions"),
         "both installs are stranded even though one manager is: {out}"
     );
     assert_eq!(
@@ -3525,7 +3525,7 @@ fn no_stranded_warning_when_every_manager_is_available() {
     let out = buf.lock().unwrap().clone();
 
     assert!(
-        !out.contains("bootstrap(s)"),
+        !out.contains("still name") && !out.contains("still names"),
         "a bootstrap dropped for a manager that is already installed strands nothing: {out}"
     );
 }

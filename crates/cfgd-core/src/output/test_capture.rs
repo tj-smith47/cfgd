@@ -195,6 +195,45 @@ impl Printer {
         (p, cap)
     }
 
+    /// A printer that HAS a live region whose bars draw nowhere, so the buffer
+    /// holds exactly what the region leaves behind: the permanent scrollback,
+    /// in the order it was committed.
+    ///
+    /// The complement of [`Printer::for_test_with_live_bars`], which records the
+    /// region's repaints INTO the same buffer on purpose — that is what lets it
+    /// catch garbling, and it is also what makes "in what order did lines land
+    /// permanently" unanswerable there, since a row repainted forty times
+    /// appears forty times. A hidden `MultiProgress` closes the renderer's
+    /// routing gate (`emit_block` skips a hidden multi), so committed lines go
+    /// straight to the sink and ephemeral rows write nothing at all.
+    pub fn for_test_live_scrollback() -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let multi =
+            indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
+        let p = Printer {
+            renderer: Arc::new(Renderer::with_bars(
+                Theme::default().with_colors(false),
+                Verbosity::Normal,
+                multi.clone(),
+            )),
+            output_format: OutputFormat::Table,
+            sink_stderr: sink.clone(),
+            sink_stdout: sink,
+            multi_progress: multi,
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: None,
+            prompt_queue: None,
+            output_error: std::sync::atomic::AtomicBool::new(false),
+            live_region: true,
+            interactive_stdin: false,
+            colors: false,
+            list_envelope: false,
+        };
+        (p, buf)
+    }
+
     /// Capture wired the way PRODUCTION wires a printer that has bars: the
     /// renderer knows its `MultiProgress`, so a line emitted while a bar is
     /// live is routed through it instead of straight to the sink.

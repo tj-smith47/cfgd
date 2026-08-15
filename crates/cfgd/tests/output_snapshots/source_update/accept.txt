@@ -10,4 +10,4 @@ source:accept-src
     ⚠ Required items increased from 0 to 2
   ✓ updated
 
-✓ Updated 1 source(s)
+✓ Updated 1 source

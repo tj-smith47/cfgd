@@ -561,7 +561,7 @@ Phase: Post-Scripts
     - postApply: nvim --headless "+Lazy! sync" +qa
     - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 
-⊙ 13 action(s) planned
+⊙ 13 actions planned
 ```
 
 A module's package line names the manager that won resolution, the manager-specific package

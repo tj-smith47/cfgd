@@ -331,7 +331,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let (input_tokens, output_tokens) = conversation.total_tokens();
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Generated {} file(s)", generated_count))
+            .status(
+                Role::Ok,
+                format!(
+                    "Generated {}",
+                    cfgd_core::pluralize(generated_count, "file")
+                ),
+            )
             .kv(
                 "Tokens",
                 format!("{} in, {} out", input_tokens, output_tokens),

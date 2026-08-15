@@ -295,7 +295,10 @@ fn init_apply_then_next_steps_bridge_invariant() {
     run.preview(&printer);
     printer.status_simple(
         cfgd_core::output::Role::Info,
-        format!("{} action(s) planned", plan.total_actions()),
+        format!(
+            "{} planned",
+            cfgd_core::pluralize(plan.total_actions(), "action")
+        ),
     );
 
     // Buffered portion — a real section with bullets, matching the shape

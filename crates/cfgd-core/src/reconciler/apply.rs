@@ -26,22 +26,39 @@ use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAc
 /// One action's line in the execution tree, resolved where the outcome is known
 /// and written either immediately (a streaming phase) or at phase close
 /// (`Packages`, whose dispatch order is not its reading order).
-struct ActionOutcome {
+pub(super) struct ActionOutcome {
     /// The action's display subject, resolved once at record time so the
     /// streaming writer and the deferred one cannot disagree about it.
-    subject: String,
-    role: Role,
-    detail: Option<String>,
+    pub(super) subject: String,
+    pub(super) role: Role,
+    pub(super) detail: Option<String>,
     /// The detail was derived from the plan or from the action's own no-op
     /// status rather than from what happened, so it renders muted. A collapsed
     /// error never does — it is the thing the reader has to act on.
-    detail_muted: bool,
-    duration: Option<std::time::Duration>,
+    pub(super) detail_muted: bool,
+    pub(super) duration: Option<std::time::Duration>,
     notes: Vec<ActionNote>,
     /// The child output a concurrent lane captured instead of streaming, laid
     /// out beneath this line when the phase's tree is written. Always empty in
     /// a sequential phase, where the output window already showed it live.
     body: Vec<String>,
+}
+
+#[cfg(test)]
+impl ActionOutcome {
+    /// The outcome of an action that succeeded, for a test driving the display
+    /// path rather than an apply.
+    pub(super) fn for_test(subject: &str, duration: std::time::Duration) -> Self {
+        Self {
+            subject: subject.to_string(),
+            role: Role::Ok,
+            detail: None,
+            detail_muted: false,
+            duration: Some(duration),
+            notes: Vec::new(),
+            body: Vec::new(),
+        }
+    }
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -147,7 +164,11 @@ pub fn emit_action_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
     }
 }
 
-fn emit_action_line(printer: &Printer, section: &SectionGuard<'_>, outcome: &ActionOutcome) {
+pub(super) fn emit_action_line(
+    printer: &Printer,
+    section: &SectionGuard<'_>,
+    outcome: &ActionOutcome,
+) {
     {
         let mut builder = section.action_status(outcome.role, &outcome.subject);
         if outcome.detail_muted {
@@ -708,8 +729,11 @@ impl<'a> super::Reconciler<'a> {
                 // The concurrent dispatcher owns these actions: it opens each
                 // action's journal row at its dispatch point, runs the work in
                 // a per-manager lane, and hands every finish back HERE, on this
-                // thread, in completion order. No status line streams — the
-                // tree is written once the lanes drain, below.
+                // thread, in completion order. Where each finish LANDS is the
+                // tree's: on a terminal every action has a row from the moment
+                // the dispatcher first has something to say about it, and the
+                // finish settles that row in place. Off one there are no rows,
+                // and the outcomes are held for `emit_phase_tree` below.
                 let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
@@ -723,7 +747,18 @@ impl<'a> super::Reconciler<'a> {
                     plan_index_base,
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
                 };
-                let mut collect = |action: &Action, collected: super::lanes::LaneCollected| {
+                let mut tree = super::live_tree::PhaseTree::new(
+                    printer,
+                    phase_section.as_ref(),
+                    sole_lane_owner.zip(lane_group.as_ref()),
+                    run.action_depth,
+                    width,
+                );
+                // Asked once, of the tree that will answer for it: the two
+                // halves of this decision must never disagree, or an outcome
+                // is rendered twice or not at all.
+                let settles_in_place = tree.is_live();
+                let mut settle = |action: &Action, collected: super::lanes::LaneCollected| {
                     let finished = completions.next();
                     let settled = self.settle_action(SettleInput {
                         action,
@@ -739,27 +774,39 @@ impl<'a> super::Reconciler<'a> {
                         results: &mut results,
                     });
                     match settled.outcome {
+                        Some(outcome) if settles_in_place => Some(outcome),
                         Some(outcome) => {
                             recorded.insert(action_key(action), outcome);
+                            None
                         }
                         // An action that reported its own status carries its
                         // notes beside the outcome rather than inside it, and a
                         // held-back tree has no line open to attach them under.
                         // Unreachable: only the two script shapes self-report,
                         // and neither is ever dispatched into a lane.
-                        None => debug_assert!(
-                            settled.notes.is_empty(),
-                            "a self-reporting action reached a lane carrying notes"
-                        ),
+                        None => {
+                            debug_assert!(
+                                settled.notes.is_empty(),
+                                "a self-reporting action reached a lane carrying notes"
+                            );
+                            None
+                        }
                     }
                 };
-                abort_stop = self.dispatch_lanes(&lane_dispatch, &run, &mut collect);
-                // Written HERE, not at phase close: the lanes are drained and
-                // the live region is empty, and whatever the phase does next
-                // renders after them. `Prerequisites` is the phase that needs
-                // it — its `cfgd:env` and `cfgd:session` groups run in the
-                // serial half below and stream their own lines, which would
-                // land ABOVE the managers group they follow if this waited.
+                abort_stop = self.dispatch_lanes(
+                    &lane_dispatch,
+                    &run,
+                    &mut super::lanes::LaneCollector::new(&mut settle, &mut tree),
+                );
+                // Committed HERE, not at phase close: whatever the phase does
+                // next renders below the live region, so the region has to be
+                // down first. `Prerequisites` is the phase that needs it — its
+                // `cfgd:env` and `cfgd:session` groups run in the serial half
+                // below and stream their own lines, which would land ABOVE the
+                // managers group they follow if this waited.
+                tree.finish();
+                // Empty on a terminal — the tree settled every line as it
+                // happened — and the whole phase off one.
                 if let Some(section) = phase_section.as_ref() {
                     emit_phase_tree(
                         printer,

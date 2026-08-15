@@ -37,11 +37,10 @@ pub use spinner::{ProgressBar, Spinner};
 pub mod window;
 pub use window::OutputWindow;
 
+pub mod live_row;
+
 pub mod lane;
 pub use lane::LaneOutput;
-
-pub mod wait_bar;
-pub(crate) use wait_bar::WaitBar;
 
 pub mod process;
 pub use process::CommandOutput;

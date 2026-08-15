@@ -817,7 +817,7 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
         "a busy unit is not a failed backup: {human:?}"
     );
     assert!(
-        human.contains("⊙ 1 action(s) not attempted"),
+        human.contains("⊙ 1 action not attempted"),
         "the snapshot the held lock cost the run is counted, not silently dropped: {human:?}"
     );
     assert!(

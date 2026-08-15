@@ -30,14 +30,25 @@ pub(crate) fn stderr_is_terminal() -> bool {
 /// every tick and again at the collapse — the wrap this can't be handed to
 /// `wrap_body`, because there is no second row to wrap onto. The lines that
 /// follow are an `OutputWindow` tail, already clamped at their own indent.
-fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> String {
+pub(super) fn clamp_label(
+    sink: &dyn Writer,
+    message: &str,
+    depth: usize,
+    carry_indent: bool,
+) -> String {
     let width = wrap::available_width(sink, depth);
     // The bar carries its own indent: indicatif draws a bar's message at
     // column 0 whatever else is on screen, so a step inside a section would
     // otherwise sit outside the tree it belongs to while running and jump
     // into it the moment it settles — and its own output window, which
-    // indents one level deeper still, would hang under nothing.
-    let indent = "  ".repeat(depth);
+    // indents one level deeper still, would hang under nothing. A bar whose
+    // style carries the indent as a `{prefix}` field asks for none here, or
+    // the row would be indented twice.
+    let indent = if carry_indent {
+        "  ".repeat(depth)
+    } else {
+        String::new()
+    };
     match message.split_once('\n') {
         Some((head, rest)) => format!("{indent}{}\n{}", wrap::clamp(head, width), rest),
         None => format!("{indent}{}", wrap::clamp(message, width)),
@@ -58,13 +69,23 @@ pub struct Spinner<'p> {
     /// with no paired decrement to forget. `None` for a hidden bar, which is
     /// never added to the MultiProgress and so must not be counted.
     pub(crate) _live: Option<LiveBarGuard>,
+    /// The bar draws this row's indent itself, through a `{prefix}` field its
+    /// style carries, so a message must not repeat it. Set only by a
+    /// [`super::live_row::LiveRow`], which owns the bar for longer than the
+    /// spinner does and needs its running line to sit in the same column as
+    /// the settled line that replaces it.
+    pub(crate) prefixed: bool,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
 
 impl<'p> Spinner<'p> {
     pub fn set_message(&self, text: impl Into<String>) {
-        self.bar
-            .set_message(clamp_label(self.sink.as_ref(), &text.into(), self.depth));
+        self.bar.set_message(clamp_label(
+            self.sink.as_ref(),
+            &text.into(),
+            self.depth,
+            !self.prefixed,
+        ));
     }
 
     pub fn finish_ok(self, final_text: impl Into<String>) -> StatusBuilder<'p> {
@@ -90,6 +111,16 @@ impl<'p> Spinner<'p> {
     /// `finish_*` does.
     pub(crate) fn finish_silent(mut self) {
         self.bar.finish_and_clear();
+        self.finished = true;
+    }
+
+    /// Give the bar back to whoever owns it, printing nothing.
+    ///
+    /// For a spinner drawn on a line it does not own — a
+    /// [`super::live_row::LiveRow`]'s, which the caller goes on to settle in
+    /// place. `finish_silent` would clear that line and retire the row's bar
+    /// with it, leaving the row unable to say anything ever again.
+    pub(crate) fn release(mut self) {
         self.finished = true;
     }
 
@@ -207,7 +238,7 @@ pub(crate) fn make_spinner_bar(
         let (bar, live) = build_spinner(
             multi,
             renderer,
-            &clamp_label(&console::Term::stderr(), message, depth),
+            &clamp_label(&console::Term::stderr(), message, depth, true),
         );
         (bar, Some(live))
     }
@@ -229,6 +260,25 @@ pub(crate) fn make_progress_bar(
     }
 }
 
+/// The animated frames a spinner cycles, painted by the theme. Shared with
+/// [`super::live_row::LiveRow`], whose running state is the same animation on a
+/// line it owns for longer than one step.
+pub(super) fn spinner_style(renderer: &Renderer, template: &str) -> ProgressStyle {
+    let frames_raw = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let styled: Vec<String> = frames_raw
+        .iter()
+        .map(|f| renderer.theme.info.apply_to(f).to_string())
+        .collect();
+    let mut tick_refs: Vec<&str> = styled.iter().map(|s| s.as_str()).collect();
+    tick_refs.push(" ");
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+        .tick_strings(&tick_refs)
+}
+
+/// How often a spinner redraws its animation.
+pub(super) const SPINNER_TICK: Duration = Duration::from_millis(80);
+
 /// Build a styled spinner ProgressBar attached to a MultiProgress.
 pub(crate) fn build_spinner(
     multi: &indicatif::MultiProgress,
@@ -237,20 +287,9 @@ pub(crate) fn build_spinner(
 ) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new_spinner());
     let live = LiveBarGuard::acquire(renderer);
-    let frames_raw = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let styled: Vec<String> = frames_raw
-        .iter()
-        .map(|f| renderer.theme.info.apply_to(f).to_string())
-        .collect();
-    let mut tick_refs: Vec<&str> = styled.iter().map(|s| s.as_str()).collect();
-    tick_refs.push(" ");
-    pb.set_style(
-        ProgressStyle::with_template("{spinner} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner())
-            .tick_strings(&tick_refs),
-    );
+    pb.set_style(spinner_style(renderer, "{spinner} {msg}"));
     pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
+    pb.enable_steady_tick(SPINNER_TICK);
     (pb, live)
 }
 
@@ -308,7 +347,7 @@ mod tests {
     fn clamp_label_keeps_the_spinner_on_one_row() {
         let sink = sink_for(&Arc::new(Mutex::new(String::new())));
         let long = "sudo apt-get install -y ".repeat(20);
-        let out = clamp_label(sink.as_ref(), &long, 0);
+        let out = clamp_label(sink.as_ref(), &long, 0, true);
         assert!(!out.contains('\n'), "label gained a row: {out:?}");
         assert!(out.len() < long.len(), "label was not clamped");
         assert!(out.ends_with('…'));
@@ -320,7 +359,7 @@ mod tests {
         // already clamped at its own indent and must survive byte for byte.
         let sink = sink_for(&Arc::new(Mutex::new(String::new())));
         let tail = "  first tail line\n  second tail line";
-        let out = clamp_label(sink.as_ref(), &format!("short label\n{tail}"), 0);
+        let out = clamp_label(sink.as_ref(), &format!("short label\n{tail}"), 0, true);
         assert_eq!(out, format!("short label\n{tail}"));
     }
 
@@ -338,6 +377,7 @@ mod tests {
             message: "doing work".into(),
             finished: false,
             _live: None,
+            prefixed: false,
             _phantom: std::marker::PhantomData,
         };
         let _ = sp.finish_ok("done");
@@ -360,6 +400,7 @@ mod tests {
                 message: "abandoned".into(),
                 finished: false,
                 _live: None,
+                prefixed: false,
                 _phantom: std::marker::PhantomData,
             };
         }

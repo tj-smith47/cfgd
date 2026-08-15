@@ -2476,7 +2476,7 @@ fn script_status_fail_after_window_emits_one_fail() {
                 ..ScriptReport::default()
             },
         );
-        st.open_window("Running script: exit 1");
+        st.open_window();
         st.finish_fail("waitpid failed", None);
     }
     drop(printer);
@@ -2509,7 +2509,7 @@ fn script_status_status_after_open_window_emits_one_line() {
                 ..ScriptReport::default()
             },
         );
-        st.open_window("Running script: exit 1");
+        st.open_window();
         st.status(crate::output::Role::Skipped, Some("creates path exists"));
     }
     drop(printer);

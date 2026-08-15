@@ -70,9 +70,23 @@ pub struct OutputWindow<'p> {
 
 impl<'p> OutputWindow<'p> {
     pub(crate) fn new(spinner: Spinner<'p>, label: String) -> Self {
+        Self::opened(spinner, label, /*announce=*/ true)
+    }
+
+    /// A window over a line its CALLER owns and will settle — a
+    /// [`super::live_row::LiveRow`]'s.
+    ///
+    /// It never announces the step. The row above it already names the action
+    /// and will carry its outcome, so a `Status(Running)` here would be that
+    /// action's second line, and the one the row settles would be its third.
+    pub(crate) fn borrowed(spinner: Spinner<'p>, label: String) -> Self {
+        Self::opened(spinner, label, /*announce=*/ false)
+    }
+
+    fn opened(spinner: Spinner<'p>, label: String, announce: bool) -> Self {
         let windowed = !spinner.bar.is_hidden();
         let body_depth = spinner.depth + 1;
-        if !windowed && spinner.renderer.verbosity != Verbosity::Quiet {
+        if announce && !windowed && spinner.renderer.verbosity != Verbosity::Quiet {
             // No window to hold the label, so the step announces itself the way
             // `run_streaming` does: a Running status, then its lines.
             spinner.renderer.render_status(
@@ -180,6 +194,16 @@ impl<'p> OutputWindow<'p> {
         self.spinner.finish_silent();
     }
 
+    /// Give the line back to whoever owns it, printing nothing and leaving it
+    /// on screen exactly as the last repaint left it.
+    ///
+    /// For a window drawn on a [`super::live_row::LiveRow`]: the row settles
+    /// its own line, and [`Self::finish_silent`] would retire the row's bar
+    /// along with the window, so the settle would paint a line nothing draws.
+    pub(crate) fn release(self) {
+        self.spinner.release();
+    }
+
     /// Collapse the window into the deepest level of the phase → owner →
     /// action tree: [`Self::finish_with`] with the subject painted
     /// `theme.primary`, so a script's line matches every other action line.
@@ -258,6 +282,7 @@ impl super::Printer {
             message: label.clone(),
             finished: false,
             _live: live,
+            prefixed: false,
             _phantom: PhantomData,
         };
         OutputWindow::new(spinner, label)
@@ -284,6 +309,7 @@ mod tests {
             message: "step".into(),
             finished: false,
             _live: None,
+            prefixed: false,
             _phantom: PhantomData,
         };
         (OutputWindow::new(spinner, "step".into()), buf)
@@ -394,6 +420,7 @@ mod tests {
             message: "step".into(),
             finished: false,
             _live: None,
+            prefixed: false,
             _phantom: PhantomData,
         };
         let mut w = OutputWindow::new(spinner, "step".into());

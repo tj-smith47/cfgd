@@ -158,7 +158,7 @@ fn rollback_aborted_human() {
 }
 
 /// Seeded state has a non-file (package) action after the target apply.
-/// `cmd_rollback` lists the action under the "Non-file action(s) require
+/// `cmd_rollback` lists the action under the "non-file actions require
 /// manual review" section with bullets — proves the indent-hack closure
 /// at rollback.rs:108 under real data (bullets render at section depth,
 /// not at column 0).
@@ -238,7 +238,7 @@ fn rollback_bridge_one_blank_line() {
     ]);
     {
         let rb_sec = printer.section_phase(&PhaseName::Files.section_label());
-        rb_sec.status_simple(Role::Ok, "1 file(s) processed");
+        rb_sec.status_simple(Role::Ok, "1 file processed");
     }
 
     let doc = Doc::new()

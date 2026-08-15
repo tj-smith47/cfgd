@@ -18,6 +18,7 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
   - `printer.section(name)` — returns `SectionGuard` (drop ends the section)
   - `printer.spinner(label)` — returns `Spinner` with `.finish_ok(subject)` / `.finish_fail(subject).detail(e)`
   - `printer.progress_bar(...)` — returns `ProgressBar`
+  - `printer.live_row_at(depth, status, subject)` / `printer.live_row_after(&row, ...)` — returns `LiveRow`, ONE line of the live region whose state the caller changes in place (`set_pending` / `set_running` / `settle`), and which is committed to the permanent scrollback when the caller drops it in order. `live_row_after` inserts directly beneath an existing row, which is what keeps one group's rows contiguous while another group is still growing. `printer.live_row_budget()` reports how many more rows the region can hold before the terminal's height truncates it — gate PENDING rows on it; never a running one
   - `printer.run(cmd, fmt)` — buffered command execution with live output
   - `printer.data_line(text)` — raw structured-output line
   - `printer.emit(doc)` — `Doc` emit (for `-o json|yaml|jsonpath|template`)

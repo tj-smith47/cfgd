@@ -605,7 +605,7 @@ pub(crate) fn handle_reconcile(
             let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
 
             if !profile_hooks.is_empty() {
-                tracing::info!(count = profile_hooks.len(), "running onDrift script(s)");
+                tracing::info!(count = profile_hooks.len(), "running onDrift scripts");
                 let owner = crate::reconciler::Owner::profile(profile_name);
                 let _group = hooks_phase.owner(&owner, hook_width);
                 let script_env =
@@ -651,7 +651,7 @@ pub(crate) fn handle_reconcile(
                 tracing::info!(
                     module = %module.name,
                     count = module.on_drift_scripts.len(),
-                    "running module onDrift script(s)"
+                    "running module onDrift scripts"
                 );
                 let owner = crate::reconciler::Owner::module(&module.name);
                 let _group = hooks_phase.owner(&owner, hook_width);
@@ -823,14 +823,18 @@ pub(crate) fn handle_reconcile(
                             notifier.notify(
                                 "cfgd: auto-apply partial failure",
                                 &format!(
-                                    "{} action(s) succeeded, {} failed. Run `cfgd status` for details.",
-                                    succeeded, failed
+                                    "{} succeeded, {} failed. Run `cfgd status` for details.",
+                                    crate::pluralize(succeeded, "action"),
+                                    failed
                                 ),
                             );
                         } else if notify_on_drift {
                             notifier.notify(
                                 "cfgd: auto-apply succeeded",
-                                &format!("{} action(s) applied successfully.", succeeded),
+                                &format!(
+                                    "{} applied successfully.",
+                                    crate::pluralize(succeeded, "action")
+                                ),
                             );
                         }
 
@@ -871,15 +875,16 @@ pub(crate) fn handle_reconcile(
                 printer.status_simple(
                     crate::output::Role::Warn,
                     format!(
-                        "Drift detected — {effective_total} action(s); policy is notify-only, nothing applied"
+                        "Drift detected — {}; policy is notify-only, nothing applied",
+                        crate::pluralize(effective_total, "action")
                     ),
                 );
                 if notify_on_drift {
                     notifier.notify(
                         "cfgd: drift detected",
                         &format!(
-                            "{} resource(s) have drifted from desired state. Run `cfgd apply` to reconcile.",
-                            effective_total
+                            "{} drifted from desired state. Run `cfgd apply` to reconcile.",
+                            crate::pluralize(effective_total, "resource")
                         ),
                     );
                 }

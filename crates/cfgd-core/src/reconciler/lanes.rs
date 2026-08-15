@@ -72,12 +72,14 @@ use std::time::{Duration, Instant};
 use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{PackageError, Result, StateError};
 use crate::modules::ResolvedModule;
-use crate::output::{LaneOutput, Printer, WaitBar};
+use crate::output::{LaneOutput, Printer};
 use crate::providers::{ActionNote, NoteSink, PackageStateStore, ProviderRegistry};
 
+use super::apply::ActionOutcome;
 use super::format::{
     action_display_subject, format_action_description, parse_resource_from_description,
 };
+use super::live_tree::{Held, PhaseTree, Wait};
 use super::packages::{ModuleInstallContext, PackageExec, action_manager};
 use super::types::{
     Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, PhaseName, ReconcileContext, Tier,
@@ -102,6 +104,36 @@ pub(super) struct LaneRun<'x> {
     pub(super) plan_index_base: usize,
     /// Depth an action's line — and so its lane's window — renders at.
     pub(super) action_depth: usize,
+}
+
+/// Where a finished action goes: through the caller's settle, which journals
+/// it and files its result row, and then into the phase's tree, which settles
+/// the row it has been running in.
+///
+/// One type rather than two parameters because every collection point must do
+/// both, in that order: an outcome that reached the tree without being settled
+/// would render a line the run's own results never counted.
+pub(super) struct LaneCollector<'a, 'p, 'g> {
+    /// Returns the line to render, and `None` when the caller kept it — off a
+    /// TTY the phase's tree is written at close, in plan order, and nothing
+    /// settles here.
+    settle: &'a mut dyn FnMut(&'p Action, LaneCollected) -> Option<ActionOutcome>,
+    tree: &'a mut PhaseTree<'p, 'g>,
+}
+
+impl<'a, 'p, 'g> LaneCollector<'a, 'p, 'g> {
+    pub(super) fn new(
+        settle: &'a mut dyn FnMut(&'p Action, LaneCollected) -> Option<ActionOutcome>,
+        tree: &'a mut PhaseTree<'p, 'g>,
+    ) -> Self {
+        Self { settle, tree }
+    }
+
+    fn finished(&mut self, owner: &'p Owner, action: &'p Action, collected: LaneCollected) {
+        if let Some(outcome) = (self.settle)(action, collected) {
+            self.tree.settled(owner, action, outcome);
+        }
+    }
 }
 
 /// One finished action, as the coordinator collected it.
@@ -231,12 +263,16 @@ struct Slot<'p> {
 /// for a blocked manager node — because they are the same statement at
 /// different levels and reading them side by side is the point.
 ///
-/// The head is the owner token wherever the owner is what distinguishes the
-/// line, and the action's own display subject where it is not: every node of
-/// the `cfgd:managers` group belongs to ONE owner, so a token there would
-/// print the same six characters above every line and name none of them.
-fn wait_subject(head: &str, thing: &str) -> String {
-    format!("{head} · waiting on {thing}")
+/// The head is what is being held: the blocked action's own display subject,
+/// in the row that action will start in. It is omitted entirely for a line
+/// standing for a whole GROUP, whose heading sits directly above it and is
+/// already the head — a group line naming its owner would print the same token
+/// twice, one line apart.
+fn wait_subject(head: Option<&str>, thing: &str) -> String {
+    match head {
+        Some(head) => format!("{head} · waiting on {thing}"),
+        None => format!("waiting on {thing}"),
+    }
 }
 
 /// The tier currently in flight, given each tier's count of actions that have
@@ -285,7 +321,7 @@ fn tier_waits<'g>(groups: &[GroupWait<'g>], in_flight: Option<Tier>) -> Vec<(&'g
     groups
         .iter()
         .filter(|g| g.pending && g.tier > in_flight)
-        .map(|g| (g.owner, wait_subject(&g.owner.token(), word)))
+        .map(|g| (g.owner, wait_subject(None, word)))
         .collect()
 }
 
@@ -480,11 +516,11 @@ impl Unrun {
 /// still `Running` because its worker vanished are both actions the run
 /// planned and did not complete, and each gets a line of its own naming why.
 /// Marked `Done` as it goes, so a second exit path cannot report one twice.
-fn settle_unrun(
-    slots: &mut [Slot<'_>],
+fn settle_unrun<'p>(
+    slots: &mut [Slot<'p>],
     reason: &Unrun,
     journal_ids: &mut HashMap<usize, Option<i64>>,
-    collect: &mut dyn FnMut(&Action, LaneCollected),
+    collect: &mut LaneCollector<'_, 'p, '_>,
 ) {
     for (index, slot) in slots.iter_mut().enumerate() {
         if slot.state == SlotState::Done {
@@ -492,7 +528,8 @@ fn settle_unrun(
         }
         slot.state = SlotState::Done;
         let manager = slot.manager.clone().unwrap_or_default();
-        collect(
+        collect.finished(
+            slot.owner,
             slot.action,
             LaneCollected {
                 journal_id: journal_ids.remove(&index).flatten(),
@@ -514,10 +551,10 @@ fn settle_unrun(
 /// thing three times without ever naming what to do. Sweeps run in slot order —
 /// the plan's own order — and repeat until nothing more is reachable, so a
 /// chain of any depth is settled in one call and always in the same sequence.
-fn fail_dependents(
-    slots: &mut [Slot<'_>],
+fn fail_dependents<'p>(
+    slots: &mut [Slot<'p>],
     root: usize,
-    collect: &mut dyn FnMut(&Action, LaneCollected),
+    collect: &mut LaneCollector<'_, 'p, '_>,
 ) {
     let root_action = slots[root].action;
     let Some(root_node) = slots[root].node.clone() else {
@@ -546,7 +583,8 @@ fn fail_dependents(
                 failed.push(node);
             }
             progressed = true;
-            collect(
+            collect.finished(
+                slot.owner,
                 slot.action,
                 LaneCollected {
                     journal_id: None,
@@ -646,24 +684,6 @@ struct WaitInputs<'a, 'p> {
     groups: &'a [(&'p Owner, Tier)],
     deps: &'a HashMap<&'a str, HashSet<&'a str>>,
     lanes_busy: &'a HashSet<String>,
-    /// Depth the phase's action lines render at — the column a wait line
-    /// standing in for one of them has to occupy.
-    depth: usize,
-}
-
-/// The wait bars currently on screen, each keyed by what replaces it: a group's
-/// by its owner token, an action's by the `(owner token, lane)` pair its
-/// sentence is built from.
-///
-/// That pair and not the slot index, because the pair IS the sentence: one
-/// owner with formulae, taps and casks all held behind a running `brew` has
-/// three blocked slots and one thing to say, and three byte-identical live
-/// lines would be three claims where there is one fact. Cardinality is still
-/// per blocked action wherever the actions differ — an owner blocked on `apt`
-/// and on `brew` keeps two bars, because those are two sentences.
-struct WaitBars<'p> {
-    groups: HashMap<String, WaitBar<'p>>,
-    actions: HashMap<(String, String), WaitBar<'p>>,
 }
 
 /// Every distinct owner in the phase, in the order the dispatch offers them,
@@ -702,7 +722,7 @@ impl super::Reconciler<'_> {
         &self,
         dispatch: &[(&'p Owner, &'p Action, usize)],
         run: &LaneRun<'_>,
-        collect: &mut dyn FnMut(&Action, LaneCollected),
+        collect: &mut LaneCollector<'_, 'p, '_>,
     ) -> Option<u8> {
         // See the module doc's "caller must not hold `path_env_mutation_guard()`"
         // section: a worker's own `path_env_read_guard()` would block forever
@@ -758,10 +778,6 @@ impl super::Reconciler<'_> {
         // exits that can do it cannot answer a slot differently — or twice.
         let mut unrun: Option<Unrun> = None;
         let mut journal_ids: HashMap<usize, Option<i64>> = HashMap::new();
-        let mut bars = WaitBars {
-            groups: HashMap::new(),
-            actions: HashMap::new(),
-        };
 
         let (tx, inbox) = channel::<LaneMessage>();
         // `None` once no `Waiting` slot remains (or the run aborts): the
@@ -795,23 +811,20 @@ impl super::Reconciler<'_> {
                         },
                     ) {
                         let action = slots[index].action;
+                        let owner = slots[index].owner;
                         let action_index = run.plan_index_base + slots[index].plan_index;
                         let journal_id = self.begin_package_journal(run, action, action_index);
-                        // The bar names its owner as well as its action: the
-                        // phase's tree is not on screen until phase close, so a
-                        // bare action text names nothing.
-                        let subject = format!(
-                            "{} · {}",
-                            slots[index].owner.token(),
-                            action_display_subject(action)
-                        );
                         // The dispatch-time read the script-install arm needs.
                         // Done here rather than in the worker because it is a
                         // SQLite read, and current because a bootstrap has
                         // always been collected before anything that could
                         // observe its directories is dispatched.
                         let path_dirs = super::all_recorded_path_dirs(self.state);
-                        let lane = run.printer.lane_at(run.action_depth, subject);
+                        // The action's row goes RUNNING, in the place the tree
+                        // has been showing it — which is where its line will
+                        // settle too, so nothing about it moves. The row names
+                        // the action alone: its owner is the heading above it.
+                        let lane = collect.tree.dispatched(owner, action);
                         let Some(worker_tx) = tx.clone() else {
                             // Unreachable: `pick_next` returns an index only
                             // while some slot is still `Waiting`, which is
@@ -911,26 +924,17 @@ impl super::Reconciler<'_> {
                             let _ = worker_tx.send(LaneMessage::Finished(Box::new(message)));
                         });
                     }
-                    refresh_wait_bars(
-                        run.printer,
-                        &WaitInputs {
-                            slots: &slots,
-                            groups: &groups,
-                            deps: &deps,
-                            lanes_busy: &lanes_busy,
-                            depth: run.action_depth,
-                        },
-                        &mut bars,
-                    );
-                } else {
-                    // Nothing new will dispatch after an abort, so every wait
-                    // line still on screen is a claim about work that will
-                    // never start. Cleared once here rather than per collected
-                    // action, because the refresh that would retire them is
-                    // itself skipped while aborting.
-                    bars.groups.clear();
-                    bars.actions.clear();
+                    collect.tree.waiting(&held_waits(&WaitInputs {
+                        slots: &slots,
+                        groups: &groups,
+                        deps: &deps,
+                        lanes_busy: &lanes_busy,
+                    }));
                 }
+                // Nothing new dispatches after an abort, so no refresh follows
+                // it: every row still describing work that has not started is
+                // a claim about work that never will, and the tree retires all
+                // of them when it closes.
 
                 // Nothing will ever clone `tx` again once no slot remains
                 // `Waiting` (or the run has aborted, which stops new
@@ -1000,7 +1004,8 @@ impl super::Reconciler<'_> {
                         }
                         self.persist_bootstraps(done.bootstrapped);
                         let failed = done.result.is_err();
-                        collect(
+                        collect.finished(
+                            slots[index].owner,
                             slots[index].action,
                             LaneCollected {
                                 journal_id: journal_ids.remove(&index).flatten(),
@@ -1055,14 +1060,10 @@ impl super::Reconciler<'_> {
                 }
             }
 
-            // Cleared before the outstanding slots are settled, for the same
-            // reason the abort branch above clears them: no further
-            // `refresh_wait_bars` call follows the break, so a wait line for a
-            // slot that is about to be reported as never-run would otherwise
-            // be the last thing drawn for it.
+            // Every outstanding slot is answered before the tree closes, so
+            // the row a stalled action has been waiting in settles as the
+            // failure it is rather than being retired unexplained.
             if let Some(reason) = &unrun {
-                bars.groups.clear();
-                bars.actions.clear();
                 settle_unrun(&mut slots, reason, &mut journal_ids, collect);
             }
         });
@@ -1093,19 +1094,17 @@ impl super::Reconciler<'_> {
     }
 }
 
-/// Bring the live region's wait lines in step with the dispatch.
+/// What the scheduler is holding back, and why — the complete set, in the
+/// order the tree wants the lines on screen.
 ///
 /// Recomputed rather than incrementally patched: a wait line is a statement
 /// about the scheduler's current state, and the state is small.
 ///
-/// A free function taking the printer rather than a `Reconciler` method: what
-/// decides which bars exist is the dispatch state, and nothing else — so a test
-/// can drive it from synthetic slots without a state store or an apply.
-fn refresh_wait_bars<'x>(
-    printer: &'x Printer,
-    inputs: &WaitInputs<'_, '_>,
-    bars: &mut WaitBars<'x>,
-) {
+/// A free function over the dispatch state and nothing else, so a test can
+/// drive it from synthetic slots without a state store, an apply, or a
+/// terminal — what a wait line SAYS is decided here, and where it is drawn is
+/// [`super::live_tree`]'s.
+fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
     let slots = inputs.slots;
     let pending = [
         pending_in(slots, Tier::Modules),
@@ -1124,42 +1123,24 @@ fn refresh_wait_bars<'x>(
                 .any(|s| s.state == SlotState::Waiting && s.owner.token() == owner.token()),
         })
         .collect();
-    // A `Vec`, not a `HashMap`: `tier_waits` already hands back `groups_of`
-    // order, and a bar not yet in `bars.groups` is `multi_progress.add`-ed
-    // (via `printer.wait_bar`) at the point it is first inserted below — so
-    // the iteration order here IS the top-to-bottom order new wait lines are
-    // drawn in. Collecting through a `HashMap` first discarded that order and
-    // redrew every fresh set of bars in `RandomState` order, reshuffled per
-    // process.
-    let wanted: Vec<(String, String)> = tier_waits(&waits, in_flight)
-        .into_iter()
-        .map(|(owner, subject)| (owner.token(), subject))
+    let pending_owners: Vec<String> = waits
+        .iter()
+        .filter(|g| g.pending)
+        .map(|g| g.owner.token())
         .collect();
-    let wanted_tokens: HashSet<&str> = wanted.iter().map(|(token, _)| token.as_str()).collect();
-    bars.groups
-        .retain(|token, _| wanted_tokens.contains(token.as_str()));
-    for (token, subject) in wanted {
-        match bars.groups.get(&token) {
-            // Replaced, never appended to: the chain `modules` → the
-            // group's own bars is one line changing what it says, not two
-            // lines accumulating.
-            Some(bar) => bar.set_subject(&subject),
-            None => {
-                bars.groups
-                    .insert(token, printer.wait_bar(inputs.depth, &subject));
-            }
-        }
-    }
+    // A `Vec` throughout, never a `HashMap`: the order these are built in IS
+    // the top-to-bottom order the tree draws new rows in, and collecting
+    // through a `HashMap` reshuffled every fresh set per process.
+    let mut rows: Vec<Wait<'p>> = tier_waits(&waits, in_flight)
+        .into_iter()
+        .map(|(owner, subject)| Wait {
+            owner,
+            action: None,
+            subject,
+        })
+        .collect();
 
-    // Same reasoning as `wanted` above: `slots` is walked in plan order, so
-    // building `blocked` as a `Vec` keeps that order for the bars inserted
-    // from it.
-    let mut blocked: Vec<((String, String), String)> = Vec::new();
-    // Several slots can collapse onto the same `(owner, lane)` line — dedup
-    // on first sight so the bar is inserted exactly once; `wait_subject` is a
-    // pure function of `(owner, lane)`, so every later occurrence would say
-    // the same thing anyway.
-    let mut blocked_seen: HashSet<(String, String)> = HashSet::new();
+    // `slots` is walked in plan order, so the rows built from it keep it.
     for (index, slot) in slots.iter().enumerate() {
         if slot.state != SlotState::Waiting || Some(slot.tier) != in_flight {
             continue;
@@ -1173,7 +1154,7 @@ fn refresh_wait_bars<'x>(
         // even have one yet — so naming the lane there would name a blocker
         // that is not in the way, and saying nothing at all would leave the
         // node absent from the live region for the whole of its wait.
-        let (key, subject) = match blocking_node(slots, index) {
+        let on = match blocking_node(slots, index) {
             Some(blocker) => {
                 // Only a manager node carries edges, so a blocker always has a
                 // name. If that ever stops holding, say nothing rather than
@@ -1186,17 +1167,11 @@ fn refresh_wait_bars<'x>(
                 let Some(on) = named else {
                     continue;
                 };
-                // Keyed per node: the nodes of the `cfgd:managers` group share
-                // one owner and one lane, so an owner-keyed line would let the
-                // first of them speak for all of them.
-                (
-                    (slot.owner.token(), slot.node.clone().unwrap_or_default()),
-                    wait_subject(&action_display_subject(slot.action).to_string(), on),
-                )
+                on.to_string()
             }
             None => {
                 // An owner mid-action in another lane still gets this line:
-                // one bar per in-flight action AND one per blocked action is
+                // one row per in-flight action AND one per blocked action is
                 // the whole point of the grammar, and the window it describes
                 // — a module holding brew while another holds apt — is the one
                 // the wait line exists for.
@@ -1205,30 +1180,19 @@ fn refresh_wait_bars<'x>(
                     continue;
                 };
                 // The lane, not the registered name: an action for `brew-cask`
-                // held back by a running `brew` is waiting on brew. Keying on
-                // `(owner, lane)` collapses the several actions of one owner
-                // that are all held behind the same binary into the one line
-                // they all say.
-                (
-                    (slot.owner.token(), lane.to_string()),
-                    wait_subject(&slot.owner.token(), lane),
-                )
+                // held back by a running `brew` is waiting on brew.
+                lane.to_string()
             }
         };
-        if blocked_seen.insert(key.clone()) {
-            blocked.push((key, subject));
-        }
+        rows.push(Wait {
+            owner: slot.owner,
+            action: Some(slot.action),
+            subject: wait_subject(Some(&action_display_subject(slot.action).to_string()), &on),
+        });
     }
-    let blocked_keys: HashSet<&(String, String)> = blocked.iter().map(|(k, _)| k).collect();
-    bars.actions.retain(|key, _| blocked_keys.contains(key));
-    for (key, subject) in blocked {
-        match bars.actions.get(&key) {
-            Some(bar) => bar.set_subject(&subject),
-            None => {
-                bars.actions
-                    .insert(key, printer.wait_bar(inputs.depth, &subject));
-            }
-        }
+    Held {
+        waits: rows,
+        pending_owners,
     }
 }
 
@@ -1312,11 +1276,13 @@ fn run_one_action(
 mod tests {
     use super::*;
 
-    /// The wait lines the live region would show, in the order given.
-    fn subjects(groups: &[GroupWait<'_>], in_flight: Option<Tier>) -> Vec<String> {
+    /// The wait lines the live region would show, in the order given, each
+    /// paired with the group it belongs under — the sentence no longer names
+    /// its owner, so the pairing is the only thing that says whose line it is.
+    fn subjects(groups: &[GroupWait<'_>], in_flight: Option<Tier>) -> Vec<(String, String)> {
         tier_waits(groups, in_flight)
             .into_iter()
-            .map(|(_, subject)| subject)
+            .map(|(owner, subject)| (owner.token(), subject))
             .collect()
     }
 
@@ -1346,8 +1312,11 @@ mod tests {
         assert_eq!(
             subjects,
             vec![
-                "cfgd:managers · waiting on modules",
-                "profile:work · waiting on modules",
+                (
+                    "cfgd:managers".to_string(),
+                    "waiting on modules".to_string()
+                ),
+                ("profile:work".to_string(), "waiting on modules".to_string()),
             ]
         );
     }
@@ -1373,8 +1342,11 @@ mod tests {
         assert_eq!(
             subjects(&groups, tier_in_flight([2, 1])),
             vec![
-                "cfgd:managers · waiting on modules",
-                "profile:work · waiting on modules",
+                (
+                    "cfgd:managers".to_string(),
+                    "waiting on modules".to_string()
+                ),
+                ("profile:work".to_string(), "waiting on modules".to_string()),
             ]
         );
 
@@ -1413,16 +1385,15 @@ mod tests {
         // The blocked-action line and the blocked-group line are the same
         // sentence at two levels; they are built by one function so they
         // cannot drift apart.
-        let nvim = Owner::module("nvim");
         assert_eq!(
-            wait_subject(&nvim.token(), "apt"),
-            "module:nvim · waiting on apt",
-            "the blocked-action cardinality"
+            wait_subject(Some("apt install git"), "apt"),
+            "apt install git · waiting on apt",
+            "the blocked-action cardinality names what is held"
         );
         assert_eq!(
-            wait_subject(&nvim.token(), Tier::Modules.wait_word().unwrap_or_default()),
-            "module:nvim · waiting on modules",
-            "the blocked-group cardinality"
+            wait_subject(None, Tier::Modules.wait_word().unwrap_or_default()),
+            "waiting on modules",
+            "the blocked-group cardinality is headed by the group's own heading"
         );
     }
 
@@ -1448,64 +1419,44 @@ mod tests {
         managers.iter().map(|m| (*m).to_string()).collect()
     }
 
-    /// Drive one refresh. Takes the printer by reference so the bars it opens
-    /// borrow it for the whole test rather than for one call.
-    fn refresh<'p>(
-        printer: &'p Printer,
-        slots: &[Slot<'_>],
-        groups: &[(&Owner, Tier)],
+    /// What the scheduler is holding back, for one arrangement of slots.
+    fn held<'p>(
+        slots: &[Slot<'p>],
+        groups: &[(&'p Owner, Tier)],
         deps: &HashMap<&str, HashSet<&str>>,
         lanes_busy: &HashSet<String>,
-        bars: &mut WaitBars<'p>,
-    ) {
-        refresh_wait_bars(
-            printer,
-            &WaitInputs {
-                slots,
-                groups,
-                deps,
-                lanes_busy,
-                depth: 0,
-            },
-            bars,
-        );
+    ) -> Held<'p> {
+        held_waits(&WaitInputs {
+            slots,
+            groups,
+            deps,
+            lanes_busy,
+        })
     }
 
-    /// Every wait line currently on screen, sorted so the assertion does not
-    /// depend on `HashMap` iteration order.
-    ///
-    /// The theme's pending glyph is stripped — that the glyph comes from the
-    /// theme is `the_glyph_comes_from_the_theme_not_the_call_site`'s assertion,
-    /// and repeating it here would make every subject assertion below depend on
-    /// the default theme's icon set.
-    fn on_screen(bars: &WaitBars<'_>) -> Vec<String> {
-        let glyph = format!("{} ", crate::output::Theme::default().icon_pending);
-        let mut lines: Vec<String> = bars
-            .groups
-            .values()
-            .chain(bars.actions.values())
-            .map(|bar| {
-                let line = bar.subject();
-                line.strip_prefix(&glyph).unwrap_or(&line).to_string()
-            })
-            .collect();
-        lines.sort();
-        lines
+    /// Every wait line, in the order the tree would draw new rows in.
+    fn lines(held: &Held<'_>) -> Vec<String> {
+        held.waits.iter().map(|w| w.subject.clone()).collect()
     }
 
-    fn empty_bars<'p>() -> WaitBars<'p> {
-        WaitBars {
-            groups: HashMap::new(),
-            actions: HashMap::new(),
-        }
+    /// Every wait line paired with the group whose heading it sits under.
+    fn rows(held: &Held<'_>) -> Vec<(String, String)> {
+        held.waits
+            .iter()
+            .map(|w| (w.owner.token(), w.subject.clone()))
+            .collect()
+    }
+
+    fn install(manager: &str, package: &str) -> Action {
+        Action::Package(crate::providers::PackageAction::Install {
+            manager: manager.to_string(),
+            packages: vec![package.to_string()],
+            origin: "local".to_string(),
+        })
     }
 
     fn probe_action() -> Action {
-        Action::Package(crate::providers::PackageAction::Install {
-            manager: "brew".to_string(),
-            packages: vec!["neovim".to_string()],
-            origin: "local".to_string(),
-        })
+        install("brew", "neovim")
     }
 
     #[test]
@@ -1514,118 +1465,105 @@ mod tests {
         // on brew and waiting on apt, which `tmux` holds. Suppressing the line
         // because its owner is busy would delete it in exactly the window the
         // grammar exists for.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let nvim = Owner::module("nvim");
         let tmux = Owner::module("tmux");
-        let action = probe_action();
+        let running = probe_action();
+        let blocked = install("apt", "git");
         let mut slots = vec![
-            slot(&nvim, Tier::Modules, "brew", &action),
-            slot(&nvim, Tier::Modules, "apt", &action),
-            slot(&tmux, Tier::Modules, "apt", &action),
+            slot(&nvim, Tier::Modules, "brew", &running),
+            slot(&nvim, Tier::Modules, "apt", &blocked),
+            slot(&tmux, Tier::Modules, "apt", &running),
         ];
         slots[0].state = SlotState::Running;
         slots[2].state = SlotState::Running;
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&["brew", "apt"]),
-            &mut bars,
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew", "apt"]));
+
+        assert_eq!(
+            rows(&held),
+            vec![(
+                "module:nvim".to_string(),
+                "apt install git · waiting on apt".to_string()
+            )]
         );
-
-        assert_eq!(on_screen(&bars), vec!["module:nvim · waiting on apt"]);
     }
 
     #[test]
     fn a_blocked_sub_manager_action_names_the_family_holding_the_lane() {
         // `brew-cask` and `brew` are one binary, so the line has to say what is
         // actually in the way rather than repeating the action's own name.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let profile = Owner::profile("work");
-        let action = probe_action();
+        let running = probe_action();
+        let cask = install("brew-cask", "firefox");
         let mut slots = vec![
-            slot(&profile, Tier::Rest, "brew", &action),
-            slot(&profile, Tier::Rest, "brew-cask", &action),
+            slot(&profile, Tier::Rest, "brew", &running),
+            slot(&profile, Tier::Rest, "brew-cask", &cask),
         ];
         slots[0].state = SlotState::Running;
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&["brew"]),
-            &mut bars,
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
+
+        assert_eq!(
+            lines(&held),
+            vec!["brew-cask install firefox · waiting on brew"]
         );
-
-        assert_eq!(on_screen(&bars), vec!["profile:work · waiting on brew"]);
     }
 
     #[test]
-    fn one_owners_actions_behind_one_family_share_a_single_line() {
-        // Formulae, taps and casks all queue behind one `brew` process, so the
-        // owner has three blocked actions and exactly one thing to say. Keyed
-        // by slot the live region would repeat `waiting on brew` three times,
-        // character for character. A second lane still earns its own line —
-        // the collapse is of identical sentences, not of blocked actions.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
+    fn every_blocked_action_gets_its_own_line_in_plan_order() {
+        // Formulae, taps and casks all queue behind one `brew` process. Each is
+        // a row of its own, because a row is where that action will START — the
+        // wait is the first state of the line the action then runs and settles
+        // in, so collapsing three waits into one would leave two actions with
+        // nowhere to appear. Naming the blocked action rather than its owner is
+        // what makes three lines behind one lane readable.
         let profile = Owner::profile("work");
-        let action = probe_action();
+        let running = probe_action();
+        let tap = install("brew-tap", "homebrew/cask-fonts");
+        let cask = install("brew-cask", "firefox");
+        let apt = install("apt", "git");
         let mut slots = vec![
-            slot(&profile, Tier::Rest, "brew", &action),
-            slot(&profile, Tier::Rest, "brew-tap", &action),
-            slot(&profile, Tier::Rest, "brew-cask", &action),
-            slot(&profile, Tier::Rest, "apt", &action),
+            slot(&profile, Tier::Rest, "brew", &running),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+            slot(&profile, Tier::Rest, "brew-cask", &cask),
+            slot(&profile, Tier::Rest, "apt", &apt),
         ];
         slots[0].state = SlotState::Running;
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&["brew", "apt"]),
-            &mut bars,
-        );
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew", "apt"]));
 
         assert_eq!(
-            on_screen(&bars),
+            lines(&held),
             vec![
-                "profile:work · waiting on apt",
-                "profile:work · waiting on brew",
+                "brew-tap install homebrew/cask-fonts · waiting on brew",
+                "brew-cask install firefox · waiting on brew",
+                "apt install git · waiting on apt",
             ]
         );
-        assert_eq!(bars.actions.len(), 2, "no line is drawn twice");
     }
 
     #[test]
     fn an_action_waiting_on_its_dependency_gets_no_manager_line() {
         // It is not waiting on a manager — its module is waiting on another
         // module, and saying "waiting on apt" would name the wrong thing.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let nvim = Owner::module("nvim");
         let base = Owner::module("base");
-        let action = probe_action();
+        let running = probe_action();
+        let blocked = install("apt", "git");
         let mut slots = vec![
-            slot(&base, Tier::Modules, "apt", &action),
-            slot(&nvim, Tier::Modules, "apt", &action),
+            slot(&base, Tier::Modules, "apt", &running),
+            slot(&nvim, Tier::Modules, "apt", &blocked),
         ];
         slots[0].state = SlotState::Running;
         let groups = groups_of(&slots);
         let deps = HashMap::from([("nvim", HashSet::from(["base"]))]);
-        let mut bars = empty_bars();
 
-        refresh(&printer, &slots, &groups, &deps, &busy(&["apt"]), &mut bars);
+        let held = held(&slots, &groups, &deps, &busy(&["apt"]));
 
-        assert!(on_screen(&bars).is_empty(), "{:?}", on_screen(&bars));
+        assert!(lines(&held).is_empty(), "{:?}", lines(&held));
     }
 
     /// One node of the `cfgd:managers` DAG, built the way the dispatcher
@@ -1694,7 +1632,6 @@ mod tests {
         // is what the node is still behind once the running one clears — an
         // attribution by "first in flight" would name brew and then have to
         // take it back a second later.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let managers = Owner::cfgd("managers");
         let pipx = provision("pipx", "brew", &[]);
         let brew = provision("brew", "curl", &[]);
@@ -1713,29 +1650,20 @@ mod tests {
         ];
         slots[1].state = SlotState::Running;
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&["brew"]),
-            &mut bars,
-        );
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
 
         // The head is the node's own display subject, not the owner token:
-        // every node here belongs to `cfgd:managers`, so a token would print
-        // the same six characters above each line and name none of them.
-        // The pipx provision earns the first line: it lanes on its mediator
-        // (`brew install pipx` cannot run while another brew process holds
-        // the lane), and a lane-blocked bar keys on the owner as everywhere
-        // else in this region.
+        // every node here belongs to `cfgd:managers`, whose heading is already
+        // one line above, so a token would print the same six characters on
+        // every line and name none of them. The pipx provision earns the first
+        // line: it lanes on its mediator, since `brew install pipx` cannot run
+        // while another brew process holds the lane.
         assert_eq!(
-            on_screen(&bars),
+            lines(&held),
             vec![
-                "cfgd:managers · waiting on brew",
-                "provision poetry via pipx · waiting on pipx"
+                "provision pipx via brew · waiting on brew",
+                "provision poetry via pipx · waiting on pipx",
             ],
             "a node held by an edge is in the live region for the whole of its wait"
         );
@@ -1766,7 +1694,6 @@ mod tests {
         // — the edges are declared brew-first, and the slots are held in an
         // order (pipx, brew) that is not their plan order, which is the shape
         // a tier-partitioned dispatch produces.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let managers = Owner::cfgd("managers");
         let brew = provision("brew", "curl", &[]);
         let pipx = provision("pipx", "brew", &[]);
@@ -1784,21 +1711,13 @@ mod tests {
             node_slot(&managers, &poetry, 2),
         ];
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&[]),
-            &mut bars,
-        );
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&[]));
 
         assert!(
-            on_screen(&bars).contains(&"provision poetry via pipx · waiting on pipx".to_string()),
+            lines(&held).contains(&"provision poetry via pipx · waiting on pipx".to_string()),
             "{:?}",
-            on_screen(&bars)
+            lines(&held)
         );
     }
 
@@ -1807,7 +1726,6 @@ mod tests {
         // `apt install curl` is curl arriving, and curl is what the dependent
         // is waiting for — naming apt would name the installer of the thing
         // rather than the thing.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let managers = Owner::cfgd("managers");
         let curl = Action::Manager(ManagerAction::Prerequisite {
             tool: "curl".to_string(),
@@ -1826,19 +1744,11 @@ mod tests {
         ];
         slots[0].state = SlotState::Running;
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&["apt"]),
-            &mut bars,
-        );
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["apt"]));
 
         assert_eq!(
-            on_screen(&bars),
+            lines(&held),
             vec!["provision brew via curl · waiting on curl"]
         );
     }
@@ -1848,7 +1758,6 @@ mod tests {
         // The node's own manager is busy AND an edge is unsatisfied. The edge
         // is what the dispatcher checks first, so it is what the line says;
         // naming the lane would name a blocker the node is not yet behind.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let managers = Owner::cfgd("managers");
         let brew = provision("brew", "curl", &[]);
         let brew_cask = Action::Manager(ManagerAction::Provision {
@@ -1862,29 +1771,20 @@ mod tests {
         ];
         slots[0].state = SlotState::Running;
         let groups = groups_of(&slots);
-        let mut bars = empty_bars();
 
-        refresh(
-            &printer,
-            &slots,
-            &groups,
-            &HashMap::new(),
-            &busy(&["brew"]),
-            &mut bars,
-        );
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
 
         assert_eq!(
-            on_screen(&bars),
-            vec!["provision brew-cask via brew · waiting on brew"]
+            lines(&held),
+            vec!["provision brew-cask via brew · waiting on brew"],
+            "one blocker, one line"
         );
-        assert_eq!(bars.actions.len(), 1, "one blocker, one line");
     }
 
     #[test]
-    fn a_groups_line_is_removed_once_the_tier_in_flight_advances() {
-        // The group's line is drawn while Modules is in flight, and removed
+    fn a_groups_line_is_withdrawn_once_the_tier_in_flight_advances() {
+        // The group's line is held while Modules is in flight, and withdrawn
         // outright — never left stale — once nothing above the group is left.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let nvim = Owner::module("nvim");
         let managers = Owner::cfgd("managers");
         let profile = Owner::profile("work");
@@ -1897,70 +1797,65 @@ mod tests {
         let groups = groups_of(&slots);
         let deps = HashMap::new();
         let idle = busy(&[]);
-        let mut bars = empty_bars();
 
-        refresh(&printer, &slots, &groups, &deps, &idle, &mut bars);
         assert_eq!(
-            on_screen(&bars),
+            rows(&held(&slots, &groups, &deps, &idle)),
             vec![
-                "cfgd:managers · waiting on modules",
-                "profile:work · waiting on modules",
+                (
+                    "cfgd:managers".to_string(),
+                    "waiting on modules".to_string()
+                ),
+                ("profile:work".to_string(), "waiting on modules".to_string()),
             ]
         );
 
         slots[0].state = SlotState::Done;
-        refresh(&printer, &slots, &groups, &deps, &idle, &mut bars);
         assert!(
-            on_screen(&bars).is_empty(),
+            lines(&held(&slots, &groups, &deps, &idle)).is_empty(),
             "nothing is ever blocked behind the last tier"
         );
-        assert_eq!(bars.groups.len(), 0, "the line is removed, not left stale");
     }
 
     #[test]
-    fn an_action_line_is_dropped_once_its_lane_frees() {
-        let (printer, _buf) = Printer::for_test_with_live_bars();
+    fn an_action_line_is_withdrawn_once_its_lane_frees() {
         let profile = Owner::profile("work");
-        let action = probe_action();
+        let running = probe_action();
+        let blocked = install("apt", "git");
         let mut slots = vec![
-            slot(&profile, Tier::Rest, "apt", &action),
-            slot(&profile, Tier::Rest, "apt", &action),
+            slot(&profile, Tier::Rest, "apt", &running),
+            slot(&profile, Tier::Rest, "apt", &blocked),
         ];
         slots[0].state = SlotState::Running;
         let groups = groups_of(&slots);
         let deps = HashMap::new();
-        let mut bars = empty_bars();
 
-        refresh(&printer, &slots, &groups, &deps, &busy(&["apt"]), &mut bars);
-        assert_eq!(on_screen(&bars), vec!["profile:work · waiting on apt"]);
+        assert_eq!(
+            lines(&held(&slots, &groups, &deps, &busy(&["apt"]))),
+            vec!["apt install git · waiting on apt"]
+        );
 
         slots[0].state = SlotState::Done;
-        refresh(&printer, &slots, &groups, &deps, &busy(&[]), &mut bars);
         assert!(
-            bars.actions.is_empty(),
+            lines(&held(&slots, &groups, &deps, &busy(&[]))).is_empty(),
             "a wait line outlives neither the wait nor the action"
         );
     }
 
-    /// The order new group bars are `printer.wait_bar`-ed in, read back through
-    /// `WaitBar::seq` since indicatif exposes no public draw-position API.
-    fn group_bar_creation_order(bars: &WaitBars<'_>) -> Vec<String> {
-        let mut by_seq: Vec<(String, u64)> = bars
-            .groups
+    /// The order the tree would append new group rows in.
+    fn group_row_order(held: &Held<'_>) -> Vec<String> {
+        held.waits
             .iter()
-            .map(|(token, bar)| (token.clone(), bar.seq()))
-            .collect();
-        by_seq.sort_by_key(|(_, seq)| seq.to_owned());
-        by_seq.into_iter().map(|(token, _)| token).collect()
+            .filter(|w| w.action.is_none())
+            .map(|w| w.owner.token())
+            .collect()
     }
 
     #[test]
-    fn group_wait_bars_are_created_in_slot_order_not_hash_order() {
+    fn group_wait_rows_are_built_in_slot_order_not_hash_order() {
         // Owners are deliberately non-alphabetical: a `HashMap`-driven creation
         // loop reshuffles this every process, and the top-to-bottom order new
-        // bars are drawn in has to match `groups_of`'s plan order — the same
+        // rows are drawn in has to match `groups_of`'s plan order — the same
         // order the phase tree shows — every run, not just this one.
-        let (printer, _buf) = Printer::for_test_with_live_bars();
         let busy_owner = Owner::module("busy");
         let zeta = Owner::module("zeta");
         let alpha = Owner::module("alpha");
@@ -1978,38 +1873,27 @@ mod tests {
         let groups = groups_of(&slots);
 
         for _ in 0..5 {
-            let mut bars = empty_bars();
-            refresh(
-                &printer,
-                &slots,
-                &groups,
-                &HashMap::new(),
-                &busy(&[]),
-                &mut bars,
-            );
             assert_eq!(
-                group_bar_creation_order(&bars),
+                group_row_order(&held(&slots, &groups, &HashMap::new(), &busy(&[]))),
                 vec!["module:zeta", "module:alpha", "module:mid"],
-                "wait bars must be created in slot/plan order every run"
+                "wait rows must be built in slot/plan order every run"
             );
         }
     }
 
-    /// The order new action bars are `printer.wait_bar`-ed in, same reasoning
-    /// as `group_bar_creation_order` but for the `(owner, lane)`-keyed map.
-    fn action_bar_creation_order(bars: &WaitBars<'_>) -> Vec<String> {
-        let mut by_seq: Vec<(String, u64)> = bars
-            .actions
+    /// The order the tree would append new action rows in, named by the group
+    /// each belongs under — the sentences are the actions' own, and what this
+    /// asserts is which group's rows come first.
+    fn action_row_order(held: &Held<'_>) -> Vec<String> {
+        held.waits
             .iter()
-            .map(|((owner, _lane), bar)| (owner.clone(), bar.seq()))
-            .collect();
-        by_seq.sort_by_key(|(_, seq)| seq.to_owned());
-        by_seq.into_iter().map(|(owner, _)| owner).collect()
+            .filter(|w| w.action.is_some())
+            .map(|w| w.owner.token())
+            .collect()
     }
 
     #[test]
-    fn action_wait_bars_are_created_in_slot_order_not_hash_order() {
-        let (printer, _buf) = Printer::for_test_with_live_bars();
+    fn action_wait_rows_are_built_in_slot_order_not_hash_order() {
         let holder = Owner::module("holder");
         let zeta = Owner::module("zeta");
         let alpha = Owner::module("alpha");
@@ -2027,42 +1911,32 @@ mod tests {
         let groups = groups_of(&slots);
 
         for _ in 0..5 {
-            let mut bars = empty_bars();
-            refresh(
-                &printer,
-                &slots,
-                &groups,
-                &HashMap::new(),
-                &busy(&["brew"]),
-                &mut bars,
-            );
             assert_eq!(
-                action_bar_creation_order(&bars),
+                action_row_order(&held(&slots, &groups, &HashMap::new(), &busy(&["brew"]))),
                 vec!["module:zeta", "module:alpha", "module:mid"],
-                "wait bars must be created in slot order every run"
+                "wait rows must be built in slot order every run"
             );
         }
     }
 
     #[test]
     fn packages_phase_runs_lanes_concurrently_when_all_managers_are_present() {
-        // Three independent, already-present managers each take a real
-        // wall-clock delay to install. A serial walk costs 3x the per-manager
-        // delay; the lane dispatcher costs ~1x, because nothing here shares a
-        // lane. Proving the wall-clock window rather than inspecting slot
-        // state is the only assertion that would fail if `dispatch_lanes`
-        // regressed to a sequential loop.
+        // Three independent, already-present managers, each holding its lane
+        // open long enough for the other two to be seen in theirs. Nothing
+        // here shares a lane, so a dispatcher that ran them is one that had
+        // all three installs in flight at once; a sequential loop peaks at
+        // one however fast the machine is.
         let delay = Duration::from_millis(200);
+        let witness = crate::test_helpers::ConcurrencyWitness::new();
+        let mock = |name: &str| {
+            crate::test_helpers::MockPackageManager::new(name)
+                .with_install_delay(delay)
+                .with_concurrency_witness(witness.clone())
+        };
         let harness = crate::test_helpers::ReconcilerTestHarness::builder()
-            .with_package_manager(
-                crate::test_helpers::MockPackageManager::new("brew").with_install_delay(delay),
-            )
-            .with_package_manager(
-                crate::test_helpers::MockPackageManager::new("cargo").with_install_delay(delay),
-            )
-            .with_package_manager(
-                crate::test_helpers::MockPackageManager::new("npm").with_install_delay(delay),
-            )
+            .with_package_manager(mock("brew"))
+            .with_package_manager(mock("cargo"))
+            .with_package_manager(mock("npm"))
             .build();
 
         let pkg_actions = vec![
@@ -2087,23 +1961,20 @@ mod tests {
             .expect("plan should succeed");
 
         let printer = crate::test_helpers::test_printer();
-        let started = Instant::now();
         let result = harness
             .apply(&plan, &printer)
             .expect("apply should succeed");
-        let elapsed = started.elapsed();
 
         assert_eq!(
             result.status,
             crate::state::ApplyStatus::Success,
             "all three installs should succeed: {result:?}"
         );
-        assert!(
-            elapsed < delay * 2,
-            "three independent managers should install concurrently \
-             (elapsed {elapsed:?}, single-manager delay {delay:?}); \
-             a serial walk would cost at least {:?}",
-            delay * 3
+        assert_eq!(
+            witness.peak(),
+            3,
+            "three independent managers should install concurrently; \
+             a peak of one is a serial walk"
         );
     }
 
@@ -2128,11 +1999,13 @@ mod tests {
         let mut journal_ids: HashMap<usize, Option<i64>> = HashMap::from([(0, Some(7))]);
 
         let mut answered: Vec<(String, Option<i64>)> = Vec::new();
-        settle_unrun(
-            &mut slots,
-            &Unrun::Lost,
-            &mut journal_ids,
-            &mut |_action, collected| {
+        // No section, so the tree is inert and every outcome is the caller's
+        // to record — which is what this test reads.
+        let printer = crate::test_helpers::test_printer();
+        let mut tree = PhaseTree::new(&printer, None, None, 0, 0);
+        // Scoped so the closure's borrow of `answered` ends before it is read.
+        {
+            let mut record = |_action: &Action, collected: LaneCollected| {
                 let message = collected
                     .result
                     .as_ref()
@@ -2140,8 +2013,15 @@ mod tests {
                     .map(ToString::to_string)
                     .unwrap_or_default();
                 answered.push((message, collected.journal_id));
-            },
-        );
+                None
+            };
+            settle_unrun(
+                &mut slots,
+                &Unrun::Lost,
+                &mut journal_ids,
+                &mut LaneCollector::new(&mut record, &mut tree),
+            );
+        }
 
         assert_eq!(
             answered.len(),
@@ -2163,12 +2043,18 @@ mod tests {
         );
 
         let mut again = 0;
-        settle_unrun(
-            &mut slots,
-            &Unrun::Stalled,
-            &mut journal_ids,
-            &mut |_action, _collected| again += 1,
-        );
+        {
+            let mut count = |_action: &Action, _collected: LaneCollected| {
+                again += 1;
+                None
+            };
+            settle_unrun(
+                &mut slots,
+                &Unrun::Stalled,
+                &mut journal_ids,
+                &mut LaneCollector::new(&mut count, &mut tree),
+            );
+        }
         assert_eq!(again, 0, "a second exit path must not report a slot twice");
     }
 }

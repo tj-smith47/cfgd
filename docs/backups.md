@@ -62,17 +62,17 @@ Backup
 
 Backups
   backup:notes-db
-    ◐ Running script: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
       0|0|0
     ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-    ◐ Running script: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
       ok
     ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
     ✓ snapshot notes.db.20260813T061306Z                                                 — 8.0 KB
   backup:journal
     ✓ snapshot journal.20260813T061306Z                                                  — 24 B
 
-✓ Backup complete — 4 action(s) succeeded (0.2s)
+✓ Backup complete — 4 actions succeeded (0.2s)
 
 $ cfgd backup run missing-name
 ✗ Backup 'missing-name' not found
@@ -425,7 +425,7 @@ Backups
   backup:notes-db
     — snapshot                           — already running (pid 3349308)
 
-— Backup did not run — 3 action(s) not attempted (0.0s)
+— Backup did not run — 3 actions not attempted (0.0s)
 $ echo $?
 1
 ```
@@ -467,15 +467,15 @@ Backup
 
 Backups
   backup:notes-db
-    ◐ Running script: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
       0|0|0
     ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-    ◐ Running script: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
       ok
     ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
     ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
 
-✓ Backup complete — 3 action(s) succeeded (0.2s)
+✓ Backup complete — 3 actions succeeded (0.2s)
  INFO scheduled backup completed backup=notes-db
 ```
 
@@ -575,10 +575,10 @@ overwrite:
 ```console
 $ cfgd backup restore notes-db --yes
 Restore Backup
-◐ Running script: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
   0|0|0
 ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-◐ Running script: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
   ok
 ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check" (0.1s)
 ✓ backup:notes-db restored from notes.db.20260813T061333Z — into /home/me/.local/share/notes/notes.db

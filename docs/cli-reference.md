@@ -269,7 +269,7 @@ Phase: Post-Scripts
   module:localmod
     - postApply: jq --version
 
-⊙ 4 action(s) planned
+⊙ 4 actions planned
 ```
 
 `--phase modules` selects every module-owned action wherever it was planned, so

@@ -295,17 +295,26 @@ pub fn build_compliance_diff_doc(
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
         doc = doc.section_if_nonempty(
-            format!("Added ({} check(s))", diff.added.len()),
+            format!(
+                "Added ({})",
+                cfgd_core::pluralize(diff.added.len(), "check")
+            ),
             &diff.added,
             |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
         );
         doc = doc.section_if_nonempty(
-            format!("Removed ({} check(s))", diff.removed.len()),
+            format!(
+                "Removed ({})",
+                cfgd_core::pluralize(diff.removed.len(), "check")
+            ),
             &diff.removed,
             |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
         );
         doc = doc.section_if_nonempty(
-            format!("Changed ({} check(s))", diff.changed.len()),
+            format!(
+                "Changed ({})",
+                cfgd_core::pluralize(diff.changed.len(), "check")
+            ),
             &diff.changed,
             |s, items| {
                 items.iter().fold(s, |s, c| {
@@ -396,7 +405,10 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
             snapshot.summary.compliant, snapshot.summary.warning, snapshot.summary.violation
         )
     } else {
-        format!("All {} check(s) compliant", snapshot.summary.compliant)
+        format!(
+            "All {} compliant",
+            cfgd_core::pluralize(snapshot.summary.compliant, "check")
+        )
     };
     doc = doc.status(role, summary_line);
 
@@ -541,7 +553,7 @@ mod tests {
             "should print hostname, got: {output}"
         );
         assert!(
-            output.contains("All 2 check(s) compliant"),
+            output.contains("All 2 checks compliant"),
             "should print all-compliant summary, got: {output}"
         );
     }
@@ -668,15 +680,15 @@ mod tests {
 
         let output = cap.human();
         assert!(
-            output.contains("Added (1 check(s))") && output.contains("file:/c"),
+            output.contains("Added (1 check)") && output.contains("file:/c"),
             "should report added check file:/c, got: {output}"
         );
         assert!(
-            output.contains("Removed (1 check(s))") && output.contains("file:/b"),
+            output.contains("Removed (1 check)") && output.contains("file:/b"),
             "should report removed check file:/b, got: {output}"
         );
         assert!(
-            output.contains("Changed (1 check(s))") && output.contains("file:/a"),
+            output.contains("Changed (1 check)") && output.contains("file:/a"),
             "should report changed check file:/a, got: {output}"
         );
         assert!(

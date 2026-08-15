@@ -231,7 +231,7 @@ $ kubectl cfgd deploy -f pod.yaml --lock cfgd-images.lock | kubectl apply -f -
 
 # Apply directly into a namespace
 $ kubectl cfgd deploy -f pod.yaml --apply -n prod
-✓ Applied 1 document(s), 1 reference(s) pinned
+✓ Applied 1 document, 1 reference pinned
 ```
 
 The rewrite, before and after:

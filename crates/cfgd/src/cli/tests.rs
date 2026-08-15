@@ -806,15 +806,15 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Policy"), "Policy header missing: {out}");
     assert!(
-        out.contains("1 locked item(s)") && out.contains("cannot override"),
+        out.contains("1 item locked") && out.contains("cannot override"),
         "locked tier line missing: {out}"
     );
     assert!(
-        out.contains("1 required item(s)") && out.contains("team requirement"),
+        out.contains("1 item required") && out.contains("team requirement"),
         "required tier line missing: {out}"
     );
     assert!(
-        out.contains("2 recommended item(s)"),
+        out.contains("2 items recommended"),
         "recommended count line missing: {out}"
     );
 }
@@ -828,7 +828,7 @@ fn display_source_manifest_omits_zero_count_tiers() {
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(
-        !out.contains("required item(s)") && !out.contains("recommended item(s)"),
+        !out.contains("item required") && !out.contains("items recommended"),
         "zero-count tiers must be suppressed, got: {out}"
     );
 }
@@ -4629,7 +4629,9 @@ fn cmd_apply_dry_run_empty_profile() {
     h.assert_header("Plan");
     let output = h.output();
     assert!(
-        output.contains("Nothing to do") || output.contains("action(s) planned"),
+        output.contains("Nothing to do")
+            || output.contains("action planned")
+            || output.contains("actions planned"),
         "should indicate plan result, got: {output}"
     );
 
@@ -4795,7 +4797,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("actions exist in phase(s): Prerequisites"),
+        output.contains("actions exist in phase: Prerequisites"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -12525,7 +12527,9 @@ fn cmd_apply_reconcile_context_threads_through() {
     h.assert_header("Plan");
     let output = h.output();
     assert!(
-        output.contains("Nothing to do") || output.contains("action(s) planned"),
+        output.contains("Nothing to do")
+            || output.contains("action planned")
+            || output.contains("actions planned"),
         "apply --context reconcile dry-run should still produce a plan, got: {output}"
     );
 }
@@ -12634,7 +12638,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             "expected warning, got:\n{out}"
         );
         assert!(
-            out.contains("actions exist in phase(s): Files"),
+            out.contains("actions exist in phase: Files"),
             "expected the phases-with-work hint, got:\n{out}"
         );
     }
@@ -15302,7 +15306,8 @@ spec:
     );
     // Should mention actions or nothing-to-do
     assert!(
-        output.contains("action(s) planned")
+        output.contains("action planned")
+            || output.contains("actions planned")
             || output.contains("Nothing to do")
             || output.contains("Phase"),
         "should show plan summary, got: {output}"
@@ -20964,7 +20969,7 @@ fn plan_preview_excludes_the_resource_its_pending_block_names() {
         "the pending block is the visibility surface and still renders, got:\n{output}"
     );
     assert!(
-        output.contains("1 action(s) planned"),
+        output.contains("1 action planned"),
         "the count must describe the pruned plan — one file, not two:\n{output}"
     );
     // Everything from the phase tree down — the pending block sits above it and
@@ -21011,7 +21016,7 @@ fn plan_preview_names_the_decision_that_declined_a_resource() {
         "the block names the resource that left the plan:\n{output}"
     );
     assert!(
-        output.contains("1 action(s) planned"),
+        output.contains("1 action planned"),
         "the count describes the pruned plan:\n{output}"
     );
 }
@@ -21358,7 +21363,7 @@ fn plan_withholds_the_item_a_rejecting_policy_declines() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("1 action(s) planned"),
+        output.contains("1 action planned"),
         "the preview counts what an apply would run — the declined item is not \
          part of it:\n{output}"
     );
@@ -21557,7 +21562,7 @@ fn plan_withholds_an_unrecorded_item_without_recording_it() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("1 action(s) planned"),
+        output.contains("1 action planned"),
         "the preview counts what an apply would run — the undecided item is \
          not part of it:\n{output}"
     );
@@ -22881,7 +22886,7 @@ fn dry_run_apply_previews_the_pruned_plan() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("1 action(s) planned"),
+        output.contains("1 action planned"),
         "a dry run previews the same pruned plan a real apply would run:\n{output}"
     );
     assert!(!f.withheld.exists(), "a dry run writes nothing either way");

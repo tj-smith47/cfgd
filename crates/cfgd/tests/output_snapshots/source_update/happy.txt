@@ -7,4 +7,4 @@ Update Sources
 source:upd-src
   ✓ updated
 
-✓ Updated 1 source(s)
+✓ Updated 1 source

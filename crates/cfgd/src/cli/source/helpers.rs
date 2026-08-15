@@ -133,19 +133,28 @@ pub(crate) fn display_source_manifest(
             if locked_count > 0 {
                 s = s.status(
                     Role::Warn,
-                    format!("{} locked item(s) (cannot override)", locked_count),
+                    format!(
+                        "{} locked (cannot override)",
+                        cfgd_core::pluralize(locked_count, "item")
+                    ),
                 );
             }
             if required_count > 0 {
                 s = s.status(
                     Role::Info,
-                    format!("{} required item(s) (team requirement)", required_count),
+                    format!(
+                        "{} required (team requirement)",
+                        cfgd_core::pluralize(required_count, "item")
+                    ),
                 );
             }
             if recommended_count > 0 {
                 s = s.status(
                     Role::Info,
-                    format!("{} recommended item(s)", recommended_count),
+                    format!(
+                        "{} recommended",
+                        cfgd_core::pluralize(recommended_count, "item")
+                    ),
                 );
             }
             if constraints.no_scripts {

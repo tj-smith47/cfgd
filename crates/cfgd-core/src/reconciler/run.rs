@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use crate::backup::BackupUnit;
 use crate::errors::Result;
 use crate::output::{OwnerLabel, Printer, Role, SectionGuard, measure_width};
+use crate::pluralize;
 use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
@@ -112,14 +113,14 @@ pub trait RunExecutor {
 ///
 /// [`ApplyResult`] produces one; so does a set of backup units, which has no
 /// [`Plan`], no `apply_id` and no `ActionResult`s. Having the rollup take this
-/// instead of an `&ApplyResult` is what makes `Backup complete — 2 action(s)
+/// instead of an `&ApplyResult` is what makes `Backup complete — 2 actions
 /// succeeded` producible without forging an apply row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunTally {
     pub succeeded: usize,
     pub failed: usize,
     /// What the run set out to do. The `Actions  N planned` header row and the
-    /// `⊙ N action(s) not attempted` shortfall line read the same field.
+    /// `⊙ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
     pub status: ApplyStatus,
     pub aborted: Option<u8>,
@@ -162,7 +163,7 @@ impl RunTally {
     /// The run planned work and reached none of it — every action was withheld
     /// or skipped before it could be attempted.
     ///
-    /// Distinct from a run that planned nothing: `Backup complete — 0 action(s)
+    /// Distinct from a run that planned nothing: `Backup complete — 0 actions
     /// succeeded` read as a clean finish on a `cfgd backup run` that was
     /// refused by another holder of the unit's lock and exited 1, so the only
     /// two things on screen that could tell the user what happened — the ✓ and
@@ -589,7 +590,7 @@ impl<'a> ApplyRun<'a> {
     /// alignment column over, so the header's `Actions N planned` and the
     /// rollup's counts reconcile against one list rather than two: a unit whose
     /// `preBackup` hook fails renders one line fewer than this and the
-    /// difference surfaces as the run's `⊙ N action(s) not attempted`.
+    /// difference surfaces as the run's `⊙ N actions not attempted`.
     fn pending_backup_count(&self) -> usize {
         self.backups.as_ref().map_or(0, |p| {
             p.units
@@ -733,7 +734,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
 /// The two counts are deliberately different sources. A unit whose `preBackup`
 /// hook list aborted never ran the hooks after the failure, so it emits fewer
 /// lines than it planned, and that difference is the run's
-/// `⊙ N action(s) not attempted`. A `Busy` skip contributes no item at all —
+/// `⊙ N actions not attempted`. A `Busy` skip contributes no item at all —
 /// the unit IS being backed up, just not here — so its one `Role::Skipped` line
 /// moves neither count nor exit code and the unit surfaces only as the
 /// shortfall.
@@ -842,8 +843,14 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
                     tally.planned_total
                 ),
             ),
-            (Role::Ok, format!("{} action(s) succeeded", tally.succeeded)),
-            (Role::Accent, format!("{} action(s) failed", tally.failed)),
+            (
+                Role::Ok,
+                format!("{} succeeded", pluralize(tally.succeeded, "action")),
+            ),
+            (
+                Role::Accent,
+                format!("{} failed", pluralize(tally.failed, "action")),
+            ),
         ],
         // A run that reached none of what it planned did not complete, whatever
         // its status says. One line, not two: the shortfall it would otherwise
@@ -851,25 +858,25 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         ApplyStatus::Success if tally.nothing_attempted() => vec![(
             Role::Skipped,
             format!(
-                "{} did not run — {} action(s) not attempted",
+                "{} did not run — {} not attempted",
                 title.as_str(),
-                tally.planned_total
+                pluralize(tally.planned_total, "action")
             ),
         )],
         ApplyStatus::Success => vec![(
             Role::Ok,
             format!(
-                "{} complete — {} action(s) succeeded",
+                "{} complete — {} succeeded",
                 title.as_str(),
-                tally.succeeded
+                pluralize(tally.succeeded, "action")
             ),
         )],
         ApplyStatus::Failed => vec![(
             Role::Fail,
             format!(
-                "{} failed — {} action(s) failed",
+                "{} failed — {} failed",
                 title.as_str(),
-                tally.failed
+                pluralize(tally.failed, "action")
             ),
         )],
         ApplyStatus::InProgress => vec![(
@@ -888,10 +895,10 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         ApplyStatus::Aborted => vec![(
             Role::Warn,
             format!(
-                "{} aborted by signal — {} of {} action(s) applied{}; no partial writes, rerun to converge",
+                "{} aborted by signal — {} of {} applied{}; no partial writes, rerun to converge",
                 title.as_str().to_ascii_lowercase(),
                 tally.succeeded,
-                tally.planned_total,
+                pluralize(tally.planned_total, "action"),
                 if tally.failed > 0 {
                     format!(", {} failed", tally.failed)
                 } else {
@@ -919,7 +926,10 @@ pub fn render_run_rollup(
     if shortfall > 0 && !(tally.status == ApplyStatus::Success && tally.nothing_attempted()) {
         // `Role::Info` and not `Role::Pending`: this is a final count, and
         // nothing it names is still going to happen.
-        lines.push((Role::Info, format!("{shortfall} action(s) not attempted")));
+        lines.push((
+            Role::Info,
+            format!("{} not attempted", pluralize(shortfall, "action")),
+        ));
     }
     let last = lines.len().saturating_sub(1);
     for (index, (role, subject)) in lines.into_iter().enumerate() {

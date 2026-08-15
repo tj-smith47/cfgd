@@ -56,8 +56,8 @@ pub fn cmd_source_remove(
         // Interactive: Keep / Remove / Cancel
         {
             let res_sec = printer.section(format!(
-                "This source manages {} resource(s)",
-                resources.len()
+                "This source manages {}",
+                cfgd_core::pluralize(resources.len(), "resource")
             ));
             let mut t = Table::new(["Type", "Resource"]);
             for r in &resources {
