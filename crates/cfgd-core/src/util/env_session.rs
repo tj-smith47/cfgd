@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::SYSTEMCTL_BIN_ENV;
+
 /// Live-refresh shell-outs are local and fast; bound them anyway so a wedged
 /// session bus (`systemctl --user` with no user D-Bus) can't hang an apply.
 const ENV_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -62,7 +64,9 @@ pub struct SessionRefresh {
 /// these commands address a running session manager and the Windows registry —
 /// neither is a path, so no test home, temp dir or `XDG_*` override can contain
 /// them. Redirecting the binary is the only sandbox available.
-const SYSTEMCTL_BIN_ENV: &str = "CFGD_SYSTEMCTL_BIN";
+///
+/// `systemctl`'s seam is named in `util/process.rs` rather than here, because
+/// the system configurators spawn it too and one spelling has to cover both.
 const LAUNCHCTL_BIN_ENV: &str = "CFGD_LAUNCHCTL_BIN";
 const SETX_BIN_ENV: &str = "CFGD_SETX_BIN";
 const REG_BIN_ENV: &str = "CFGD_REG_BIN";

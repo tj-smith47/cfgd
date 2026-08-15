@@ -583,6 +583,7 @@ pub fn is_system_manager(name: &str) -> bool {
 // --- SystemConfigurator trait ---
 
 /// One setting a [`SystemConfigurator`] found diverging from the desired state.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemDrift {
     /// The setting's identity WITHIN this configurator — never prefixed with the
     /// configurator's own name.

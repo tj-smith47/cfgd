@@ -3346,8 +3346,11 @@ fn sysctl_apply_skips_non_string_keys_without_panicking() {
 //   - no unitFile → straight to enable; systemctl enable on phantom unit fails
 //     → "systemctl enable ... failed" warning (or Err if systemctl absent)
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let yaml: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - name: cfgd-test-phantom-read.service
@@ -3359,10 +3362,8 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    // Apply may return Ok or Err depending on whether systemctl is present
-    // (the enable shellout uses `?`); both are acceptable — what we pin is
-    // that the "Failed to read unit file" warning is emitted.
-    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .expect("a shimmed systemctl succeeds, so only the unreadable source warns");
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("Failed to read unit file"),
@@ -3370,11 +3371,14 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     // Source unit file exists in tempdir; atomic_write to /etc/systemd/system
     // will fail for non-root → "Failed to install unit file" warning fires.
     // The "Installing unit file:" info line is emitted before the failure.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let dir = tempdir().unwrap();
     let source = dir.path().join("cfgd-source.service");
     fs::write(&source, "[Unit]\nDescription=Test\n").unwrap();
@@ -3394,11 +3398,13 @@ fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
     // No unitFile → skips the install block entirely and goes straight to
-    // the enable shellout. systemctl enable on a phantom unit either fails
-    // with a warning, or apply returns Err if systemctl itself is missing.
+    // the enable shellout, which is what the argv log has to show.
+    let shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let yaml: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - name: cfgd-test-phantom-enable.service
@@ -3409,17 +3415,26 @@ fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .expect("Ok");
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("systemctl enable cfgd-test-phantom-enable.service"),
         "info line for enable shellout should fire: {captured}"
     );
+    assert_eq!(
+        shim.argv_log().trim(),
+        "enable cfgd-test-phantom-enable.service",
+        "no unitFile means no daemon-reload — only the enable call is made"
+    );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
     // `enabled: false` → action is "disable" instead of "enable".
+    let shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let yaml: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - name: cfgd-test-phantom-disable.service
@@ -3430,11 +3445,50 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .expect("Ok");
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("systemctl disable cfgd-test-phantom-disable.service"),
         "disable info line should fire when enabled=false: {captured}"
+    );
+    assert_eq!(
+        shim.argv_log().trim(),
+        "disable cfgd-test-phantom-disable.service",
+        "`enabled: false` must reach systemctl as `disable`, not `enable`"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn systemd_apply_unit_reloads_the_manager_before_enabling_an_installed_unit() {
+    // A unit file that lands changes what systemd knows, so the reload has to
+    // precede the enable — enabling first resolves against the stale view.
+    let shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("cfgd-order.service");
+    fs::write(&source, "[Unit]\nDescription=Test\n").unwrap();
+    let yaml_str = format!(
+        "- name: cfgd-test-phantom-order.service\n  enabled: true\n  unitFile: {}\n",
+        source.display()
+    );
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
+    let su = crate::system::SystemdUnitConfigurator::default();
+    let printer = test_printer();
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    let argv: Vec<String> = shim
+        .argv_log()
+        .lines()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        argv,
+        vec![
+            "daemon-reload".to_string(),
+            "enable cfgd-test-phantom-order.service".to_string(),
+        ],
+        "reload must run before enable"
     );
 }
 

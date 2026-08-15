@@ -199,7 +199,7 @@ fn resolve_runtime_dir(xdg: Option<&str>, fallback: &std::path::Path) -> Runtime
 /// real state instead of over-claiming `started`).
 #[cfg(unix)]
 pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> Result<bool> {
-    if !crate::command_available("systemctl") {
+    if !crate::systemctl_available() {
         let hint_cmd = if scope == crate::Scope::System {
             "systemctl enable --now cfgd.service"
         } else {
@@ -245,7 +245,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
     };
 
     for args in systemd_start_argv(scope) {
-        let mut cmd = std::process::Command::new("systemctl");
+        let mut cmd = crate::systemctl_cmd();
         cmd.args(&args);
         if let Some(dir) = &runtime_dir {
             cmd.env("XDG_RUNTIME_DIR", dir);
@@ -326,7 +326,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
     if crate::test_home_override().is_some() {
         return;
     }
-    if !crate::command_available("systemctl") {
+    if !crate::systemctl_available() {
         printer.status_simple(
             Role::Warn,
             "systemctl not found — unit file removed but daemon may still be running",
@@ -341,7 +341,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
     }
 
     let [disable, _reload] = systemd_stop_argv(scope);
-    let mut cmd = std::process::Command::new("systemctl");
+    let mut cmd = crate::systemctl_cmd();
     cmd.args(&disable);
     match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
         Ok(output) if output.status.success() => {}
@@ -390,9 +390,9 @@ pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) 
     }
 
     // Reload AFTER removal so systemd drops the now-deleted unit from its view.
-    if crate::test_home_override().is_none() && crate::command_available("systemctl") {
+    if crate::test_home_override().is_none() && crate::systemctl_available() {
         let [_disable, reload] = systemd_stop_argv(scope);
-        let mut cmd = std::process::Command::new("systemctl");
+        let mut cmd = crate::systemctl_cmd();
         cmd.args(&reload);
         if let Ok(output) = crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT)
             && !output.status.success()
@@ -702,8 +702,10 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn start_systemd_service_user_scope_warns_and_hints_when_systemctl_missing() {
-        // Point PATH at an empty dir so `command_available("systemctl")` is false,
+        // Point PATH at an empty dir so `systemctl_available()` is false,
         // driving the not-found branch without any real systemctl shell-out.
+        // The seam is cleared too — it answers before PATH does.
+        let _seam = crate::test_helpers::EnvVarGuard::unset(crate::SYSTEMCTL_BIN_ENV);
         let empty = TempDir::new().expect("tempdir");
         let empty_path = empty.path().display().to_string();
         // Holds the spawn-exclusion lock across the empty-PATH window so no

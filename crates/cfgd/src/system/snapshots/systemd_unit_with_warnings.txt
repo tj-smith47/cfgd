@@ -4,6 +4,5 @@ Phase: System
       ⊙ Installing unit file: <TMPDIR>/test.service → /etc/systemd/system/cfgd-snap-warn.service
       ⚠ Failed to read unit file: <os error>
       ⊙ systemctl enable cfgd-snap-warn.service
-      ⚠ systemctl enable cfgd-snap-warn.service failed: <SYSTEMCTL_ERROR>
 
 ⚠ systemd units applied with warnings

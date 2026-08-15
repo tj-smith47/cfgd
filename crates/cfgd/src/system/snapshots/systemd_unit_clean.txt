@@ -2,6 +2,5 @@ Phase: System
   profile:snapshot
     ✓ set systemdUnits.cfgd-snap-test.service.enabled: true → false
       ⊙ systemctl disable cfgd-snap-test.service
-      ⚠ systemctl disable cfgd-snap-test.service failed: <SYSTEMCTL_ERROR>
 
 ✓ systemd units applied

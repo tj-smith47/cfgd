@@ -588,10 +588,11 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
     }
 
     // Linux: list user systemd units
-    if cfgd_core::command_available("systemctl")
-        && let Ok(output) = std::process::Command::new("systemctl")
-            .args(["--user", "list-unit-files", "--no-pager", "--plain"])
-            .output()
+    let mut systemctl = cfgd_core::systemctl_cmd();
+    systemctl.args(["--user", "list-unit-files", "--no-pager", "--plain"]);
+    if cfgd_core::systemctl_available()
+        && let Ok(output) =
+            cfgd_core::command_output_with_timeout(&mut systemctl, cfgd_core::COMMAND_TIMEOUT)
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);

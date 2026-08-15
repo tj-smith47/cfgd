@@ -326,6 +326,23 @@ check_pattern error \
     '(^|[^[:alnum:]_])e?print(ln)?!\(' \
     'output/|main\.rs:|src/bin/'
 
+log_section "systemctl Goes Through One Factory"
+# Five call sites across three crates spawn systemctl. Two shapes defeat both
+# the test seam and the timeout, so both are named:
+#   Command::new("systemctl")        — unshimmable AND unbounded, so a test
+#                                      reaches the host's own manager and a
+#                                      systemd-less host pays the ~90s D-Bus
+#                                      connect timeout per unit
+#   command_available("systemctl")   — answers from PATH while the spawn beside
+#                                      it answers from CFGD_SYSTEMCTL_BIN, so a
+#                                      shimmed test reports "unavailable" and
+#                                      silently skips the branch it shimmed
+# `util/process.rs` is the factory's own home and is where the string belongs.
+check_pattern error \
+    "systemctl spawned only via cfgd_core::systemctl_cmd (no raw Command/command_available)" \
+    'Command::new\("systemctl"\)|command_available\("systemctl"\)' \
+    'util/process\.rs:'
+
 log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
 # Exclusions:

@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
@@ -50,9 +49,9 @@ impl KubeletConfigurator {
     }
 
     fn restart_kubelet() -> Result<()> {
-        let output = Command::new("systemctl")
-            .args(["restart", "kubelet"])
-            .output()
+        let mut cmd = cfgd_core::systemctl_cmd();
+        cmd.args(["restart", "kubelet"]);
+        let output = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
             .map_err(CfgdError::Io)?;
 
         if !output.status.success() {

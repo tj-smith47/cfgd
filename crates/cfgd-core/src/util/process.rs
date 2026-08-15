@@ -485,6 +485,30 @@ pub fn require_tool_with_seam(
     require_tool(default, install_hint)
 }
 
+/// Test-seam env var for every `systemctl` invocation in the workspace.
+///
+/// Named once here because five call sites across three crates spawn
+/// `systemctl` and a test can only redirect them all when they agree on the
+/// spelling. See [`systemctl_cmd`].
+pub const SYSTEMCTL_BIN_ENV: &str = "CFGD_SYSTEMCTL_BIN";
+
+/// Build a `Command` for `systemctl`, honoring [`SYSTEMCTL_BIN_ENV`].
+///
+/// Every `systemctl` shell-out goes through here, and every one of them is
+/// bounded by [`command_output_with_timeout`]: on a host where systemd is
+/// installed but not running (a container, WSL, a chroot), a bare
+/// `systemctl` call blocks for the D-Bus connect timeout — around 90
+/// seconds — per unit, which a `cfgd diff` over several units turns into
+/// minutes of silence.
+pub fn systemctl_cmd() -> std::process::Command {
+    tool_cmd(SYSTEMCTL_BIN_ENV, "systemctl")
+}
+
+/// Whether `systemctl` resolves, honoring [`SYSTEMCTL_BIN_ENV`].
+pub fn systemctl_available() -> bool {
+    command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl")
+}
+
 /// Like [`command_available`] but also returns true when the env-var seam
 /// points at an existing file. Use in `is_available()` checks where the
 /// caller wants a bool, not a `Result`.

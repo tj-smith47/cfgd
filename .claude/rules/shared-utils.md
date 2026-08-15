@@ -134,6 +134,7 @@ A PowerShell function-wrapper alias must carry its command as a quoted string bu
 - `hostname_string()` — system hostname as `String`; `"unknown"` on failure
 - `tracing_env_filter(default)` — `EnvFilter::try_from_default_env().unwrap_or_else(EnvFilter::new(default))`
 - `require_tool(name, install_hint)` — uniform "X not found" error message, used by all `command_available`-gated CLI flows
+- `systemctl_cmd()` / `systemctl_available()` / `SYSTEMCTL_BIN_ENV` — the ONE `systemctl` factory, its availability predicate, and the `CFGD_SYSTEMCTL_BIN` seam name they share. Every `systemctl` invocation in the workspace is built here and bounded by `command_output_with_timeout`: five call sites across three crates spawn it (`system/systemd_unit.rs`, `system/node/{kubelet,containerd}.rs`, `generate/scan`, `daemon/service/systemd.rs`, `env_session.rs`), so one spelling is what lets a test redirect all of them at once, and an unbounded call on a host carrying the binary without a running manager — a container, WSL, a chroot — blocks for the ~90s D-Bus connect timeout PER UNIT before failing. Never write `Command::new("systemctl")` or `command_available("systemctl")`: the first is unshimmable and unbounded, the second answers from `PATH` while the spawn answers from the seam, so a shimmed test reads "unavailable" and skips the branch it installed the shim for
 
 ## Git
 
