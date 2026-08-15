@@ -635,9 +635,12 @@ tasks:
     desc: Run the VHS tape, producing demo/.out/raw.mp4.
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
-      # font VHS still exits 0 and records a take full of tofu boxes.
-      - sh: fc-list | grep -qi 'JetBrainsMono Nerd Font'
-        msg: "JetBrainsMono Nerd Font is not installed — the take would record tofu boxes instead of LazyVim's glyphs."
+      # font VHS still exits 0 and records a take full of tofu boxes. The font
+      # is read from the tape itself so the gate cannot drift from what VHS
+      # will actually request.
+      - sh: >-
+          fc-list : family | grep -qF "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/init.tape | head -1)"
+        msg: "The font demo/init.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
     cmds:
       - bash demo/scripts/chromium-no-sandbox.sh
       - bash demo/scripts/record.sh
