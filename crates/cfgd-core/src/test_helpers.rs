@@ -1754,7 +1754,13 @@ impl PathEnvGate {
 
     fn release_read(&self) {
         let mut state = self.locked();
-        state.readers = state.readers.saturating_sub(1);
+        // An underflow here means a release without a matching acquire — a bug
+        // in the gate itself, not a count to saturate through.
+        debug_assert!(
+            state.readers > 0,
+            "PATH gate: release_read with readers == 0"
+        );
+        state.readers -= 1;
         if state.readers == 0 {
             self.signal.notify_all();
         }
@@ -1766,11 +1772,24 @@ impl PathEnvGate {
         // Announced before parking, so a test can observe the queued writer
         // rather than sleep a guess at when it arrives.
         self.signal.notify_all();
-        while state.writer || state.readers > 0 {
-            state = self
-                .signal
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A generous bound no legitimate suite run can approach: a silent
+        // hang points at nothing, so a writer that waits this long panics
+        // with a diagnostic naming the gate instead of leaving the suite to
+        // time out with no pointer to why.
+        const WRITER_STARVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+        let (next, result) = self
+            .signal
+            .wait_timeout_while(state, WRITER_STARVATION_TIMEOUT, |gate| {
+                gate.writer || gate.readers > 0
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state = next;
+        if result.timed_out() {
+            panic!(
+                "PATH_ENV_LOCK: writer starved for over {:?} with {} reader(s) still \
+                 holding the gate — this is writer starvation, not a legitimate wait",
+                WRITER_STARVATION_TIMEOUT, state.readers
+            );
         }
         state.writers_waiting -= 1;
         state.writer = true;

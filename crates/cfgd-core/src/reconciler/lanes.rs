@@ -1275,6 +1275,8 @@ fn run_one_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::SectionGuard;
+    use crate::output::lane::LaneHandle;
 
     /// The wait lines the live region would show, in the order given, each
     /// paired with the group it belongs under — the sentence no longer names
@@ -2056,5 +2058,156 @@ mod tests {
             );
         }
         assert_eq!(again, 0, "a second exit path must not report a slot twice");
+    }
+
+    /// Concern 3 of the elision re-review: `settle_unrun`/`fail_dependents`
+    /// reach `PhaseTree::settled` only through `LaneCollector::finished`, and
+    /// every existing swept-row test either called `tree.settled` directly
+    /// (bypassing `fail_dependents` itself) or ran off a TTY, where
+    /// `settles_in_place` is false and `tree.settled` is never reached at
+    /// all. Drives the real `fail_dependents` against a LIVE tree whose head
+    /// (`actions[0]`, `apt`) is pinned `Running` for as long as the caller
+    /// holds the returned handle — `actions[1]` is `brew`, which runs (and
+    /// fails); `actions[2]`/`actions[3]` are `npm`/`pnpm`, which never run at
+    /// all and are swept by `fail_dependents`.
+    fn swept_by_fail_dependents<'a>(
+        printer: &'a Printer,
+        section: &'a SectionGuard<'a>,
+        owner: &'a Owner,
+        actions: &'a [Action],
+    ) -> (PhaseTree<'a, 'a>, LaneHandle<'a>) {
+        let mut tree = PhaseTree::new(printer, Some(section), None, section.depth + 1, 30);
+        let running = tree.dispatched(owner, &actions[0]);
+        // brew actually ran (and failed) rather than being swept, so it is
+        // dispatched first like `apt` — its own row keeps its line and is not
+        // counted by `held_unseen()`. Only the dependents it takes down with
+        // it (`npm`, `pnpm`) never ran at all.
+        tree.dispatched(owner, &actions[1]).finish();
+
+        let mut slots = vec![
+            node_slot(owner, &actions[1], 1),
+            node_slot(owner, &actions[2], 2),
+            node_slot(owner, &actions[3], 3),
+        ];
+        // Mirrors `apply.rs`'s live settle closure closely enough to prove
+        // the wiring: every finished action becomes a `Fail`-role outcome
+        // carrying the real error `fail_dependents` produced.
+        let mut record = |action: &Action, collected: LaneCollected| {
+            let subject = action_display_subject(action).to_string();
+            let mut outcome = ActionOutcome::for_test(&subject, Duration::ZERO);
+            outcome.role = crate::output::Role::Fail;
+            outcome.duration = None;
+            outcome.detail = collected.result.err().map(|e| e.to_string());
+            Some(outcome)
+        };
+        {
+            let mut collect = LaneCollector::new(&mut record, &mut tree);
+            // brew's own failure, exactly as the coordinator reports it
+            // before sweeping what depended on it.
+            collect.finished(
+                slots[0].owner,
+                slots[0].action,
+                LaneCollected {
+                    journal_id: None,
+                    result: Err(PackageError::BootstrapFailed {
+                        manager: "brew".to_string(),
+                        message: "brew still not available after bootstrap".to_string(),
+                    }
+                    .into()),
+                    elapsed: Duration::ZERO,
+                    notes: Vec::new(),
+                    body: Vec::new(),
+                },
+            );
+            fail_dependents(&mut slots, 0, &mut collect);
+        }
+        let done_count = slots[1..]
+            .iter()
+            .filter(|s| s.state == SlotState::Done)
+            .count();
+        assert_eq!(
+            done_count, 2,
+            "the whole dependent chain must be answered by one sweep"
+        );
+        (tree, running)
+    }
+
+    fn prerequisites_sweep_actions() -> [Action; 4] {
+        [
+            provision("apt", "system", &[]),
+            provision("brew", "curl", &[]),
+            provision("npm", "brew", &[ManagerAction::provision_node("brew")]),
+            provision("pnpm", "npm", &[ManagerAction::provision_node("npm")]),
+        ]
+    }
+
+    #[test]
+    fn fail_dependents_holds_swept_rows_for_commit_on_a_live_tree() {
+        // While `apt` (the group's head) is still Running, nothing can commit
+        // — so the two rows `fail_dependents` just swept are genuinely HELD,
+        // not merely en route to an instant commit.
+        let (printer, _buf) = crate::output::Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = prerequisites_sweep_actions();
+
+        let (tree, running) = swept_by_fail_dependents(&printer, &section, &managers, &actions);
+
+        let rows = tree.drawn_rows();
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("2 settled rows held for commit")),
+            "the swept dependents were not counted while genuinely held: {rows:?}"
+        );
+        drop(running);
+    }
+
+    #[test]
+    fn fail_dependents_commits_swept_rows_once_in_dispatch_order_on_a_live_tree() {
+        let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = prerequisites_sweep_actions();
+
+        let (mut tree, running) = swept_by_fail_dependents(&printer, &section, &managers, &actions);
+
+        // Release the head and let the tree drain what it was holding.
+        running.finish();
+        tree.settled(
+            &managers,
+            &actions[0],
+            ActionOutcome::for_test("provision apt via system", Duration::ZERO),
+        );
+        tree.finish();
+
+        let scrollback = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        for subject in [
+            "provision brew via curl",
+            "provision npm via brew",
+            "provision pnpm via npm",
+        ] {
+            assert_eq!(
+                scrollback.matches(subject).count(),
+                1,
+                "{subject} did not reach the scrollback exactly once: {scrollback}"
+            );
+        }
+        let at = |needle: &str| {
+            scrollback
+                .find(needle)
+                .unwrap_or_else(|| panic!("no {needle:?} in {scrollback}"))
+        };
+        assert!(
+            at("provision apt via system") < at("provision brew via curl"),
+            "the sweep committed ahead of the head that was blocking it: {scrollback}"
+        );
+        assert!(
+            at("provision brew via curl") < at("provision npm via brew"),
+            "the sweep did not commit in dispatch order: {scrollback}"
+        );
+        assert!(
+            at("provision npm via brew") < at("provision pnpm via npm"),
+            "the sweep did not commit in dispatch order: {scrollback}"
+        );
     }
 }

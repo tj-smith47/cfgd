@@ -19222,6 +19222,60 @@ fn a_lane_dispatch_is_not_stalled_by_a_test_that_is_waiting_to_mutate_path() {
 }
 
 #[test]
+fn a_live_region_commits_swept_dependents_once_in_dispatch_order() {
+    // Concern 3 of the elision re-review: the only test driving
+    // `fail_dependents` (`a_failed_node_fails_its_dependents_with_the_root_cause`)
+    // runs off a TTY, where `settles_in_place == false` and `PhaseTree::settled`
+    // is never reached — so no test proved the real `LaneCollector`/
+    // `fail_dependents` wiring reaches a LIVE tree at all. This re-drives the
+    // same failure — brew's provision fails, npm and pnpm sweep behind it,
+    // neither ever dispatched — through the real dispatcher with a live
+    // region, end to end through `apply.rs`'s own settle closure. (The
+    // `held_unseen()` summary claim — that the swept rows are counted while
+    // genuinely held, not yet committed — is pinned deterministically in
+    // `lanes.rs`'s own test module, where the tree's head can be pinned
+    // Running without a race.)
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).stays_unavailable(),
+        DispatchLogManager::new("npm", &log, false),
+        DispatchLogManager::new("pnpm", &log, false),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+        provision_node("pnpm", "npm", &[ManagerAction::provision_node("npm")]),
+    ]);
+
+    let outcome = ConcurrentApply::new(registry, plan).run_live(|| {});
+    assert_eq!(outcome.result.status, ApplyStatus::Failed);
+    let transcript = &outcome.transcript;
+    for once in ["provision npm via brew", "provision pnpm via npm"] {
+        assert_eq!(
+            transcript.matches(once).count(),
+            1,
+            "{once:?} did not commit exactly once: {transcript}"
+        );
+    }
+    assert_eq!(
+        transcript
+            .matches("did not run — brew failed earlier in this phase")
+            .count(),
+        2,
+        "both dependents must name the root cause: {transcript}"
+    );
+    let at = |needle: &str| {
+        transcript
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in {transcript}"))
+    };
+    assert!(
+        at("provision npm via brew") < at("provision pnpm via npm"),
+        "the sweep did not commit in dispatch order: {transcript}"
+    );
+}
+
+#[test]
 fn wait_line_never_reaches_the_transcript() {
     let probe = LaneProbe::holding(&["apt:tmux"]);
     let log = new_dispatch_log();
