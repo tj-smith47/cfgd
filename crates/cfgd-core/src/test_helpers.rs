@@ -1353,6 +1353,50 @@ spec:
 // mutation is process-global.
 // ---------------------------------------------------------------------------
 
+/// A `PATH` holding exactly the named executables and nothing else, for a test
+/// asserting what a `command_available` probe resolves.
+///
+/// It exists because an `is_available()` test that compares the provider's
+/// answer to `command_available("<tool>")` restates the implementation: both
+/// sides move together, so the test passes on every host and would keep passing
+/// if the probed name were misspelled. Naming the executables makes the probe's
+/// NAME the subject — install `gsettings` and the configurator must say yes;
+/// install nothing and it must say no.
+///
+/// Take `path_env_mutation_guard()` first (declared before this, so it drops
+/// last) and pair the test with `serial_test::serial`: `PATH` is process-global.
+/// `BootstrappedPathDirsGuard::capture_and_clear()` is required too for the
+/// negative direction — the bootstrapped registry is searched after `PATH`.
+///
+/// Unix-only: the probe files are `/bin/sh` no-ops, and Windows resolves an
+/// executable by `PATHEXT` rather than by the exec bit.
+#[cfg(unix)]
+pub struct ProbePath {
+    _tmp: tempfile::TempDir,
+    _path: EnvVarGuard,
+}
+
+#[cfg(unix)]
+impl ProbePath {
+    /// A `PATH` of one directory containing an executable per name.
+    pub fn containing(names: &[&str]) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        for name in names {
+            let bin = tmp.path().join(name);
+            std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
+            let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).expect("chmod");
+        }
+        let path = EnvVarGuard::set("PATH", tmp.path().to_str().expect("utf-8 tempdir"));
+        Self {
+            _tmp: tmp,
+            _path: path,
+        }
+    }
+}
+
 /// Owns a tempdir holding a `/bin/sh` shim binary plus the env-vars that
 /// route a single `tool_cmd(env_var, default)` factory at it. The shim
 /// records its full argv to a log file and exits with a chosen status,

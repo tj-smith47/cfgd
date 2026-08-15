@@ -1881,19 +1881,45 @@ fn certificate_diff_non_sequence_desired() {
 
 // --- CertificateConfigurator is_available ---
 
+// Asserted per target rather than against `cfg!(target_os = "linux")`: compared
+// to the same expression the implementation uses, the two move together and the
+// test passes on every host whatever the configurator claims.
 #[test]
+#[cfg(target_os = "linux")]
 fn certificate_is_available_on_linux() {
-    let cc = CertificateConfigurator;
-    assert_eq!(cc.is_available(), cfg!(target_os = "linux"));
+    assert!(CertificateConfigurator.is_available());
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn certificate_is_unavailable_off_linux() {
+    assert!(
+        !CertificateConfigurator.is_available(),
+        "the CA-trust layout this writes is Linux's"
+    );
 }
 
 // --- SeccompConfigurator is_available ---
 
+// Availability follows the kernel's own seccomp knob, not the OS: a Linux build
+// without CONFIG_SECCOMP has no such file and must report unavailable. The two
+// directions are asserted separately because comparing against the same
+// `exists()` call the implementation makes restates it and can never fail.
 #[test]
-fn seccomp_is_available_depends_on_proc() {
-    let sc = SeccompConfigurator;
-    let expected = std::path::Path::new("/proc/sys/kernel/seccomp").exists();
-    assert_eq!(sc.is_available(), expected);
+fn seccomp_is_available_where_the_kernel_exposes_its_knob() {
+    if !std::path::Path::new("/proc/sys/kernel/seccomp").exists() {
+        return;
+    }
+    assert!(SeccompConfigurator.is_available());
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn seccomp_is_unavailable_where_there_is_no_proc() {
+    assert!(
+        !SeccompConfigurator.is_available(),
+        "seccomp is a Linux kernel facility"
+    );
 }
 
 // --- find_toml_value dot-path with missing intermediate ---

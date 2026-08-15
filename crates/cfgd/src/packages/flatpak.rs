@@ -140,7 +140,6 @@ pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
 
     #[cfg(target_os = "linux")]
@@ -173,25 +172,31 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn flatpak_manager_is_available_checks_flatpak() {
-        // Snapshot + clear the seam env var so this assertion mirrors the
-        // PATH-only contract. Without this, parallel ToolShim tests setting
-        // CFGD_FLATPAK_BIN would race with this assertion.
-        let prev = std::env::var_os("CFGD_FLATPAK_BIN");
-        // SAFETY: serial.
-        unsafe {
-            std::env::remove_var("CFGD_FLATPAK_BIN");
-        }
+    fn flatpak_manager_is_available_exactly_when_a_flatpak_binary_resolves() {
+        // The seam env var is cleared for the whole test: with it set, this
+        // asserts about whichever ToolShim ran last rather than about the
+        // PATH probe.
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_FLATPAK_BIN");
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = FlatpakManager;
-        let available = mgr.is_available();
-        let expected = command_available("flatpak");
-        // SAFETY: serial.
-        unsafe {
-            if let Some(v) = prev {
-                std::env::set_var("CFGD_FLATPAK_BIN", v);
-            }
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !mgr.is_available(),
+                "a host resolving no binaries has no flatpak"
+            );
         }
-        assert_eq!(available, expected);
+
+        #[cfg(unix)]
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&["flatpak"]);
+            assert!(
+                mgr.is_available(),
+                "the binary this manager probes for is named `flatpak`"
+            );
+        }
     }
 
     // --- parse_flatpak_app_list ---

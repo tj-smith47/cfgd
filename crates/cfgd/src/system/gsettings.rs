@@ -122,11 +122,28 @@ mod tests {
     }
 
     #[test]
-    fn gsettings_availability_depends_on_command() {
+    #[serial_test::serial]
+    fn gsettings_is_available_exactly_when_a_gsettings_binary_resolves() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let gc = GsettingsConfigurator;
-        // is_available should match whether gsettings is on PATH
-        let expected = cfgd_core::command_available("gsettings");
-        assert_eq!(gc.is_available(), expected);
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !gc.is_available(),
+                "a host resolving no binaries is not a gsettings host"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&["gsettings"]);
+            assert!(
+                gc.is_available(),
+                "the binary this configurator probes for is named `gsettings`"
+            );
+        }
     }
 
     #[test]

@@ -273,7 +273,6 @@ pub(super) fn parse_nix_search_version(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::{PackageManager, PackageManagerExt};
 
     use super::*;
@@ -405,32 +404,35 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn nix_manager_is_available_checks_nix_env_or_nix() {
-        // Snapshot + clear the seam env vars so this assertion mirrors the
-        // PATH-only contract (mgr.is_available() == command_available union).
-        // Without this, parallel ToolShim tests setting CFGD_NIX_BIN /
-        // CFGD_NIX_ENV_BIN would race with this assertion.
-        let prev_nix = std::env::var_os("CFGD_NIX_BIN");
-        let prev_nix_env = std::env::var_os("CFGD_NIX_ENV_BIN");
-        // SAFETY: serial.
-        unsafe {
-            std::env::remove_var("CFGD_NIX_BIN");
-            std::env::remove_var("CFGD_NIX_ENV_BIN");
-        }
+    fn nix_manager_is_available_for_either_nix_binary() {
+        // The seam env vars are cleared for the whole test: with either set,
+        // this asserts about whichever ToolShim ran last rather than about the
+        // PATH probe.
+        let _seam_nix = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NIX_BIN");
+        let _seam_nix_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NIX_ENV_BIN");
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = NixManager;
-        let available = mgr.is_available();
-        let expected = command_available("nix-env") || command_available("nix");
-        // Restore before any panic so other tests aren't poisoned.
-        // SAFETY: serial.
-        unsafe {
-            if let Some(v) = prev_nix {
-                std::env::set_var("CFGD_NIX_BIN", v);
-            }
-            if let Some(v) = prev_nix_env {
-                std::env::set_var("CFGD_NIX_ENV_BIN", v);
-            }
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !mgr.is_available(),
+                "a host resolving no binaries has no nix"
+            );
         }
-        assert_eq!(available, expected);
+
+        // A classic install ships `nix-env`, a flakes-era one may ship only
+        // `nix`; each is asserted alone, so dropping either arm is caught on a
+        // host that happens to carry both.
+        #[cfg(unix)]
+        for binary in ["nix-env", "nix"] {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[binary]);
+            assert!(
+                mgr.is_available(),
+                "{binary} alone must make this manager available"
+            );
+        }
     }
 
     // --- parse_nix_profile_list_json ---

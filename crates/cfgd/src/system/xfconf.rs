@@ -125,10 +125,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xfconf_availability_depends_on_command() {
+    #[serial_test::serial]
+    fn xfconf_is_available_exactly_when_an_xfconf_query_binary_resolves() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let xc = XfconfConfigurator;
-        let expected = cfgd_core::command_available("xfconf-query");
-        assert_eq!(xc.is_available(), expected);
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !xc.is_available(),
+                "a host resolving no binaries is not an xfconf host"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&["xfconf-query"]);
+            assert!(
+                xc.is_available(),
+                "the binary this configurator probes for is named `xfconf-query`"
+            );
+        }
     }
 
     #[test]

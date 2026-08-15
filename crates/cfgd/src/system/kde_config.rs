@@ -196,11 +196,32 @@ mod tests {
     }
 
     #[test]
-    fn kde_availability_depends_on_command() {
+    #[serial_test::serial]
+    fn kde_is_available_for_either_kwriteconfig_generation() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let kc = KdeConfigConfigurator;
-        let expected = cfgd_core::command_available("kwriteconfig6")
-            || cfgd_core::command_available("kwriteconfig5");
-        assert_eq!(kc.is_available(), expected);
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !kc.is_available(),
+                "a host resolving no binaries is not a KDE host"
+            );
+        }
+
+        // Plasma 5 and 6 ship differently-suffixed binaries and a host carries
+        // one or the other, so each generation is asserted on its own — an
+        // either-or checked only against a host that has both would not notice
+        // one arm being dropped.
+        #[cfg(unix)]
+        for generation in ["kwriteconfig6", "kwriteconfig5"] {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[generation]);
+            assert!(
+                kc.is_available(),
+                "{generation} alone must make this configurator available"
+            );
+        }
     }
 
     #[test]
