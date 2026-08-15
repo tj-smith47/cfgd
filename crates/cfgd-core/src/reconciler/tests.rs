@@ -17350,8 +17350,16 @@ struct LaneProbeState {
 /// Generous because a lane worker is SPAWNED, and a spawn takes the shared
 /// `PATH` guard: another test in this binary holding the exclusive one
 /// (`CwdGuard`, any `PATH` mutation) stalls every worker for as long as its
-/// body runs. Ten seconds was not enough under a loaded parallel run, and a
-/// wait that expires early reports the harness rather than the code.
+/// body runs, and several such bodies can queue. A wait that expires early
+/// reports the harness rather than the code.
+///
+/// It is not what makes the dispatch tests reliable, and widening it never
+/// was: the stall they used to hit was a gate deadlock rather than slowness —
+/// a worker inside the read side, a writer queued behind it, and the sibling
+/// worker the test is waiting for shut out by that writer. `PATH_ENV_LOCK`'s
+/// admission rule is what removed it (see
+/// `a_lane_dispatch_is_not_stalled_by_a_test_that_is_waiting_to_mutate_path`);
+/// this only decides how long a future one takes to go red.
 const LANE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl LaneProbe {
@@ -18967,6 +18975,57 @@ fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
         at("apt install tmux") < at("apt install zsh"),
         "the rest of the phase followed the head out of order: {transcript}"
     );
+}
+
+#[test]
+fn a_lane_dispatch_is_not_stalled_by_a_test_that_is_waiting_to_mutate_path() {
+    // The shape that made the ordering test above flaky under a loaded suite.
+    // Every lane worker takes the shared `PATH` guard for its whole body, so a
+    // worker parked in this probe is a READER that cannot leave until the
+    // dispatch moves on — and the dispatch cannot move on until the NEXT
+    // worker, a fresh thread taking a real read, starts. Any of the binary's
+    // `PATH`-mutating tests queueing a writer between those two acquisitions
+    // used to shut the second one out, deadlocking the probe, the writer and
+    // every other reader until the probe's timeout expired a minute later.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux", "apt:zsh"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+        module_install_action("zsh", "apt", "zsh"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+        module_for("zsh", "apt", "zsh"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run_live(move || {
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            let mutator = std::thread::spawn(|| {
+                let _exclusive = crate::test_helpers::path_env_mutation_guard();
+            });
+            assert!(
+                crate::test_helpers::await_queued_path_writer(LANE_PROBE_TIMEOUT),
+                "the mutating test never reached the gate"
+            );
+            // `zsh` is dispatched onto the lane `tmux` frees, so its worker
+            // takes its read guard with the writer already queued and `neovim`
+            // still inside.
+            driver.release("apt:tmux");
+            assert!(driver.await_started("apt:zsh"), "{:?}", driver.events());
+            driver.release_all();
+            mutator.join().expect("the mutation window closes");
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
 }
 
 #[test]

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Condvar, Mutex};
 
 use secrecy::SecretString;
 
@@ -1694,7 +1694,110 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 /// on one thread. And shared-then-exclusive on one thread: a read guard cannot
 /// upgrade to a write guard, so [`path_env_mutation_guard`] `debug_assert!`s
 /// that no shared guard is held rather than silently allowing the mutation.
-static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
+///
+/// ## Why this is not a `std::sync::RwLock`
+///
+/// `RwLock` is write-preferring: once a writer is queued, a reader arriving
+/// after it waits even though the lock is ALREADY held for reading. That
+/// starves the one pattern concurrent dispatch is made of — a reader that
+/// cannot leave its critical section until a SECOND reader enters it. A lane
+/// worker blocked in a fixture rendezvous holds the read side; the thread
+/// waiting on it cannot proceed until the sibling worker starts; the sibling is
+/// a fresh thread, so it takes a real read and parks behind whatever writer
+/// happened to queue in between. Nothing in that cycle can move, and the only
+/// thing that ends it is a test-side timeout expiring minutes later — after
+/// stalling every other reader in the binary behind the same writer.
+///
+/// So admission is: a reader waits while a writer HOLDS the gate, and while a
+/// writer is waiting for a gate no reader holds. A writer that is waiting on
+/// readers already inside does not block another reader from joining them — it
+/// has to wait for those readers regardless, and refusing the newcomer buys it
+/// nothing while making the deadlock above representable. Writers still make
+/// progress: readers stop being admitted the moment the reader count reaches
+/// zero with a writer waiting.
+static PATH_ENV_LOCK: PathEnvGate = PathEnvGate {
+    state: Mutex::new(PathEnvGateState {
+        readers: 0,
+        writer: false,
+        writers_waiting: 0,
+    }),
+    signal: Condvar::new(),
+};
+
+/// The `PATH` gate's admission state and the condvar every waiter parks on.
+struct PathEnvGate {
+    state: Mutex<PathEnvGateState>,
+    signal: Condvar,
+}
+
+struct PathEnvGateState {
+    readers: usize,
+    writer: bool,
+    writers_waiting: usize,
+}
+
+impl PathEnvGate {
+    fn locked(&self) -> std::sync::MutexGuard<'_, PathEnvGateState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn acquire_read(&self) {
+        let mut state = self.locked();
+        while state.writer || (state.writers_waiting > 0 && state.readers == 0) {
+            state = self
+                .signal
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.readers += 1;
+    }
+
+    fn release_read(&self) {
+        let mut state = self.locked();
+        state.readers = state.readers.saturating_sub(1);
+        if state.readers == 0 {
+            self.signal.notify_all();
+        }
+    }
+
+    fn acquire_write(&self) {
+        let mut state = self.locked();
+        state.writers_waiting += 1;
+        // Announced before parking, so a test can observe the queued writer
+        // rather than sleep a guess at when it arrives.
+        self.signal.notify_all();
+        while state.writer || state.readers > 0 {
+            state = self
+                .signal
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.writers_waiting -= 1;
+        state.writer = true;
+    }
+
+    fn release_write(&self) {
+        let mut state = self.locked();
+        state.writer = false;
+        self.signal.notify_all();
+    }
+}
+
+/// Block until a thread is waiting to take [`path_env_mutation_guard`]'s
+/// exclusive side, answering `false` if none arrives within `timeout`.
+///
+/// The observable a concurrency test needs to reach "a writer is queued"
+/// without a clock standing in for it: a test that slept instead would pass
+/// vacuously whenever the sleep were short, and prove nothing about the
+/// admission rule it is there to pin.
+pub fn await_queued_path_writer(timeout: std::time::Duration) -> bool {
+    let state = PATH_ENV_LOCK.locked();
+    let (state, _) = PATH_ENV_LOCK
+        .signal
+        .wait_timeout_while(state, timeout, |gate| gate.writers_waiting == 0)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.writers_waiting > 0
+}
 
 thread_local! {
     /// Depth of nested [`path_env_read_guard`] acquisitions on this thread.
@@ -1711,20 +1814,19 @@ thread_local! {
 /// *fails* does not need it — an empty `PATH` cannot turn a miss into a hit.
 ///
 /// Re-entrant by design: a `CwdGuard`/`PathShimGuard` window (which hold the
-/// exclusive guard) composing with a spawn inside it is normal, and `RwLock`
-/// is write-preferring, so a second *real* read acquisition on a thread would
-/// deadlock behind a waiting writer. A nested acquisition, and any acquisition
-/// on a thread already holding the exclusive guard, is therefore a no-op. See
-/// [`PATH_ENV_LOCK`].
+/// exclusive guard) composing with a spawn inside it is normal, and a thread
+/// that already holds the exclusive side must not queue behind itself. A nested
+/// acquisition, and any acquisition on a thread already holding the exclusive
+/// guard, is therefore a no-op. See [`PATH_ENV_LOCK`].
 pub fn path_env_read_guard() -> SpawnEnvGuard {
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
         || SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) > 0
     {
         return SpawnEnvGuard(None);
     }
-    let guard = PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner());
+    PATH_ENV_LOCK.acquire_read();
     SPAWN_GUARD_DEPTH.with(|d| d.set(1));
-    SpawnEnvGuard(Some(guard))
+    SpawnEnvGuard(Some(()))
 }
 
 /// Whether THIS thread currently holds [`path_env_mutation_guard`]'s exclusive
@@ -1740,13 +1842,15 @@ pub fn path_env_exclusive_guard_held() -> bool {
     SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
 }
 
-/// Shared read guard returned by [`path_env_read_guard`].
-pub struct SpawnEnvGuard(Option<RwLockReadGuard<'static, ()>>);
+/// Shared read guard returned by [`path_env_read_guard`]. `None` for a
+/// re-entrant acquisition, which took nothing and must release nothing.
+pub struct SpawnEnvGuard(Option<()>);
 
 impl Drop for SpawnEnvGuard {
     fn drop(&mut self) {
         if self.0.is_some() {
             SPAWN_GUARD_DEPTH.with(|d| d.set(0));
+            PATH_ENV_LOCK.release_read();
         }
     }
 }
@@ -1762,8 +1866,8 @@ impl Drop for SpawnEnvGuard {
 ///
 /// Re-entrant per thread, exactly like [`path_env_read_guard`]: combining a
 /// [`CwdGuard`] with a [`PathShimGuard`], or nesting either, is a natural
-/// thing for a test to do and must not deadlock a write-preferring `RwLock`
-/// against itself. The inner acquisitions are no-ops and the lock is released
+/// thing for a test to do and must not queue the gate against itself. The
+/// inner acquisitions are no-ops and the gate is released
 /// when the outermost guard drops. See [`PATH_ENV_LOCK`] for the cross-thread
 /// limit.
 ///
@@ -1781,22 +1885,24 @@ pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
          Take the exclusive guard before the spawn, not during it."
     );
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get) {
-        return ExclusiveEnvGuard { guard: None };
+        return ExclusiveEnvGuard { held: false };
     }
-    let guard = PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner());
+    PATH_ENV_LOCK.acquire_write();
     SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(true));
-    ExclusiveEnvGuard { guard: Some(guard) }
+    ExclusiveEnvGuard { held: true }
 }
 
 /// Exclusive spawn-environment guard returned by [`path_env_mutation_guard`].
 pub struct ExclusiveEnvGuard {
-    guard: Option<RwLockWriteGuard<'static, ()>>,
+    /// `false` for a re-entrant acquisition, which took nothing.
+    held: bool,
 }
 
 impl Drop for ExclusiveEnvGuard {
     fn drop(&mut self) {
-        if self.guard.is_some() {
+        if self.held {
             SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+            PATH_ENV_LOCK.release_write();
         }
     }
 }
@@ -2732,10 +2838,56 @@ mod tests {
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
 
+    /// Concurrent dispatch is made of a reader that cannot leave its critical
+    /// section until a SECOND reader enters it: a lane worker blocked in a
+    /// fixture rendezvous holds the read side, and the thread waiting on it
+    /// cannot proceed until the sibling worker — a fresh thread, so a real
+    /// acquisition — starts. Queue a writer between the two and a
+    /// write-preferring lock deadlocks all four parties until a test-side
+    /// timeout expires minutes later, having stalled every other reader in the
+    /// binary behind the same writer. The gate admits the sibling instead: the
+    /// writer is already waiting on the reader inside, and refusing the
+    /// newcomer buys it nothing.
+    #[test]
+    fn a_queued_writer_does_not_shut_out_a_reader_joining_one_already_inside() {
+        let (holder_in, holder_ready) = std::sync::mpsc::channel();
+        let (release_holder, holder_waits) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _inside = path_env_read_guard();
+            holder_in.send(()).expect("report the read side taken");
+            holder_waits.recv().expect("wait for the release");
+        });
+        holder_ready.recv().expect("the read side is held");
+
+        let writer = std::thread::spawn(|| {
+            let _exclusive = path_env_mutation_guard();
+        });
+        // The writer is QUEUED, not merely spawned — the state a clock would
+        // otherwise be guessing at.
+        assert!(
+            await_queued_path_writer(std::time::Duration::from_secs(10)),
+            "the writer never reached the gate"
+        );
+
+        let (joined_in, joined) = std::sync::mpsc::channel();
+        let joiner = std::thread::spawn(move || {
+            let _inside = path_env_read_guard();
+            joined_in.send(()).expect("report the second read taken");
+        });
+        joined
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a reader joining one already inside was shut out by a queued writer");
+
+        release_holder.send(()).expect("release the first reader");
+        for thread in [holder, writer, joiner] {
+            thread.join().expect("thread");
+        }
+    }
+
     /// The spawn-environment guards must compose: a test that pins the working
     /// directory *and* puts a shim on `PATH` is natural, and both halves take
-    /// the exclusive guard. Without per-thread re-entrancy this deadlocks a
-    /// write-preferring `RwLock` against itself and hangs the suite with no
+    /// the exclusive guard. Without per-thread re-entrancy the second
+    /// acquisition queues behind the first and hangs the suite with no
     /// timeout, so this test only ever passes or never returns.
     #[cfg(unix)]
     #[test]
