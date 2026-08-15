@@ -10,7 +10,8 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     bootstrap_via_brew_then_system, detect_brew_system_method, pip_user_scripts_dir, pkg_run,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
+    planned_method_failed, planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct PipxManager;
@@ -121,19 +122,25 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+        // Returns false without probing anything when the plan named `pip` —
+        // pipx's own fallback arm, which is the next thing below.
         if bootstrap_via_brew_then_system(cx, "pipx", "pipx", &["pipx"])? {
             return Ok(());
         }
 
-        // Fall back to pip
-        let pip_cmd = if command_available("pip3") {
-            "pip3"
-        } else if command_available("pip") {
-            "pip"
-        } else {
-            return Err(PackageError::BootstrapFailed {
-                manager: "pipx".into(),
-                message: "no installation method available".into(),
+        // Fall back to pip. Resolved to a full path rather than spawned by bare
+        // name: `command_path` searches the directories cfgd bootstrapped this
+        // run as well as `$PATH`, and a bare-name spawn searches only `$PATH`.
+        let Some((pip_cmd, pip_path)) = ["pip3", "pip"]
+            .into_iter()
+            .find_map(|tool| cfgd_core::command_path(tool).map(|path| (tool, path)))
+        else {
+            return Err(match cx.planned_method() {
+                Some(method) => planned_method_unavailable("pipx", method),
+                None => PackageError::BootstrapFailed {
+                    manager: "pipx".into(),
+                    message: "no installation method available".into(),
+                },
             }
             .into());
         };
@@ -141,7 +148,7 @@ impl PackageManager for PipxManager {
         let label = format!("Installing pipx via {}", pip_cmd);
         let result = pkg_run(
             cx,
-            Command::new(pip_cmd).args(["install", "--user", "pipx"]),
+            Command::new(pip_path).args(["install", "--user", "pipx"]),
             &label,
         )
         .map_err(|e| PackageError::BootstrapFailed {
@@ -149,9 +156,12 @@ impl PackageManager for PipxManager {
             message: format!("{} install failed: {}", pip_cmd, e),
         })?;
         if !result.status.success() {
-            return Err(PackageError::BootstrapFailed {
-                manager: "pipx".into(),
-                message: format!("{} install --user pipx failed", pip_cmd),
+            return Err(match cx.planned_method() {
+                Some(method) => planned_method_failed("pipx", method, &result),
+                None => PackageError::BootstrapFailed {
+                    manager: "pipx".into(),
+                    message: format!("{} install --user pipx failed", pip_cmd),
+                },
             }
             .into());
         }

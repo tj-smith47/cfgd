@@ -374,6 +374,55 @@ pub fn register_bootstrapped_path_dirs(dirs: &[String]) {
     }
 }
 
+/// Compose a `PATH` value whose leading entries are `dirs`, followed by
+/// everything already in `current`.
+///
+/// `None` when the value would not change — `dirs` is empty, or every one of
+/// them is already on `current` — so a caller can leave the environment alone
+/// rather than re-setting a variable to itself. `None` also when the join
+/// fails, which happens when a directory contains the platform separator and
+/// would silently split into two bogus entries; keeping the original `PATH` is
+/// the safe answer.
+///
+/// The ONE composition of that string. Two callers need it and they must agree,
+/// because they hand the same directories to two halves of the same run: a
+/// lifecycle script's environment (`reconciler::scripts`) and a package
+/// manager's child process (`packages::shared::pkg_run`). Prepending rather
+/// than appending matches `generate_env_file_content` — a script, a package
+/// manager and the login shell that follows them must resolve a command the
+/// same way, and cfgd installed the manager's copy on purpose.
+pub fn path_with_dirs_prepended(current: &str, dirs: &[std::path::PathBuf]) -> Option<String> {
+    if dirs.is_empty() {
+        return None;
+    }
+    // An empty `PATH` has no entries at all. `split_paths("")` yields one EMPTY
+    // entry, which POSIX reads as the current directory — composing that back
+    // would put `.` on the PATH of every child, which is not what an unset PATH
+    // asked for.
+    let existing: Vec<std::path::PathBuf> = if current.is_empty() {
+        Vec::new()
+    } else {
+        std::env::split_paths(current).collect()
+    };
+    let mut merged: Vec<std::path::PathBuf> = Vec::new();
+    for dir in dirs {
+        if !existing.contains(dir) && !merged.contains(dir) {
+            merged.push(dir.clone());
+        }
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    merged.extend(existing);
+    match std::env::join_paths(&merged) {
+        Ok(joined) => Some(joined.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!("cannot add bootstrapped PATH directories: {e}");
+            None
+        }
+    }
+}
+
 /// Snapshot of the directories registered by [`register_bootstrapped_path_dirs`].
 pub fn bootstrapped_path_dirs() -> Vec<std::path::PathBuf> {
     BOOTSTRAPPED_PATH_DIRS
@@ -994,6 +1043,70 @@ mod tests {
         assert!(
             !orphan.is_empty(),
             "output written before the kill must still be captured"
+        );
+    }
+
+    /// The separator is the platform's, so the assertions build their
+    /// expectation with `join_paths` rather than hardcoding `:`.
+    fn joined(parts: &[&str]) -> String {
+        std::env::join_paths(parts.iter().map(std::path::Path::new))
+            .expect("no separator inside a fixture path")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn a_bootstrapped_dir_lands_in_front_of_the_path_it_is_added_to() {
+        let composed = path_with_dirs_prepended(
+            &joined(&["/usr/bin", "/bin"]),
+            &[std::path::PathBuf::from("/home/linuxbrew/.linuxbrew/bin")],
+        )
+        .expect("a new directory changes the value");
+        assert_eq!(
+            composed,
+            joined(&["/home/linuxbrew/.linuxbrew/bin", "/usr/bin", "/bin"])
+        );
+    }
+
+    #[test]
+    fn a_dir_already_on_the_path_composes_nothing_rather_than_duplicating_itself() {
+        assert_eq!(
+            path_with_dirs_prepended(
+                &joined(&["/usr/bin", "/opt/bin"]),
+                &[std::path::PathBuf::from("/opt/bin")],
+            ),
+            None,
+            "an unchanged PATH must not be re-set"
+        );
+        assert_eq!(
+            path_with_dirs_prepended("/usr/bin", &[]),
+            None,
+            "nothing to add is nothing to change"
+        );
+    }
+
+    #[test]
+    fn repeated_dirs_are_added_once_and_keep_the_order_they_were_given() {
+        let composed = path_with_dirs_prepended(
+            "/usr/bin",
+            &[
+                std::path::PathBuf::from("/opt/a"),
+                std::path::PathBuf::from("/opt/b"),
+                std::path::PathBuf::from("/opt/a"),
+            ],
+        )
+        .expect("two new directories change the value");
+        assert_eq!(composed, joined(&["/opt/a", "/opt/b", "/usr/bin"]));
+    }
+
+    #[test]
+    fn an_empty_current_path_yields_the_dirs_alone() {
+        let composed = path_with_dirs_prepended("", &[std::path::PathBuf::from("/opt/a")])
+            .expect("a directory is added to nothing");
+        assert_eq!(
+            composed, "/opt/a",
+            "an unset PATH contributes no entries — least of all the empty one \
+             `split_paths` invents, which POSIX reads as the current directory"
         );
     }
 }

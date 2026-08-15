@@ -161,6 +161,9 @@ fn prepend_bootstrapped_path_dirs(env: &mut Vec<(String, String)>, path_dirs: &[
     if path_dirs.is_empty() {
         return;
     }
+    // A PATH the script's own declared environment set wins as the base: the
+    // author asked for it, so the bootstrapped directories go in FRONT of that
+    // rather than in front of whatever this process inherited.
     let current = env
         .iter()
         .rev()
@@ -168,29 +171,9 @@ fn prepend_bootstrapped_path_dirs(env: &mut Vec<(String, String)>, path_dirs: &[
         .map(|(_, v)| v.clone())
         .or_else(|| std::env::var("PATH").ok())
         .unwrap_or_default();
-    let existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
-
-    let mut merged: Vec<std::path::PathBuf> = Vec::new();
-    for dir in path_dirs {
-        let dir = std::path::PathBuf::from(dir);
-        if !existing.contains(&dir) && !merged.contains(&dir) {
-            merged.push(dir);
-        }
-    }
-    if merged.is_empty() {
+    let dirs: Vec<std::path::PathBuf> = path_dirs.iter().map(std::path::PathBuf::from).collect();
+    let Some(joined) = crate::path_with_dirs_prepended(&current, &dirs) else {
         return;
-    }
-    merged.extend(existing);
-
-    // `join_paths` rejects a directory containing the platform separator, which
-    // would otherwise silently split into two bogus entries. Keeping the
-    // original PATH is the safe answer.
-    let joined = match std::env::join_paths(&merged) {
-        Ok(joined) => joined.to_string_lossy().into_owned(),
-        Err(e) => {
-            tracing::warn!("cannot add bootstrapped PATH directories to script env: {e}");
-            return;
-        }
     };
     match env.iter_mut().rev().find(|(k, _)| k == "PATH") {
         Some(slot) => slot.1 = joined,

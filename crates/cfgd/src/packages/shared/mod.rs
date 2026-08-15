@@ -341,12 +341,41 @@ pub(super) fn pkg_run(
     cmd: &mut Command,
     label: impl Into<String>,
 ) -> std::io::Result<CommandOutput> {
+    hand_child_bootstrapped_path(cmd);
     if let Some(lane) = cx.lane() {
         lane.run(cmd)
     } else if cx.caller_owns_status {
         cx.printer.run_silent(cmd, label)
     } else {
         cx.printer.run(cmd, label)
+    }
+}
+
+/// Give a package-manager child the PATH directories cfgd bootstrapped during
+/// this run.
+///
+/// Resolving the manager's own binary through the registry
+/// (`cfgd_core::command_path`) is not enough: npm shells out to `node` and
+/// `git`, pipx to a Python, and those grandchildren resolve through the PATH
+/// they inherit — which is the one cfgd started with, and which cannot name a
+/// prefix that did not exist then. Lifecycle scripts already get this treatment
+/// (`reconciler::scripts`), and both compose the string the same way.
+///
+/// A PATH the command builder set deliberately is left alone: `brew_cmd`'s
+/// augmented PATH is how brew finds its own tools, and overwriting it would
+/// undo a decision made with more context than this has.
+fn hand_child_bootstrapped_path(cmd: &mut Command) {
+    let dirs = cfgd_core::bootstrapped_path_dirs();
+    if dirs.is_empty()
+        || cmd
+            .get_envs()
+            .any(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+    {
+        return;
+    }
+    let current = std::env::var("PATH").unwrap_or_default();
+    if let Some(joined) = cfgd_core::path_with_dirs_prepended(&current, &dirs) {
+        cmd.env("PATH", joined);
     }
 }
 
@@ -502,8 +531,14 @@ pub(super) fn any_system_manager_available() -> bool {
 }
 
 /// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
-/// them is available. The name a `BootstrapPlan` carries as its method, resolved
-/// through the same probes `bootstrap_via_brew_then_system` runs.
+/// them is available. The name a `BootstrapPlan` carries as its method.
+///
+/// The answer is BINDING on execution, not a preview of it: the plan line the
+/// user reads names this mediator and the action is serialized on this
+/// mediator's concurrency lane, so `bootstrap` runs this arm alone (see
+/// [`PackageContext::planned_method`] and [`bootstrap_via_brew_then_system`])
+/// and fails rather than substituting a manager that became available after
+/// planning.
 pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
     if brew_available() {
         "brew"
@@ -517,7 +552,8 @@ pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str 
 }
 
 /// Which manager an apt→dnf→zypper cascade would pick. Linux-only, like the two
-/// managers whose plans resolve their method through it.
+/// managers whose plans resolve their method through it. Binding on execution
+/// for the same reason [`detect_brew_system_method`] is.
 #[cfg(target_os = "linux")]
 pub(super) fn detect_system_method() -> &'static str {
     if command_available("apt") {
@@ -526,6 +562,54 @@ pub(super) fn detect_system_method() -> &'static str {
         "dnf"
     } else {
         "zypper"
+    }
+}
+
+/// The command a planned system-manager method actually runs, or `None` when
+/// the method names no system manager (`brew`, or a manager's own fallback like
+/// npm's `nvm` / pipx's `pip`).
+///
+/// A plan says `apt` — that is the manager's name, what the user reads and what
+/// the concurrency lane is keyed on — while the binary a bootstrap invokes is
+/// `apt-get`. One place owns that translation so a planned method and the arm
+/// it authorizes cannot drift apart.
+fn planned_system_tool(method: &str) -> Option<&'static str> {
+    match method {
+        "apt" => Some("apt-get"),
+        "dnf" => Some("dnf"),
+        "zypper" => Some("zypper"),
+        _ => None,
+    }
+}
+
+/// The plan named a mediator that cannot deliver on this host any more.
+///
+/// Never a fall-through: substituting whatever else is available would run the
+/// install outside the lane the action was serialized on, and would contradict
+/// the line the user approved.
+pub(super) fn planned_method_unavailable(manager: &str, method: &str) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!(
+            "the plan installs {manager} via {method}, which is not available on this host; re-run to re-plan"
+        ),
+    }
+}
+
+/// The mediator the plan named ran and failed. Its diagnostic travels in the
+/// error rather than in a note, because there is no next method to narrate
+/// toward and a caller-owned window settles no line of its own.
+pub(super) fn planned_method_failed(
+    manager: &str,
+    method: &str,
+    output: &CommandOutput,
+) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!(
+            "{method} could not install {manager}: {}",
+            command_failure_reason(output)
+        ),
     }
 }
 
@@ -716,6 +800,121 @@ fn brew_owner() -> Option<String> {
     }
 }
 
+/// Run the brew arm of a bootstrap cascade, honoring the method the plan chose.
+///
+/// `Ok(true)` — brew installed `brew_pkg`. `Ok(false)` — the caller continues
+/// to its next arm, because brew is absent or the plan named a different
+/// mediator. `Err` — the plan named brew and brew could not deliver, which is
+/// the end of the attempt rather than the start of a fallback.
+pub(super) fn bootstrap_brew_arm(
+    cx: &PackageContext<'_>,
+    manager_name: &str,
+    brew_pkg: &str,
+) -> Result<bool> {
+    let planned = cx.planned_method();
+    if planned.is_some_and(|method| method != "brew") {
+        return Ok(false);
+    }
+    if !brew_available() {
+        return match planned {
+            Some(method) => Err(planned_method_unavailable(manager_name, method).into()),
+            None => Ok(false),
+        };
+    }
+    let result = pkg_run(
+        cx,
+        brew_cmd().args(["install", brew_pkg]),
+        format!("Installing {} via brew", brew_pkg),
+    )
+    .map_err(|e| PackageError::BootstrapFailed {
+        manager: manager_name.into(),
+        message: format!("brew install {} failed: {}", brew_pkg, e),
+    })?;
+    if result.status.success() {
+        return Ok(true);
+    }
+    match planned {
+        Some(method) => Err(planned_method_failed(manager_name, method, &result).into()),
+        None => {
+            report_abandoned_step(cx, manager_name, "brew", &result);
+            Ok(false)
+        }
+    }
+}
+
+/// Install `pkgs` from the first of `tools` that answers — or, when the plan
+/// chose one of them, from that one alone.
+///
+/// `subject` is what the live window says is being installed; the cascade order
+/// is the caller's, because a manager's own bootstrap probes exactly the
+/// managers its `bootstrap_plan` resolved against.
+fn bootstrap_system_arms(
+    cx: &PackageContext<'_>,
+    manager_name: &str,
+    subject: &str,
+    pkgs: &[&str],
+    tools: &[&str],
+) -> Result<bool> {
+    if let Some(method) = cx.planned_method() {
+        // A method naming no tool in this cascade is the manager's own fallback
+        // arm (npm's `nvm`, pipx's `pip`): the caller runs it next, and this
+        // cascade must not probe ahead of it.
+        let Some(tool) = planned_system_tool(method).filter(|tool| tools.contains(tool)) else {
+            return Ok(false);
+        };
+        if !system_tool_available(tool) {
+            return Err(planned_method_unavailable(manager_name, method).into());
+        }
+        let result = run_system_install(cx, manager_name, subject, pkgs, tool)?;
+        return if result.status.success() {
+            Ok(true)
+        } else {
+            Err(planned_method_failed(manager_name, method, &result).into())
+        };
+    }
+
+    for tool in tools {
+        if system_tool_available(tool) {
+            let result = run_system_install(cx, manager_name, subject, pkgs, tool)?;
+            if result.status.success() {
+                return Ok(true);
+            }
+            report_abandoned_step(cx, manager_name, tool, &result);
+        }
+    }
+    Ok(false)
+}
+
+/// Probe a system manager through the same `CFGD_<NAME>_BIN` seam
+/// [`sudo_cmd_with_seam`] honors — a seam-shimmed tool must look available on
+/// hosts that lack the real binary (see `require_tool_with_seam`'s pairing
+/// note), or the probe answers from `$PATH` while the spawn answers from the
+/// seam.
+fn system_tool_available(tool: &str) -> bool {
+    cfgd_core::command_available_with_seam(&tool_seam_var(tool), tool)
+}
+
+fn run_system_install(
+    cx: &PackageContext<'_>,
+    manager_name: &str,
+    subject: &str,
+    pkgs: &[&str],
+    tool: &str,
+) -> Result<CommandOutput> {
+    pkg_run(
+        cx,
+        sudo_cmd_with_seam(tool).args(["install", "-y"]).args(pkgs),
+        format!("Installing {} via {}", subject, tool),
+    )
+    .map_err(|e| {
+        PackageError::BootstrapFailed {
+            manager: manager_name.into(),
+            message: format!("{} install failed: {}", tool, e),
+        }
+        .into()
+    })
+}
+
 /// Try to install a package via common system package managers (apt, then dnf, then zypper).
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
 pub(super) fn bootstrap_via_system_manager(
@@ -723,25 +922,14 @@ pub(super) fn bootstrap_via_system_manager(
     target_pkg: &str,
     manager_name: &str,
 ) -> Result<()> {
-    for cmd_name in ["apt-get", "dnf", "zypper"] {
-        // Probe through the same CFGD_<NAME>_BIN seam the construction below
-        // honors — a seam-shimmed tool must look available on hosts that lack
-        // the real binary (see require_tool_with_seam's pairing note).
-        if cfgd_core::command_available_with_seam(&tool_seam_var(cmd_name), cmd_name) {
-            let result = pkg_run(
-                cx,
-                sudo_cmd_with_seam(cmd_name).args(["install", "-y", target_pkg]),
-                format!("Installing {} via {}", target_pkg, cmd_name),
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: manager_name.into(),
-                message: format!("{} install failed: {}", cmd_name, e),
-            })?;
-            if result.status.success() {
-                return Ok(());
-            }
-            report_abandoned_step(cx, manager_name, cmd_name, &result);
-        }
+    if bootstrap_system_arms(
+        cx,
+        manager_name,
+        target_pkg,
+        &[target_pkg],
+        &["apt-get", "dnf", "zypper"],
+    )? {
+        return Ok(());
     }
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
@@ -751,52 +939,30 @@ pub(super) fn bootstrap_via_system_manager(
 }
 
 /// Try to install packages via brew first, then fall back to system package managers.
-/// `brew_pkg` is the brew formula name, `apt_pkgs`/`dnf_pkgs` are the system package names.
+/// `brew_pkg` is the brew formula name, `system_pkgs` are the system package names.
 /// Returns `Ok(true)` if installed, `Ok(false)` if no method succeeded (caller should
 /// try alternative), or `Err` on command execution failure.
+///
+/// When the context carries a planned method ([`PackageContext::planned_method`])
+/// exactly one arm runs: the one the plan named. `Ok(false)` then means the plan
+/// named the CALLER's own fallback arm (npm's nvm, pipx's pip), never that this
+/// cascade tried and gave up.
 pub(super) fn bootstrap_via_brew_then_system(
     cx: &PackageContext<'_>,
     manager_name: &str,
     brew_pkg: &str,
     system_pkgs: &[&str],
 ) -> Result<bool> {
-    if brew_available() {
-        let result = pkg_run(
-            cx,
-            brew_cmd().args(["install", brew_pkg]),
-            format!("Installing {} via brew", brew_pkg),
-        )
-        .map_err(|e| PackageError::BootstrapFailed {
-            manager: manager_name.into(),
-            message: format!("brew install {} failed: {}", brew_pkg, e),
-        })?;
-        if result.status.success() {
-            return Ok(true);
-        }
-        report_abandoned_step(cx, manager_name, "brew", &result);
+    if bootstrap_brew_arm(cx, manager_name, brew_pkg)? {
+        return Ok(true);
     }
-
-    for cmd_name in ["apt-get", "dnf"] {
-        if command_available(cmd_name) {
-            let result = pkg_run(
-                cx,
-                sudo_cmd_with_seam(cmd_name)
-                    .args(["install", "-y"])
-                    .args(system_pkgs),
-                format!("Installing {} via {}", manager_name, cmd_name),
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: manager_name.into(),
-                message: format!("{} install failed: {}", cmd_name, e),
-            })?;
-            if result.status.success() {
-                return Ok(true);
-            }
-            report_abandoned_step(cx, manager_name, cmd_name, &result);
-        }
-    }
-
-    Ok(false)
+    bootstrap_system_arms(
+        cx,
+        manager_name,
+        manager_name,
+        system_pkgs,
+        &["apt-get", "dnf"],
+    )
 }
 
 /// Run a `sh -c <script>` install pipeline and surface non-zero exits as

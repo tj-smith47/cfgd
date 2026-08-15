@@ -286,14 +286,17 @@ impl<'x> PackageExec<'x> {
                     changed = false;
                 }
             }
-            ManagerAction::Provision { manager, .. } => {
+            ManagerAction::Provision { manager, via, .. } => {
                 let pm = lookup(manager)?;
                 // An earlier node may have provisioned it already. What the
                 // node promises is an available manager, not a second run of
                 // an installer that is minutes of work and not idempotent for
                 // every manager.
                 if !pm.is_available() {
-                    pm.bootstrap(&cx)?;
+                    // The method travels into the bootstrap so the cascade runs
+                    // the mediator the line named — which is also the mediator
+                    // whose lane this action holds.
+                    pm.bootstrap(&cx.for_provision(via))?;
                 }
                 self.record_bootstrap(pm.as_ref());
                 if !pm.is_available() {

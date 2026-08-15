@@ -17128,6 +17128,10 @@ struct DispatchLogManager {
     /// Lines pushed into the lane around this manager's rendezvous, so a test
     /// can force two lanes to interleave their child output.
     lane_lines: Option<(String, String)>,
+    /// Where `bootstrap` writes the method the plan named, for the test that
+    /// pins the `via` reaching execution. A slot rather than a log line
+    /// because every other fixture asserts on the log's exact contents.
+    seen_provision_via: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
 }
 
 impl DispatchLogManager {
@@ -17146,6 +17150,7 @@ impl DispatchLogManager {
             touches_state: false,
             panics: false,
             lane_lines: None,
+            seen_provision_via: None,
         }
     }
 
@@ -17171,6 +17176,14 @@ impl DispatchLogManager {
 
     fn with_lane_lines(mut self, first: &str, second: &str) -> Self {
         self.lane_lines = Some((first.to_string(), second.to_string()));
+        self
+    }
+
+    fn recording_provision_via(
+        mut self,
+        slot: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        self.seen_provision_via = Some(std::sync::Arc::clone(slot));
         self
     }
 
@@ -17310,9 +17323,12 @@ impl PackageManager for DispatchLogManager {
     fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
         Some(crate::providers::BootstrapPlan::new("stub"))
     }
-    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         let label = format!("bootstrap:{}", self.name);
         self.record(label.clone());
+        if let Some(slot) = &self.seen_provision_via {
+            *slot.lock().unwrap() = cx.planned_method().map(str::to_string);
+        }
         if !self.stays_unavailable {
             *self.available.lock().unwrap() = true;
         }
@@ -20568,5 +20584,43 @@ fn decision_store_ownership_matches_only_the_runs_own_scope() {
             crate::Scope::User
         ),
         "a --state-dir override grants ownership regardless: the swept store is the one the config was aimed at"
+    );
+}
+
+/// The mediator the plan named has to reach the bootstrap that runs, or the
+/// manager re-probes and can pick a different one — installing outside the
+/// concurrency lane the action was serialized on, and contradicting the line
+/// the user read.
+#[test]
+fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
+    let log = new_dispatch_log();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        DispatchLogManager::new("npm", &log, false).recording_provision_via(&seen),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    let resolved = resolved_for("work", &[]);
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert!(result.action_results[0].success, "the provision ran: {out}");
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("apt"),
+        "bootstrap must see the method the plan resolved, not None"
     );
 }

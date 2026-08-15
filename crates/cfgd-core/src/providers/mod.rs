@@ -84,6 +84,17 @@ pub struct PackageContext<'a> {
     /// lanes reading it would interleave. `None` for every sequential context,
     /// which is every non-`Packages` phase and every read path.
     lane: Option<&'a dyn crate::output::LaneOutput>,
+    /// The bootstrap method the PLAN resolved for this provision — the `via` of
+    /// the `ManagerAction::Provision` being executed. `None` for every context
+    /// that is not executing a planned provision (direct callers, `cfgd
+    /// doctor`, fixtures), where a manager's bootstrap cascade re-probes as it
+    /// always has.
+    ///
+    /// It travels here rather than as a `bootstrap()` parameter because it is
+    /// per-RUN context, not part of what a `PackageManager` promises: the trait
+    /// keeps its no-argument bootstrap contract while the one caller that holds
+    /// a plan can bind execution to it.
+    provision_via: Option<&'a str>,
 }
 
 impl<'a> PackageContext<'a> {
@@ -97,6 +108,7 @@ impl<'a> PackageContext<'a> {
             notes: NoteSink::discarded(),
             caller_owns_status: false,
             lane: None,
+            provision_via: None,
         }
     }
 
@@ -113,6 +125,7 @@ impl<'a> PackageContext<'a> {
             notes,
             caller_owns_status: false,
             lane: None,
+            provision_via: None,
         }
     }
 
@@ -133,6 +146,26 @@ impl<'a> PackageContext<'a> {
     /// it through its shell-out helper rather than by hand.
     pub fn lane(&self) -> Option<&'a dyn crate::output::LaneOutput> {
         self.lane
+    }
+
+    /// Bind this context's `bootstrap` to the method the plan named.
+    ///
+    /// The plan line the user read says `provision npm via apt`, and the
+    /// concurrency lane the action was serialized on is that mediator's — so a
+    /// bootstrap that re-probed and picked brew instead would both contradict
+    /// the line and run outside the lock that keeps two dpkg-class installs
+    /// apart.
+    #[must_use]
+    pub fn for_provision(mut self, via: &'a str) -> Self {
+        self.provision_via = Some(via);
+        self
+    }
+
+    /// The bootstrap method the plan resolved for this provision, or `None`
+    /// when no plan chose one. A cascade honors `Some(m)` as BINDING: it runs
+    /// that method's arm alone and fails rather than substituting another.
+    pub fn planned_method(&self) -> Option<&'a str> {
+        self.provision_via
     }
 
     /// Declare that the CALLER emits the one status line for this action.

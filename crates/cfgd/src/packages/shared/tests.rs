@@ -1616,3 +1616,238 @@ fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
         "error must surface manager name: {msg}"
     );
 }
+
+/// The apt shim reaches the cascade through `sudo_cmd_with_seam`'s
+/// `CFGD_APT_GET_BIN` seam rather than through `PATH`, so an unprivileged test
+/// never routes a real `sudo apt-get install` at the host.
+#[cfg(unix)]
+fn apt_get_shim() -> cfgd_core::test_helpers::ToolShim {
+    cfgd_core::test_helpers::ToolShim::install("CFGD_APT_GET_BIN", 0, "apt-get: done\n", "")
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    )
+    .expect("the planned apt arm exits 0");
+
+    assert!(installed, "the planned method installed the manager");
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "the plan said apt; brew must not run even though it is available: {}",
+        brew.argv_log()
+    );
+    assert!(
+        apt.argv_log().contains("install -y ripgrep"),
+        "the apt arm ran the install: {}",
+        apt.argv_log()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substituting() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    // No apt-get: neither on PATH nor behind the seam, which is exactly the
+    // "the mediator went away between plan and apply" shape.
+    let _no_apt = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APT_GET_BIN");
+    let dir = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink("/bin/sh", dir.path().join("sh")).unwrap();
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        dir.path().to_str().expect("tempdir path is valid UTF-8"),
+    );
+
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    )
+    .expect_err("a planned method that cannot run fails the provision");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("apt") && msg.contains("test-mgr"),
+        "the error names the planned method and the manager: {msg}"
+    );
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "an unavailable planned method is never substituted: {}",
+        brew.argv_log()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
+    let _no_brew = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let apt = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_APT_GET_BIN",
+        100,
+        "",
+        "E: Unable to locate package ripgrep\n",
+    );
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let err = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    )
+    .expect_err("a failed planned method ends the provision");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("apt could not install test-mgr"),
+        "the error names the planned method: {msg}"
+    );
+    assert!(
+        msg.contains("Unable to locate package"),
+        "the abandoned step's diagnostic survives in the error: {msg}"
+    );
+    assert_eq!(apt.invocation_count(), 1, "exactly one arm ran");
+}
+
+/// A method naming no arm of this cascade belongs to the CALLER's own fallback
+/// (npm's `nvm`, pipx's `pip`), so the cascade declines without probing —
+/// brew must not run ahead of the arm the plan actually named.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_entirely() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("nvm"),
+        "npm",
+        "node",
+        &["nodejs", "npm"],
+    )
+    .expect("declining is not an error");
+
+    assert!(!installed, "the cascade defers to the caller's own arm");
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "brew never probed: {}",
+        brew.argv_log()
+    );
+    assert_eq!(
+        apt.invocation_count(),
+        0,
+        "apt never probed: {}",
+        apt.argv_log()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn an_unplanned_bootstrap_still_cascades_brew_then_system() {
+    let brew = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_BREW_BIN",
+        1,
+        "",
+        "Error: No available formula\n",
+    );
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+    )
+    .expect("the apt fallback exits 0");
+
+    assert!(installed, "the cascade fell through to apt");
+    assert_eq!(brew.invocation_count(), 1, "brew was tried first");
+    assert_eq!(apt.invocation_count(), 1, "apt finished the job");
+}
+
+/// The registry dirs a `Command` would carry, as `(key, value)` pairs — the
+/// only way to observe what [`hand_child_bootstrapped_path`] decided without
+/// spawning anything.
+fn child_path_env(cmd: &Command) -> Option<String> {
+    cmd.get_envs().find_map(|(key, value)| {
+        (key.eq_ignore_ascii_case("PATH"))
+            .then(|| value.unwrap_or_default().to_string_lossy().into_owned())
+    })
+}
+
+#[test]
+#[serial_test::serial]
+fn a_package_manager_child_inherits_the_dirs_bootstrapped_this_run() {
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let dir = tempfile::tempdir().unwrap();
+    let registered = cfgd_core::to_posix_string(dir.path());
+    cfgd_core::register_bootstrapped_path_dirs(std::slice::from_ref(&registered));
+
+    let mut cmd = Command::new("npm");
+    hand_child_bootstrapped_path(&mut cmd);
+
+    let path = child_path_env(&cmd).expect("a registered dir must reach the child");
+    assert_eq!(
+        std::env::split_paths(&path).next(),
+        Some(std::path::PathBuf::from(&registered)),
+        "the bootstrapped dir leads, so a freshly installed binary wins: {path}"
+    );
+    assert!(
+        std::env::split_paths(&path).count() > 1,
+        "the process PATH is kept behind it, not replaced: {path}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_path_the_command_builder_already_chose_is_left_alone() {
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let dir = tempfile::tempdir().unwrap();
+    cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir.path())]);
+
+    // brew_cmd's augmented PATH is the real instance of this: a deliberate
+    // override made with more context than pkg_run has.
+    let mut cmd = Command::new("brew");
+    cmd.env("PATH", "/opt/homebrew/bin");
+    hand_child_bootstrapped_path(&mut cmd);
+
+    assert_eq!(
+        child_path_env(&cmd).as_deref(),
+        Some("/opt/homebrew/bin"),
+        "a builder-set PATH must survive pkg_run untouched"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_run_that_bootstrapped_nothing_sets_no_path_at_all() {
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let mut cmd = Command::new("apt-get");
+    hand_child_bootstrapped_path(&mut cmd);
+    assert_eq!(
+        child_path_env(&cmd),
+        None,
+        "with nothing registered the child's environment is not touched"
+    );
+}

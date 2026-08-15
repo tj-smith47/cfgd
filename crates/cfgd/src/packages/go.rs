@@ -10,9 +10,9 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd,
-    detect_brew_system_method, pkg_run, report_abandoned_step, resolve_tool_with_fallbacks,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    any_system_manager_available, bootstrap_brew_arm, bootstrap_via_system_manager,
+    detect_brew_system_method, resolve_tool_with_fallbacks, run_pkg_cmd_live,
+    tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
@@ -56,20 +56,10 @@ impl PackageManager for GoInstallManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        if brew_available() {
-            let result = pkg_run(
-                cx,
-                brew_cmd().args(["install", "go"]),
-                "Installing Go via brew",
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: "go".into(),
-                message: format!("brew install go failed: {}", e),
-            })?;
-            if result.status.success() {
-                return Ok(());
-            }
-            report_abandoned_step(cx, "go", "brew", &result);
+        // Returns false without running brew when the plan named a system
+        // manager, and errors rather than falling through when it named brew.
+        if bootstrap_brew_arm(cx, "go", "go")? {
+            return Ok(());
         }
 
         bootstrap_via_system_manager(cx, "golang", "go")

@@ -10,8 +10,9 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, report_abandoned_step,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, planned_method_failed,
+    planned_method_unavailable, report_abandoned_step, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
@@ -391,8 +392,12 @@ pub(super) fn find_npm() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if command_available("npm") {
-        return Some(PathBuf::from("npm"));
+    // The FULL resolved path, never the bare name: `command_path` searches the
+    // bootstrapped-directory registry after `$PATH`, and a `Command::new("npm")`
+    // spawn searches only `$PATH` — so an npm cfgd just provisioned through brew
+    // would answer "available" and then die with ENOENT.
+    if let Some(path) = cfgd_core::command_path("npm") {
+        return Some(path);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     find_npm_in_nvm(&home)
@@ -496,6 +501,8 @@ impl PackageManager for NpmManager {
     }
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // Returns false without probing anything when the plan named `nvm` —
+        // npm's own fallback arm, which is the next thing below.
         if bootstrap_via_brew_then_system(cx, "npm", "node", &["nodejs", "npm"])? {
             return Ok(());
         }
@@ -518,7 +525,13 @@ impl PackageManager for NpmManager {
             if result.status.success() {
                 return Ok(());
             }
+            if let Some(method) = cx.planned_method() {
+                return Err(planned_method_failed("npm", method, &result).into());
+            }
             report_abandoned_step(cx, "npm", "nvm", &result);
+        } else if let Some(method) = cx.planned_method() {
+            // `curl` is nvm's declared prerequisite, so the plan promised it.
+            return Err(planned_method_unavailable("npm", method).into());
         }
 
         Err(PackageError::BootstrapFailed {
@@ -968,6 +981,41 @@ mod tests {
             found.as_deref(),
             Some(std::path::Path::new("/nonexistent/cfgd-npm-bin-not-a-file")),
             "a non-file CFGD_NPM_BIN must be ignored, not returned verbatim"
+        );
+    }
+
+    /// The bug this pins: `command_available` searches `$PATH` AND the
+    /// bootstrapped-directory registry, while a `Command::new("npm")` spawn
+    /// searches only `$PATH` — so an npm that brew had just landed answered
+    /// "available" and then died with ENOENT. Only a full path can be spawned.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn find_npm_returns_a_full_path_for_an_npm_only_the_bootstrapped_registry_can_see() {
+        use std::os::unix::fs::PermissionsExt;
+        let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NPM_BIN");
+        let bootstrapped = tempfile::tempdir().unwrap();
+        let npm = bootstrapped.path().join("npm");
+        std::fs::write(&npm, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // A PATH that cannot see it, so the registry is the ONLY way npm
+        // resolves — which is the state right after a brew-mediated provision.
+        let empty = tempfile::tempdir().unwrap();
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+            "PATH",
+            empty.path().to_str().expect("utf8 tempdir path"),
+        );
+        let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(
+            bootstrapped.path(),
+        )]);
+
+        assert_eq!(
+            find_npm().as_deref(),
+            Some(npm.as_path()),
+            "find_npm must hand back the resolved path, never the bare name"
         );
     }
 
