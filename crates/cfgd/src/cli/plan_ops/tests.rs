@@ -2016,7 +2016,7 @@ fn apply_conflict_policy_backup_copies_file() {
 
     let mut action = file_create(file.to_str().unwrap());
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(OnConflict::Backup, &file, &mut action, &printer).unwrap();
+    apply_conflict_policy(ResolvedConflict::Backup, &file, &mut action, &printer).unwrap();
 
     let backup = tmp.path().join("target.txt.cfgd-backup");
     assert!(
@@ -2034,7 +2034,7 @@ fn apply_conflict_policy_skip_converts_action_to_skip() {
 
     let mut action = file_create(file.to_str().unwrap());
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(OnConflict::Skip, &file, &mut action, &printer).unwrap();
+    apply_conflict_policy(ResolvedConflict::Skip, &file, &mut action, &printer).unwrap();
 
     assert!(
         matches!(action, Action::File(FileAction::Skip { .. })),
@@ -2054,7 +2054,7 @@ fn apply_conflict_policy_overwrite_leaves_action_unchanged() {
 
     let mut action = file_create(file.to_str().unwrap());
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(OnConflict::Overwrite, &file, &mut action, &printer).unwrap();
+    apply_conflict_policy(ResolvedConflict::Overwrite, &file, &mut action, &printer).unwrap();
 
     assert!(
         matches!(action, Action::File(FileAction::Create { .. })),
@@ -2074,7 +2074,8 @@ fn apply_conflict_policy_fail_aborts_and_touches_nothing() {
 
     let mut action = file_create(file.to_str().unwrap());
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let err = apply_conflict_policy(OnConflict::Fail, &file, &mut action, &printer).unwrap_err();
+    let err =
+        apply_conflict_policy(ResolvedConflict::Fail, &file, &mut action, &printer).unwrap_err();
 
     assert!(
         err.to_string().contains("--on-conflict fail"),
@@ -2088,24 +2089,47 @@ fn apply_conflict_policy_fail_aborts_and_touches_nothing() {
 fn yes_resolves_ask_to_backup_and_leaves_an_explicit_policy_alone() {
     assert_eq!(
         resolve_conflict_policy(OnConflict::Ask, true),
-        OnConflict::Backup,
+        Some(ResolvedConflict::Backup),
         "--yes must mean 'do not stop to ask', never 'discard my file'"
     );
     assert_eq!(
         resolve_conflict_policy(OnConflict::Ask, false),
-        OnConflict::Ask,
+        None,
         "without --yes the question is still asked, per target"
     );
-    for policy in [
-        OnConflict::Backup,
-        OnConflict::Overwrite,
-        OnConflict::Skip,
-        OnConflict::Fail,
+    for (policy, resolved) in [
+        (OnConflict::Backup, ResolvedConflict::Backup),
+        (OnConflict::Overwrite, ResolvedConflict::Overwrite),
+        (OnConflict::Skip, ResolvedConflict::Skip),
+        (OnConflict::Fail, ResolvedConflict::Fail),
     ] {
         assert_eq!(
             resolve_conflict_policy(policy, true),
-            policy,
+            Some(resolved),
             "an explicit policy passes through --yes untouched"
+        );
+    }
+}
+
+#[test]
+fn every_prompt_option_maps_to_a_settled_policy() {
+    let options = conflict_prompt_options();
+    assert_eq!(
+        options.len(),
+        PROMPT_POLICIES.len(),
+        "an option with no policy beside it selects the fallback silently"
+    );
+    // The interactive vocabulary is the flag's vocabulary: no outcome may be
+    // reachable only by re-running with `--on-conflict`.
+    for policy in [
+        ResolvedConflict::Backup,
+        ResolvedConflict::Overwrite,
+        ResolvedConflict::Skip,
+        ResolvedConflict::Fail,
+    ] {
+        assert!(
+            PROMPT_POLICIES.contains(&policy),
+            "{policy:?} is offered by the flag but not by the prompt"
         );
     }
 }
@@ -2129,6 +2153,7 @@ fn an_unanswerable_prompt_backs_the_file_up_instead_of_overwriting_it() {
         &printer,
         false,
         OnConflict::Ask,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2199,6 +2224,7 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
         &printer,
         false,
         OnConflict::Ask,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2220,6 +2246,313 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
     assert!(
         tmp.path().join("zshrc.cfgd-backup").exists(),
         "a Copy target still honours the Backup choice"
+    );
+}
+
+#[test]
+fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
+    // Ground truth, not a hand-written key: the id comes from the producer.
+    // The two spellings agree on POSIX and diverge on Windows, where a lookup
+    // keyed on native separators reports every managed file as unmanaged — so
+    // `--yes` (which now means backup) mints a sidecar for cfgd's OWN files on
+    // every apply, forever.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("zshrc");
+    std::fs::write(&target, "written by cfgd").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    assert!(
+        is_unmanaged_file(&target, tmp.path(), &state),
+        "control: with no row at all the target is unmanaged"
+    );
+
+    let desc = cfgd_core::reconciler::format_action_description(&copy_update(&target));
+    let id = desc
+        .strip_prefix("file:update:")
+        .expect("a file Update description carries the file:update: prefix");
+    state
+        .upsert_managed_resource("file", id, "local", None, None)
+        .unwrap();
+
+    assert!(
+        !is_unmanaged_file(&target, tmp.path(), &state),
+        "a target whose managed id the reconciler minted must be recognised as managed"
+    );
+}
+
+#[test]
+fn a_module_file_inheriting_the_global_copy_strategy_is_not_re_adopted() {
+    // The file declares no strategy of its own; the config's `fileStrategy:
+    // copy` decides what gets written. Judged on the per-file field, the target
+    // is treated as un-comparable and copied aside and rewritten every apply.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "identical\n").unwrap();
+    std::fs::write(&target, "identical\n").unwrap();
+
+    let mut file = module_copy_file(&source, &target);
+    file.strategy = None;
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = module_deploy_plan(vec![file]);
+
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Ask,
+        FileStrategy::Copy,
+    )
+    .unwrap();
+
+    assert!(
+        !tmp.path().join("live.conf.cfgd-backup").exists(),
+        "a converged target must not be copied aside"
+    );
+    assert_eq!(
+        deployed_files(&plan),
+        vec![target],
+        "the file stays in the deployment"
+    );
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        !out.contains("unmanaged file"),
+        "a converged target is not a conflict, got: {out}"
+    );
+}
+
+fn set_permissions(target: &Path, mode: u32) -> Action {
+    Action::File(FileAction::SetPermissions {
+        target: target.to_path_buf(),
+        mode,
+        origin: "test".to_string(),
+    })
+}
+
+#[test]
+fn skip_drops_the_chmod_planned_beside_the_write_it_skipped() {
+    // Planning pairs every write with a sibling `SetPermissions`. Left behind,
+    // `--on-conflict skip` still changes the mode of the file it undertook to
+    // leave untouched.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("zshrc");
+    std::fs::write(&target, "hand written").unwrap();
+    cfgd_core::set_file_permissions(&target, 0o600).ok();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = one_phase_plan(vec![copy_update(&target), set_permissions(&target, 0o644)]);
+
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Skip,
+        FileStrategy::Symlink,
+    )
+    .unwrap();
+
+    let remaining: Vec<_> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.owned_actions())
+        .map(|(_, a)| a)
+        .collect();
+    assert!(
+        !remaining
+            .iter()
+            .any(|a| matches!(a, Action::File(FileAction::SetPermissions { .. }))),
+        "the chmod planned beside a skipped write must go with it, got: {remaining:?}"
+    );
+    assert!(
+        remaining
+            .iter()
+            .any(|a| matches!(a, Action::File(FileAction::Skip { .. }))),
+        "the write itself is still reported as skipped"
+    );
+}
+
+#[test]
+fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
+    // A dropped module file leaves no action behind to render, so a silent
+    // removal is a file the user is never told was left alone.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from module\n").unwrap();
+    std::fs::write(&target, "hand written\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Skip,
+        FileStrategy::Symlink,
+    )
+    .unwrap();
+
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("skipped: target exists as unmanaged file"),
+        "the module arm must say what the profile arm's Skip action says, got: {out}"
+    );
+    assert!(
+        out.contains("live.conf"),
+        "the report names the file it left alone, got: {out}"
+    );
+    assert!(
+        deployed_files(&plan).is_empty(),
+        "the file is dropped from the deployment"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "hand written\n");
+}
+
+#[test]
+fn two_adoptions_in_the_same_second_land_beside_each_other_never_on_top() {
+    // The stamp has one-second resolution, so it is a hint at a free name and
+    // never a guarantee of one: unchecked, the second adoption of a second
+    // original overwrites the sidecar holding the first.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("live.conf");
+    let primary = tmp.path().join("live.conf.cfgd-backup");
+    std::fs::write(&primary, "first original").unwrap();
+
+    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+
+    std::fs::write(&target, "second original").unwrap();
+    let second = backup_file(&target, &printer).unwrap();
+    std::fs::write(&target, "third original").unwrap();
+    let third = backup_file(&target, &printer).unwrap();
+
+    assert_ne!(second, third, "back-to-back adoptions need distinct names");
+    assert_eq!(std::fs::read_to_string(&primary).unwrap(), "first original");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "second original");
+    assert_eq!(std::fs::read_to_string(&third).unwrap(), "third original");
+}
+
+#[test]
+fn a_directory_backup_never_merges_into_an_occupied_sidecar() {
+    // `copy_dir_recursive` writes INTO an existing directory, so an occupied
+    // sidecar silently fuses two different originals into one tree.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("conf.d");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("new.conf"), "new").unwrap();
+
+    let primary = tmp.path().join("conf.d.cfgd-backup");
+    std::fs::create_dir_all(&primary).unwrap();
+    std::fs::write(primary.join("old.conf"), "old").unwrap();
+
+    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+    let first = backup_file(&target, &printer).unwrap();
+
+    // A second, different original in the same second: the stamp alone would
+    // name the directory the first one just filled.
+    std::fs::remove_file(target.join("new.conf")).unwrap();
+    std::fs::write(target.join("newer.conf"), "newer").unwrap();
+    let second = backup_file(&target, &printer).unwrap();
+
+    assert_ne!(
+        first, primary,
+        "an occupied sidecar directory is not reused"
+    );
+    assert_ne!(first, second, "two originals need two directories");
+    assert_eq!(
+        std::fs::read_dir(&primary).unwrap().count(),
+        1,
+        "the older sidecar must not gain the newer originals' entries"
+    );
+    assert!(primary.join("old.conf").exists());
+    assert!(first.join("new.conf").exists() && !first.join("newer.conf").exists());
+    assert!(second.join("newer.conf").exists() && !second.join("new.conf").exists());
+}
+
+#[test]
+fn an_interrupted_prompt_aborts_while_an_unreachable_one_backs_up() {
+    // Ctrl-C and "nobody to ask" are not the same event: resolving the first
+    // like the second carries out, file by file, the work the user interrupted
+    // to prevent.
+    let target = Path::new("/tmp/does-not-need-to-exist");
+
+    let err = settle_prompt_failure(inquire::InquireError::OperationInterrupted, target)
+        .expect_err("an interrupted prompt must abort the run");
+    assert!(
+        err.to_string().contains("interrupted"),
+        "the abort says why, got: {err}"
+    );
+    settle_prompt_failure(inquire::InquireError::OperationCanceled, target)
+        .expect_err("a cancelled prompt must abort the run");
+
+    assert_eq!(
+        settle_prompt_failure(inquire::InquireError::NotTTY, target).unwrap(),
+        ResolvedConflict::Backup,
+        "a prompt that could not be reached lands where --yes lands"
+    );
+}
+
+#[test]
+fn the_prompts_abort_answer_stops_the_run_without_touching_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("zshrc");
+    std::fs::write(&target, "hand written").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, _cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Select(
+            "Abort (stop the apply without touching the file)".into(),
+        )]);
+    let mut plan = one_phase_plan(vec![copy_update(&target)]);
+
+    let err = handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        false,
+        OnConflict::Ask,
+        FileStrategy::Symlink,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        err.contains("--on-conflict fail"),
+        "the interactive abort is the same abort the flag gives, got: {err}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "hand written");
+    assert!(!tmp.path().join("zshrc.cfgd-backup").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sidecar_carries_the_setuid_bit_of_the_file_it_preserves() {
+    // A backup is the file it preserves; a special bit dropped in the copy is
+    // not restorable from it.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("helper.sh");
+    std::fs::write(&target, "#!/bin/sh\n").unwrap();
+    cfgd_core::set_file_permissions(&target, 0o4755).unwrap();
+
+    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+    let backup = backup_file(&target, &printer).unwrap();
+
+    let mode = cfgd_core::file_permissions_mode_full(&std::fs::metadata(&backup).unwrap());
+    assert_eq!(
+        mode,
+        Some(0o4755),
+        "the sidecar must reproduce the mode it is a copy of"
     );
 }
 
@@ -2298,6 +2631,7 @@ fn unmanaged_prompt_skips_patch_module_files() {
         &printer,
         false,
         OnConflict::Ask,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2369,6 +2703,7 @@ fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
         &printer,
         true,
         OnConflict::Ask,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2402,6 +2737,7 @@ fn a_module_target_holding_different_bytes_is_copied_aside_under_yes() {
         &printer,
         true,
         OnConflict::Ask,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2441,6 +2777,7 @@ fn on_conflict_overwrite_keeps_no_copy() {
         &printer,
         true,
         OnConflict::Overwrite,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2474,6 +2811,7 @@ fn on_conflict_skip_drops_the_file_from_the_deployment() {
         &printer,
         true,
         OnConflict::Skip,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2504,6 +2842,7 @@ fn on_conflict_fail_aborts_naming_the_module_and_the_file() {
         &printer,
         true,
         OnConflict::Fail,
+        FileStrategy::Symlink,
     )
     .unwrap_err()
     .to_string();
@@ -2539,6 +2878,7 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
         &printer,
         true,
         OnConflict::Backup,
+        FileStrategy::Symlink,
     )
     .unwrap();
 
@@ -2575,6 +2915,7 @@ fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
         &printer,
         true,
         OnConflict::Backup,
+        FileStrategy::Symlink,
     )
     .unwrap();
 

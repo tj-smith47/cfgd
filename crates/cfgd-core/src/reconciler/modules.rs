@@ -19,9 +19,16 @@ use super::types::{ModuleAction, ModuleActionKind, ReconcileContext};
 /// `Patch` entry whose merge has already been evaluated. A link entry has no
 /// content to compare, and a target that is a symlink or a directory is a thing
 /// to replace rather than content to match, so both answer false.
+///
+/// `strategy` is the RESOLVED strategy — the per-file override or the config's
+/// global `fileStrategy` — never `file.strategy`. Read from the field, a module
+/// file that declares no strategy of its own under a global `fileStrategy: copy`
+/// answers "not a whole-content write" and is rewritten on every apply, which is
+/// the exact repetition this check exists to end.
 fn converged_content_file(
     file: &crate::modules::ResolvedFile,
     target: &std::path::Path,
+    strategy: crate::config::FileStrategy,
     patched: Option<&str>,
     mode: Option<u32>,
 ) -> bool {
@@ -32,9 +39,11 @@ fn converged_content_file(
         return false;
     }
     // A declared mode the target does not already carry is itself drift, and
-    // the deployment is what corrects it.
+    // the deployment is what corrects it. Compared over the full `0o7777`,
+    // because a declared mode may name a setuid/setgid/sticky bit and a masked
+    // actual could then never equal it.
     if let Some(declared) = mode
-        && crate::file_permissions_mode(&meta).is_some_and(|actual| actual != declared)
+        && crate::file_permissions_mode_full(&meta).is_some_and(|actual| actual != declared)
     {
         return false;
     }
@@ -45,8 +54,8 @@ fn converged_content_file(
         return actual == content.as_bytes();
     }
     if !matches!(
-        file.strategy,
-        Some(crate::config::FileStrategy::Copy) | Some(crate::config::FileStrategy::Template)
+        strategy,
+        crate::config::FileStrategy::Copy | crate::config::FileStrategy::Template
     ) {
         return false;
     }
@@ -184,7 +193,7 @@ impl<'a> super::Reconciler<'a> {
                     // no removal and no write: the sole effect of doing the work
                     // anyway is a redundant `file_backups` row and a run that
                     // claims to have changed a file it did not touch.
-                    if converged_content_file(file, &target, patched.as_deref(), mode) {
+                    if converged_content_file(file, &target, strategy, patched.as_deref(), mode) {
                         self.record_module_file(action, &target, strategy, apply_id)?;
                         continue;
                     }

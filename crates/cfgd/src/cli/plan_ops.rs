@@ -997,8 +997,11 @@ pub(in crate::cli) fn is_unmanaged_file(
         }
     }
 
-    // Check state store — if already tracked, it's managed
-    let target_str = target.display().to_string();
+    // Check state store — if already tracked, it's managed. The id is minted
+    // posix-folded (`reconciler::format`), so the lookup folds too: asked with
+    // native separators, every managed file on Windows answers "unmanaged" and
+    // the conflict pass copies cfgd's OWN files aside on every apply.
+    let target_str = cfgd_core::to_posix_string(target);
     if let Ok(managed) = state.is_resource_managed("file", &target_str) {
         return !managed;
     }
@@ -1053,11 +1056,16 @@ fn target_holds_desired_content(target: &Path, desired_hash: Option<&str>) -> bo
 /// verbatim in `reconciler::modules`); a link entry replaces the target with a
 /// link and a `Patch` entry merges into whatever the target already holds, so
 /// neither has a comparable "desired content" at all.
-fn module_file_desired_hash(file: &cfgd_core::modules::ResolvedFile) -> Option<String> {
-    if !matches!(
-        file.strategy,
-        Some(FileStrategy::Copy) | Some(FileStrategy::Template)
-    ) {
+///
+/// `strategy` is the RESOLVED strategy, matching what `reconciler::modules`
+/// will act on: a file declaring none of its own under a global
+/// `fileStrategy: copy` writes whole content just the same, and reading the
+/// unresolved field would answer `None` and re-adopt it on every apply.
+fn module_file_desired_hash(
+    file: &cfgd_core::modules::ResolvedFile,
+    strategy: FileStrategy,
+) -> Option<String> {
+    if !matches!(strategy, FileStrategy::Copy | FileStrategy::Template) {
         return None;
     }
     if !file.source.is_file() {
@@ -1068,18 +1076,45 @@ fn module_file_desired_hash(file: &cfgd_core::modules::ResolvedFile) -> Option<S
         .map(|bytes| cfgd_core::sha256_hex(&bytes))
 }
 
-/// Resolve `--on-conflict ask` against a run that has already been told not to
-/// stop and ask.
+/// A conflict policy that has been SETTLED for one target.
+///
+/// [`OnConflict::Ask`] is a request, never an outcome: by the time a target is
+/// acted on, the question has been answered — by the prompt, by `--yes`, or by
+/// there being nobody to ask. Giving the answer its own type without an `Ask`
+/// variant is what makes "ask" unrepresentable at the executors, where it had
+/// been folded into their `Overwrite` catch-all — so a run that asked to be
+/// asked, and could not be, destroyed the file instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::cli) enum ResolvedConflict {
+    /// Copy the existing file aside, then write.
+    Backup,
+    /// Replace the existing file, keeping no copy of it.
+    Overwrite,
+    /// Leave the existing file alone and drop cfgd's write.
+    Skip,
+    /// Abort the apply without touching the file.
+    Fail,
+}
+
+/// Resolve the run's `--on-conflict` request into the policy every target gets,
+/// or `None` when each target must be asked about individually.
 ///
 /// `--yes` means "do not stop to ask", never "discard my file", so the skipped
 /// question lands on the safe policy rather than on the destructive one. Every
 /// other policy is explicit and passes through. A run that WOULD ask but has
 /// nobody to ask is settled one target at a time by
 /// [`prompt_conflict_policy`], which lands on the same policy.
-pub(in crate::cli) fn resolve_conflict_policy(requested: OnConflict, auto_yes: bool) -> OnConflict {
+pub(in crate::cli) fn resolve_conflict_policy(
+    requested: OnConflict,
+    auto_yes: bool,
+) -> Option<ResolvedConflict> {
     match requested {
-        OnConflict::Ask if auto_yes => OnConflict::Backup,
-        other => other,
+        OnConflict::Ask if auto_yes => Some(ResolvedConflict::Backup),
+        OnConflict::Ask => None,
+        OnConflict::Backup => Some(ResolvedConflict::Backup),
+        OnConflict::Overwrite => Some(ResolvedConflict::Overwrite),
+        OnConflict::Skip => Some(ResolvedConflict::Skip),
+        OnConflict::Fail => Some(ResolvedConflict::Fail),
     }
 }
 
@@ -1089,12 +1124,26 @@ fn conflict_prompt_options() -> Vec<String> {
         format!("Backup (copy to <target>{CFGD_BACKUP_SUFFIX}, then overwrite)"),
         "Overwrite (replace it, keeping no copy)".to_string(),
         "Skip (leave the file untouched)".to_string(),
+        "Abort (stop the apply without touching the file)".to_string(),
     ]
 }
 
 /// The policy each [`conflict_prompt_options`] entry selects, same order.
-const PROMPT_POLICIES: [OnConflict; 3] =
-    [OnConflict::Backup, OnConflict::Overwrite, OnConflict::Skip];
+///
+/// Every `--on-conflict` value with an outcome appears here: the interactive
+/// user chooses from the same vocabulary the flag offers, so nothing is
+/// reachable only by re-running with a flag.
+const PROMPT_POLICIES: [ResolvedConflict; 4] = [
+    ResolvedConflict::Backup,
+    ResolvedConflict::Overwrite,
+    ResolvedConflict::Skip,
+    ResolvedConflict::Fail,
+];
+
+/// The reason a target skipped for holding an unmanaged file reports, shared by
+/// the profile action's `Skip` reason and the module arm's status line so the
+/// two cannot describe the same decision differently.
+const UNMANAGED_SKIP_REASON: &str = "skipped: target exists as unmanaged file";
 
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
@@ -1103,9 +1152,15 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     printer: &Printer,
     auto_yes: bool,
     requested: OnConflict,
+    default_strategy: FileStrategy,
 ) -> anyhow::Result<()> {
     let policy = resolve_conflict_policy(requested, auto_yes);
     let options = conflict_prompt_options();
+    // Targets the pass decided to leave alone. Planning emits a `SetPermissions`
+    // as a SIBLING of the write, so rewriting only the write leaves a chmod
+    // behind — and "skip" would still change the mode of the file it promised
+    // not to touch.
+    let mut skipped: Vec<PathBuf> = Vec::new();
 
     for phase in &mut plan.phases {
         for (_owner, actions) in phase.groups_mut() {
@@ -1135,6 +1190,9 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                         && is_unmanaged_file(&target, config_dir, state)
                     {
                         let chosen = resolve_for_target(policy, &target, None, printer, &options)?;
+                        if chosen == ResolvedConflict::Skip {
+                            skipped.push(target.clone());
+                        }
                         apply_conflict_policy(chosen, &target, &mut actions[i], printer)?;
                     }
                 }
@@ -1147,8 +1205,9 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                     let mut j = 0;
                     while j < files.len() {
                         let file_target = cfgd_core::expand_tilde(&files[j].target);
-                        let desired = module_file_desired_hash(&files[j]);
-                        if !files[j].strategy.is_some_and(adopts_in_place)
+                        let strategy = files[j].strategy.unwrap_or(default_strategy);
+                        let desired = module_file_desired_hash(&files[j], strategy);
+                        if !adopts_in_place(strategy)
                             && !target_holds_desired_content(&file_target, desired.as_deref())
                             && is_unmanaged_file(&file_target, config_dir, state)
                         {
@@ -1160,20 +1219,34 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                                 &options,
                             )?;
                             match chosen {
-                                OnConflict::Backup => {
+                                ResolvedConflict::Backup => {
                                     backup_file(&file_target, printer)?;
                                 }
-                                OnConflict::Skip => {
+                                ResolvedConflict::Skip => {
+                                    // A dropped module file leaves no action to
+                                    // render, so the decision is reported here
+                                    // or nowhere — the profile arm's `Skip`
+                                    // action says the same thing in the tree.
+                                    printer.status_simple(
+                                        Role::Skipped,
+                                        format!(
+                                            "module '{}': {} — {}",
+                                            module_name,
+                                            file_target.posix(),
+                                            UNMANAGED_SKIP_REASON
+                                        ),
+                                    );
+                                    skipped.push(file_target);
                                     files.remove(j);
                                     continue;
                                 }
-                                OnConflict::Fail => {
+                                ResolvedConflict::Fail => {
                                     return Err(unmanaged_conflict_error(
                                         &file_target,
                                         Some(&module_name),
                                     ));
                                 }
-                                OnConflict::Overwrite | OnConflict::Ask => {}
+                                ResolvedConflict::Overwrite => {}
                             }
                         }
                         j += 1;
@@ -1185,28 +1258,51 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
         }
     }
 
+    prune_skipped_leftovers(plan, &skipped);
     Ok(())
+}
+
+/// Clear away what a skipped target leaves behind in the plan.
+///
+/// Two leftovers, both of which contradict what "skip" was told to mean:
+///
+/// - the sibling `SetPermissions` planning pairs with every `Create`/`Update`.
+///   Left in place, `--on-conflict skip` still changes the mode of the file it
+///   undertook to leave untouched — a smaller edit than the write, and the same
+///   broken promise. Swept over the whole plan rather than the neighbouring
+///   index, so a phase that groups the pair differently cannot reintroduce it
+/// - a module deployment whose every file was skipped, which would otherwise
+///   render and journal a deployment of nothing
+fn prune_skipped_leftovers(plan: &mut reconciler::Plan, skipped: &[PathBuf]) {
+    for phase in &mut plan.phases {
+        phase.retain_actions(|action| match action {
+            reconciler::Action::File(FileAction::SetPermissions { target, .. }) => {
+                !skipped.iter().any(|s| s == target)
+            }
+            reconciler::Action::Module(ma) => !matches!(
+                &ma.kind,
+                reconciler::ModuleActionKind::DeployFiles { files } if files.is_empty()
+            ),
+            _ => true,
+        });
+    }
+    plan.phases.retain(|p| !p.is_empty());
 }
 
 /// The policy to apply to one conflicting target: the run's policy, or the
 /// answer to a per-file prompt when the run's policy is `Ask`.
 fn resolve_for_target(
-    policy: OnConflict,
+    policy: Option<ResolvedConflict>,
     target: &Path,
     module_name: Option<&str>,
     printer: &Printer,
     options: &[String],
-) -> anyhow::Result<OnConflict> {
-    if policy != OnConflict::Ask {
+) -> anyhow::Result<ResolvedConflict> {
+    if let Some(settled) = policy {
         announce_conflict(target, module_name, printer);
-        return Ok(policy);
+        return Ok(settled);
     }
-    Ok(prompt_conflict_policy(
-        target,
-        module_name,
-        printer,
-        options,
-    ))
+    prompt_conflict_policy(target, module_name, printer, options)
 }
 
 /// Say which file is in the way before anything is done about it.
@@ -1240,24 +1336,49 @@ fn unmanaged_conflict_error(target: &Path, module_name: Option<&str>) -> anyhow:
 
 /// Ask the user how to handle one unmanaged file target.
 ///
-/// A prompt that cannot be reached answers `Backup`, matching what
-/// [`resolve_conflict_policy`] would have chosen had the run known in advance
-/// there was nobody to ask.
+/// Two failures to read an answer are not the same event and must not resolve
+/// the same way. A prompt that cannot be REACHED — no tty, structured output —
+/// answers `Backup`, matching what [`resolve_conflict_policy`] would have
+/// chosen had the run known in advance there was nobody to ask. A prompt the
+/// user INTERRUPTED (Ctrl-C) or cancelled (Esc) is an answer: stop. Landing
+/// that on a policy would carry out, file by file, the work they interrupted to
+/// prevent, and interrupting again would only be read the same way.
 fn prompt_conflict_policy(
     target: &Path,
     module_name: Option<&str>,
     printer: &Printer,
     options: &[String],
-) -> OnConflict {
+) -> anyhow::Result<ResolvedConflict> {
     announce_conflict(target, module_name, printer);
-    let Ok(choice) = printer.prompt_select("How should cfgd handle this file?", options) else {
-        return OnConflict::Backup;
-    };
-    options
-        .iter()
-        .position(|o| o == choice)
-        .and_then(|idx| PROMPT_POLICIES.get(idx).copied())
-        .unwrap_or(OnConflict::Backup)
+    match printer.prompt_select("How should cfgd handle this file?", options) {
+        Ok(choice) => Ok(options
+            .iter()
+            .position(|o| o == choice)
+            .and_then(|idx| PROMPT_POLICIES.get(idx).copied())
+            .unwrap_or(ResolvedConflict::Backup)),
+        Err(e) => settle_prompt_failure(e, target),
+    }
+}
+
+/// Turn a failure to READ an answer into either an abort or the safe policy.
+///
+/// Split out from [`prompt_conflict_policy`] because no harness can seed an
+/// interrupted prompt, while the classification is exactly the part that must
+/// not regress: a Ctrl-C read as "nobody to ask" carries on doing the work it
+/// was pressed to stop.
+fn settle_prompt_failure(
+    err: inquire::InquireError,
+    target: &Path,
+) -> anyhow::Result<ResolvedConflict> {
+    match err {
+        inquire::InquireError::OperationInterrupted | inquire::InquireError::OperationCanceled => {
+            Err(anyhow::anyhow!(
+                "interrupted at the unmanaged-file prompt for {}; nothing was applied",
+                target.posix()
+            ))
+        }
+        _ => Ok(ResolvedConflict::Backup),
+    }
 }
 
 /// Copy an unmanaged target aside before cfgd overwrites it, and return where
@@ -1281,11 +1402,10 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
         let dest = target
             .read_link()
             .map_err(|e| anyhow::anyhow!("Failed to backup symlink {}: {}", target.posix(), e))?;
-        let backup_path = reserve_backup_path(target, None);
-        if backup_path.symlink_metadata().is_ok() {
-            std::fs::remove_file(&backup_path)
-                .map_err(|e| backup_error(target, &backup_path, e))?;
-        }
+        // Reserved unoccupied, so the link is created rather than replacing
+        // whatever a previous adoption left — including a dangling link, which
+        // `symlink_metadata` still counts as an entry someone made.
+        let backup_path = reserve_backup_path(target, None)?;
         cfgd_core::create_symlink(&dest, &backup_path)
             .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
         printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
@@ -1293,7 +1413,10 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
     }
 
     if meta.is_dir() {
-        let backup_path = reserve_backup_path(target, None);
+        // Same reservation, and load-bearing here: `copy_dir_recursive` writes
+        // INTO an existing directory, so an occupied sidecar would silently
+        // merge two different originals into one tree.
+        let backup_path = reserve_backup_path(target, None)?;
         cfgd_core::copy_dir_recursive(target, &backup_path)
             .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
         printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
@@ -1303,7 +1426,7 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
     let content = std::fs::read(target)
         .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
     let hash = cfgd_core::sha256_hex(&content);
-    let backup_path = reserve_backup_path(target, Some(&hash));
+    let backup_path = reserve_backup_path(target, Some(&hash))?;
     // An earlier adoption already preserved these exact bytes; rewriting the
     // sidecar would only widen the window in which it is half-written.
     if sidecar_holds(&backup_path, &hash) {
@@ -1322,13 +1445,22 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
             backup_path.posix()
         ));
     }
-    if let Some(mode) = cfgd_core::file_permissions_mode(&meta) {
+    // Full `0o7777`: a sidecar is the file it preserves, and a setuid or sticky
+    // bit dropped in the copy is not restorable from it.
+    if let Some(mode) = cfgd_core::file_permissions_mode_full(&meta) {
         cfgd_core::set_file_permissions(&backup_path, mode)
             .map_err(|e| backup_error(target, &backup_path, e))?;
     }
     printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
     Ok(backup_path)
 }
+
+/// How many `-N` disambiguators are tried before a reservation gives up.
+///
+/// A bound rather than an unbounded scan: past this many distinct originals
+/// adopted at one target within one second, the situation is a loop and the
+/// honest answer is an error, not a hundredth sidecar.
+const BACKUP_DISAMBIGUATOR_LIMIT: u32 = 64;
 
 /// Where this backup may be written without destroying an older one.
 ///
@@ -1337,17 +1469,51 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
 /// one that predates cfgd. A second, different original is stamped instead of
 /// clobbering it, because a sidecar overwritten by the file that displaced it
 /// is the same data loss the copy exists to prevent.
-fn reserve_backup_path(target: &Path, hash: Option<&str>) -> PathBuf {
+///
+/// The stamp has one-second resolution, so it is a hint at a free name and
+/// never a guarantee of one: two adoptions of the same target inside one second
+/// derive the same stamp, and the second would clobber the first. Every
+/// candidate is therefore checked, and a taken one moves to `-1`, `-2`, … until
+/// a free name is found or the limit is reached.
+fn reserve_backup_path(target: &Path, hash: Option<&str>) -> anyhow::Result<PathBuf> {
     let primary = cfgd_backup_path(target, "");
-    let occupied = match hash {
-        // Re-adopting identical content reuses the sidecar it already wrote.
-        Some(h) => primary.symlink_metadata().is_ok() && !sidecar_holds(&primary, h),
-        None => primary.symlink_metadata().is_ok(),
-    };
-    if !occupied {
-        return primary;
+    if !sidecar_occupied(&primary, hash) {
+        return Ok(primary);
     }
-    cfgd_backup_path(target, &format!(".{}", cfgd_core::utc_now_backup_stamp()))
+    let stamp = cfgd_core::utc_now_backup_stamp();
+    let stamped = cfgd_backup_path(target, &format!(".{stamp}"));
+    if !sidecar_occupied(&stamped, hash) {
+        return Ok(stamped);
+    }
+    for n in 1..=BACKUP_DISAMBIGUATOR_LIMIT {
+        let candidate = cfgd_backup_path(target, &format!(".{stamp}-{n}"));
+        if !sidecar_occupied(&candidate, hash) {
+            return Ok(candidate);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "No free backup path beside {}: {} and {} disambiguators are all taken",
+        target.posix(),
+        stamped.posix(),
+        BACKUP_DISAMBIGUATOR_LIMIT
+    ))
+}
+
+/// Whether a candidate sidecar path is spoken for.
+///
+/// Judged with `symlink_metadata`, so a dangling link or a directory counts as
+/// an entry someone made — writing over either is the loss the reservation
+/// exists to avoid. `hash` is `Some` only for a regular-file backup, where a
+/// sidecar already holding exactly these bytes is not an obstacle but the same
+/// backup, and reusing it is the whole point.
+fn sidecar_occupied(path: &Path, hash: Option<&str>) -> bool {
+    if path.symlink_metadata().is_err() {
+        return false;
+    }
+    match hash {
+        Some(h) => !sidecar_holds(path, h),
+        None => true,
+    }
 }
 
 /// Whether the sidecar at `path` is a regular file holding exactly `hash`.
@@ -1367,16 +1533,16 @@ fn backup_error(target: &Path, backup_path: &Path, e: std::io::Error) -> anyhow:
 
 /// Carry out one resolved policy against one profile-file action.
 pub(in crate::cli) fn apply_conflict_policy(
-    policy: OnConflict,
+    policy: ResolvedConflict,
     target: &Path,
     action: &mut reconciler::Action,
     printer: &Printer,
 ) -> anyhow::Result<()> {
     match policy {
-        OnConflict::Backup => {
+        ResolvedConflict::Backup => {
             backup_file(target, printer)?;
         }
-        OnConflict::Skip => {
+        ResolvedConflict::Skip => {
             let origin = match action {
                 reconciler::Action::File(FileAction::Create { origin, .. })
                 | reconciler::Action::File(FileAction::Update { origin, .. }) => origin.clone(),
@@ -1384,12 +1550,12 @@ pub(in crate::cli) fn apply_conflict_policy(
             };
             *action = reconciler::Action::File(FileAction::Skip {
                 target: target.to_path_buf(),
-                reason: "skipped: target exists as unmanaged file".to_string(),
+                reason: UNMANAGED_SKIP_REASON.to_string(),
                 origin,
             });
         }
-        OnConflict::Fail => return Err(unmanaged_conflict_error(target, None)),
-        OnConflict::Overwrite | OnConflict::Ask => {}
+        ResolvedConflict::Fail => return Err(unmanaged_conflict_error(target, None)),
+        ResolvedConflict::Overwrite => {}
     }
     Ok(())
 }

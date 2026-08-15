@@ -446,6 +446,7 @@ pub fn run_apply(
         printer,
         yes,
         args.on_conflict,
+        registry.default_file_strategy,
     )?;
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the

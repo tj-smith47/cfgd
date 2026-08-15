@@ -219,6 +219,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     profile: None,
                     state: &store,
                     on_conflict: args.on_conflict,
+                    default_strategy: registry.default_file_strategy,
                 },
                 printer,
             )?;
@@ -335,6 +336,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     profile: Some(&profile_name),
                     state: &store,
                     on_conflict: args.on_conflict,
+                    default_strategy: registry.default_file_strategy,
                 },
                 printer,
             )?;
@@ -508,6 +510,9 @@ pub(super) struct ApplyPlanOpts<'a> {
     pub state: &'a cfgd_core::state::StateStore,
     /// What to do with a target that already holds a file cfgd never wrote.
     pub on_conflict: crate::cli::OnConflict,
+    /// The config's global `fileStrategy`, which decides what a module file
+    /// declaring no strategy of its own will actually write.
+    pub default_strategy: cfgd_core::config::FileStrategy,
 }
 
 /// Run the scaffolded configuration through the one run skeleton: header,
@@ -539,6 +544,7 @@ pub(super) fn apply_plan(
             printer,
             opts.yes,
             opts.on_conflict,
+            opts.default_strategy,
         )?;
     }
     let plan = &*plan;

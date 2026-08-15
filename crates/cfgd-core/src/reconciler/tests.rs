@@ -8863,6 +8863,150 @@ fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes
     );
 }
 
+/// Deploy one module file under a global `fileStrategy: copy`, the way a config
+/// that sets `spec.fileStrategy` and a module that declares nothing per-file do.
+fn deploy_one_module_file_under_global_copy(
+    dir: &std::path::Path,
+    state: &crate::state::StateStore,
+    file: ResolvedFile,
+) -> crate::reconciler::ApplyResult {
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![file.clone()],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: dir.to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir,
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn apply_module_deploy_files_short_circuits_a_file_that_declares_no_strategy() {
+    // The GLOBAL `fileStrategy` is what decides the write, so it is what has to
+    // decide convergence. Judged on the per-file field, a module file that
+    // declares no strategy answers "not a whole-content write" and is copied
+    // aside and rewritten on every single apply.
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("module-source.txt");
+    let target_file = dir.path().join("module-target.txt");
+    std::fs::write(&source_file, "module content").unwrap();
+    std::fs::write(&target_file, "module content").unwrap();
+    let witness = dir.path().join("witness");
+    std::fs::hard_link(&target_file, &witness).unwrap();
+
+    let state = test_state();
+    let result = deploy_one_module_file_under_global_copy(
+        dir.path(),
+        &state,
+        ResolvedFile {
+            source: source_file,
+            target: target_file.clone(),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        },
+    );
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !result.action_results[0].changed,
+        "a deployment that wrote nothing must not claim a change"
+    );
+    assert!(
+        crate::is_same_inode(&target_file, &witness),
+        "a file inheriting the global copy strategy must not be rewritten"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_module_deploy_files_short_circuits_a_target_carrying_its_declared_setuid_bit() {
+    // A declared mode may name a setuid/setgid/sticky bit (`parse_octal_mode`
+    // accepts up to 0o7777). Compared against an actual masked to 0o777, such a
+    // mode can never match, and the short-circuit is dead for the file's life.
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("module-source.sh");
+    let target_file = dir.path().join("module-target.sh");
+    std::fs::write(&source_file, "#!/bin/sh\n").unwrap();
+    std::fs::write(&target_file, "#!/bin/sh\n").unwrap();
+    crate::set_file_permissions(&target_file, 0o4755).unwrap();
+    let witness = dir.path().join("witness");
+    std::fs::hard_link(&target_file, &witness).unwrap();
+
+    let state = test_state();
+    let result = deploy_one_module_file_under_global_copy(
+        dir.path(),
+        &state,
+        ResolvedFile {
+            source: source_file,
+            target: target_file.clone(),
+            is_git_source: false,
+            strategy: Some(crate::config::FileStrategy::Copy),
+            encryption: None,
+            permissions: Some("4755".to_string()),
+            patch: None,
+        },
+    );
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !result.action_results[0].changed,
+        "a target already carrying its declared special bits is converged"
+    );
+    assert!(
+        crate::is_same_inode(&target_file, &witness),
+        "a converged target must not be rewritten over a special-bit comparison"
+    );
+    let mode = crate::file_permissions_mode_full(&std::fs::metadata(&target_file).unwrap());
+    assert_eq!(mode, Some(0o4755), "the declared special bit must survive");
+}
+
 #[test]
 fn apply_module_deploy_files_patch_merges_into_the_target() {
     // A `Patch` module file has no source; the merge must run against the

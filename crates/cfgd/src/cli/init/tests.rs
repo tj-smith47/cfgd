@@ -1751,6 +1751,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2305,6 +2306,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     )
@@ -2367,6 +2369,7 @@ fn init_dry_run_never_copies_anything_aside() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     )
@@ -2427,6 +2430,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2500,6 +2504,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2591,6 +2596,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2662,6 +2668,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2725,6 +2732,7 @@ fn apply_plan_dry_run_skips_apply() {
             profile: None,
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -5254,6 +5262,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
             on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
             path: Some(target.to_str().unwrap()),
             from: None,
             branch: "master",

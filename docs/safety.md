@@ -47,14 +47,51 @@ That sidecar is a **copy, never a move**:
 - The copy carries the original's permission bits
 - A symlinked target is copied as a symlink, so the link is preserved rather
   than flattened into its destination
+- The copy carries the original's setuid, setgid and sticky bits as well as its
+  permission bits — a sidecar is the file it preserves, and a special bit
+  dropped in the copy cannot be restored from it
 - An existing `<target>.cfgd-backup` holding *different* content is never
   clobbered: the newer copy lands at `<target>.cfgd-backup.<timestamp>`, so the
   sidecar `cfgd profile update` and module removal offer to restore is always
   the content that predates cfgd
+- The timestamp has one-second resolution, so it is a hint at a free name rather
+  than a guarantee of one. Every candidate path is checked before it is written,
+  and a taken one moves to `<target>.cfgd-backup.<timestamp>-1`, `-2`, … — two
+  adoptions of the same target inside one second land beside each other, never
+  on top of each other. The same check covers a directory target, where an
+  occupied sidecar would otherwise be *merged into* rather than replaced
 
 A target that already holds exactly the bytes cfgd would write is not adopted at
 all — no prompt, no sidecar, no rewrite, and the run does not report a change it
 did not make.
+
+### Durability of a sidecar
+
+Two different failures, two different guarantees:
+
+| Failure | Linux / macOS / BSD | Windows |
+|---|---|---|
+| **Process crash / kill** (`cfgd` dies, OS keeps running) | Guaranteed. The sidecar is written to a temp file and renamed into place; the rename is atomic, so the path either does not exist or holds complete, hash-verified content | Guaranteed, on the same basis |
+| **Power loss / kernel panic** | Guaranteed. The temp file is `fsync`ed before the rename and the parent directory is `fsync`ed after it, so both the content and the directory entry naming it are on stable storage before the copy is reported | **Best-effort.** The content is flushed, but the directory entry is left to the filesystem's own flush interval; a sidecar reported as written may not survive an immediate power cut |
+
+Neither platform's guarantee depends on the *target* surviving: the original is
+still at the target throughout, because the sidecar is a copy.
+
+### The daemon does not run this pass
+
+`--on-conflict` is a `cfgd apply` / `cfgd init --apply` flag, and the adoption
+pass that reads it lives in the CLI. **The daemon's auto-apply reconcile loop
+does not run it**: a daemon tick that finds an unmanaged file at a managed
+target overwrites it, without a prompt, a sidecar copy, or a way to configure
+otherwise.
+
+What still protects that write is the transaction journal below — the daemon's
+applies record `file_backups` rows exactly as a CLI apply does, so
+`cfgd rollback <apply-id>` restores the overwritten content. What is missing is
+the *pre-write sidecar* and the *policy*: a daemon cannot prompt, so a
+config-driven policy is the only shape available to it, and none is defined yet.
+Until one is, a machine whose targets may hold files cfgd never wrote should be
+adopted once with `cfgd apply` before the daemon's auto-apply is enabled.
 
 ## Transaction Journal
 

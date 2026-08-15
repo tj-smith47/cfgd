@@ -162,8 +162,24 @@ happens to it:
 | `ask` (default) | Prompt per file. With `--yes`, under `-o json`, or with no terminal at stdin, resolves to `backup` |
 | `backup` | Copy the file to `<target>.cfgd-backup`, then write the managed version |
 | `overwrite` | Write the managed version, keeping no copy |
-| `skip` | Leave the file alone; the action is reported as skipped |
+| `skip` | Leave the file alone — content *and* permissions; the action is reported as skipped |
 | `fail` | Abort the apply (exit `1`) without touching anything |
+
+The prompt offers the same four outcomes, so nothing is reachable only by
+re-running with a flag:
+
+```console
+$ cfgd apply
+⚠ Target exists as unmanaged file: /home/u/.zshrc
+? How should cfgd handle this file?
+> Backup (copy to <target>.cfgd-backup, then overwrite)
+  Overwrite (replace it, keeping no copy)
+  Skip (leave the file untouched)
+  Abort (stop the apply without touching the file)
+```
+
+Interrupting that prompt (Ctrl-C, or Esc) aborts the run — it is never read as
+"nobody to ask" and resolved to `backup`.
 
 ```console
 $ cfgd apply --yes
@@ -183,7 +199,9 @@ nothing is rewritten. See [File Safety](safety.md#unmanaged-file-adoption) for
 what the backup copy guarantees.
 
 `cfgd init --apply` takes the same flag and runs the same pass — the first apply
-on a machine is the one that meets the most files cfgd never wrote.
+on a machine is the one that meets the most files cfgd never wrote. The daemon's
+auto-apply does **not** run this pass; see
+[File Safety](safety.md#the-daemon-does-not-run-this-pass).
 
 `apply` reconciles exactly what `plan` previews, so a [source item awaiting a
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
