@@ -112,6 +112,25 @@ leave the live region for the permanent scrollback from the head only, so what s
 past reads in exactly the order the screen did. Whatever the phase then runs serially —
 `cfgd:env` and `cfgd:session` in `Prerequisites` — streams its own lines below.
 
+On a terminal too short for the phase, the region gives up the lines it can spare rather
+than letting the terminal drop the rows at its foot — which are the ones still running. A
+settled row's line leaves the screen while its outcome stays queued, and a single muted
+line at the top says how many are in that state:
+
+```text
+  … 5 settled rows held for commit
+  cfgd:managers
+    ⠹ brew install neovim
+    ⠹ cargo install just
+```
+
+A finished line disappearing is not a line lost. Every row it stood for is still written
+to the scrollback, in dispatch order, when the rows ahead of it commit — so a line that
+left the screen reappears in the transcript, in its own place, and the count falls as it
+does. Running rows and group headings are never given up, and the count includes an
+action that never got a line at all, such as one swept before it ran by a failed
+dependency.
+
 A phase whose lane work belongs to a single owner — `Prerequisites`, always — names that
 group before its lanes start. A phase running several groups at once (`Packages`, with a
 group per module) opens each heading as that group's first action is dispatched, and keeps

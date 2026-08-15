@@ -37,13 +37,25 @@
 //!    its own heading twice. A group therefore keeps its guard open until it
 //!    can gain no more rows (`sealed`), and the next group's rows wait behind
 //!    it rather than being misfiled under it.
-//! 4. **The region never outgrows the terminal.** indicatif draws top down and
-//!    stops at the last line, so an over-full region drops the rows at its
-//!    FOOT — the work in flight. When the head row is slow, every row behind it
-//!    piles up, so the region pays for itself out of the rows with nothing left
-//!    to say: a settled row gives up its LINE while keeping its outcome, and a
-//!    single `… N settled rows held for commit` line at the top accounts for
-//!    every one of them. A running row's line is never taken.
+//! 4. **The tree's own rows stay inside a line budget.** indicatif draws top
+//!    down and stops at the last line, so an over-full region drops the rows at
+//!    its FOOT — the work in flight. When the head row is slow, every row behind
+//!    it piles up, so the region pays for itself out of the rows with nothing
+//!    left to say: a settled row gives up its LINE while keeping its outcome,
+//!    and a single `… N settled rows held for commit` line at the top accounts
+//!    for every settled row the tree is holding unseen. A running row's line is
+//!    never taken, and neither is a heading — the two the reader needs.
+//!
+//!    What the budget counts is ROWS: one per heading, one per drawn row, one
+//!    for the summary. It is not a count of the terminal lines indicatif ends up
+//!    painting, and it does not try to be. A running row tails its child's
+//!    output BELOW itself, a status subject may carry `\n` continuations, and
+//!    either can soft-wrap — all three are a moving target that would have to be
+//!    remeasured on every write of a child process cfgd does not control. So the
+//!    guarantee is bounded, not absolute: the tree keeps its own rows within the
+//!    budget, `LIVE_REGION_HEADROOM` leaves slack for the rest, and a phase with
+//!    many groups or a chatty child can still overflow with nothing freeable
+//!    left.
 //!
 //! Off a TTY nothing here draws: rows are never built, the tree is inert, and
 //! the phase's outcomes are written by `apply::emit_phase_tree` in PLAN order
@@ -90,13 +102,11 @@ struct Row<'p> {
     /// `None` for a group's own tier-wait row, which stands for every action of
     /// the group rather than for one of them.
     action: Option<&'p Action>,
-    /// The live-region line, absent off a TTY and for a pending row the region
-    /// had no room to draw.
+    /// The live-region line, absent off a TTY, for a pending row the region had
+    /// no room to draw, for a settled row whose line the budget took back, and
+    /// for an action swept before it was ever dispatched.
     line: Option<LiveRow<'p>>,
     state: RowState,
-    /// This row has settled and the region gave its LINE up for the work still
-    /// running; the elision row counts it until it commits.
-    elided: bool,
 }
 
 struct Group<'p> {
@@ -148,12 +158,10 @@ pub(super) struct PhaseTree<'p, 'g> {
     /// Lines the region may hold before the terminal starts dropping the ones
     /// at its foot.
     budget: usize,
-    /// The region's own summary line, standing in for the settled rows whose
-    /// lines it gave up. Drawn at the TOP, which is the one position an
-    /// over-full region never truncates.
+    /// The region's own summary line, standing in for the settled rows it is
+    /// holding with no line on screen. Drawn at the TOP, which is the one
+    /// position an over-full region never truncates.
     elision: Option<LiveRow<'p>>,
-    /// Settled rows currently holding no line.
-    elided: usize,
 }
 
 impl<'p, 'g> PhaseTree<'p, 'g> {
@@ -176,7 +184,6 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             open: None,
             budget: printer.live_row_budget(),
             elision: None,
-            elided: 0,
         }
     }
 
@@ -292,6 +299,10 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         }
         self.groups[gi].rows[ri].state = RowState::Settled(outcome);
         self.commit_from_head();
+        // An action swept by a failed dependency settles having never been
+        // dispatched, so it settles with no line: the summary is where its
+        // outcome is accounted for until the commit reaches it.
+        self.paint_elision();
         self.enforce_budget();
     }
 
@@ -389,14 +400,29 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     /// work while hiding what is in flight is the reading this whole tree
     /// exists to prevent.
     fn free_one_line(&mut self) -> bool {
-        for gi in 0..self.groups.len() {
-            for ri in 0..self.groups[gi].rows.len() {
-                let row = &self.groups[gi].rows[ri];
-                if matches!(row.state, RowState::Settled(_)) && row.line.is_some() {
-                    self.elide(gi, ri);
-                    return true;
-                }
-            }
+        let (head, more_than_one) = {
+            let mut candidates = self.groups.iter().enumerate().flat_map(|(gi, group)| {
+                group
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| {
+                        matches!(row.state, RowState::Settled(_)) && row.line.is_some()
+                    })
+                    .map(move |(ri, _)| (gi, ri))
+            });
+            (candidates.next(), candidates.next().is_some())
+        };
+        // Taking the ONLY settled line while no summary exists is a line traded
+        // for a line: the region gives up a line saying what happened to gain
+        // one saying that a line is hidden, and is no shorter for it. It buys
+        // height once the summary is already drawn, or once a second settled row
+        // can hide behind the one that draws it.
+        if let Some((gi, ri)) = head
+            && (more_than_one || self.elision.is_some())
+        {
+            self.elide(gi, ri);
+            return true;
         }
         // Taken from the foot: the furthest a pending row can be from the head
         // is the longest before anything needs to be read about it.
@@ -418,19 +444,34 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         if let Some(line) = self.groups[gi].rows[ri].line.take() {
             line.retire();
         }
-        self.groups[gi].rows[ri].elided = true;
-        self.elided += 1;
         self.paint_elision();
     }
 
+    /// Settled rows the region is holding for commit with no line on screen.
+    ///
+    /// Derived from the rows on every paint rather than counted as lines are
+    /// given up: a row can lose its line by being elided under budget pressure,
+    /// and it can also settle having never been drawn at all (an action swept by
+    /// a failed dependency never ran, so no line was ever attached). A counter
+    /// has to be incremented at both, and at whatever the third one turns out to
+    /// be; the rows already know.
+    fn held_unseen(&self) -> usize {
+        self.groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .filter(|row| matches!(row.state, RowState::Settled(_)) && row.line.is_none())
+            .count()
+    }
+
     /// Keep the summary line in step with what it stands for, drawing it when
-    /// the region first gives a line up and retiring it once every row it
-    /// counted has been committed.
+    /// the region first holds an outcome it cannot show and retiring it once
+    /// every row it counted has been committed.
     ///
     /// It is never allowed to be silent: a dispatched action is on screen as a
     /// row, or committed to the scrollback, or counted here.
     fn paint_elision(&mut self) {
-        if self.elided == 0 {
+        let held = self.held_unseen();
+        if held == 0 {
             if let Some(elision) = self.elision.take() {
                 elision.retire();
             }
@@ -442,7 +483,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         if let Some(elision) = &self.elision {
             elision.set_note(&format!(
                 "{} held for commit",
-                crate::pluralize(self.elided, "settled row")
+                crate::pluralize(held, "settled row")
             ));
         }
     }
@@ -455,7 +496,6 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             groups,
             open,
             preopened,
-            elided,
             ..
         } = self;
         let Some(target) = open
@@ -470,9 +510,6 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         let group = &mut groups[index];
         let row = &mut group.rows[group.flushed];
         group.flushed += 1;
-        if std::mem::take(&mut row.elided) {
-            *elided = elided.saturating_sub(1);
-        }
         let RowState::Settled(outcome) = std::mem::replace(&mut row.state, RowState::Flushed)
         else {
             debug_assert!(false, "an unsettled row reached the commit");
@@ -546,7 +583,6 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             action,
             line: None,
             state: RowState::Pending,
-            elided: false,
         });
         (gi, self.groups[gi].rows.len() - 1)
     }
@@ -1068,6 +1104,207 @@ mod tests {
             order.windows(2).all(|w| w[0] < w[1]),
             "the scrollback left dispatch order: {scrollback:?}"
         );
+    }
+
+    /// The outcome an action gets when a failed dependency swept it before it
+    /// ever ran: no duration, because nothing was spent on it.
+    fn swept(subject: &str) -> ActionOutcome {
+        let mut outcome = ActionOutcome::for_test(subject, Duration::ZERO);
+        outcome.role = Role::Skipped;
+        outcome.duration = None;
+        outcome
+    }
+
+    /// Dispatch a slow head, run a second action to a settled line, then settle
+    /// a third that was NEVER dispatched — the shape a failed dependency leaves
+    /// when it sweeps the actions that were waiting on it. The head keeps
+    /// running, so nothing can commit and the region has to account for both.
+    fn swept_behind_a_running_head<'a>(
+        printer: &'a Printer,
+        section: &'a SectionGuard<'a>,
+        owner: &'a Owner,
+        actions: &'a [Action],
+    ) -> (PhaseTree<'a, 'a>, LaneHandle<'a>) {
+        // A heading and one row is all this terminal has room for.
+        let mut tree =
+            PhaseTree::new(printer, Some(section), None, section.depth + 1, 30).with_budget(2);
+        let running = tree.dispatched(owner, &actions[0]);
+        tree.dispatched(owner, &actions[1]).finish();
+        tree.settled(owner, &actions[1], done("apt install pkg1"));
+        tree.settled(owner, &actions[2], swept("apt install pkg2"));
+        (tree, running)
+    }
+
+    #[test]
+    fn a_row_swept_before_it_was_ever_drawn_is_counted_as_held() {
+        // An action whose dependency failed settles WITHOUT being dispatched, so
+        // it settles with no line — the region is holding an outcome it never
+        // showed and cannot show. Read off the rows, that is the same condition
+        // as a line the budget took back. Counted at the places lines are given
+        // up, it is invisible: an outcome held for commit that the summary line
+        // does not admit to, on any terminal short enough to hide it.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(3);
+
+        let (tree, running) = swept_behind_a_running_head(&printer, &section, &managers, &actions);
+
+        let rows = tree.drawn_rows();
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("2 settled rows held for commit")),
+            "the swept row is held for commit and unaccounted for: {rows:?}"
+        );
+        for hidden in ["pkg1", "pkg2"] {
+            assert!(
+                !rows.iter().any(|line| line.contains(hidden)),
+                "{hidden} is counted as hidden while still on screen: {rows:?}"
+            );
+        }
+        drop(running);
+    }
+
+    #[test]
+    fn a_row_swept_before_it_was_ever_drawn_still_commits_once_in_order() {
+        // The other half of the same claim: a row the region never drew is
+        // still a row it owes the scrollback, in the slot it was planned into.
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(3);
+
+        let (mut tree, running) =
+            swept_behind_a_running_head(&printer, &section, &managers, &actions);
+        running.finish();
+        tree.settled(&managers, &actions[0], done("apt install pkg0"));
+        tree.finish();
+
+        let scrollback = drawn(&buf);
+        let subjects = ["apt install pkg0", "apt install pkg1", "apt install pkg2"];
+        for subject in subjects {
+            assert_eq!(
+                scrollback.matches(subject).count(),
+                1,
+                "{subject} reached the permanent record {} times: {scrollback:?}",
+                scrollback.matches(subject).count()
+            );
+        }
+        let order = last_at(&scrollback, &subjects);
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the swept row committed out of dispatch order: {scrollback:?}"
+        );
+    }
+
+    #[test]
+    fn the_summary_counts_down_as_the_rows_it_stood_for_commit() {
+        // The count is only true while it tracks what is actually held: a
+        // summary that stays at its high-water mark tells a reader two outcomes
+        // are pending when one is, and never retires.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(4);
+
+        // Rows 1 and 3 settle behind rows 0 and 2, which are still running.
+        let (mut tree, mut running) =
+            over_full(&printer, &section, &managers, &actions, &[1, 3], 3);
+        let rows = tree.drawn_rows();
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("2 settled rows held for commit")),
+            "both settled rows gave up their lines and only one was counted: {rows:?}"
+        );
+
+        // Row 0 commits, and takes row 1 with it; row 2 is still running, so
+        // row 3 stays held.
+        running.remove(0).finish();
+        tree.settled(&managers, &actions[0], done("apt install pkg0"));
+        let rows = tree.drawn_rows();
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("1 settled row held for commit")),
+            "the summary did not follow the row that committed out of it: {rows:?}"
+        );
+
+        running.remove(0).finish();
+        tree.settled(&managers, &actions[2], done("apt install pkg2"));
+        let rows = tree.drawn_rows();
+        assert!(
+            !rows.iter().any(|line| line.contains("held for commit")),
+            "the summary outlived the last row it stood for: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_summary_retires_when_a_seal_releases_the_rows_it_stood_for() {
+        // The commit that empties the summary does not always arrive on a
+        // settle: a second group's rows are held behind the first group's SEAL,
+        // and the scheduler lifts that from `waiting`. A summary that only
+        // recounts where outcomes arrive still says two rows are held over a
+        // region holding none.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let first = Owner::module("a");
+        let second = Owner::module("b");
+        let head = install("apt", "pkg0");
+        let behind = packages(2);
+
+        let mut tree =
+            PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30).with_budget(3);
+        let running = tree.dispatched(&first, &head);
+        for action in &behind {
+            tree.dispatched(&second, action).finish();
+        }
+        for (index, action) in behind.iter().enumerate() {
+            tree.settled(&second, action, done(&format!("apt install pkg{index}")));
+        }
+        running.finish();
+        tree.settled(&first, &head, done("apt install pkg0"));
+
+        let rows = tree.drawn_rows();
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("2 settled rows held for commit")),
+            "the second group's rows are held behind an unsealed group: {rows:?}"
+        );
+
+        // Nothing is waiting and no group can gain a row: both seal, and the
+        // second group's rows commit without any outcome arriving.
+        tree.waiting(&Held {
+            waits: Vec::new(),
+            pending_owners: Vec::new(),
+        });
+        let rows = tree.drawn_rows();
+        assert!(
+            !rows.iter().any(|line| line.contains("held for commit")),
+            "the summary outlived the rows a seal released: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_region_does_not_trade_its_only_settled_line_for_a_line_about_it() {
+        // Giving up the FIRST settled line is net-zero: the region loses a line
+        // that says what happened and gains one saying that a line is hidden.
+        // It is no shorter, and the reader is worse off.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(3);
+
+        let (tree, running) = over_full(&printer, &section, &managers, &actions, &[1], 2);
+
+        let rows = tree.drawn_rows();
+        assert!(
+            !rows.iter().any(|line| line.contains("held for commit")),
+            "the region traded one line for one line: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("pkg1")),
+            "the only settled line was given up for no height: {rows:?}"
+        );
+        drop(running);
     }
 
     #[test]
