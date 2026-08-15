@@ -242,6 +242,23 @@ _strip_test_blocks_uncached() {
 # Usage: check_pattern <severity> <label> <pattern> <exclude_pattern>
 #   Searches ALL .rs files across all workspace crates (excluding test blocks).
 #   exclude_pattern: grep -v pattern to exclude allowed directories/files (optional)
+# The corpus every check_pattern gate reads: the workspace source roots
+# normally, and EXACTLY the path CFGD_AUDIT_PATH names when the audit-tests
+# driver scopes a run to one fixture. Without the second arm a check_pattern
+# gate is unreachable from a fixture — it would keep scanning crates/ and
+# report OK no matter what the fixture contains, so a `bad_*.txt` written to
+# prove such a gate proves nothing. The rg-based gates already honour the same
+# variable; this makes the scoping mechanism one mechanism.
+# Extension-blind on purpose: fixtures are `.txt` so they sit outside the cargo
+# source tree.
+audit_scan_files() {
+    if [[ -n "${CFGD_AUDIT_PATH:-}" ]]; then
+        find "$CFGD_AUDIT_PATH" -type f -print0 2>/dev/null
+    else
+        find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null
+    fi
+}
+
 check_pattern() {
     local severity="$1"
     local label="$2"
@@ -255,7 +272,7 @@ check_pattern() {
         if [[ -n "$file_results" ]]; then
             results="${results}${file_results}"$'\n'
         fi
-    done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+    done < <(audit_scan_files)
 
     # Apply exclude filter
     if [[ -n "$exclude_pattern" ]]; then
@@ -341,6 +358,20 @@ log_section "systemctl Goes Through One Factory"
 check_pattern error \
     "systemctl spawned only via cfgd_core::systemctl_cmd (no raw Command/command_available)" \
     'Command::new\("systemctl"\)|command_available\("systemctl"\)' \
+    'util/process\.rs:'
+
+log_section "One Rendering of a Child's Exit"
+# `status.code()` is None for a process a signal killed, so `unwrap_or(-1)`
+# prints `exit code -1` — a number no process ever returned, and the shape an
+# interrupted run produces most often. The sites that matter most are the ones
+# `command_output_with_timeout` KILLS on timeout: they are guaranteed to reach
+# the None arm. `cfgd_core::exit_status_reason` is the one rendering; it names
+# the signal instead.
+# `util/process.rs` is the function's own home, where the banned idiom is
+# quoted in its doc comment as the thing not to write.
+check_pattern error \
+    "Child-exit wording via cfgd_core::exit_status_reason (no status.code().unwrap_or(-1))" \
+    'code\(\)[[:space:]]*\.unwrap_or\(-1\)' \
     'util/process\.rs:'
 
 log_section "No Unwrap in Library Code"
@@ -866,7 +897,7 @@ cmds_in_code=$(rg --type rust --color never -n \
       '^(pub(\(crate\)|(\(super\)))? fn |fn )cmd_' \
       crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
       2>/dev/null \
-      | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | LC_ALL=C sort -u)
+      | sed -E 's/.*fn cmd_([a-z0-9_]+).*/\1/' | LC_ALL=C sort -u)
 rule_file=".claude/rules/structured-output-coverage.md"
 if [ -f "$rule_file" ]; then
     # The whole file is the table; row cells are lowercase, the header cell is not.

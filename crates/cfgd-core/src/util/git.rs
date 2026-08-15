@@ -1,7 +1,8 @@
 use super::constants::GIT_NETWORK_TIMEOUT;
 use super::paths::home_dir_var;
 use super::process::{
-    command_output_with_timeout, command_path, stderr_lossy_trimmed, stdout_lossy_trimmed,
+    command_output_with_timeout, command_path, exit_status_reason, stderr_lossy_trimmed,
+    stdout_lossy_trimmed,
 };
 use crate::config;
 
@@ -99,9 +100,9 @@ pub fn try_git_cmd(
         Ok(output) if output.status.success() => true,
         Ok(output) => {
             tracing::debug!(
-                "git {} CLI failed (exit {}): {}",
+                "git {} CLI failed ({}): {}",
                 label,
-                output.status.code().unwrap_or(-1),
+                exit_status_reason(&output.status),
                 stderr_lossy_trimmed(&output),
             );
             false

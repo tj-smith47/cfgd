@@ -1158,8 +1158,8 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
         return Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
             message: format!(
-                "git log failed (exit {}): {}",
-                output.status.code().unwrap_or(-1),
+                "git log failed ({}): {}",
+                crate::exit_status_reason(&output.status),
                 crate::stderr_lossy_trimmed(&output)
             ),
         }
@@ -1524,8 +1524,8 @@ pub fn git_clone_with_fallback(
     // reason into the final message so the actual cause is not lost.
     let cli_failure = match &cli_result {
         Ok(output) => format!(
-            "git CLI exited {}: {}",
-            output.status.code().unwrap_or(-1),
+            "git CLI {}: {}",
+            crate::exit_status_reason(&output.status),
             output.stderr.trim()
         ),
         Err(e) => format!("git CLI unavailable: {e}"),

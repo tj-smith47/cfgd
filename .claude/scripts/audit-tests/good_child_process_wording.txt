@@ -1,0 +1,21 @@
+# EXPECTED: accepted. The compliant counterpart of bad_print_macros,
+# bad_raw_systemctl and bad_exit_code_unwrap, so each of those three gates is
+# proven to fire on the violation WITHOUT firing on the correct shape beside it.
+fn _example(printer: &Printer) -> String {
+    let mut cmd = cfgd_core::systemctl_cmd();
+    cmd.args(["is-enabled", "cfgd.service"]);
+    match cfgd_core::command_output_with_timeout(&mut cmd, SYSTEMCTL_TIMEOUT) {
+        Ok(output) if output.status.success() => cfgd_core::stdout_lossy_trimmed(&output),
+        Ok(output) => {
+            printer.status_simple(
+                Role::Warn,
+                format!("systemctl is-enabled ({})", cfgd_core::exit_status_reason(&output.status)),
+            );
+            String::new()
+        }
+        Err(e) => {
+            printer.status_simple(Role::Warn, format!("systemctl unavailable: {e}"));
+            String::new()
+        }
+    }
+}

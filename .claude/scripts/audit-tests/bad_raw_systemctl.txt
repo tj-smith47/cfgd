@@ -1,0 +1,10 @@
+# EXPECTED: caught by the systemctl-factory rule.
+# Both shapes defeat the seam: the raw Command is also unbounded, and the
+# PATH-only availability probe disagrees with the spawn beside it.
+fn _example() {
+    if cfgd_core::command_available("systemctl") {
+        let mut cmd = std::process::Command::new("systemctl");
+        cmd.args(["restart", "kubelet"]);
+        let _ = cmd.output();
+    }
+}
