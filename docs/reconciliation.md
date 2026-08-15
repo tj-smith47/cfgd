@@ -115,6 +115,17 @@ is only knowable once its bootstrap finishes (npm's global prefix) still converg
 apply — cfgd re-derives the file once every phase completes and the real directory is recorded, so
 the file is correct when that run finishes either way.
 
+**What a `postApply` script sees in the env files.** The `Prerequisites` phase runs long before
+`Post-Scripts`, so every `spec.env` value cfgd could resolve up front is already in `~/.cfgd.env`
+when a post-script reads it. The re-derivation described above is the exception: it runs after
+*every* phase, `Post-Scripts` included, because its two inputs only exist once the phases have run
+— a value resolved from a `secrets:` reference (decrypted in the `Secrets` phase) and a package
+manager's real install directory when it differs from what the plan declared (npm's global prefix).
+A `postApply` script that reads `~/.cfgd.env`, `~/.config/environment.d/cfgd.conf` or a shell rc
+file for one of those two therefore observes the file as it was *before* this run's re-derivation,
+and sees the new value only from the next run on. Read a secret-backed variable in a post-script
+through the secret itself rather than through the generated env file.
+
 ## Apply vs Reconcile Context
 
 cfgd distinguishes between user-initiated apply and daemon-initiated reconciliation:
