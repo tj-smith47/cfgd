@@ -2590,7 +2590,13 @@ fn rendered_item_lines(human: &str) -> Vec<String> {
     human
         .lines()
         .skip_while(|line| line.trim() != "Backups")
-        .take_while(|line| !line.contains("action(s)"))
+        .skip(1)
+        // The rollup begins at the first unindented line: every item lives
+        // under an owner group and is indented, and only the phase heading
+        // above (skipped) shares column 0 with the rollup. Terminating on the
+        // words `action(s)` instead read a rollup line that names no count —
+        // the partial run's leading verdict — as an item of the phase.
+        .take_while(|line| line.trim().is_empty() || line.starts_with(char::is_whitespace))
         .map(|line| line.trim().to_string())
         .filter(|line| line.starts_with(STATUS_ICONS))
         .collect()

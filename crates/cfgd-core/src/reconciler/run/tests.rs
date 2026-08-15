@@ -141,7 +141,11 @@ impl RunExecutor for StubExecutor {
 fn rollup_lines_covers_every_apply_status() {
     let cases: Vec<(ApplyStatus, usize, Vec<Role>)> = vec![
         (ApplyStatus::Success, 1, vec![Role::Ok]),
-        (ApplyStatus::Partial, 2, vec![Role::Ok, Role::Accent]),
+        (
+            ApplyStatus::Partial,
+            3,
+            vec![Role::Warn, Role::Ok, Role::Accent],
+        ),
         (ApplyStatus::Failed, 1, vec![Role::Fail]),
         (ApplyStatus::InProgress, 1, vec![Role::Warn]),
         (ApplyStatus::Aborted, 1, vec![Role::Warn]),
@@ -241,8 +245,8 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
 }
 
 /// A completed run names itself, so the header and the rollup cannot disagree
-/// about what ran. Only the `Success` arm is titled — `Partial` splits into two
-/// bare count lines, which is the shape every mock of a partial run shows.
+/// about what ran. `Partial` names itself too, in a leading `Role::Warn`
+/// verdict, and keeps the two count lines below it.
 #[test]
 fn a_completed_rollup_names_the_run_it_finished() {
     for (title, expected) in [
@@ -274,11 +278,57 @@ fn a_completed_rollup_names_the_run_it_finished() {
         aborted: None,
     };
     let lines = rollup_lines(&partial, RunTitle::Apply);
-    assert_eq!(lines.len(), 2, "a partial rollup splits into two lines");
-    assert!(
-        lines.iter().all(|(_, line)| !line.contains("Apply")),
-        "a partial rollup carries bare counts, not a titled verdict: {lines:?}"
+    assert_eq!(
+        lines,
+        vec![
+            (Role::Warn, "Apply partial — 1 of 2 applied".to_string()),
+            (Role::Ok, "1 action(s) succeeded".to_string()),
+            (Role::Accent, "1 action(s) failed".to_string()),
+        ],
+        "a partial rollup leads with its own verdict and keeps both counts"
     );
+    // The verdict names the run that was partial: a partially-applied backup
+    // must not report itself as an apply.
+    assert_eq!(
+        rollup_lines(&partial, RunTitle::Backup)[0].1,
+        "Backup partial — 1 of 2 applied"
+    );
+}
+
+/// A run that failed actions must not OPEN on a tick. The two count lines are
+/// deliberately split so `9 succeeded, 1 failed` and `1 succeeded, 9 failed`
+/// do not read the same colour — but with the success count first, the first
+/// line of the closing block was `✓ N action(s) succeeded` for both, and a
+/// reader who takes the first line as the verdict reads a failed run as a
+/// clean one. Every rollup that carries a failure now leads with its verdict.
+#[test]
+fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
+    for (status, succeeded, failed) in [
+        (ApplyStatus::Partial, 9, 1),
+        (ApplyStatus::Partial, 1, 9),
+        (ApplyStatus::Failed, 0, 3),
+    ] {
+        let tally = RunTally {
+            succeeded,
+            failed,
+            planned_total: succeeded + failed,
+            status: status.clone(),
+            aborted: None,
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+        drop(printer);
+        let out = strip_ansi(&buf.lock().unwrap());
+        let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        assert!(
+            !first.contains('✓'),
+            "{status:?} ({succeeded}/{failed}) opened its rollup on a tick: {out:?}"
+        );
+        assert!(
+            first.contains('⚠') || first.contains('✗'),
+            "{status:?} ({succeeded}/{failed}) must open on its verdict: {out:?}"
+        );
+    }
 }
 
 /// The abort sentence is the CLI's, verbatim and lowercase, and it is the only

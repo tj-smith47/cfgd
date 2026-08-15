@@ -819,16 +819,29 @@ pub fn align_width(phase: &Phase) -> usize {
     align_width_of(items.iter().map(String::as_str))
 }
 
-/// Every arm returns; `Partial` returns two lines. No path panics, so the
+/// Every arm returns; `Partial` returns three lines. No path panics, so the
 /// function is safe in core and testable without a `Printer` — and it reads a
 /// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
 fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
     match tally.status {
-        // Partial splits into two role-tagged lines so the success count and
-        // the failure count read as distinct outcomes — fusing them into one
-        // Warn line makes a "9 succeeded, 1 failed" run look the same colour as
-        // a "1 succeeded, 9 failed" run.
+        // Partial leads with a Warn title line naming the outcome, because the
+        // block below it opens on a ✓ and a reader who takes the first line as
+        // the verdict reads a run that failed actions as a run that succeeded.
+        //
+        // The two counts stay split below it so the success count and the
+        // failure count read as distinct outcomes — fusing them into one Warn
+        // line makes a "9 succeeded, 1 failed" run look the same colour as a
+        // "1 succeeded, 9 failed" run.
         ApplyStatus::Partial => vec![
+            (
+                Role::Warn,
+                format!(
+                    "{} partial — {} of {} applied",
+                    title.as_str(),
+                    tally.succeeded,
+                    tally.planned_total
+                ),
+            ),
             (Role::Ok, format!("{} action(s) succeeded", tally.succeeded)),
             (Role::Accent, format!("{} action(s) failed", tally.failed)),
         ],
