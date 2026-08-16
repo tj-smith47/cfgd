@@ -497,39 +497,46 @@ mod tests {
 
     #[test]
     fn pipx_bootstrap_plan_follows_the_brew_system_pip_cascade() {
-        let plan = PipxManager.bootstrap_plan();
-        let expected = brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("pip3")
-            || command_available("pip");
-        assert_eq!(plan.is_some(), expected);
-        if let Some(plan) = plan {
-            // Only `bootstrap`'s pip fallback installs into the user's own tree
-            // (`pip install --user`); brew and the system managers put pipx on
-            // the system PATH, so they declare no directory. The user tree is
-            // not the same directory on every platform — Windows sends console
-            // scripts to CPython's `nt_user` scheme under roaming AppData.
-            if plan.method == "pip" {
-                assert_eq!(plan.requires.len(), 1);
-                assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
-                let is_user_scripts_dir = |d: &String| {
-                    if cfg!(windows) {
-                        d.contains("/Python/Python") && d.ends_with("/Scripts")
-                    } else {
-                        d.ends_with("/.local/bin")
-                    }
-                };
-                assert!(
-                    plan.creates_path_dirs.iter().all(is_user_scripts_dir),
-                    "{:?}",
-                    plan.creates_path_dirs
-                );
-            } else {
-                assert!(["brew", "apt", "dnf"].contains(&plan.method.as_str()));
-                assert!(plan.requires.is_empty());
-                assert!(plan.creates_path_dirs.is_empty());
-            }
+        // The probes below assert what THIS host resolves, so hold the read
+        // guard — a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        // The plan always exists: the cascade's pip fallback names the tool it
+        // would need even when no pip is present, so the planner can say WHY
+        // pipx cannot be provisioned (`feasible_bootstrap_plan` answers the
+        // `None`).
+        let plan = PipxManager
+            .bootstrap_plan()
+            .expect("pipx plans on every host via the pip fallback");
+        // A host with no brew and no system arm (FreeBSD CI) lands on the pip
+        // fallback. The system probes are the production arms' probe binaries
+        // (`apt-get`, not `apt` — BREW_SYSTEM_ARMS).
+        if !brew_available() && !command_available("apt-get") && !command_available("dnf") {
+            assert_eq!(plan.method, "pip");
+        }
+        // Only `bootstrap`'s pip fallback installs into the user's own tree
+        // (`pip install --user`); brew and the system managers put pipx on
+        // the system PATH, so they declare no directory. The user tree is
+        // not the same directory on every platform — Windows sends console
+        // scripts to CPython's `nt_user` scheme under roaming AppData.
+        if plan.method == "pip" {
+            assert_eq!(plan.requires.len(), 1);
+            assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
+            let is_user_scripts_dir = |d: &String| {
+                if cfg!(windows) {
+                    d.contains("/Python/Python") && d.ends_with("/Scripts")
+                } else {
+                    d.ends_with("/.local/bin")
+                }
+            };
+            assert!(
+                plan.creates_path_dirs.iter().all(is_user_scripts_dir),
+                "{:?}",
+                plan.creates_path_dirs
+            );
+        } else {
+            assert!(["brew", "apt", "dnf"].contains(&plan.method.as_str()));
+            assert!(plan.requires.is_empty());
+            assert!(plan.creates_path_dirs.is_empty());
         }
     }
 

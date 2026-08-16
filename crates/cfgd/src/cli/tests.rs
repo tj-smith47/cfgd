@@ -5620,11 +5620,21 @@ fn declared_env_host_probe(zsh_present: bool) -> cfgd_core::reconciler::EnvHostP
     }
 }
 
+/// The per-platform session-file env target: `environment.d` on Linux, the
+/// LaunchAgent plist on macOS. Other Unixes (FreeBSD) run neither systemd nor
+/// launchd, so `env_engine`'s `reaches_all` block deliberately plans neither
+/// and their env surface is one action smaller.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const SESSION_FILE_TARGETS: u32 = 1;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+const SESSION_FILE_TARGETS: u32 = 0;
+
 /// Shared body for the zsh-present / no-zsh env-target-count variants below.
 /// `expected_actions` is the exact `env_targets` count for the declared shape
 /// (see `EnvHostProbe`'s field docs for which target each flag adds/removes):
-/// `.cfgd.env` + interactive rc + `.profile` + `environment.d` + live-session
-/// refresh (5), plus `.zshenv` only when `zsh_present` (6).
+/// `.cfgd.env` + interactive rc + `.profile` + live-session refresh (4), plus
+/// the platform's session file when it has one (`SESSION_FILE_TARGETS`), plus
+/// `.zshenv` only when `zsh_present`.
 fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
     let (config_dir, state_dir) = setup_test_env();
     // A real (non-dry-run) apply of a profile carrying `spec.env` writes the
@@ -5700,13 +5710,13 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
 #[test]
 #[cfg(unix)]
 fn cmd_apply_with_env_vars() {
-    cmd_apply_with_env_vars_for_host(true, 6);
+    cmd_apply_with_env_vars_for_host(true, 5 + SESSION_FILE_TARGETS);
 }
 
 #[test]
 #[cfg(unix)]
 fn cmd_apply_with_env_vars_no_zsh() {
-    cmd_apply_with_env_vars_for_host(false, 5);
+    cmd_apply_with_env_vars_for_host(false, 4 + SESSION_FILE_TARGETS);
 }
 
 // The Windows env plan never consults the probe's shell shape: its target set
