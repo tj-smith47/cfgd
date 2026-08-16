@@ -121,9 +121,9 @@ Rollback is available for any apply that has backups in the state store.
 
 ## Apply Locking
 
-cfgd takes an exclusive whole-file lock to prevent concurrent applies — `flock()` on Unix, `LockFileEx` on Windows. Only one `cfgd apply` can run at a time.
+cfgd takes an exclusive whole-file lock to prevent concurrent applies: `flock()` on Unix, `LockFileEx` on Windows. Only one `cfgd apply` can run at a time.
 
-- The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform — see `configuration.md`)
+- The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform, see `configuration.md`)
 - The daemon skips reconciliation ticks if the lock is held by a CLI apply
 - The lock is released automatically when the process exits
 - The holder records its PID in the lock file, and a refused apply names it: `apply lock held by another process: pid 12345`

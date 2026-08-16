@@ -776,10 +776,14 @@ fn an_acquire_that_never_finds_its_own_file_says_so_instead_of_claiming_a_holder
         ),
         "exhaustion names the unstable lock file, got: {err}"
     );
+    // The variant match above already rules out the holder-claiming error; a
+    // negative substring check against a message embedding a random tempdir
+    // path could trip on the path itself, so pin the static wording instead.
     let msg = err.to_string();
     assert!(
-        msg.contains(SOURCE_CACHE_LOCK_FILENAME) && !msg.contains("held"),
-        "the failure names the lock file that kept changing and claims no holder: {msg}"
+        msg.contains("could not safely acquire the lock at")
+            && msg.contains(SOURCE_CACHE_LOCK_FILENAME),
+        "the failure names the lock file that kept changing: {msg}"
     );
 }
 

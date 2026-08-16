@@ -258,7 +258,7 @@ enum LockWait {
 /// One retry covers the real case: somebody removed the lock file (or the
 /// directory holding it) while a contender was blocked on it. The remaining
 /// attempts exist so a repeating removal ends in an error rather than a spin.
-pub const STALE_LOCK_ATTEMPTS: usize = 8;
+pub(crate) const STALE_LOCK_ATTEMPTS: usize = 8;
 
 /// How long a re-open waits before its next attempt: doubles from a few
 /// milliseconds, capped well under a second.
