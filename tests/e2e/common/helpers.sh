@@ -343,8 +343,18 @@ ensure_cfgd_binary() {
 
 # --- Assertion helpers ---
 
+# The shell mirror of the Rust suite's `captured_text`: these assertions are
+# about TEXT, and cfgd emits attribute SGR (bold/italic) even under
+# --no-color — colour off is not attrs off — so a style boundary inside a
+# token (the phase heading's "Phase" + ":") breaks a plain grep over the raw
+# bytes, and a negative grep over them passes vacuously.
+strip_sgr() {
+    sed -e $'s/\x1b\\[[0-9;]*m//g'
+}
+
 assert_contains() {
-    local output="$1"
+    local output
+    output=$(printf '%s' "$1" | strip_sgr)
     local expected="$2"
     if echo "$output" | grep -qF "$expected"; then
         return 0
@@ -356,7 +366,8 @@ assert_contains() {
 }
 
 assert_not_contains() {
-    local output="$1"
+    local output
+    output=$(printf '%s' "$1" | strip_sgr)
     local unexpected="$2"
     if echo "$output" | grep -qF "$unexpected"; then
         echo "  ASSERT FAILED: output contains unexpected '$unexpected'"

@@ -11122,7 +11122,7 @@ fn cmd_apply_with_aliases() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan"),
         "should contain Plan header, got: {output}"
