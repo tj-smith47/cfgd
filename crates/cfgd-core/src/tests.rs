@@ -683,12 +683,14 @@ fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_rele
 #[test]
 #[serial_test::serial]
 fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
-    // The failed-load cleanup removes the lock file it is holding, which is
-    // what makes this reachable: a contender already blocked on that file wakes
-    // holding an exclusive lock on an unlinked inode, while the next process
-    // creates a fresh file at the same path and locks THAT. Both would then be
-    // "the" holder. The acquire re-checks identity after the lock is granted,
-    // so the woken contender re-opens instead.
+    // A user wiping a cache directory mid-run removes the lock file, and the
+    // directory holding it, under a live holder. A contender already blocked on
+    // that file would wake holding an exclusive lock on an unlinked inode,
+    // while the next process creates a fresh file at the same path and locks
+    // THAT — both "the" holder. The acquire re-checks identity after the lock
+    // is granted and re-opens on a mismatch, re-creating the directory it needs
+    // to re-open INTO, which is the half that a re-check alone does not give:
+    // without it the woken contender fails ENOENT for having waited politely.
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
     let lock_path = cache.join(SOURCES_LOCK_FILENAME);
@@ -710,7 +712,10 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
         "the contender must be blocked on the lock file before it is removed"
     );
 
-    std::fs::remove_file(&lock_path).expect("the holder removes the file it locked");
+    // Exactly what a `rm -rf <cache dir>` does to a live holder: the lock file
+    // AND the directory it lives in.
+    std::fs::remove_file(&lock_path).expect("the file the holder locked is removed");
+    std::fs::remove_dir(&cache).expect("the directory holding it goes too");
     drop(guard);
     took_rx.recv().expect("the contender takes the lock");
 
@@ -741,6 +746,34 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
     late_rx.recv().expect("the late acquire completes in turn");
     contender.join().expect("the contender thread finishes");
     late.join().expect("the late thread finishes");
+}
+
+#[test]
+#[serial_test::serial]
+fn an_acquire_that_never_finds_its_own_file_reports_the_lock_held() {
+    // Someone deleting the lock in a loop exhausts the re-open budget. The
+    // acquire must then report the lock as held, NOT hand back a guard over a
+    // file the path no longer names: that guard is the double-holder state the
+    // re-check exists to prevent, and a caller told "held" reports or retries,
+    // which is the truthful answer.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    // Two budgets' worth, because `acquire_source_lock` makes two acquires: the
+    // non-blocking probe, whose exhaustion reads as "held" and sends it into
+    // the waiting arm, and the blocking retry behind it. Exactly that many, so
+    // the injection drains itself here and leaks nothing into whatever runs
+    // next on this thread.
+    crate::force_stale_lock_rechecks(16);
+
+    let err = acquire_source_lock(&cache, || {})
+        .expect_err("an acquire that can never confirm its file must not return a guard");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::ApplyLockHeld { .. })
+        ),
+        "exhaustion reports the lock as held, got: {err}"
+    );
 }
 
 #[test]

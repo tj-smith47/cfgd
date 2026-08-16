@@ -92,18 +92,43 @@ impl Drop for FileLockGuard {
         // Clear the PID so stale reads aren't confusing.
         // Lock is released when LockFile is dropped after this.
         //
-        // Truncate an existing file rather than `fs::write`, which creates one:
-        // a holder may have deleted the lock it held (the failed-first-load
-        // cache cleanup does exactly that), and re-creating it there would
-        // leave a fresh empty file inside a directory that was just removed.
-        let cleared = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self._path);
-        if let Err(e) = cleared {
+        // Through the HELD handle, never through the path. The path can name a
+        // different file by now (the lock file removed by a user wiping the
+        // cache, and re-created by the next process), and truncating THAT one
+        // erases a live holder's record — or, with `fs::write`, plants an
+        // unlocked file at the path for a third process to lock while the
+        // orphan is still held.
+        if let Err(e) = held_file(&self._file).set_len(0) {
             tracing::debug!(path = ?self._path, error = %e, "failed to clear lock PID on drop");
         }
     }
+}
+
+/// The plain `File` inside a platform lock handle.
+///
+/// One body for both platforms: on Unix the `&Flock<File>` reaches `&File`
+/// through `Deref`, on Windows it already is one.
+fn held_file(lock: &LockFile) -> &std::fs::File {
+    lock
+}
+
+/// Record this process's PID in the locked file, through the handle that holds
+/// the lock.
+///
+/// Addressed by handle rather than by path for the reason [`acquire_lock_at`]
+/// re-checks identity at all: a path-addressed write does not inherit the
+/// identity the re-check established, so it can land in a file this process
+/// does not hold. It writes through a `try_clone` of the handle rather than
+/// through `Flock`'s own `DerefMut`, which on macOS ARM64 silently drops the
+/// write (the exclusion is unaffected — the lock still holds).
+fn record_pid(lock: &LockFile) -> errors::Result<()> {
+    use std::io::{Seek, Write};
+    let mut file = held_file(lock).try_clone()?;
+    file.set_len(0)?;
+    file.rewind()?;
+    file.write_all(pid_record().as_bytes())?;
+    file.sync_all()?;
+    Ok(())
 }
 
 /// The observation that a thread has reached a [`LockWait::Block`] acquire and
@@ -148,17 +173,58 @@ mod blocking_witness {
     /// `timeout` is a deadlock escape, never a timing assertion: the answer is
     /// the returned bool, and a caller asserts on that.
     pub fn await_blocking_source_acquire(timeout: std::time::Duration) -> bool {
+        await_blocking_source_acquires(1, timeout)
+    }
+
+    /// Block until `wanted` threads are waiting on the source lock at once.
+    ///
+    /// The counting form is what lets a test put two contenders in ONE window
+    /// before the holder releases: released on the single-waiter signal, the
+    /// second contender may not have reached the acquire yet, and the two run
+    /// one after another instead of racing.
+    pub fn await_blocking_source_acquires(wanted: usize, timeout: std::time::Duration) -> bool {
         let (count, signal) = &*GATE;
         let guard = count.lock().unwrap_or_else(PoisonError::into_inner);
         let (guard, _) = signal
-            .wait_timeout_while(guard, timeout, |count| *count == 0)
+            .wait_timeout_while(guard, timeout, |count| *count < wanted)
             .unwrap_or_else(PoisonError::into_inner);
-        *guard > 0
+        *guard >= wanted
     }
 }
 
 #[cfg(test)]
-pub use blocking_witness::await_blocking_source_acquire;
+pub use blocking_witness::{await_blocking_source_acquire, await_blocking_source_acquires};
+
+/// Fault injection for the identity re-check, so the exhaustion arm can be
+/// driven without a second process racing deletions in a loop.
+#[cfg(test)]
+mod stale_injection {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Make the next `count` identity re-checks on THIS thread report the
+    /// locked file as no longer the one the path names.
+    pub fn force_stale_lock_rechecks(count: usize) {
+        FORCED.with(|forced| forced.set(count));
+    }
+
+    pub(super) fn take_forced_stale() -> bool {
+        FORCED.with(|forced| {
+            let remaining = forced.get();
+            if remaining == 0 {
+                return false;
+            }
+            forced.set(remaining - 1);
+            true
+        })
+    }
+}
+
+#[cfg(test)]
+pub use stale_injection::force_stale_lock_rechecks;
 
 /// What a contended acquire does about the holder.
 ///
@@ -178,46 +244,86 @@ enum LockWait {
     Block,
 }
 
-/// How many times an acquire re-opens a lock file that was deleted between the
-/// open and the lock.
+/// How many times an acquire re-opens a lock file that vanished, or was
+/// replaced, between the open and the lock.
 ///
-/// One retry is the real case (a holder that removed the file it locked, which
-/// is what a failed first-ever source load does to an empty cache root). The
-/// remaining attempts exist so a pathological sequence of deletions ends in an
-/// error rather than a spin.
+/// One retry covers the real case: somebody removed the lock file (or the
+/// directory holding it) while a contender was blocked on it. The remaining
+/// attempts exist so a repeating removal ends in an error rather than a spin.
 const STALE_LOCK_ATTEMPTS: usize = 8;
 
 /// Acquire an exclusive whole-file lock at `lock_path`, on the file that
 /// `lock_path` still names when the lock is granted.
 ///
-/// The identity re-check is what makes deleting a lock file safe. Both
-/// `flock` and `LockFileEx` lock an OPEN FILE, not a path, and both platforms
-/// let a file be unlinked while handles to it are open (Rust's Windows opens
-/// carry `FILE_SHARE_DELETE`). So a contender that blocks on the lock, and
-/// whose holder then removes the file, wakes up holding an exclusive lock on an
-/// orphan inode that no later process can ever open — while the next process
-/// creates a fresh file at the same path and locks that one instead. Two
-/// processes then hold "the" lock at once, which is the exact interleaving the
-/// lock exists to prevent. Re-opening on a mismatch closes it: the winner is
-/// whoever holds the file the path currently names.
+/// The identity re-check is what keeps a REMOVED lock file from splitting the
+/// section in two. Nothing in cfgd deletes one, but a user wiping a cache
+/// directory does, and both platforms allow it while handles are open (`flock`
+/// and `LockFileEx` lock an open FILE, not a path, and Rust's Windows opens
+/// carry `FILE_SHARE_DELETE`). A contender blocked on the removed file would
+/// otherwise wake holding an exclusive lock on an orphan nothing can open
+/// again, while the next process creates a fresh file at the same path and
+/// locks that one: two holders in one section, the interleaving the lock exists
+/// to prevent. Re-opening on a mismatch settles it — the holder is whoever
+/// holds the file the path currently names.
+///
+/// A removal takes the lock file's DIRECTORY with it as often as not, so the
+/// re-open recreates the directory too (in [`lock_file_at`]) rather than
+/// failing the contender with `ENOENT` for waiting politely.
+///
+/// Exhausting the attempts reports the lock as held rather than handing back a
+/// guard over a file the path no longer names: that guard would be the very
+/// double-holder state the re-check exists to prevent, and a caller told "held"
+/// retries or reports, which is the truthful outcome when someone is deleting
+/// the lock in a loop.
 fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
     let mut attempt = 1;
     loop {
-        let mut locked = lock_file_at(lock_path, wait)?;
-        if attempt < STALE_LOCK_ATTEMPTS && !locked_file_is_current(&locked, lock_path) {
-            // Dropped bare, not through `FileLockGuard`: the guard's drop
-            // clears the PID record by PATH, which now names somebody else's
-            // file.
-            drop(locked);
-            attempt += 1;
-            continue;
+        let last_attempt = attempt >= STALE_LOCK_ATTEMPTS;
+        let locked = match lock_file_at(lock_path, wait) {
+            Ok(locked) => locked,
+            // The open itself lost a race with a removal: the file (or its
+            // directory) went away, or on Windows sits in the delete-pending
+            // window, which refuses opens with ERROR_ACCESS_DENIED. Both are
+            // transient and neither means the caller may not have the lock.
+            Err(e) if !last_attempt && is_transient_open_error(&e) => {
+                attempt += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let current = locked_file_is_current(&locked, lock_path);
+        #[cfg(test)]
+        let current = current && !stale_injection::take_forced_stale();
+        if current {
+            record_pid(&locked)?;
+            return Ok(FileLockGuard {
+                _file: locked,
+                _path: lock_path.to_path_buf(),
+            });
         }
-        record_pid(&mut locked, lock_path)?;
-        return Ok(FileLockGuard {
-            _file: locked,
-            _path: lock_path.to_path_buf(),
-        });
+        // Dropped bare, never through `FileLockGuard`, whose drop would clear a
+        // PID record this process does not own.
+        drop(locked);
+        if last_attempt {
+            return Err(errors::StateError::ApplyLockHeld {
+                holder: holder_label(lock_path),
+            }
+            .into());
+        }
+        attempt += 1;
     }
+}
+
+/// Whether an open failure is one a re-open can still win: the lock file or its
+/// directory was removed, or Windows is holding it in delete-pending.
+fn is_transient_open_error(err: &errors::CfgdError) -> bool {
+    let errors::CfgdError::Io(io) = err else {
+        return false;
+    };
+    matches!(
+        io.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+    )
 }
 
 // Acquire an exclusive whole-file lock via `flock()` (`LOCK_EX`, plus
@@ -225,12 +331,7 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
 // holder has it and the caller refuses to wait.
 #[cfg(unix)]
 fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<LockFile> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
+    let file = open_lock_file(lock_path)?;
 
     let arg = match wait {
         LockWait::Refuse => nix::fcntl::FlockArg::LockExclusiveNonblock,
@@ -247,14 +348,23 @@ fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<L
     })
 }
 
-// The PID is written via `std::fs::write` (a fresh open/write/close) rather
-// than through the Flock fd because on macOS ARM64 writes through
-// `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
-// unaffected — `Flock<File>` still holds it).
-#[cfg(unix)]
-fn record_pid(_file: &mut LockFile, lock_path: &std::path::Path) -> errors::Result<()> {
-    std::fs::write(lock_path, pid_record().as_bytes())?;
-    Ok(())
+/// Open (creating if absent) the file a lock is taken on, re-creating its
+/// directory first.
+///
+/// The directory matters on a RE-open: a removal that took the lock file is
+/// usually a removal of the directory holding it, and a contender that came
+/// back to find neither would fail with `ENOENT` while doing everything right.
+fn open_lock_file(lock_path: &std::path::Path) -> errors::Result<std::fs::File> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    Ok(file)
 }
 
 /// Whether the locked file is still the one `lock_path` names.
@@ -280,12 +390,7 @@ fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<L
     };
     use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
+    let file = open_lock_file(lock_path)?;
 
     let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
     let mut overlapped = OVERLAPPED {
@@ -321,15 +426,6 @@ fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<L
     }
 
     Ok(file)
-}
-
-#[cfg(windows)]
-fn record_pid(file: &mut LockFile, _lock_path: &std::path::Path) -> errors::Result<()> {
-    use std::io::Write;
-    file.set_len(0)?;
-    write!(file, "{}", pid_record())?;
-    file.sync_all()?;
-    Ok(())
 }
 
 /// Whether the locked file is still the one `lock_path` names.
