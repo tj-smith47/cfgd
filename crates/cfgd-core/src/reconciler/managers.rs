@@ -1746,6 +1746,130 @@ mod tests {
         );
     }
 
+    /// One batched provision node, as `collapse_provisions` would have minted
+    /// it: `manager` leads, `batched` ride along, one `via` command delivers
+    /// all of them.
+    fn batched_provision(manager: &str, batched: &[&str], via: &str) -> Action {
+        Action::Manager(ManagerAction::Provision {
+            manager: manager.to_string(),
+            via: via.to_string(),
+            batched: batched.iter().map(|m| (*m).to_string()).collect(),
+            depends_on: Vec::new(),
+        })
+    }
+
+    /// Every provision line the plan still carries, as the tree renders it.
+    fn provision_lines(plan: &Plan) -> Vec<String> {
+        plan.phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .map(format_plan_item)
+            .collect()
+    }
+
+    /// Every provision node's persisted id.
+    fn provision_ids(plan: &Plan) -> Vec<String> {
+        plan.phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .map(format_action_description)
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_member_whose_installs_are_all_skipped_leaves_the_command() {
+        // `--skip packages.pipx` takes away everything pipx was going to
+        // install. The one apt command provisioning the batch must stop
+        // carrying pipx with it, or the run installs a toolchain nothing asked
+        // for — the shape `shrink_provision_batches` exists to prevent.
+        let mut plan = one_phase_plan(
+            vec![batched_provision("npm", &["pipx"], "apt")],
+            vec![pkg_install("npm", "typescript")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert_eq!(
+            provision_lines(&plan),
+            vec!["provision npm via apt"],
+            "no surviving install needs pipx, so the mediator command that \
+             would have installed it stops naming it"
+        );
+        assert_eq!(
+            provision_ids(&plan),
+            vec!["manager:provision:npm"],
+            "the surviving leader keeps the identity it already had"
+        );
+    }
+
+    #[test]
+    fn a_dropped_unpinned_leader_promotes_the_next_batch_member() {
+        // The mirror case: the skip took away npm's installs and npm is the
+        // batch's LEADER, so the node's identity moves to pipx. Safe only
+        // because nothing depends on `manager:provision:npm`.
+        let mut plan = one_phase_plan(
+            vec![batched_provision("npm", &["pipx"], "apt")],
+            vec![pkg_install("pipx", "black")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert_eq!(
+            provision_lines(&plan),
+            vec!["provision pipx via apt"],
+            "the surviving member leads the command it is now the whole of"
+        );
+        assert_eq!(
+            provision_ids(&plan),
+            vec!["manager:provision:pipx"],
+            "the node's persisted identity is the promoted leader's, so the \
+             journal row names the manager the command actually provisions"
+        );
+        let edges: Vec<String> = plan
+            .phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter_map(|action| match action {
+                Action::Manager(node) => Some(node.depends_on().to_vec()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            !edges.contains(&ManagerAction::provision_node("npm")),
+            "promotion may only retire an id nothing waits on: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn an_unconsumed_leader_another_node_waits_on_keeps_its_place() {
+        // npm has no surviving install of its own, but pnpm is provisioned
+        // THROUGH npm and its edge resolves against `manager:provision:npm`.
+        // Dropping npm here would promote pipx and leave that edge naming a
+        // node no phase carries, so the leader is retained.
+        let pnpm = Action::Manager(ManagerAction::Provision {
+            manager: "pnpm".to_string(),
+            via: "npm".to_string(),
+            batched: Vec::new(),
+            depends_on: vec![ManagerAction::provision_node("npm")],
+        });
+        let mut plan = one_phase_plan(
+            vec![batched_provision("npm", &["pipx"], "apt"), pnpm],
+            vec![pkg_install("pipx", "black"), pkg_install("pnpm", "vite")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert_eq!(
+            provision_lines(&plan),
+            vec!["provision npm, pipx via apt", "provision pnpm via npm"],
+            "npm stays in the command that installs it, because pnpm's \
+             provisioning waits on the node npm's name identifies"
+        );
+    }
+
     #[test]
     fn every_named_manager_gets_a_managers_phase_action() {
         let actions = plan_actions(
