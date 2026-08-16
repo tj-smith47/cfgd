@@ -289,7 +289,7 @@ impl SourceManager {
         // A load that then FAILS leaves the root and its lock file standing.
         // Taking them back would mean deleting a lock file this process holds,
         // which is precisely what strands a contender already blocked on it, so
-        // an empty cache root and a zero-byte `sources.lock` are the deliberate
+        // an empty cache root and a zero-byte `cache.lock` are the deliberate
         // residue: the next load reuses both, and neither says anything untrue
         // about the machine.
         let created_cache_root = !self.cache_dir.exists();
@@ -1218,18 +1218,18 @@ fn validate_source_name(name: &str) -> Result<()> {
         message: format!("invalid source name: {e}"),
     })?;
     // A source's checkout is `<cache_dir>/<name>`, and the cache lock is a file
-    // at `<cache_dir>/sources.lock`. A source claiming that name would put a
+    // at `<cache_dir>/cache.lock`. A source claiming that name would put a
     // directory where the lock file goes, so neither could be opened.
     if name
         .split(['/', '\\'])
         .next()
-        .is_some_and(|first| first.eq_ignore_ascii_case(crate::SOURCES_LOCK_FILENAME))
+        .is_some_and(|first| first.eq_ignore_ascii_case(crate::SOURCE_CACHE_LOCK_FILENAME))
     {
         return Err(SourceError::GitError {
             name: name.to_string(),
             message: format!(
                 "invalid source name: '{}' is reserved for the source-cache lock",
-                crate::SOURCES_LOCK_FILENAME
+                crate::SOURCE_CACHE_LOCK_FILENAME
             ),
         }
         .into());

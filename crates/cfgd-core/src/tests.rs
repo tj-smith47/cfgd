@@ -619,7 +619,7 @@ fn an_uncontended_source_lock_is_taken_without_announcing_a_wait() {
     })
     .expect("a free lock is taken");
     assert!(
-        cache.join(SOURCES_LOCK_FILENAME).is_file(),
+        cache.join(SOURCE_CACHE_LOCK_FILENAME).is_file(),
         "the lock lands in the cache dir it guards"
     );
     drop(guard);
@@ -693,7 +693,7 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
     // without it the woken contender fails ENOENT for having waited politely.
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    let lock_path = cache.join(SOURCES_LOCK_FILENAME);
+    let lock_path = cache.join(SOURCE_CACHE_LOCK_FILENAME);
     let guard = acquire_source_lock(&cache, || panic!("the first holder never waits"))
         .expect("the holder takes a free lock");
 
@@ -750,29 +750,36 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
 
 #[test]
 #[serial_test::serial]
-fn an_acquire_that_never_finds_its_own_file_reports_the_lock_held() {
+fn an_acquire_that_never_finds_its_own_file_says_so_instead_of_claiming_a_holder() {
     // Someone deleting the lock in a loop exhausts the re-open budget. The
-    // acquire must then report the lock as held, NOT hand back a guard over a
-    // file the path no longer names: that guard is the double-holder state the
-    // re-check exists to prevent, and a caller told "held" reports or retries,
-    // which is the truthful answer.
+    // acquire must then fail, NOT hand back a guard over a file the path no
+    // longer names: that guard is the double-holder state the re-check exists
+    // to prevent. And the failure is not contention — nobody holds anything —
+    // so it must not announce a wait, and the error names the lock file that
+    // kept changing rather than a holder to go look for.
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    // Two budgets' worth, because `acquire_source_lock` makes two acquires: the
-    // non-blocking probe, whose exhaustion reads as "held" and sends it into
-    // the waiting arm, and the blocking retry behind it. Exactly that many, so
-    // the injection drains itself here and leaks nothing into whatever runs
-    // next on this thread.
-    crate::force_stale_lock_rechecks(16);
+    // One budget's worth: exhaustion on the non-blocking probe propagates
+    // directly instead of being read as a held lock and retried blocking.
+    // Exactly that many, so the injection drains itself here and leaks nothing
+    // into whatever runs next on this thread.
+    crate::force_stale_lock_rechecks(crate::STALE_LOCK_ATTEMPTS);
 
-    let err = acquire_source_lock(&cache, || {})
-        .expect_err("an acquire that can never confirm its file must not return a guard");
+    let err = acquire_source_lock(&cache, || {
+        panic!("exhaustion is not contention; no wait may be announced")
+    })
+    .expect_err("an acquire that can never confirm its file must not return a guard");
     assert!(
         matches!(
             err,
-            crate::errors::CfgdError::State(crate::errors::StateError::ApplyLockHeld { .. })
+            crate::errors::CfgdError::State(crate::errors::StateError::LockFileUnstable { .. })
         ),
-        "exhaustion reports the lock as held, got: {err}"
+        "exhaustion names the unstable lock file, got: {err}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains(SOURCE_CACHE_LOCK_FILENAME) && !msg.contains("held"),
+        "the failure names the lock file that kept changing and claims no holder: {msg}"
     );
 }
 

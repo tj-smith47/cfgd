@@ -3088,7 +3088,7 @@ mod local_source_fixture {
     #[serial]
     fn load_source_serializes_on_a_lock_file_in_the_cache_dir() {
         // The origin check, the discard and the clone are one critical section
-        // held under `<cache_dir>/sources.lock`. The lock is released with the
+        // held under `<cache_dir>/cache.lock`. The lock is released with the
         // load, so the second load of the same name takes it again: were the
         // guard held past the first return, this test would never finish.
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
@@ -3104,7 +3104,7 @@ mod local_source_fixture {
 
             mgr.load_source(&spec, &test_printer())
                 .expect("the first load clones under the lock");
-            let lock_path = cache_dir.join(crate::SOURCES_LOCK_FILENAME);
+            let lock_path = cache_dir.join(crate::SOURCE_CACHE_LOCK_FILENAME);
             assert!(
                 lock_path.is_file(),
                 "the lock lives beside the checkouts it guards: {:?}",
@@ -3303,12 +3303,30 @@ mod local_source_fixture {
                 .collect();
             assert_eq!(
                 left,
-                vec![std::ffi::OsString::from(crate::SOURCES_LOCK_FILENAME)],
+                vec![std::ffi::OsString::from(crate::SOURCE_CACHE_LOCK_FILENAME)],
                 "only the lock file may survive a failed first-ever load"
             );
             assert!(
                 !cache_dir.join("litter").exists(),
                 "a failed load must not leave a checkout the next load would serve"
+            );
+
+            // Pin the lock FILE's identity across the next failing load, not
+            // just its presence: a rewrite that replaced the lock by
+            // temp+rename would keep the name while orphaning the inode a
+            // blocked contender holds, which is a deletion in every way that
+            // matters to that contender. The hard link is the witness — it
+            // names the file the first load created, so `is_same_inode`
+            // answers whether the path still does too.
+            let lock_path = cache_dir.join(crate::SOURCE_CACHE_LOCK_FILENAME);
+            let witness = tmp.path().join("lock-identity-witness");
+            std::fs::hard_link(&lock_path, &witness)
+                .expect("the surviving lock file can be hard-linked as an identity witness");
+            mgr.load_source(&spec, &test_printer())
+                .expect_err("the pin still matches no tag on the next load");
+            assert!(
+                crate::is_same_inode(&lock_path, &witness),
+                "a failed load must reuse the standing lock file, never replace it"
             );
         });
     }
@@ -3338,17 +3356,17 @@ mod local_source_fixture {
 
     #[test]
     fn a_source_may_not_claim_the_cache_lock_filename() {
-        // The lock is a FILE at `<cache_dir>/sources.lock` and a checkout is a
+        // The lock is a FILE at `<cache_dir>/cache.lock` and a checkout is a
         // DIRECTORY at `<cache_dir>/<name>`. A source claiming that name would
         // put one where the other goes, so the name is refused up front rather
         // than failing later as an unopenable path.
-        let err = validate_source_name(crate::SOURCES_LOCK_FILENAME)
+        let err = validate_source_name(crate::SOURCE_CACHE_LOCK_FILENAME)
             .expect_err("the lock filename is not an available source name");
         assert!(
             err.to_string().contains("reserved"),
             "the refusal must say why: {err}"
         );
-        validate_source_name("sources.lock.d").expect("only the exact reserved name is refused");
+        validate_source_name("cache.lock.d").expect("only the exact reserved name is refused");
     }
 }
 

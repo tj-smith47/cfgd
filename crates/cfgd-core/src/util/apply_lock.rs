@@ -16,7 +16,12 @@ const LOCKS_SUBDIR: &str = "locks";
 /// the cache is what it guards: a cache directory carried to another machine,
 /// or wiped, takes its lock with it. `validate_source_name` rejects this name,
 /// so no source's checkout can ever occupy the path.
-pub const SOURCES_LOCK_FILENAME: &str = "sources.lock";
+///
+/// Deliberately NOT `sources.lock`: the SHA lockfile beside the user's config
+/// (`sources/lockfile.rs`) already owns that name, and two unrelated files
+/// sharing it invites the wrong one being inspected or deleted. The cache
+/// directory the file sits in already says what this lock is for.
+pub const SOURCE_CACHE_LOCK_FILENAME: &str = "cache.lock";
 
 /// High half of the byte offset `LockFileEx` locks, i.e. the lock sits one byte
 /// past 2^63 into the file.
@@ -118,9 +123,12 @@ fn held_file(lock: &LockFile) -> &std::fs::File {
 /// Addressed by handle rather than by path for the reason [`acquire_lock_at`]
 /// re-checks identity at all: a path-addressed write does not inherit the
 /// identity the re-check established, so it can land in a file this process
-/// does not hold. It writes through a `try_clone` of the handle rather than
-/// through `Flock`'s own `DerefMut`, which on macOS ARM64 silently drops the
-/// write (the exclusion is unaffected — the lock still holds).
+/// does not hold. The write goes through a `try_clone` of the held handle (a
+/// second descriptor over the same open file description) rather than through
+/// `Flock`'s own `DerefMut`: a write through the `DerefMut` path was observed
+/// dropped on macOS ARM64, and the dup keeps the write on a plain `File` code
+/// path. Whether that avoids the dropped write there is evidence only the
+/// real-OS runs can give; the exclusion itself is unaffected either way.
 fn record_pid(lock: &LockFile) -> errors::Result<()> {
     use std::io::{Seek, Write};
     let mut file = held_file(lock).try_clone()?;
@@ -250,7 +258,25 @@ enum LockWait {
 /// One retry covers the real case: somebody removed the lock file (or the
 /// directory holding it) while a contender was blocked on it. The remaining
 /// attempts exist so a repeating removal ends in an error rather than a spin.
-const STALE_LOCK_ATTEMPTS: usize = 8;
+pub const STALE_LOCK_ATTEMPTS: usize = 8;
+
+/// How long a re-open waits before its next attempt: doubles from a few
+/// milliseconds, capped well under a second.
+///
+/// A plain removal re-opens cleanly at once, so the first delay is short. The
+/// Windows delete-pending window is different: it lasts until the deleter's
+/// LAST handle closes, so back-to-back retries all land inside one window and
+/// the attempt budget buys nothing. The backoff gives that handle time to
+/// close. It is a chance, not a guarantee; a window outliving the whole budget
+/// still surfaces the real io error.
+fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
+    const BASE_MS: u64 = 4;
+    const CAP_MS: u64 = 64;
+    // 4 << 6 already clears the cap, so wider shifts cannot change the answer
+    // and capping them keeps the shift in range for any attempt count.
+    let doublings = attempt.saturating_sub(1).min(6) as u32;
+    std::time::Duration::from_millis((BASE_MS << doublings).min(CAP_MS))
+}
 
 /// Acquire an exclusive whole-file lock at `lock_path`, on the file that
 /// `lock_path` still names when the lock is granted.
@@ -270,11 +296,13 @@ const STALE_LOCK_ATTEMPTS: usize = 8;
 /// re-open recreates the directory too (in [`lock_file_at`]) rather than
 /// failing the contender with `ENOENT` for waiting politely.
 ///
-/// Exhausting the attempts reports the lock as held rather than handing back a
-/// guard over a file the path no longer names: that guard would be the very
-/// double-holder state the re-check exists to prevent, and a caller told "held"
-/// retries or reports, which is the truthful outcome when someone is deleting
-/// the lock in a loop.
+/// Exhausting the attempts reports
+/// [`errors::StateError::LockFileUnstable`] rather than handing back a guard
+/// over a file the path no longer names: that guard would be the very
+/// double-holder state the re-check exists to prevent. Deliberately NOT the
+/// held-lock error: nobody is known to hold anything, so the caller must not
+/// be sent looking for a holder, and [`acquire_source_lock`] must not read
+/// the exhaustion as contention and announce a wait for it.
 fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
     let mut attempt = 1;
     loop {
@@ -283,9 +311,12 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
             Ok(locked) => locked,
             // The open itself lost a race with a removal: the file (or its
             // directory) went away, or on Windows sits in the delete-pending
-            // window, which refuses opens with ERROR_ACCESS_DENIED. Both are
-            // transient and neither means the caller may not have the lock.
+            // window, which refuses opens with ERROR_ACCESS_DENIED. The
+            // backoff is what gives the retry a chance at the second case —
+            // delete-pending clears only when the deleter's last handle
+            // closes, and back-to-back attempts all land inside one window.
             Err(e) if !last_attempt && is_transient_open_error(&e) => {
+                std::thread::sleep(stale_retry_backoff(attempt));
                 attempt += 1;
                 continue;
             }
@@ -305,8 +336,8 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
         // PID record this process does not own.
         drop(locked);
         if last_attempt {
-            return Err(errors::StateError::ApplyLockHeld {
-                holder: holder_label(lock_path),
+            return Err(errors::StateError::LockFileUnstable {
+                path: lock_path.to_path_buf(),
             }
             .into());
         }
@@ -314,8 +345,11 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
     }
 }
 
-/// Whether an open failure is one a re-open can still win: the lock file or its
-/// directory was removed, or Windows is holding it in delete-pending.
+/// Whether an open failure is worth re-trying: the lock file or its directory
+/// was removed, or the open landed in Windows delete-pending, which reports
+/// `PermissionDenied`. The retry cannot tell delete-pending from a genuine
+/// EACCES; the backoff between attempts gives a pending delete time to finish,
+/// and a denial that outlives the budget surfaces as the io error it is.
 fn is_transient_open_error(err: &errors::CfgdError) -> bool {
     let errors::CfgdError::Io(io) = err else {
         return false;
@@ -478,7 +512,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLoc
 }
 
 /// Acquire the exclusive source-cache lock at
-/// `<cache_dir>/`[`SOURCES_LOCK_FILENAME`].
+/// `<cache_dir>/`[`SOURCE_CACHE_LOCK_FILENAME`].
 ///
 /// Held across a source's origin check, the discard of a mismatched checkout,
 /// and the clone or fetch that replaces it. That sequence is a
@@ -501,7 +535,7 @@ pub fn acquire_source_lock(
     on_wait: impl FnOnce(),
 ) -> errors::Result<FileLockGuard> {
     std::fs::create_dir_all(cache_dir)?;
-    let lock_path = cache_dir.join(SOURCES_LOCK_FILENAME);
+    let lock_path = cache_dir.join(SOURCE_CACHE_LOCK_FILENAME);
     match acquire_lock_at(&lock_path, LockWait::Refuse) {
         Err(errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })) => {
             on_wait();
