@@ -610,6 +610,7 @@ fn backup_locks_are_per_unit_and_live_under_the_locks_dir() {
 }
 
 #[test]
+#[serial_test::serial]
 fn an_uncontended_source_lock_is_taken_without_announcing_a_wait() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
@@ -625,6 +626,7 @@ fn an_uncontended_source_lock_is_taken_without_announcing_a_wait() {
 }
 
 #[test]
+#[serial_test::serial]
 fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_releases() {
     // The blocking arm is the one that can hang a CLI, so it is driven rather
     // than reasoned about — with channels and the acquire's own witness, never
@@ -676,6 +678,69 @@ fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_rele
         .recv()
         .expect("the wait ends when the holder releases");
     waiter.join().expect("the waiter thread finishes");
+}
+
+#[test]
+#[serial_test::serial]
+fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
+    // The failed-load cleanup removes the lock file it is holding, which is
+    // what makes this reachable: a contender already blocked on that file wakes
+    // holding an exclusive lock on an unlinked inode, while the next process
+    // creates a fresh file at the same path and locks THAT. Both would then be
+    // "the" holder. The acquire re-checks identity after the lock is granted,
+    // so the woken contender re-opens instead.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let lock_path = cache.join(SOURCES_LOCK_FILENAME);
+    let guard = acquire_source_lock(&cache, || panic!("the first holder never waits"))
+        .expect("the holder takes a free lock");
+
+    // The contender blocks on the file that is about to be deleted.
+    let (took_tx, took_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let contender_cache = cache.clone();
+    let contender = std::thread::spawn(move || {
+        let held = acquire_source_lock(&contender_cache, || {}).expect("the contender waits");
+        let _ = took_tx.send(());
+        let _ = release_rx.recv();
+        drop(held);
+    });
+    assert!(
+        crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+        "the contender must be blocked on the lock file before it is removed"
+    );
+
+    std::fs::remove_file(&lock_path).expect("the holder removes the file it locked");
+    drop(guard);
+    took_rx.recv().expect("the contender takes the lock");
+
+    // Whatever file the contender ended up holding, a later acquire has to be
+    // excluded by it. Without the identity re-check the contender is on an
+    // orphan inode, this acquire creates a new file and takes it immediately,
+    // and two holders are in the section at once.
+    let (late_tx, late_rx) = std::sync::mpsc::channel::<()>();
+    let late_cache = cache.clone();
+    let late = std::thread::spawn(move || {
+        let held = acquire_source_lock(&late_cache, || {}).expect("the late acquire waits");
+        let _ = late_tx.send(());
+        drop(held);
+    });
+    assert!(
+        crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+        "a lock taken after the file was replaced must still exclude the next acquire"
+    );
+    assert!(
+        matches!(
+            late_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "the contender still holds the section, so nothing else may be in it"
+    );
+
+    let _ = release_tx.send(());
+    late_rx.recv().expect("the late acquire completes in turn");
+    contender.join().expect("the contender thread finishes");
+    late.join().expect("the late thread finishes");
 }
 
 #[test]

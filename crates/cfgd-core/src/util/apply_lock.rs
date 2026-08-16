@@ -91,7 +91,16 @@ impl Drop for FileLockGuard {
     fn drop(&mut self) {
         // Clear the PID so stale reads aren't confusing.
         // Lock is released when LockFile is dropped after this.
-        if let Err(e) = std::fs::write(&self._path, b"") {
+        //
+        // Truncate an existing file rather than `fs::write`, which creates one:
+        // a holder may have deleted the lock it held (the failed-first-load
+        // cache cleanup does exactly that), and re-creating it there would
+        // leave a fresh empty file inside a directory that was just removed.
+        let cleared = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&self._path);
+        if let Err(e) = cleared {
             tracing::debug!(path = ?self._path, error = %e, "failed to clear lock PID on drop");
         }
     }
@@ -169,16 +178,53 @@ enum LockWait {
     Block,
 }
 
+/// How many times an acquire re-opens a lock file that was deleted between the
+/// open and the lock.
+///
+/// One retry is the real case (a holder that removed the file it locked, which
+/// is what a failed first-ever source load does to an empty cache root). The
+/// remaining attempts exist so a pathological sequence of deletions ends in an
+/// error rather than a spin.
+const STALE_LOCK_ATTEMPTS: usize = 8;
+
+/// Acquire an exclusive whole-file lock at `lock_path`, on the file that
+/// `lock_path` still names when the lock is granted.
+///
+/// The identity re-check is what makes deleting a lock file safe. Both
+/// `flock` and `LockFileEx` lock an OPEN FILE, not a path, and both platforms
+/// let a file be unlinked while handles to it are open (Rust's Windows opens
+/// carry `FILE_SHARE_DELETE`). So a contender that blocks on the lock, and
+/// whose holder then removes the file, wakes up holding an exclusive lock on an
+/// orphan inode that no later process can ever open — while the next process
+/// creates a fresh file at the same path and locks that one instead. Two
+/// processes then hold "the" lock at once, which is the exact interleaving the
+/// lock exists to prevent. Re-opening on a mismatch closes it: the winner is
+/// whoever holds the file the path currently names.
+fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
+    let mut attempt = 1;
+    loop {
+        let mut locked = lock_file_at(lock_path, wait)?;
+        if attempt < STALE_LOCK_ATTEMPTS && !locked_file_is_current(&locked, lock_path) {
+            // Dropped bare, not through `FileLockGuard`: the guard's drop
+            // clears the PID record by PATH, which now names somebody else's
+            // file.
+            drop(locked);
+            attempt += 1;
+            continue;
+        }
+        record_pid(&mut locked, lock_path)?;
+        return Ok(FileLockGuard {
+            _file: locked,
+            _path: lock_path.to_path_buf(),
+        });
+    }
+}
+
 // Acquire an exclusive whole-file lock via `flock()` (`LOCK_EX`, plus
 // `LOCK_NB` under `LockWait::Refuse`): `StateError::ApplyLockHeld` when another
 // holder has it and the caller refuses to wait.
-//
-// The PID is written via `std::fs::write` (a fresh open/write/close) rather
-// than through the Flock fd because on macOS ARM64 writes through
-// `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
-// unaffected — `Flock<File>` still holds it).
 #[cfg(unix)]
-fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
+fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<LockFile> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -190,7 +236,7 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
         LockWait::Refuse => nix::fcntl::FlockArg::LockExclusiveNonblock,
         LockWait::Block => nix::fcntl::FlockArg::LockExclusive,
     };
-    let locked = nix::fcntl::Flock::lock(file, arg).map_err(|(_file, errno)| {
+    nix::fcntl::Flock::lock(file, arg).map_err(|(_file, errno)| {
         if errno == nix::errno::Errno::EWOULDBLOCK {
             errors::CfgdError::from(errors::StateError::ApplyLockHeld {
                 holder: holder_label(lock_path),
@@ -198,14 +244,27 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
         } else {
             errors::CfgdError::from(std::io::Error::from(errno))
         }
-    })?;
-
-    std::fs::write(lock_path, pid_record().as_bytes())?;
-
-    Ok(FileLockGuard {
-        _file: locked,
-        _path: lock_path.to_path_buf(),
     })
+}
+
+// The PID is written via `std::fs::write` (a fresh open/write/close) rather
+// than through the Flock fd because on macOS ARM64 writes through
+// `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
+// unaffected — `Flock<File>` still holds it).
+#[cfg(unix)]
+fn record_pid(_file: &mut LockFile, lock_path: &std::path::Path) -> errors::Result<()> {
+    std::fs::write(lock_path, pid_record().as_bytes())?;
+    Ok(())
+}
+
+/// Whether the locked file is still the one `lock_path` names.
+#[cfg(unix)]
+fn locked_file_is_current(file: &LockFile, lock_path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), std::fs::metadata(lock_path)) {
+        (Ok(held), Ok(named)) => held.ino() == named.ino() && held.dev() == named.dev(),
+        _ => false,
+    }
 }
 
 // Acquire an exclusive whole-file lock via `LockFileEx`
@@ -214,8 +273,7 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
 // and the caller refuses to wait. The lock is released when the guard drops
 // and the handle closes.
 #[cfg(windows)]
-fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
-    use std::io::Write;
+fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<LockFile> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
@@ -262,15 +320,55 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
         return Err(err.into());
     }
 
-    let mut f = file;
-    f.set_len(0)?;
-    write!(f, "{}", pid_record())?;
-    f.sync_all()?;
+    Ok(file)
+}
 
-    Ok(FileLockGuard {
-        _file: f,
-        _path: lock_path.to_path_buf(),
-    })
+#[cfg(windows)]
+fn record_pid(file: &mut LockFile, _lock_path: &std::path::Path) -> errors::Result<()> {
+    use std::io::Write;
+    file.set_len(0)?;
+    write!(file, "{}", pid_record())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Whether the locked file is still the one `lock_path` names.
+///
+/// Windows has no inode, so identity is the volume serial plus the file index,
+/// read from the HELD handle (the path's own entry may already be gone).
+#[cfg(windows)]
+fn locked_file_is_current(file: &LockFile, lock_path: &std::path::Path) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    fn info_of(file: &std::fs::File) -> Option<BY_HANDLE_FILE_INFORMATION> {
+        // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain-old-data struct of
+        // integer fields; the all-zero bit pattern is a valid initial value
+        // that `GetFileInformationByHandle` overwrites before it is read.
+        let mut info = unsafe { std::mem::zeroed() };
+        // SAFETY: `file.as_raw_handle()` is a valid, open Win32 file handle
+        // owned by `file`, which outlives the call. `&mut info` points to
+        // sufficient, aligned, stack-local writable memory for the out
+        // parameter, and nothing else aliases it.
+        let ret = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+        if ret != 0 { Some(info) } else { None }
+    }
+
+    let Some(held) = info_of(file) else {
+        return false;
+    };
+    let Some(named) = std::fs::File::open(lock_path)
+        .ok()
+        .as_ref()
+        .and_then(info_of)
+    else {
+        return false;
+    };
+    held.dwVolumeSerialNumber == named.dwVolumeSerialNumber
+        && held.nFileIndexHigh == named.nFileIndexHigh
+        && held.nFileIndexLow == named.nFileIndexLow
 }
 
 /// Acquire the machine-wide apply lock at `<state_dir>/apply.lock`.
