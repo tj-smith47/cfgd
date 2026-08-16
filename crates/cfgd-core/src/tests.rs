@@ -680,6 +680,22 @@ fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_rele
     waiter.join().expect("the waiter thread finishes");
 }
 
+fn remove_with_retry(op: impl Fn() -> std::io::Result<()>, what: &str) {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..100 {
+        match op() {
+            Ok(()) => return,
+            Err(e) => {
+                last = Some(e);
+                // sleep-ok: waiting out a foreign scanner's transient handle;
+                // no in-process observable exists for another process's handle
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    panic!("{what}: still failing after retries: {last:?}");
+}
+
 #[test]
 #[serial_test::serial]
 fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
@@ -713,9 +729,19 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
     );
 
     // Exactly what a `rm -rf <cache dir>` does to a live holder: the lock file
-    // AND the directory it lives in.
-    std::fs::remove_file(&lock_path).expect("the file the holder locked is removed");
-    std::fs::remove_dir(&cache).expect("the directory holding it goes too");
+    // AND the directory it lives in. On Windows a scanner (Defender, the
+    // indexer) briefly holds fresh files without FILE_SHARE_DELETE, so an
+    // unlucky remove fails with a sharing violation; retry the simulation
+    // briefly. The code under test never deletes, so this loop is fixture
+    // robustness against a foreign handle, not synchronization of cfgd.
+    remove_with_retry(
+        || std::fs::remove_file(&lock_path),
+        "the file the holder locked is removed",
+    );
+    remove_with_retry(
+        || std::fs::remove_dir(&cache),
+        "the directory holding it goes too",
+    );
     drop(guard);
     took_rx.recv().expect("the contender takes the lock");
 
