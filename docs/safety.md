@@ -128,16 +128,20 @@ cfgd takes an exclusive whole-file lock to prevent concurrent applies — `flock
 - The lock is released automatically when the process exits
 - The holder records its PID in the lock file, and a refused apply names it: `apply lock held by another process: pid 12345`
 
-**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, the OS releases it automatically when the file handle closes. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
+**Resolving a stuck lock**: A crash does not leave a stuck lock. The OS releases the lock the moment the crashed process's file handle closes. The leftover file is unlocked, and the next acquire reuses it. If the file names a PID that is no longer running, that record is stale and harmless: the next holder overwrites it. In that no-holder case you may delete the file, but check first. Kill the PID shown if it is still alive, or retry the acquire. A refused acquire means a live holder exists, whatever the PID record says.
 
 The message reads `unknown pid` when the file holds no complete PID record, and cfgd would rather say it does not know than name a process it is not sure about. Two things produce it:
 
 - A holder that is not cfgd (`flock(1)`, say) never writes a record at all.
-- **Version skew across an upgrade.** cfgd started writing a terminator after the PID; a daemon still running from before `cfgd upgrade` writes the older, terminator-less record, which a newer contender will not read as a PID. The holder is a perfectly legitimate cfgd process — restarting the daemon (`systemctl --user restart cfgd`, or whatever supervises it) puts the two on the same format again.
+- **Version skew across an upgrade.** cfgd started writing a terminator after the PID. A daemon still running from before `cfgd upgrade` writes the older, terminator-less record, which a newer contender will not read as a PID. The holder is a perfectly legitimate cfgd process.
 
-Deleting the lock file is the same remedy in either case.
+Both `unknown pid` cases have a live holder. Find it and stop it: kill the non-cfgd holder (`fuser` or `lsof` on the lock file will name it), or restart the skewed daemon (`systemctl --user restart cfgd`, or whatever supervises it) to put the two on the same record format.
 
-**The PID is advisory; the refusal is not.** "Lock held" is decided by the OS and is always correct. The PID is read from the file separately, and a holder that crashed without clearing its record leaves it in place until the next holder overwrites it — so a contender arriving in the syscall-narrow window between that acquire and that write can name the *previous* holder. Treat the PID as a starting point for `ps`, not as proof.
+**Never delete a lock file while its holder is alive.** The holder keeps its lock on the deleted file. The next acquire creates a fresh file at the same path and locks that one instead. Both processes then run at once. This split is the one sequence cfgd's own lock safety checks cannot catch, because each holder's lock is valid on its own file.
+
+**NFS caveat**: flock-based locking is not sound on NFS-backed state or cache directories. Linux emulates `flock()` over NFS with POSIX locks, and closing any descriptor for the file drops the lock. Keep the state dir and source cache on a local filesystem.
+
+**The PID is advisory; the refusal is not.** "Lock held" is decided by the OS and is always correct. The PID is read from the file separately, and a holder that crashed without clearing its record leaves it in place until the next holder overwrites it, so a contender arriving in the syscall-narrow window between that acquire and that write can name the *previous* holder. Treat the PID as a starting point for `ps`, not as proof.
 
 ## Graceful Interruption (SIGINT / SIGTERM)
 
