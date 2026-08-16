@@ -278,15 +278,38 @@ impl SourceManager {
             .into());
         }
 
-        let source_dir = self.cache_dir.join(&spec.name);
-
         // The cache root is a precondition of everything below, the lock file
         // included, so it is created here with the wording a caller who cannot
         // create it needs — before the lock's own silent `create_dir_all` would
-        // report the same failure as a bare io error.
+        // report the same failure as a bare io error. A root cfgd creates is
+        // owner-only; one the operator already made keeps the mode they gave
+        // it, because a cache directory can be deliberately shared and
+        // re-tightening it on every load would take that choice away.
+        let created_cache_root = !self.cache_dir.exists();
         std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
             message: format!("cannot create cache dir: {e}"),
         })?;
+        if created_cache_root {
+            let _ = crate::set_file_permissions(&self.cache_dir, 0o700);
+        }
+
+        let outcome = self.load_source_locked(spec, printer);
+
+        // A first-ever load that failed leaves a cache root holding nothing but
+        // the lock file this run made. Take back exactly what this run created
+        // and nothing else: the removal is skipped unless the root is empty
+        // apart from that lock, so a checkout, or another process's work, is
+        // never in the blast radius.
+        if outcome.is_err() && created_cache_root {
+            discard_unpopulated_cache_root(&self.cache_dir);
+        }
+        outcome
+    }
+
+    /// The body of [`Self::load_source`] that runs under the source-cache lock,
+    /// from the origin check through the completed clone or fetch.
+    fn load_source_locked(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
+        let source_dir = self.cache_dir.join(&spec.name);
 
         // Everything from here to the end of the load is a check-then-act over
         // a directory two cfgd processes can be told to own: the origin check
@@ -294,14 +317,15 @@ impl SourceManager {
         // fetch rebuilds it. Unserialized, a second process's fetch resolves
         // `origin` after this one re-pointed it, or clones into a tree this one
         // is still removing.
+        //
+        // The notice goes through `alert`, not `status_simple`: the wait is
+        // unbounded and can cover another process's network clone, and the
+        // command most likely to contend (`cfgd sync`) hands `load_source` a
+        // Quiet printer that swallows every role but `Fail`. An advisory about
+        // what this run is actually doing has to survive that, so it takes the
+        // always-visible stderr channel `alert` and `deprecation` share.
         let _cache_lock = crate::acquire_source_lock(&self.cache_dir, || {
-            printer.status_simple(
-                Role::Info,
-                format!(
-                    "Waiting for another cfgd process to finish updating the source cache before loading '{}'",
-                    spec.name
-                ),
-            );
+            printer.alert(cache_wait_notice(&spec.name));
         })?;
 
         // The cache is keyed by the source NAME alone, so nothing else ties an
@@ -992,21 +1016,14 @@ impl SourceManager {
     }
 
     /// Remove a source from cache.
-    pub fn remove_source(&mut self, name: &str) -> Result<()> {
-        let cached = self
-            .sources
+    pub fn remove_source(&mut self, name: &str, printer: &Printer) -> Result<()> {
+        self.sources
             .remove(name)
             .ok_or_else(|| SourceError::NotFound {
                 name: name.to_string(),
             })?;
 
-        if cached.local_path.exists() {
-            std::fs::remove_dir_all(&cached.local_path).map_err(|e| SourceError::CacheError {
-                message: format!("failed to remove cache for '{}': {}", name, e),
-            })?;
-        }
-
-        Ok(())
+        discard_cached_checkout(&self.cache_dir, name, printer)
     }
 
     /// Compose this manager's already-loaded sources with a local resolved
@@ -1146,6 +1163,67 @@ impl SourceManager {
             sync: Default::default(),
         }
     }
+}
+
+/// The advisory a contended source-cache acquire announces, so the two callers
+/// that can wait on it cannot describe the same wait two ways.
+fn cache_wait_notice(name: &str) -> String {
+    format!("Source '{name}': waiting for another cfgd process to finish updating the source cache")
+}
+
+/// Remove the cached checkout of `name` under `cache_dir`, holding the
+/// source-cache lock across the removal.
+///
+/// The ONE deletion of a source's checkout, and why it is not an inline
+/// `remove_dir_all` at either caller: unserialized, `cfgd source remove` deletes
+/// the tree a concurrent `cfgd sync` is cloning into, which is the same
+/// interleaving the lock exists to close on the load side. `cfgd source remove`
+/// reaches it directly rather than through
+/// [`SourceManager::remove_source`], because that command never populates the
+/// in-memory `sources` map its `NotFound` is judged against.
+///
+/// A checkout that is already gone is not an error: the caller asked for its
+/// absence, and another process winning the race delivered exactly that.
+pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) -> Result<()> {
+    validate_source_name(name)?;
+    let checkout = cache_dir.join(name);
+    // Judged before the lock so a removal with no cache at all neither creates
+    // the cache root nor leaves a lock file in one.
+    if !checkout.exists() {
+        return Ok(());
+    }
+    let _cache_lock = crate::acquire_source_lock(cache_dir, || {
+        printer.alert(cache_wait_notice(name));
+    })?;
+    match std::fs::remove_dir_all(&checkout) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SourceError::CacheError {
+            message: format!("failed to remove cache for '{name}': {e}"),
+        }
+        .into()),
+    }
+}
+
+/// Take back a cache root this run created and then failed to populate.
+///
+/// Best-effort and deliberately narrow: it removes the lock file and the
+/// directory only when the directory holds nothing else, so a checkout — or a
+/// root that turned out to pre-exist after all — is never in the blast radius.
+/// `remove_dir` rather than `remove_dir_all` is the second half of that
+/// guarantee: a non-empty directory refuses.
+fn discard_unpopulated_cache_root(cache_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { return };
+        if entry.file_name() != std::ffi::OsStr::new(crate::SOURCES_LOCK_FILENAME) {
+            return;
+        }
+    }
+    let _ = std::fs::remove_file(cache_dir.join(crate::SOURCES_LOCK_FILENAME));
+    let _ = std::fs::remove_dir(cache_dir);
 }
 
 /// Reject a source name that cannot serve as a cache directory of its own.

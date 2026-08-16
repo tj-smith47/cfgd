@@ -148,13 +148,14 @@ pub fn cmd_source_remove(
     }
 
     // Remove the cached clone. It lives at `<cache_dir>/<name>` (see
-    // SourceManager::load_source). Delete the directory directly: the previous
-    // SourceManager::remove_source path keyed off an in-memory `sources` map
-    // that this command never populates, so it returned NotFound and the cache
-    // dir leaked on every removal.
-    let cached_dir = source_cache_dir(cli)?.join(name);
-    if cached_dir.exists()
-        && let Err(e) = std::fs::remove_dir_all(&cached_dir)
+    // SourceManager::load_source). Routed through `discard_cached_checkout`
+    // rather than `SourceManager::remove_source`, which keys off an in-memory
+    // `sources` map this command never populates and so returned NotFound while
+    // the cache dir leaked on every removal. The helper is what holds the
+    // source-cache lock across the delete, so this cannot take out the tree a
+    // concurrent `cfgd sync` is cloning into.
+    if let Err(e) =
+        cfgd_core::sources::discard_cached_checkout(&source_cache_dir(cli)?, name, printer)
     {
         // Config + state mutations already landed, so a cache-removal failure
         // is non-fatal — but surface it as a visible warning rather than a

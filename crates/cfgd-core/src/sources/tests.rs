@@ -79,7 +79,9 @@ fn build_source_spec_no_profile() {
 fn remove_nonexistent_source() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
-    let err = mgr.remove_source("nonexistent").unwrap_err();
+    let err = mgr
+        .remove_source("nonexistent", &test_printer())
+        .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "expected 'not found' error, got: {err}"
@@ -871,7 +873,7 @@ fn remove_source_success() {
     assert!(mgr.get("test-source").is_some());
 
     // Remove the source
-    mgr.remove_source("test-source")
+    mgr.remove_source("test-source", &test_printer())
         .expect("remove_source should succeed for existing cached source");
 
     // Verify it was removed from the map
@@ -1436,7 +1438,7 @@ fn remove_source_cleans_up_directory() {
         "source should be in cache before removal"
     );
 
-    mgr.remove_source("removable")
+    mgr.remove_source("removable", &test_printer())
         .expect("remove_source should succeed for existing cached source");
 
     // Post-conditions: both directory and cache entry are gone
@@ -1956,7 +1958,7 @@ fn remove_source_missing_directory_still_removes_cache_entry() {
     insert_fake_source(&mut mgr, "already-gone", missing_path.clone());
 
     // Should succeed even though directory doesn't exist
-    mgr.remove_source("already-gone")
+    mgr.remove_source("already-gone", &test_printer())
         .expect("remove should succeed when directory is already gone");
     assert!(mgr.get("already-gone").is_none());
 }
@@ -2821,7 +2823,7 @@ mod local_source_fixture {
             mgr.load_source(&spec, &printer).unwrap();
             assert!(mgr.get("ts6").is_some());
             assert!(cache_dir.join("ts6").exists());
-            mgr.remove_source("ts6").unwrap();
+            mgr.remove_source("ts6", &test_printer()).unwrap();
             assert!(mgr.get("ts6").is_none());
             assert!(!cache_dir.join("ts6").exists());
         });
@@ -3121,6 +3123,143 @@ mod local_source_fixture {
     }
 
     #[test]
+    #[serial]
+    fn removing_a_checkout_waits_for_whoever_holds_the_cache_lock() {
+        // `cfgd source remove` deleting the tree a concurrent `cfgd sync` is
+        // cloning into is the same interleaving the load path serializes, so
+        // the removal takes the same lock. Driven with the acquire's own
+        // witness rather than a clock: while the guard below is alive, a
+        // checkout that still exists is proof the delete waited.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let checkout = cache_dir.join("held");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(checkout.join("cfgd.yaml"), "kind: ConfigSource\n").unwrap();
+
+        let guard = crate::acquire_source_lock(&cache_dir, || panic!("nothing holds it yet"))
+            .expect("the holder takes a free lock");
+
+        let remover_cache = cache_dir.clone();
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel::<()>();
+        let remover = std::thread::spawn(move || {
+            discard_cached_checkout(&remover_cache, "held", &test_printer())
+                .expect("the removal completes once the holder releases");
+            let _ = removed_tx.send(());
+        });
+
+        assert!(
+            crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+            "the removal must wait on the cache lock, not delete around it"
+        );
+        assert!(
+            checkout.exists(),
+            "the lock is still held, so the checkout must be untouched"
+        );
+
+        drop(guard);
+        removed_rx
+            .recv()
+            .expect("the removal proceeds when the lock is free");
+        remover.join().expect("the removing thread finishes");
+        assert!(
+            !checkout.exists(),
+            "the checkout is gone once the lock frees"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_contended_load_announces_the_wait_through_a_quiet_printer() {
+        // `cfgd sync` hands `load_source` a printer derived at Quiet, which
+        // drops every status role but `Fail`. The wait is unbounded and can
+        // cover another process's network clone, so an ordinary status line
+        // would leave the command animating a spinner and saying nothing.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "quiet-wait", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let spec = build_spec(
+                "quiet-wait",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+
+            let guard = crate::acquire_source_lock(&cache_dir, || panic!("nothing holds it yet"))
+                .expect("the holder takes a free lock");
+
+            let (printer, buf) =
+                crate::output::Printer::for_test_at(crate::output::Verbosity::Quiet);
+            let loader_cache = cache_dir.clone();
+            let loader = std::thread::spawn(move || {
+                let mut mgr = SourceManager::new(&loader_cache);
+                mgr.load_source(&spec, &printer)
+                    .expect("the load completes once the lock frees");
+            });
+
+            assert!(
+                crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+                "the second load must wait on the holder"
+            );
+            drop(guard);
+            loader.join().expect("the loading thread finishes");
+
+            let out = crate::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains("waiting for another cfgd process"),
+                "a Quiet printer must still be told why the run is stalled, got: {out:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn a_failed_first_load_takes_back_the_cache_root_it_created() {
+        // The lock lives in the cache root, so the root is now created before
+        // anything can fail. A load that then fails must not leave an empty
+        // cache dir and a zero-byte lock where nothing existed before.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _) = make_bare_with_tags(&tmp, "litter", &["v1.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("litter", &bare, "~9");
+
+            mgr.load_source(&spec, &test_printer())
+                .expect_err("a pin matching no tag fails the first-ever load");
+            assert!(
+                !cache_dir.exists(),
+                "a failed first load leaves nothing behind: {:?}",
+                std::fs::read_dir(&cache_dir).map(|d| d
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .collect::<Vec<_>>())
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn a_failed_load_keeps_a_cache_root_it_did_not_create() {
+        // The cleanup takes back only what this run made. A cache root the
+        // operator already had, and anything in it, survives a failed load.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _) = make_bare_with_tags(&tmp, "keeper", &["v1.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            std::fs::create_dir_all(cache_dir.join("other")).unwrap();
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("keeper", &bare, "~9");
+
+            mgr.load_source(&spec, &test_printer())
+                .expect_err("a pin matching no tag fails the first-ever load");
+            assert!(cache_dir.exists(), "a pre-existing cache root is not ours");
+            assert!(
+                cache_dir.join("other").exists(),
+                "another source's checkout is never in the blast radius"
+            );
+        });
+    }
+
+    #[test]
     fn a_source_may_not_claim_the_cache_lock_filename() {
         // The lock is a FILE at `<cache_dir>/sources.lock` and a checkout is a
         // DIRECTORY at `<cache_dir>/<name>`. A source claiming that name would
@@ -3177,10 +3316,13 @@ fn clone_source_returns_cache_error_when_parent_is_regular_file() {
 
 #[test]
 fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
-    // Stand up a cached entry whose local_path points at a regular file
-    // (not a directory). remove_dir_all on a regular file fails with
+    // Stand up a cached entry whose checkout path holds a regular file rather
+    // than a directory. remove_dir_all on a regular file fails with
     // NotADirectory on Linux. remove_source must wrap that as a
-    // CacheError carrying the source name + the underlying message.
+    // CacheError carrying the source name + the underlying message. The entry
+    // is named for its own path, the way every loaded source is: the checkout
+    // is `<cache_dir>/<name>` at every write site, so a fixture pointing
+    // `local_path` somewhere else would be testing a shape nothing mints.
     let tmp = tempfile::tempdir().unwrap();
     let cache_dir = tmp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
@@ -3189,7 +3331,7 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
 
     let mut mgr = SourceManager::new(&cache_dir);
     let cached = CachedSource {
-        name: "bad".to_string(),
+        name: "not-a-dir".to_string(),
         origin_url: "https://example.com/x.git".to_string(),
         origin_branch: "main".to_string(),
         local_path: target.clone(),
@@ -3197,7 +3339,7 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
             api_version: crate::API_VERSION.into(),
             kind: "ConfigSource".into(),
             metadata: crate::config::ConfigSourceMetadata {
-                name: "bad".into(),
+                name: "not-a-dir".into(),
                 version: None,
                 description: None,
             },
@@ -3210,17 +3352,17 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
         last_fetched: None,
         resolved_ref: None,
     };
-    mgr.sources.insert("bad".to_string(), cached);
+    mgr.sources.insert("not-a-dir".to_string(), cached);
 
-    let err = mgr.remove_source("bad").unwrap_err();
+    let err = mgr.remove_source("not-a-dir", &test_printer()).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("failed to remove cache"),
         "error must surface 'failed to remove cache': {msg}"
     );
     assert!(
-        msg.contains("bad"),
-        "error must include the source name 'bad': {msg}"
+        msg.contains("not-a-dir"),
+        "error must include the source name 'not-a-dir': {msg}"
     );
 }
 
@@ -3376,7 +3518,9 @@ fn classify_signature_status_unknown_status_rejected() {
 fn source_manager_remove_source_returns_err_when_not_present() {
     let tmp = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(tmp.path());
-    let err = mgr.remove_source("does-not-exist").unwrap_err();
+    let err = mgr
+        .remove_source("does-not-exist", &test_printer())
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("does-not-exist") || msg.contains("not found"),
