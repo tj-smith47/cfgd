@@ -1721,16 +1721,6 @@ pub(in crate::cli) fn filter_plan(
 
                 if matched_skip.is_none() && passes_only {
                     filtered_actions.push(action);
-                    continue;
-                }
-                // The `Prerequisites` node that provisions the manager. Filtered
-                // away, it strands the installs that needed the manager.
-                if let reconciler::Action::Manager(reconciler::ManagerAction::Provision {
-                    manager,
-                    ..
-                }) = &action
-                {
-                    removals.record(manager, matched_skip.map(String::as_str));
                 }
             }
 
