@@ -131,7 +131,7 @@ impl<'p> LiveRow<'p> {
         if !self.bar.is_hidden() {
             self.bar.set_style(super::spinner::spinner_style(
                 &self.renderer,
-                "{prefix}{spinner} {msg}",
+                "{spinner} {msg}",
             ));
             self.bar.enable_steady_tick(super::spinner::SPINNER_TICK);
         }
@@ -261,8 +261,7 @@ impl Drop for LiveRow<'_> {
 /// `{spinner}` field — a static line beside an animated frame reads as work
 /// still happening.
 fn plain_style() -> ProgressStyle {
-    ProgressStyle::with_template("{prefix}{msg}")
-        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+    super::spinner::plain_style("{msg}")
 }
 
 /// Where a new row joins the live region.
@@ -327,7 +326,7 @@ impl super::Printer {
                 RowSlot::First => self.multi_progress.insert(0, fresh),
                 RowSlot::Foot => self.multi_progress.add(fresh),
             };
-            bar.set_prefix("  ".repeat(depth));
+            super::spinner::set_bar_depth(&bar, depth);
             bar.set_style(plain_style());
             (bar, Some(LiveBarGuard::acquire(&self.renderer)))
         } else {

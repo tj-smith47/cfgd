@@ -292,6 +292,7 @@ impl<'p> SectionGuard<'p> {
             &self.renderer,
             total,
             self.printer.live_bars(),
+            self.depth,
             &message.into(),
         );
         super::spinner::ProgressBar {

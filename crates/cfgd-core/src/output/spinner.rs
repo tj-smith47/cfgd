@@ -34,29 +34,32 @@ pub(crate) fn stderr_is_terminal() -> bool {
 /// every tick and again at the collapse — the wrap this can't be handed to
 /// `wrap_body`, because there is no second row to wrap onto. The lines that
 /// follow are an `OutputWindow` tail, already clamped at their own indent.
-pub(super) fn clamp_label(
-    sink: &dyn Writer,
-    message: &str,
-    depth: usize,
-    carry_indent: bool,
-) -> String {
+/// The message NEVER carries the indent — [`set_bar_depth`] puts it in the
+/// bar's `{prefix}`, ahead of the animated frame. Indenting here instead would
+/// leave the frame at column 0 with the text pushed away from it, which is
+/// where a spinner inside a section drifts out of the glyph column its own
+/// settled line lands in.
+pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> String {
+    // Still measured at `depth`: the prefix occupies those columns whether or
+    // not this string contains them.
     let width = wrap::available_width(sink, depth);
-    // The bar carries its own indent: indicatif draws a bar's message at
-    // column 0 whatever else is on screen, so a step inside a section would
-    // otherwise sit outside the tree it belongs to while running and jump
-    // into it the moment it settles — and its own output window, which
-    // indents one level deeper still, would hang under nothing. A bar whose
-    // style carries the indent as a `{prefix}` field asks for none here, or
-    // the row would be indented twice.
-    let indent = if carry_indent {
-        "  ".repeat(depth)
-    } else {
-        String::new()
-    };
     match message.split_once('\n') {
-        Some((head, rest)) => format!("{indent}{}\n{}", wrap::clamp(head, width), rest),
-        None => format!("{indent}{}", wrap::clamp(message, width)),
+        Some((head, rest)) => format!("{}\n{}", wrap::clamp(head, width), rest),
+        None => wrap::clamp(message, width),
     }
+}
+
+/// Indent a live bar by putting `depth`'s indent in its `{prefix}` field — the
+/// ONE way any bar in this module is indented, and the reason a spinner, a
+/// progress bar and a `LiveRow` cannot disagree about where the indent goes.
+///
+/// indicatif draws a bar's line at column 0 whatever else is on screen, so the
+/// indent has to be part of what the bar paints. Every template below leads
+/// with `{prefix}`, so the indent always lands ahead of the frame: a running
+/// line sits in the same column its settled line will, rather than jumping into
+/// the tree the moment it stops moving.
+pub(super) fn set_bar_depth(bar: &IndProgressBar, depth: usize) {
+    bar.set_prefix("  ".repeat(depth));
 }
 
 /// Live spinner. Drop without `finish_*()` emits a `Status(Info)` with the
@@ -88,12 +91,8 @@ pub struct Spinner<'p> {
 
 impl<'p> Spinner<'p> {
     pub fn set_message(&self, text: impl Into<String>) {
-        self.bar.set_message(clamp_label(
-            self.sink.as_ref(),
-            &text.into(),
-            self.depth,
-            !self.borrowed,
-        ));
+        self.bar
+            .set_message(clamp_label(self.sink.as_ref(), &text.into(), self.depth));
     }
 
     pub fn finish_ok(self, final_text: impl Into<String>) -> StatusBuilder<'p> {
@@ -256,7 +255,8 @@ pub(crate) fn make_spinner_bar(
         let (bar, live) = build_spinner(
             multi,
             renderer,
-            &clamp_label(&console::Term::stderr(), message, depth, true),
+            depth,
+            &clamp_label(&console::Term::stderr(), message, depth),
         );
         (bar, Some(live))
     }
@@ -268,20 +268,36 @@ pub(crate) fn make_progress_bar(
     renderer: &Arc<Renderer>,
     total: u64,
     live_bars: bool,
+    depth: usize,
     message: &str,
 ) -> (IndProgressBar, Option<LiveBarGuard>) {
     if !live_bars {
         (IndProgressBar::hidden(), None)
     } else {
-        let (bar, live) = build_progress_bar(multi, renderer, total, message);
+        let (bar, live) = build_progress_bar(multi, renderer, total, depth, message);
         (bar, Some(live))
     }
+}
+
+/// Compose a bar template, with the depth `{prefix}` supplied here rather than
+/// by the caller.
+///
+/// A caller names only what its bar draws AFTER the indent, so no template in
+/// this module can put the indent anywhere but first, or omit it. That freedom
+/// is what let a `LiveRow` indent ahead of its frame while a section spinner
+/// indented behind one — two bars on the same tree, in two different columns,
+/// with nothing in the types to say they disagreed.
+fn indented_template(body: &str) -> String {
+    format!("{{prefix}}{body}")
 }
 
 /// The animated frames a spinner cycles, painted by the theme. Shared with
 /// [`super::live_row::LiveRow`], whose running state is the same animation on a
 /// line it owns for longer than one step.
-pub(super) fn spinner_style(renderer: &Renderer, template: &str) -> ProgressStyle {
+///
+/// `body` is the template WITHOUT its leading `{prefix}` — see
+/// [`indented_template`].
+pub(super) fn spinner_style(renderer: &Renderer, body: &str) -> ProgressStyle {
     let frames_raw = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let styled: Vec<String> = frames_raw
         .iter()
@@ -289,9 +305,16 @@ pub(super) fn spinner_style(renderer: &Renderer, template: &str) -> ProgressStyl
         .collect();
     let mut tick_refs: Vec<&str> = styled.iter().map(|s| s.as_str()).collect();
     tick_refs.push(" ");
-    ProgressStyle::with_template(template)
+    ProgressStyle::with_template(&indented_template(body))
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
         .tick_strings(&tick_refs)
+}
+
+/// The unanimated counterpart of [`spinner_style`], on the same indent
+/// contract: a settled row, and any bar whose line is a static one.
+pub(super) fn plain_style(body: &str) -> ProgressStyle {
+    ProgressStyle::with_template(&indented_template(body))
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
 /// How often a spinner redraws its animation.
@@ -301,11 +324,13 @@ pub(super) const SPINNER_TICK: Duration = Duration::from_millis(80);
 pub(crate) fn build_spinner(
     multi: &indicatif::MultiProgress,
     renderer: &Arc<Renderer>,
+    depth: usize,
     message: &str,
 ) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new_spinner());
     let live = LiveBarGuard::acquire(renderer);
     pb.set_style(spinner_style(renderer, "{spinner} {msg}"));
+    set_bar_depth(&pb, depth);
     pb.set_message(message.to_string());
     pb.enable_steady_tick(SPINNER_TICK);
     (pb, live)
@@ -315,6 +340,7 @@ pub(crate) fn build_progress_bar(
     multi: &indicatif::MultiProgress,
     renderer: &Arc<Renderer>,
     total: u64,
+    depth: usize,
     message: &str,
 ) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new(total));
@@ -336,10 +362,11 @@ pub(crate) fn build_progress_bar(
         "{spinner} [{bar:30./dim}] {pos}/{len} {msg}"
     };
     pb.set_style(
-        ProgressStyle::with_template(template)
+        ProgressStyle::with_template(&indented_template(template))
             .unwrap_or_else(|_| ProgressStyle::default_bar())
             .progress_chars("━╸─"),
     );
+    set_bar_depth(&pb, depth);
     pb.set_message(message.to_string());
     (pb, live)
 }
@@ -365,7 +392,7 @@ mod tests {
     fn clamp_label_keeps_the_spinner_on_one_row() {
         let sink = sink_for(&Arc::new(Mutex::new(String::new())));
         let long = "sudo apt-get install -y ".repeat(20);
-        let out = clamp_label(sink.as_ref(), &long, 0, true);
+        let out = clamp_label(sink.as_ref(), &long, 0);
         assert!(!out.contains('\n'), "label gained a row: {out:?}");
         assert!(out.len() < long.len(), "label was not clamped");
         assert!(out.ends_with('…'));
@@ -377,7 +404,7 @@ mod tests {
         // already clamped at its own indent and must survive byte for byte.
         let sink = sink_for(&Arc::new(Mutex::new(String::new())));
         let tail = "  first tail line\n  second tail line";
-        let out = clamp_label(sink.as_ref(), &format!("short label\n{tail}"), 0, true);
+        let out = clamp_label(sink.as_ref(), &format!("short label\n{tail}"), 0);
         assert_eq!(out, format!("short label\n{tail}"));
     }
 
@@ -462,7 +489,7 @@ mod tests {
                 Theme::from_preset("dracula").with_colors(colors),
                 Verbosity::Normal,
             ));
-            let (bar, _live) = build_progress_bar(&multi, &renderer, 4, "installing");
+            let (bar, _live) = build_progress_bar(&multi, &renderer, 4, 0, "installing");
             bar.set_position(2);
             bar.tick();
             drawn.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -522,5 +549,47 @@ mod tests {
         );
         let sp = p.spinner("x");
         assert!(sp.bar.is_hidden(), "Quiet should yield a hidden bar");
+    }
+
+    /// Every live bar a section opens paints its glyph in the SAME column, and
+    /// in the same column the section's settled lines put theirs.
+    ///
+    /// The bug this pins: a spinner's indent used to live in its message,
+    /// behind the animated frame, so a running step drew its frame at column 0
+    /// and its text two columns right of where its own settled line would land
+    /// — while a `LiveRow` on the same tree, indenting through its `{prefix}`,
+    /// drew the frame in the right column all along. A progress bar had no
+    /// indent at all. Three builders, three answers, on one tree.
+    #[test]
+    fn every_live_bar_in_a_section_paints_its_glyph_in_the_settled_glyph_column() {
+        let (printer, screen) = super::super::Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Packages");
+        let sp = section.spinner("brew install fd");
+        let pb = section.progress_bar(4, "downloading");
+        pb.set_position(2);
+        // A tick each, so both have painted a frame rather than only a message.
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let held = screen.contents();
+        sp.finish_silent();
+        pb.finish();
+        drop(section);
+
+        let indent = "  ";
+        let rows: Vec<&str> = held
+            .lines()
+            .filter(|l| l.contains("brew install fd") || l.contains("downloading"))
+            .collect();
+        assert_eq!(rows.len(), 2, "expected both bars on screen: {held:?}");
+        for row in rows {
+            assert!(
+                row.starts_with(indent) && !row.starts_with("   "),
+                "bar is not in the section's glyph column: {row:?}"
+            );
+            let glyph = row.trim_start().chars().next().unwrap_or(' ');
+            assert!(
+                !glyph.is_ascii_alphanumeric(),
+                "expected a glyph before the text, got {row:?}"
+            );
+        }
     }
 }

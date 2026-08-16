@@ -562,6 +562,7 @@ impl Printer {
             &self.renderer,
             total,
             self.live_bars(),
+            self.renderer.inherit_depth(),
             &message.into(),
         );
         super::spinner::ProgressBar {
