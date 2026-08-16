@@ -770,5 +770,6 @@ CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
 | Version pinning bypass | `pinVersion` resolved against git tags/refs, not the source's self-reported `metadata.version` — a source cannot edit its manifest to escape the pin, and a tag outside `~2` is never checked out |
 | Privilege escalation | Sources cannot set `shell:` or install launchAgents/systemdUnits without `allowSystemChanges: true` |
 | Recursive trust | A ConfigSource cannot itself subscribe to other ConfigSources |
+| Cache substitution | Every sync compares the cached clone's recorded `origin` against the declared URL and discards and re-clones on mismatch, so a stale or planted clone never serves under this source's name. Offline reads warn and skip a mismatched cache |
 
 Every new capability requested by a source update requires interactive confirmation. The daemon never auto-applies permission-expanding changes.

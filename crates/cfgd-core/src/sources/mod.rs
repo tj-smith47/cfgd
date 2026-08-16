@@ -193,6 +193,21 @@ impl SourceManager {
             return Ok(());
         }
 
+        // A read path never fetches, but it must not COMPOSE a checkout that was
+        // cloned from a repository the spec no longer names — that is another
+        // source's content wearing this one's name. Degrade exactly like the
+        // cache-miss above: the sync path is what discards and re-clones.
+        if !Self::cached_origin_matches(spec, &source_dir) {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; using local state only",
+                    spec.name
+                ),
+            );
+            return Ok(());
+        }
+
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
         // A cached source still gets its signature verified — a tampered cache
@@ -259,6 +274,31 @@ impl SourceManager {
         }
 
         let source_dir = self.cache_dir.join(&spec.name);
+
+        // The cache is keyed by the source NAME alone, so nothing else ties an
+        // existing checkout to the origin it was cloned from. Left unchecked, a
+        // subscription whose origin changed — or two configs sharing one cache
+        // under the same name — fetches whatever repository the stale clone
+        // still points at and serves content the spec never named. A clone
+        // whose recorded origin disagrees is discarded and re-cloned rather
+        // than re-pointed: unrelated histories refuse the fast-forward, which
+        // would quietly keep serving the OLD checkout after a "successful"
+        // fetch.
+        if source_dir.exists() && !Self::cached_origin_matches(spec, &source_dir) {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Source '{}': cached checkout was cloned from a different origin — discarding it and re-cloning from '{}'",
+                    spec.name, spec.origin.url
+                ),
+            );
+            std::fs::remove_dir_all(&source_dir).map_err(|e| SourceError::CacheError {
+                message: format!(
+                    "failed to discard stale cache for source '{}': {e}",
+                    spec.name
+                ),
+            })?;
+        }
 
         // A pin resolves to a concrete git ref (tag or commit SHA) rather than
         // tracking a branch. Resolution happens on every load so a semver-range
@@ -358,6 +398,19 @@ impl SourceManager {
 
         self.sources.insert(spec.name.clone(), cached);
         Ok(())
+    }
+
+    /// Whether the cached checkout at `source_dir` was cloned from the origin
+    /// `spec` names. `false` for a directory that is not a repository or has
+    /// no `origin` remote — both are stale-cache shapes the caller discards.
+    fn cached_origin_matches(spec: &SourceSpec, source_dir: &Path) -> bool {
+        let Ok(repo) = Repository::open(source_dir) else {
+            return false;
+        };
+        let Ok(remote) = repo.find_remote("origin") else {
+            return false;
+        };
+        remote.url().ok() == Some(spec.origin.url.as_str())
     }
 
     /// Fetch (pull) updates for an already-cloned source.
